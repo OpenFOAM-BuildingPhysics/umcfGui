@@ -26,7 +26,8 @@ git submodule update --remote solver && git add solver            # move the pin
 
 Never commit inside `solver/` from this repository: changes to the solver are pull requests to
 [urbanMicroclimateFoam](https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam).
-Moving the pin is a commit of its own.
+Moving the pin is a commit of its own; check it with `cargo xtask ci` and the
+[tests against real cases](#tests-against-real-cases).
 
 ## Quality gates
 
