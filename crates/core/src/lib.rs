@@ -57,9 +57,10 @@ pub trait CaseFs {
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError>;
     fn is_file(&self, rel: &str) -> bool;
     fn is_dir(&self, rel: &str) -> bool;
-    /// Names of the entries directly inside `rel` (files and directories), sorted. Empty if it
-    /// is not a directory.
-    fn list(&self, rel: &str) -> Vec<String>;
+    /// Names of the entries directly inside `rel` (files and directories), sorted. A path that
+    /// doesn't exist or isn't a directory lists as empty; any other failure (permissions, I/O)
+    /// is an error, never an empty listing.
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError>;
 }
 
 /// Rejects absolute paths and `..`, so a path taken from a dictionary can't leave the case.
@@ -111,12 +112,20 @@ impl CaseFs for DirFs {
         self.path(rel).is_some_and(|p| p.is_dir())
     }
 
-    fn list(&self, rel: &str) -> Vec<String> {
-        let Some(path) = self.path(rel) else { return Vec::new() };
-        let Ok(entries) = std::fs::read_dir(path) else { return Vec::new() };
-        let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+        let io = |source| FsError::Io { path: rel.to_string(), source };
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || path.is_file() => return Ok(Vec::new()),
+            Err(e) => return Err(io(e)),
+        };
+        let mut names = Vec::new();
+        for e in entries {
+            names.push(e.map_err(io)?.file_name().to_string_lossy().into_owned());
+        }
         names.sort();
-        names
+        Ok(names)
     }
 }
 
@@ -162,7 +171,8 @@ impl CaseFs for MemFs {
         rel.is_empty() || self.files.keys().any(|k| k.starts_with(&prefix))
     }
 
-    fn list(&self, rel: &str) -> Vec<String> {
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        check_rel(rel)?;
         let rel = rel.trim_matches('/');
         let prefix = if rel.is_empty() { String::new() } else { format!("{rel}/") };
         let mut names: Vec<String> = self
@@ -173,7 +183,7 @@ impl CaseFs for MemFs {
             .map(str::to_string)
             .collect();
         names.dedup();
-        names
+        Ok(names)
     }
 }
 
@@ -186,8 +196,9 @@ mod tests {
         let fs = MemFs::new().with("system/controlDict", "a 1;").with("system/air/fvSchemes", "").with("0/air/U", "");
         assert!(fs.is_file("system/controlDict"));
         assert!(fs.is_dir("system") && fs.is_dir("system/air") && !fs.is_dir("constant"));
-        assert_eq!(fs.list(""), ["0", "system"]);
-        assert_eq!(fs.list("system"), ["air", "controlDict"]);
+        assert_eq!(fs.list("").unwrap(), ["0", "system"]);
+        assert_eq!(fs.list("system").unwrap(), ["air", "controlDict"]);
+        assert!(fs.list("nope").unwrap().is_empty());
         assert_eq!(fs.read("system/controlDict", 100).unwrap().as_deref(), Some(&b"a 1;"[..]));
         assert!(fs.read("system/nope", 100).unwrap().is_none());
         assert!(matches!(fs.read("system/controlDict", 2), Err(FsError::TooLarge { .. })));
@@ -201,7 +212,27 @@ mod tests {
         let d = DirFs::new("/tmp");
         assert!(matches!(d.read("../etc/passwd", 100), Err(FsError::BadPath(_))));
         assert!(!d.is_file("../etc/passwd"));
-        assert!(d.list("..").is_empty());
+        assert!(matches!(d.list(".."), Err(FsError::BadPath(_))));
+        assert!(matches!(fs.list("../x"), Err(FsError::BadPath(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_is_an_error_not_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("umcf-core-list-{}", std::process::id()));
+        let locked = root.join("locked");
+        std::fs::create_dir_all(locked.join("inner")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = DirFs::new(&root).list("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        // Root can read anything: then there is nothing to check.
+        if let Ok(names) = &result {
+            assert_eq!(names, &["inner"]);
+            return;
+        }
+        assert!(matches!(result, Err(FsError::Io { .. })), "{result:?}");
     }
 
     #[test]
@@ -210,7 +241,10 @@ mod tests {
         assert!(d.is_file("Cargo.toml"));
         assert!(d.read("no-such-file", 10).unwrap().is_none());
         assert!(d.read("src", 10).unwrap().is_none());
-        assert!(d.list("").contains(&"src".to_string()));
+        assert!(d.list("").unwrap().contains(&"src".to_string()));
+        // Missing directories and files list as empty; they are not errors.
+        assert!(d.list("no-such-dir").unwrap().is_empty());
+        assert!(d.list("Cargo.toml").unwrap().is_empty());
         assert!(matches!(d.read("Cargo.toml", 3), Err(FsError::TooLarge { .. })));
     }
 }
