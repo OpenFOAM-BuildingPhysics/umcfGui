@@ -1,0 +1,20 @@
+[package]
+name = "umcf-foam-mesh"
+description = "OpenFOAM polyMesh: points, faces, owner, neighbour, boundary and cell zones"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+umcf-foam-field.workspace = true
+thiserror.workspace = true
+fast-float2.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+
+[lints]
+workspace = true

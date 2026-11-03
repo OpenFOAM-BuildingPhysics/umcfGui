@@ -22,6 +22,7 @@ The foundation libraries, from Rust:
 |---|---|
 | `umcf-foam-dict` | Reads, edits and writes OpenFOAM dictionaries without losing anything ([Dictionaries](user-guide/dictionaries.md)) |
 | `umcf-foam-field` | Reads field files: ASCII, binary, gzip; time and processor directories ([Fields](user-guide/fields.md)) |
+| `umcf-foam-mesh` | Reads `polyMesh` (points, faces, owner, neighbour, boundary, cell zones) and checks it ([Meshes](user-guide/meshes.md)) |
 | `umcf-schema` | Works out a case's OpenFOAM version, its kind and its regions ([Cases](user-guide/cases.md)) |
 | `umcf-core` | Case file access for the layers above |
 

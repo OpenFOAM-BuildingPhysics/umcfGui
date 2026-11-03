@@ -16,6 +16,7 @@ nav = [
     "user-guide/openfoam-versions.md",
     "user-guide/dictionaries.md",
     "user-guide/fields.md",
+    "user-guide/meshes.md",
   ] },
   { "Solver Coverage" = "solver-coverage.md" },
   { "Architecture" = "architecture.md" },

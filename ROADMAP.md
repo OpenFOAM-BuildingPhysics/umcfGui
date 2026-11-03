@@ -9,7 +9,7 @@
 | Case layout: OpenFOAM version (OF8 / OF12) and regions | ✅ scored detection; correct on all 11 local UMCF cases, flags porting leftovers |
 | Docs site (Zensical) + `docs` gate (rustdoc `-D warnings`, nav, strict build) | ✅ |
 | `foam-field`: fields (ASCII, binary, gzip), time and processor directories | ✅ matches the mesh on every field of 6 projects; bit-identical to OpenFOAM-8/12 binary output |
-| `foam-mesh` (polyMesh) | ⬜ |
+| `foam-mesh`: polyMesh (ASCII, binary `faceCompactList`, gzip), boundary, cell zones, consistency checks | ✅ 32 meshes up to 16 M cells pass; identical to OpenFOAM-8/12 binary; 16 M cells in 13 s |
 | Solver catalog: `schema::catalog` + `cargo xtask catalog` | ✅ 7 families, 41 types (13 BCs), 176 keyword reads, OF8 and OF12; checked in CI |
 | `model`, `engine` commands, CLI | ⬜ |
 | `ui-egui`, control channel, MCP | ⬜ |
@@ -17,4 +17,4 @@
 
 ## Progress log
 
-- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog.
+- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog; M0.7 `foam-mesh`.

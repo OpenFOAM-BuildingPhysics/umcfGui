@@ -237,6 +237,37 @@ fn nan_and_inf_values() {
 }
 
 #[test]
+fn bare_typed_lists_as_in_zone_files() {
+    let src = format!(
+        "{}2\n(\nheating\n{{\n    type cellZone;\n    cellLabels      List<label> 3(4 7 9);\n}}\nempty\n{{\n    type cellZone;\n    cellLabels List<label> 0();\n}}\n)\n",
+        header("ascii", "regIOobject", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert_eq!(f.lists().len(), 2);
+    assert_eq!(f.lists()[0].as_flat().unwrap(), [4.0, 7.0, 9.0]);
+    // Review finding: typed lists of other types stay text, as in field boundaryField entries.
+    let src = format!(
+        "{}internalField uniform 1;\nboundaryField\n{{\n    wall\n    {{\n        type zeroGradient;\n        inGroups List<word> 1(wall);\n    }}\n}}\n",
+        header("ascii", "volScalarField", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(f.lists().is_empty());
+    assert_eq!(f.doc.value(&["boundaryField", "wall", "inGroups"]).as_deref(), Some("List<word> 1 (wall)"));
+    // `MyList<label>` is a word, not a list.
+    let src = format!("{}internalField uniform 1;\nx MyList<label>;\n", header("ascii", "volScalarField", ""));
+    assert!(Field::parse(src.as_bytes()).unwrap().lists().is_empty());
+}
+
+#[test]
+fn header_end_offset() {
+    let src = format!("{}3\n(\n0 1 2\n)\n", header("ascii", "labelList", ""));
+    let (h, end) = read_header_end(src.as_bytes()).unwrap();
+    assert_eq!(h.class.as_deref(), Some("labelList"));
+    assert!(src[end.unwrap()..].trim_start().starts_with('3'));
+    assert_eq!(read_header_end(b"3(0 1 2)").unwrap().1, None);
+}
+
+#[test]
 fn note_counts() {
     let src = "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nPoints:30416  nCells:25588  nFaces:81504  nInternalFaces:72072\";\n    object owner;\n}\n";
     let h = read_header(src.as_bytes()).unwrap();
@@ -286,4 +317,136 @@ fn fuzz_mutations_never_panic() {
             }
         }
     }
+}
+
+/// Whether entry `key` resolves to a spliced list (bare, or after `nonuniform`).
+fn resolves(f: &Field, key: &str) -> bool {
+    f.doc.get(&[key]).is_some_and(
+        |e| matches!(e.value.last(), Some(umcf_foam_dict::Node::Atom(p)) if f.placeholder_list(&p.text).is_some()),
+    )
+}
+
+#[test]
+fn placeholder_words_in_the_input_name_no_list() {
+    // Review findings: a word spelling a placeholder resolved to a list the scanner spliced out
+    // (reused, or moved to another entry where the scanner and the lexer disagree about
+    // comments and strings: `a#{`, `${"…}`, `${/*…}`, `${//}`). Placeholders now use a tag the
+    // input doesn't contain, so no input word can name a list, and no word is reserved.
+    let h = header("ascii", "regIOobject", "");
+    let lists = "a List<label> 2(0 1);\nv nonuniform List<scalar> 1(5);\n";
+    for forged in [
+        "b __umcfList0;",
+        "b __umcfListA0;",
+        "b __umcfListA1;",
+        "x a#{}; b __umcfListA0; y #};",
+        "x ${\"};b __umcfListA0 ;\"\"};",
+        "x ${/*};b __umcfListA0 ;*/};",
+        "x ${//} \" ;\nw \" ;\nb __umcfListA0 ;\nz \" \";",
+        "x ${/*} \" */ ;\nw \"} ;\nb __umcfListA1 ;",
+    ] {
+        for order in [format!("{h}{lists}{forged}\n"), format!("{h}{forged}\n{lists}")] {
+            let f = Field::parse(order.as_bytes()).unwrap_or_else(|e| panic!("{order}: {e}"));
+            assert!(!resolves(&f, "b"), "{order}");
+        }
+    }
+    // Mentions in comments, strings and words are plain text.
+    let src = format!("{h}// __umcfList7\nnote \"__umcfListA0\";\nw __umcfListB2;\n{lists}");
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(resolves(&f, "a") && resolves(&f, "v") && !resolves(&f, "w"));
+    // Every one-letter suffix taken: the tag grows to two letters and still works.
+    let taken: String = (b'A'..=b'Z').map(|c| format!("w{c} __umcfList{}0;\n", c as char)).collect();
+    let src = format!("{h}{taken}b __umcfListAA0;\n{lists}");
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(resolves(&f, "a") && resolves(&f, "v") && !resolves(&f, "b") && !resolves(&f, "wA"));
+    // A list the lexer merges into a macro isn't where a reader looks: refused, not lost.
+    let src = format!("{h}z ${{nonuniform List<scalar> 1(1)}};\n");
+    assert!(matches!(Field::parse(src.as_bytes()), Err(Error::Unsupported(_))));
+    // A tag stays short, whatever the input uses.
+    let many: String = (0..30u8).map(|i| format!("w{i} __umcfList{};\n", (b'A' + i % 26) as char)).collect();
+    let tag = scan::Tag::for_input(format!("{many}__umcfList{}", "Q".repeat(10_000)).as_bytes());
+    assert!(tag.word(0).len() < 16, "{tag:?}");
+}
+
+#[test]
+fn placeholders_name_exactly_one_list() {
+    // Review finding: digits right after a list ran on into its placeholder, so `0()1` named
+    // list 1 (and `0()01` too, through a leading zero).
+    let h = header("ascii", "regIOobject", "");
+    for src in [
+        format!("{h}a List<label> 0()1;\nb List<label> 3(5 6 7);\n"),
+        format!("{h}a List<label> 0()01;\nb List<label> 1(5);\n"),
+    ] {
+        let f = Field::parse(src.as_bytes()).unwrap();
+        let a = f.doc.get(&["a"]).unwrap();
+        assert!(
+            !matches!(a.value.as_slice(), [umcf_foam_dict::Node::Atom(p)] if f.placeholder_list(&p.text).is_some()),
+            "{src}"
+        );
+    }
+    let tag = scan::Tag::for_input(b"");
+    assert_eq!(tag.index(&format!("{}1", tag.word(0))), None, "leading zero");
+    assert_eq!(tag.index(&tag.word(1)), Some(1));
+}
+
+#[test]
+fn bare_typed_lists_that_are_not_data_stay_text() {
+    // Review finding: splicing every `List<T>` made a file fail when one isn't data.
+    let h = header("ascii", "volScalarField", "");
+    let src = format!("{h}internalField uniform 1;\ncoeffs {{ a List<scalar> (1 2 3); b List<scalar> 2($x $y); }}\n");
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(f.lists.is_empty());
+    assert!(f.doc.to_string().contains("List<scalar> (1 2 3)"));
+}
+
+#[test]
+fn empty_binary_list_is_its_size_alone() {
+    // Review finding: decomposePar writes `value nonuniform List<vector> \n0\n;` for a patch with
+    // no faces on a processor, in binary.
+    let src = format!(
+        "{}dimensions [0 1 -1 0 0 0 0];\ninternalField uniform (0 0 0);\nboundaryField\n{{\n    wall\n    {{\n        type fixedValue;\n        value nonuniform List<vector> \n0\n;\n    }}\n}}\n",
+        header("binary", "volVectorField", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    let v = f.patch_value("wall", "value");
+    assert!(matches!(v, Some(Value::List(l)) if l.is_empty()), "{v:?}");
+}
+
+#[test]
+fn failing_bare_lists_cost_linear_time() {
+    // Review finding: every bare `List<T>` that isn't data was retried after counting lines
+    // from the start of the file (and scanning a bad word to its end): quadratic, hours for a
+    // few MB. With the fix these parse in well under a second; quadratic would not finish.
+    let h = header("ascii", "volScalarField", "");
+    let many = "List<scalar> ;\n".repeat(200_000);
+    let src = format!("{h}internalField uniform 1;\na ( {many} );\n");
+    let _ = Field::parse(src.as_bytes());
+    // Unquoted, so every `List<` is an attempt and each bad word `x;List<…` reaches the slow
+    // number path (no whitespace, parenthesis or `}` ends it): capped at 64 bytes, not scanned
+    // to the end of the file.
+    let chain = "List<scalar>1{x;".repeat(40_000);
+    let src = format!("{h}internalField uniform 1;\na {chain}\n");
+    let _ = Field::parse(src.as_bytes());
+    // The line number of a real error is still right.
+    let src = format!("{h}internalField nonuniform List<scalar> 2(1 x);\n");
+    let e = Field::parse(src.as_bytes()).unwrap_err().to_string();
+    let line = src.lines().position(|l| l.contains("2(1 x)")).unwrap() + 1;
+    assert!(e.starts_with(&format!("line {line}:")), "{e}");
+}
+
+#[test]
+fn bad_lists_after_nonuniform_still_fail() {
+    // The text fallback is for bare `List<T>` only: field data that doesn't read is an error.
+    let h = header("ascii", "volScalarField", "");
+    let src = format!("{h}internalField nonuniform List<scalar> 2($a $b);\n");
+    assert!(matches!(Field::parse(src.as_bytes()), Err(Error::BadList { .. })));
+}
+
+#[test]
+fn long_bad_words_are_errors() {
+    // Review finding: a word past the 64-byte cap was parsed from its first 64 bytes.
+    let h = header("ascii", "volScalarField", "");
+    let src = format!("{h}internalField nonuniform List<scalar> 2(1.{}+2);\n", "0".repeat(62));
+    assert!(matches!(Field::parse(src.as_bytes()), Err(Error::BadList { .. })));
+    let long = format!("{h}internalField nonuniform List<scalar> 1(1.{});\n", "0".repeat(200));
+    assert!(Field::parse(long.as_bytes()).is_ok(), "a long valid number still reads (fast path)");
 }

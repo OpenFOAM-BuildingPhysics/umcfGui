@@ -37,14 +37,14 @@ pub const TABLE: &[(&str, Class)] = &[
 
 /// Orderings within a layer: in each chain an earlier crate may be used by a later one.
 pub const INTRA_LAYER_ORDER: &[&[&str]] =
-    &[&["core", "geom"], &["foam-dict", "foam-mesh", "foam-field"], &["schema", "model"], &["post", "render"]];
+    &[&["core", "geom"], &["foam-dict", "foam-field", "foam-mesh"], &["schema", "model"], &["post", "render"]];
 
 /// Format crates may depend only on these workspace crates, so OpenFOAM syntax never pulls in
 /// UMCF knowledge.
 pub const FORMAT_ALLOWED: &[(&str, &[&str])] = &[
     ("foam-dict", &["core", "geom"]),
-    ("foam-mesh", &["core", "geom", "foam-dict"]),
-    ("foam-field", &["core", "geom", "foam-dict", "foam-mesh"]),
+    ("foam-field", &["core", "geom", "foam-dict"]),
+    ("foam-mesh", &["core", "geom", "foam-dict", "foam-field"]),
 ];
 
 /// External crates that make up a UI toolkit. A trailing `*` is a prefix match.
@@ -223,6 +223,9 @@ mod tests {
     #[test]
     fn same_layer_needs_a_chain() {
         assert!(check(&[krate("umcf-foam-field", &[("umcf-foam-dict", true)])]).is_empty());
+        assert!(check(&[krate("umcf-foam-mesh", &[("umcf-foam-field", true), ("umcf-foam-dict", true)])]).is_empty());
+        let v = check(&[krate("umcf-foam-field", &[("umcf-foam-mesh", true)])]);
+        assert!(v.iter().any(|x| matches!(x, Violation::SameLayer { .. })), "{v:?}");
         let v = check(&[krate("umcf-foam-dict", &[("umcf-foam-field", true)])]);
         assert!(v.iter().any(|x| matches!(x, Violation::SameLayer { .. })), "{v:?}");
         let v = check(&[krate("umcf-validate", &[("umcf-post", true)])]);

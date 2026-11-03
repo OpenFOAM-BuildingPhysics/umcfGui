@@ -4,7 +4,7 @@ An OpenFOAM case editor, runner and viewer for urbanMicroclimateFoam, built as s
 Rust crates.
 
 !!! info "Status"
-    The crates that exist today are `core`, `foam-dict`, `foam-field` and `schema` (case layout
+    The crates that exist today are `core`, `foam-dict`, `foam-field`, `foam-mesh` and `schema` (case layout
     and the generated [solver catalog](solver-coverage.md)), plus the `xtask` tooling.
     The others in the table below are planned.
 
@@ -14,7 +14,7 @@ Rust crates.
 |---|---|
 | Strict layers checked by a tool | `cargo xtask layers` reads `cargo metadata`. A crate may depend only on lower layers, plus explicit chains within a layer (table below) |
 | UI quarantine | UI crates (`egui*`, `eframe`, `winit`, `rfd`, `wgpu*`) only at L6+. `wgpu` only if the 3D view needs it, and only in `ui-egui` |
-| Format crates kept narrow | `foam-*` depend only on `core` and `geom`. They know OpenFOAM syntax, not UMCF |
+| Format crates kept narrow | `foam-*` depend only on `core`, `geom` and the `foam-*` below them. They know OpenFOAM syntax, not UMCF |
 | One command registry | `CommandSpec { id, label, menu, shortcut, params, enabled, run, journal, undoable }`. `enabled` returns `Err(reason)`, which the UI shows as a tooltip |
 | Session as the single entry point | `Session::execute(id, Json)` with a panic guard, an undo snapshot and a journal. The case model is `Arc`-cloned for cheap undo snapshots |
 | Headless parity | `execute_headless` rejects commands that would only open a dialog. The CLI and MCP use it |
@@ -30,8 +30,8 @@ Rust crates.
 L0  core        ids, units (SI + typed quantities), errors, case paths
     geom        Vec3, bbox, transforms, STL/OBJ triSurface I/O
 L1  foam-dict   lossless FoamFile dictionary CST: parse, edit-in-place, write
-    foam-mesh   polyMesh (points/faces/owner/neighbour/boundary), ASCII + binary, cellZones
-    foam-field  vol*/surface* fields, uniform/nonuniform lists, time dirs, processor* dirs
+    foam-field  vol*/surface* fields, uniform/nonuniform lists, gzip, time dirs, processor* dirs
+    foam-mesh   polyMesh (points/faces/owner/neighbour/boundary, cellZones), ASCII + binary
 L2  schema      catalog of solver types and keywords (generated in part by xtask catalog)
     model       typed Case built on foam-dict nodes: regions, materials, BCs, controls, sun/weather
 L3  validate    case diagnostics (missing dicts, region/patch coupling mismatches, unknown types)
@@ -44,7 +44,8 @@ L6  ui-egui     panels, 3D view, theme tokens, control channel server
 L7  apps        umcf-gui (desktop), umcf-cli (check / run / render / mcp)
 ```
 
-Chains within a layer: `foam-dict → foam-mesh → foam-field`, `schema → model`, `post → render`.
+Chains within a layer: `foam-dict → foam-field → foam-mesh` (the mesh reader uses the field
+reader's header, gzip and number parsing), `schema → model`, `post → render`.
 
 `runner` is optional and the only native-only crate below L6 (it spawns processes). `engine`
 depends on it only through `features = ["runner"]`, which the desktop and CLI apps turn on by
