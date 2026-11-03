@@ -120,6 +120,14 @@ pub struct FieldInfo {
     pub internal: Option<String>,
     /// `boundaryField` entries in file order. `None` when the file was too big to read here.
     pub bcs: Option<Vec<Bc>>,
+    /// `boundaryField` also takes entries from elsewhere (`#include`, `#includeEtc`,
+    /// `$macro`): the list above may not be all of them.
+    pub indirect: bool,
+    /// The file has a `boundaryField` dictionary of its own.
+    pub boundary_field: bool,
+    /// `object` of the FoamFile header: the field the file holds. A copy such as `T~` or
+    /// `T.bak` still says `T`.
+    pub object: Option<String>,
 }
 
 /// One `boundaryField` entry.
@@ -133,6 +141,9 @@ pub struct Bc {
     pub kind: Option<String>,
     /// `value` in short, when there is one.
     pub value: Option<String>,
+    /// `patchType`: the patch type a condition is meant for (`fixedJump` on a `cyclic` patch),
+    /// which lifts OpenFOAM's check that constraint patches use their own type.
+    pub patch_type: Option<String>,
 }
 
 /// What is on disk for one dictionary, as read or last saved. Shared by every clone of a
@@ -169,6 +180,9 @@ pub struct Case {
     pub regions: Vec<Region>,
     /// What didn't read (files skipped, a missing start time): the case still opens.
     pub notes: Vec<Note>,
+    /// `processorN` directories: the case is decomposed, and a parallel run reads its times
+    /// and meshes from there.
+    pub processors: usize,
     files: BTreeMap<String, Arc<Document>>,
     /// Paths that are the same file as a loaded one (a symlinked dictionary): path → that one.
     aliases: BTreeMap<String, String>,
@@ -281,6 +295,7 @@ impl Case {
 
         let controls = files.get(CONTROL_DICT).map(|d| Controls::read(d)).unwrap_or_default();
         let time_dirs = times::time_dirs(fs, "")?;
+        let processors = times::processor_dirs(fs)?.len();
         let start = controls.start_dir(&time_dirs);
         if start.is_none() && layout.kind == CaseKind::Solver {
             notes.push(note(
@@ -316,7 +331,7 @@ impl Case {
         }
 
         let disk = Arc::new(std::sync::Mutex::new(DiskState { files: disk, backed_up: Default::default() }));
-        Ok(Case { layout, controls, start, regions: out, notes, files, aliases, disk, options })
+        Ok(Case { layout, controls, start, regions: out, notes, processors, files, aliases, disk, options })
     }
 
     pub fn region(&self, name: &str) -> Option<&Region> {
@@ -495,7 +510,17 @@ fn read_fields(fs: &dyn CaseFs, dir: &str, options: OpenOptions, notes: &mut Vec
             Ok(None) => {}
             Err(umcf_foam_field::Error::Fs(FsError::TooLarge { .. }) | umcf_foam_field::Error::TooLarge { .. }) => {
                 notes.push(note(Severity::Info, &path, "too large to read its boundary conditions here"));
-                out.push(FieldInfo { name, path, class: None, dimensions: None, internal: None, bcs: None });
+                out.push(FieldInfo {
+                    name,
+                    path,
+                    class: None,
+                    dimensions: None,
+                    internal: None,
+                    bcs: None,
+                    indirect: false,
+                    boundary_field: false,
+                    object: None,
+                });
             }
             Err(e) => notes.push(note(Severity::Warning, &path, e.to_string())),
         }
@@ -511,23 +536,52 @@ fn short(f: &Field, path: &[&str]) -> Option<String> {
     }
 }
 
+/// An entry's value in short, read from the entry itself (no path lookup: a `boundaryField`
+/// with thousands of patches stays linear).
+fn short_entry(f: &Field, e: &umcf_foam_dict::Entry) -> Option<String> {
+    use umcf_foam_dict::Node;
+    if let [Node::Atom(n), Node::Atom(p)] = e.value.as_slice()
+        && n.text == "nonuniform"
+        && let Some(l) = f.placeholder_list(&p.text)
+    {
+        return Some(format!("nonuniform List<{}> {}", l.kind.name(), l.len()));
+    }
+    e.value_text()
+}
+
+/// A word entry (`type`, `patchType`): OpenFOAM's word reader takes a quoted string too.
+fn word(d: &umcf_foam_dict::Dict, key: &str) -> Option<String> {
+    d.get(key).and_then(umcf_foam_dict::Entry::value_text).map(|v| umcf_foam_dict::unquote(v.trim()).to_string())
+}
+
 fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
     let entries = f.doc.get(&["boundaryField"]).and_then(umcf_foam_dict::Entry::dict);
     let bcs = entries
         .map(|d| {
             d.entries()
                 .map(|e| {
-                    let p = e.key();
+                    let body = e.dict();
                     Bc {
-                        patch: p.to_string(),
+                        patch: e.key().to_string(),
                         pattern: e.key.text.starts_with('"'),
-                        kind: f.patch_type(p),
-                        value: short(f, &["boundaryField", p, "value"]),
+                        kind: body.and_then(|b| word(b, "type")),
+                        value: body.and_then(|b| b.get("value")).and_then(|v| short_entry(f, v)),
+                        patch_type: body.and_then(|b| word(b, "patchType")),
                     }
                 })
                 .collect()
         })
         .unwrap_or_default();
+    // Entry-level directives and `$macro` merges bring in entries this list can't show. Without
+    // a `boundaryField` dictionary of its own (`boundaryField $common;`, or one that comes from
+    // an `#include` at the top of the file), all of them may come from elsewhere.
+    let brings_in = |d: &umcf_foam_dict::Dict| {
+        d.items.iter().any(|i| matches!(i, umcf_foam_dict::Item::Directive { .. } | umcf_foam_dict::Item::Macro { .. }))
+    };
+    let indirect = match entries {
+        Some(d) => brings_in(d),
+        None => brings_in(&f.doc.root) || f.doc.get(&["boundaryField"]).is_some(),
+    };
     FieldInfo {
         name,
         path,
@@ -535,6 +589,9 @@ fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
         dimensions: f.dimensions(),
         internal: short(f, &["internalField"]),
         bcs: Some(bcs),
+        indirect,
+        boundary_field: entries.is_some(),
+        object: f.header.object.clone(),
     }
 }
 

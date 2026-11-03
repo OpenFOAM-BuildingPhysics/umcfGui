@@ -12,7 +12,8 @@
 | `foam-mesh`: polyMesh (ASCII, binary `faceCompactList`, gzip), boundary, cell zones, consistency checks | ✅ 32 meshes up to 16 M cells pass; identical to OpenFOAM-8/12 binary; 16 M cells in 13 s |
 | Solver catalog: `schema::catalog` + `cargo xtask catalog` | ✅ 7 families, 41 types (13 BCs), 176 keyword reads, OF8 and OF12; checked in CI |
 | `model`: typed case (regions, controls, start time, patches, boundary conditions), lossless edits, atomic save with backup and conflict check | ✅ opens all 18 local cases (OF8 and OF12, solver and meshing steps); an edit changes exactly one entry |
-| `validate` case checks, `engine` commands, CLI | ⬜ |
+| `validate`: case checks (controls, regions, boundary conditions against the mesh as OpenFOAM matches them, region coupling, solver types per version) | ✅ no false errors on the 18 local cases; one real one found (a restart that would fail) |
+| `engine` commands, CLI (`umcf-cli check`) | ⬜ |
 | Mesh quality (`checkMesh` metrics and sets) | ⬜ |
 | STL import, diagnostics and repair | ⬜ |
 | 3D scene, picking, boundary conditions by picking | ⬜ |
@@ -24,4 +25,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 
 ## Progress log
 
-- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog; M0.7 `foam-mesh`; M0.8 `model`. Scope extended: geometry import, meshing set-up, mesh-problem handling and boundary conditions by picking in 3D (`docs/architecture.md`).
+- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog; M0.7 `foam-mesh`; M0.8 `model`; M0.9 `validate`. Scope extended: geometry import, meshing set-up, mesh-problem handling and boundary conditions by picking in 3D (`docs/architecture.md`).

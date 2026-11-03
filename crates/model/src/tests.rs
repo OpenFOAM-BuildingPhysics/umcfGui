@@ -173,7 +173,11 @@ fn start_time_resolution() {
     assert_eq!(name(c(Some("firstTime"), None)).as_deref(), Some("0"));
     assert_eq!(name(c(Some("latestTime"), Some("0"))).as_deref(), Some("7200"));
     assert_eq!(name(c(Some("startTime"), Some("3600"))).as_deref(), Some("3600"));
-    assert_eq!(name(c(None, Some("3.6e3"))).as_deref(), Some("3600"));
+    assert_eq!(name(c(Some("startTime"), Some("3.6e3"))).as_deref(), Some("3600"));
+    // Without startFrom, OpenFOAM resumes from the latest time (Time::setControls).
+    assert_eq!(name(c(None, Some("0"))).as_deref(), Some("7200"));
+    assert_eq!(name(c(Some("lastTime"), Some("0"))), None, "unknown startFrom");
+    assert_eq!(c(None, None).describe_start(), "latestTime, the default");
     assert_eq!(name(c(Some("startTime"), Some("100"))), None);
     assert_eq!(name(c(Some("startTime"), Some("$t0"))), None);
     assert_eq!(c(Some("startTime"), Some("100")).describe_start(), "startTime 100");
@@ -304,7 +308,11 @@ fn single_region_fields_have_plain_paths() {
 fn start_time_matches_like_openfoam() {
     let times: Vec<TimeDir> =
         ["0", "3600", "0.333333"].iter().map(|n| TimeDir { name: n.to_string(), value: n.parse().unwrap() }).collect();
-    let at = |t: &str| Controls { start_time: Some(t.into()), ..Controls::default() }.start_dir(&times).map(|d| d.name);
+    let at = |t: &str| {
+        Controls { start_from: Some("startTime".into()), start_time: Some(t.into()), ..Controls::default() }
+            .start_dir(&times)
+            .map(|d| d.name)
+    };
     // More digits than the directory name has: OpenFOAM still finds `0.333333`.
     assert_eq!(at("0.3333333333").as_deref(), Some("0.333333"));
     assert_eq!(at("3600").as_deref(), Some("3600"));
@@ -400,7 +408,8 @@ fn an_empty_original_is_still_backed_up() {
 fn start_time_takes_the_nearest_directory() {
     let times: Vec<TimeDir> =
         ["100000", "100000.4"].iter().map(|n| TimeDir { name: n.to_string(), value: n.parse().unwrap() }).collect();
-    let c = Controls { start_time: Some("1.000004e5".into()), ..Controls::default() };
+    let c =
+        Controls { start_from: Some("startTime".into()), start_time: Some("1.000004e5".into()), ..Controls::default() };
     assert_eq!(c.start_dir(&times).map(|d| d.name).as_deref(), Some("100000.4"));
 }
 
@@ -540,4 +549,20 @@ fn a_file_grown_past_the_limit_is_a_conflict() {
     c.set(CONTROL_DICT, &["endTime"], "5").unwrap();
     let e = c.save(&mut fs, None).unwrap_err();
     assert!(matches!(&e, Error::Partial { source, .. } if matches!(**source, Error::Conflict { .. })), "{e}");
+}
+
+#[test]
+fn boundary_fields_with_includes_are_marked_indirect() {
+    let mut fs = case();
+    fs.insert(
+        "0/air/U",
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    #includeEtc \"caseDicts/setConstraintTypes\"\n    ground {{ type noSlip; }}\n}}\n",
+            header("volVectorField", "U")
+        ),
+    );
+    let c = Case::open(&fs).unwrap();
+    let air = c.region("air").unwrap();
+    assert!(air.field("U").unwrap().indirect);
+    assert!(!air.field("T").unwrap().indirect);
 }

@@ -7,8 +7,8 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Case checks before a run: regions against meshes and fields, field patches against mesh patches, boundary-condition types against the solver catalog | Most failed runs are set-up mistakes that a check finds in seconds | `validate`, `umcf-cli check` |
-| 2 | Commands, session, undo and journal; the headless CLI | The GUI, CLI and MCP all act through commands | `engine`, `umcf-cli` |
+| 1 | Commands, session, undo and journal; the headless CLI with `umcf-cli check` | The GUI, CLI and MCP all act through commands; the case checks need a front end | `engine`, `umcf-cli` |
+| 2 | Required fields per region and model (which fields the solver reads for a fluid, solid or vegetation region, and for the selected models), and the keywords each selected type needs | A missing `w` or `Ts` file stops the solver at the start; the checks know the patches but not yet the solver's field list | `xtask catalog`, `validate` |
 | 3 | Mesh quality from `foam-mesh`: non-orthogonality, skewness, aspect ratio, volumes, open cells, with `checkMesh`'s thresholds; reading `checkMesh -writeSets` | Bad cells are the most common reason a run diverges; each problem needs a location to show | `validate` |
 | 4 | STL import and diagnostics: open and non-manifold edges, normals, degenerate triangles, units, extent; repair commands (weld, drop degenerate, orient, scale) | Urban geometry is rarely clean, and snappyHexMesh fails late on it | `geom`, `engine` |
 | 5 | 3D scene of meshes and surfaces, CPU rasteriser, BVH picking (triangle → patch / face) | Seeing the case, and picking what a command acts on | `render`, `geom` |
@@ -23,3 +23,4 @@ in the same pull request that closes it.
 |---|---|---|
 | `Case::open` reads each start-time field file whole to list its boundary conditions | Opening a case at a late time with gzipped multi-GB fields takes 20 s (Hong Kong project: 30 fields, 4 GB); files over 256 MB are listed without their BCs | Read fields in the background after the case opens, and only when they are needed |
 | Fields are read, not edited | Boundary conditions can't be changed yet | `bc.set` edits the field file losslessly, splicing list data back unchanged |
+| Standard OpenFOAM boundary-condition and model types are not in the catalog | A misspelt `zeroGradient` is not caught before the run | Extend `xtask catalog` to the OpenFOAM sources the solver builds against |

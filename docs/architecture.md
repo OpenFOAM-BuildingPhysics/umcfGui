@@ -5,7 +5,7 @@ Rust crates.
 
 !!! info "Status"
     The crates that exist today are `core`, `foam-dict`, `foam-field`, `foam-mesh`, `schema` (case layout
-    and the generated [solver catalog](solver-coverage.md)) and `model`, plus the `xtask` tooling.
+    and the generated [solver catalog](solver-coverage.md)), `model` and `validate`, plus the `xtask` tooling.
     The others in the table below are planned.
 
 ## Core patterns
