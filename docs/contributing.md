@@ -52,7 +52,9 @@ variables, and report a skip when they are unset:
 | `UMCF_CASES_EXPECT` | pins versions: `<case path>=8,<case path>=12,…` |
 | `UMCF_DICT_TREES` | directory trees, e.g. the OpenFOAM-8 and OpenFOAM-12 `tutorials/` and `etc/`: every file with a `FoamFile` header round-trips |
 | `UMCF_OF8_TUTORIALS`, `UMCF_OF12_TUTORIALS` | the snappyHexMesh tutorials get their version |
-| `UMCF_FUZZ_ITERS` | more iterations for the dictionary fuzz test |
+| `UMCF_FIELDS_ALL_TIMES` | with `UMCF_CASES`: read the fields of every time directory, not only the first and last |
+| `UMCF_FIELD_PAIR` | `<ascii case>:<binary case>`: a copy converted with `writeFormat binary;` and `foamFormatConvert -region <r>` must read back bit for bit the same |
+| `UMCF_FUZZ_ITERS` | more iterations for the dictionary and field fuzz tests |
 
 ```sh
 UMCF_DICT_TREES=$HOME/OpenFOAM-8/tutorials:$HOME/OpenFOAM-12/tutorials cargo test -p umcf-foam-dict --test corpus

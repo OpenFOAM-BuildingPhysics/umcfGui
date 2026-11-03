@@ -15,6 +15,7 @@ nav = [
     "user-guide/cases.md",
     "user-guide/openfoam-versions.md",
     "user-guide/dictionaries.md",
+    "user-guide/fields.md",
   ] },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
