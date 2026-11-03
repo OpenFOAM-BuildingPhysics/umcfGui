@@ -258,6 +258,20 @@ fn region_coupling() {
         "sampleRegion street;\n        samplePatch street_to_air;",
     );
     assert_eq!(codes(&fs), []);
+    // An empty region is not a word: OpenFOAM stops, in both versions.
+    let mut fs = case();
+    edit(&mut fs, "constant/air/polyMesh/boundary", "neighbourRegion street;", "neighbourRegion \"\";");
+    assert!(errors(&fs).iter().any(|d| d.code == "coupling.region" && d.message.contains("empty `neighbourRegion`")));
+    // A missing region is the patch's own, in both versions: here `air` has no `street_to_air`.
+    let mut fs = case();
+    edit(&mut fs, "constant/air/polyMesh/boundary", "neighbourRegion street;", "");
+    let e = errors(&fs);
+    assert!(e.iter().any(|d| d.code == "coupling.patch") && !e.iter().any(|d| d.code == "coupling.region"), "{e:?}");
+    let mut of8 = of8_case();
+    assert_eq!(codes(&of8), []);
+    edit(&mut of8, "constant/air/polyMesh/boundary", "sampleRegion street;", "");
+    let e = errors(&of8);
+    assert!(e.iter().any(|d| d.code == "coupling.patch") && !e.iter().any(|d| d.code == "coupling.region"), "{e:?}");
 }
 
 #[test]
@@ -334,9 +348,9 @@ fn model_types_against_the_solver() {
     assert_eq!(codes(&fs), []);
 }
 
-#[test]
-fn a_type_from_the_other_version() {
-    // OSB exists only in the OpenFOAM-12 solver; this case is OpenFOAM-8 (regionProperties).
+/// The test case as an OpenFOAM-8 case: `constant/regionProperties`, `fvOptions`, and the
+/// `sample*` coupling keywords.
+fn of8_case() -> MemFs {
     let mut fs = case();
     edit(
         &mut fs,
@@ -351,7 +365,6 @@ fn a_type_from_the_other_version() {
             header("dictionary")
         ),
     );
-    fs.insert("constant/air/fvModels", "");
     let mut of8 = MemFs::new();
     for rel in [
         "system/controlDict",
@@ -365,9 +378,18 @@ fn a_type_from_the_other_version() {
         "0/street/Ts",
         "0/vegetation/Tl",
     ] {
-        of8.insert(rel, fs.read(rel, 1 << 20).unwrap().unwrap());
+        let text = fs.read(rel, 1 << 20).unwrap().unwrap();
+        let text = String::from_utf8(text).unwrap();
+        of8.insert(rel, text.replace("neighbourRegion", "sampleRegion").replace("neighbourPatch", "samplePatch"));
     }
     of8.insert("system/air/fvOptions", format!("{}\n", header("dictionary")));
+    of8
+}
+
+#[test]
+fn a_type_from_the_other_version() {
+    // OSB exists only in the OpenFOAM-12 solver; this case is OpenFOAM-8 (regionProperties).
+    let mut of8 = of8_case();
     let c = Case::open(&of8).unwrap();
     assert_eq!(c.layout.version, Some(OfVersion::V8));
     assert!(check(&c).iter().all(|d| d.level != Level::Error), "{:?}", check(&c));
@@ -643,15 +665,55 @@ fn duplicates_merge_like_openfoam() {
 
 #[test]
 fn couple_groups_and_first_time() {
-    // OF12 `coupleGroup` finds the partner by group; a stale neighbourRegion is ignored.
+    // `coupleGroup` finds the partner by group. OF12 refuses partner keywords next to it.
     let mut fs = case();
     edit(
         &mut fs,
         "constant/air/polyMesh/boundary",
-        "neighbourRegion street;",
-        "coupleGroup streetAir;\n        neighbourRegion old;",
+        "neighbourRegion street;\n        neighbourPatch street_to_air;",
+        "coupleGroup streetAir;",
     );
     assert_eq!(codes(&fs), []);
+    let mut fs = case();
+    edit(&mut fs, "constant/air/polyMesh/boundary", "neighbourRegion street;", "coupleGroup streetAir;");
+    assert!(errors(&fs).iter().any(|d| d.code == "coupling.group" && d.message.contains("`neighbourPatch`")));
+    // `samePatch false` is no partner keyword; `mappedInternal` reads no coupleGroup.
+    let mut fs = case();
+    edit(
+        &mut fs,
+        "constant/air/polyMesh/boundary",
+        "neighbourRegion street;\n        neighbourPatch street_to_air;",
+        "coupleGroup streetAir;\n        samePatch false;",
+    );
+    assert_eq!(codes(&fs), []);
+    let mut fs = case();
+    edit(
+        &mut fs,
+        "constant/vegetation/polyMesh/boundary",
+        "neighbourRegion air;",
+        "coupleGroup g;\n        neighbourRegion air;",
+    );
+    assert_eq!(codes(&fs), []);
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "neighbourRegion air;", "neighbourRegion airs;");
+    assert!(errors(&fs).iter().any(|d| d.code == "coupling.region"), "{:?}", errors(&fs));
+    // OF8 reads an empty sampleRegion even next to a coupleGroup.
+    let mut of8 = of8_case();
+    edit(
+        &mut of8,
+        "constant/air/polyMesh/boundary",
+        "sampleRegion street;",
+        "coupleGroup g;\n        sampleRegion \"\";",
+    );
+    assert!(errors(&of8).iter().any(|d| d.code == "coupling.region"), "{:?}", errors(&of8));
+    // OF8 ignores the partner keywords.
+    let mut of8 = of8_case();
+    edit(
+        &mut of8,
+        "constant/air/polyMesh/boundary",
+        "sampleRegion street;",
+        "coupleGroup streetAir;\n        sampleRegion old;",
+    );
+    assert_eq!(codes(&of8), []);
     // startFrom firstTime with endTime at the first time: the run stops at once.
     let mut fs = case();
     edit(&mut fs, "system/controlDict", "startFrom startTime;", "startFrom firstTime;");
@@ -716,11 +778,11 @@ fn third_review() {
     edit(&mut fs, "0/air/T", "boundaryField\n{\n", "boundaryField\n{\n    \"inlet|x\\\\\\\\d\" { type fixedValue; }\n");
     assert!(!codes(&fs).contains(&(Level::Warning, "bc.pattern")), "{:?}", codes(&fs));
     // OF8: a coupleGroup patch with samplePatch but no sampleRegion is found by group.
-    let mut fs = case();
+    let mut fs = of8_case();
     edit(
         &mut fs,
         "constant/air/polyMesh/boundary",
-        "neighbourRegion street;\n        neighbourPatch street_to_air;",
+        "sampleRegion street;\n        samplePatch street_to_air;",
         "coupleGroup g;\n        samplePatch street_to_air;",
     );
     assert_eq!(codes(&fs), []);

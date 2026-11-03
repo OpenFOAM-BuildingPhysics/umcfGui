@@ -1,9 +1,12 @@
 # Checking a case
 
-Before a run, umcfGui checks the case for the mistakes that make urbanMicroclimateFoam stop
-at the start, or compute something other than what the case says. The check reads nothing
-beyond what opening the case already read, so it is fast enough to run again after every
-edit.
+The case check finds the mistakes that make urbanMicroclimateFoam stop at the start, or
+compute something other than what the case says. It reads nothing beyond what opening the case
+already read, so it is fast enough to run again after every edit.
+
+For now the check is a library call, `umcf_validate::check(&case)`, which returns the problems
+found. The command line (`umcf-cli check`) and the GUI, which will run it before a run, are
+not there yet (see [Gaps](../gaps.md)).
 
 Each problem has a level, a code and the file it is about, and where there is one, the region,
 patch and field:
@@ -64,12 +67,13 @@ Regions exchange heat and moisture through `mapped*` patches. The partner comes 
 
 | Code | Level | What it means |
 |---|---|---|
-| `coupling.region` | Error | The partner region is not one of the case's regions |
+| `coupling.region` | Error | The partner region is not one of the case's regions, or is empty (`neighbourRegion "";`: OpenFOAM stops reading the boundary file; next to an OpenFOAM-12 `coupleGroup` it is a `coupling.group` error). A patch without one couples within its own region |
+| `coupling.group` | Error | An OpenFOAM-12 patch has a `coupleGroup` and also `neighbourRegion`, `neighbourPatch` (or the `sample*` names) or `samePatch true`: OpenFOAM-12 stops, it takes one or the other. OpenFOAM-8 ignores the extra keywords. `mappedInternal` reads no `coupleGroup` and is checked by its region |
 | `coupling.patch` | Error | The partner region has no patch of that name. Not checked for patches that use no patch there: `mappedInternal`, `sampleMode nearestCell`, `nearestOnlyCell` or `nearestFace`, or `samplePatch none` |
 | `coupling.not-mutual` | Warning | The partner points back into this region, but at another patch. One-way sampling (vegetation reading the air's patches) is normal and not reported |
 
 A patch with a `coupleGroup` finds its partner by group, so its region and patch names are not
-checked.
+checked further.
 
 A meshing step names regions that only exist once the steps are put together, so coupling is
 checked in solver cases only.

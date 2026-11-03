@@ -2,7 +2,8 @@
 //!
 //! `UMCF_CASES` (`:`-separated case directories): every case is checked and its diagnostics are
 //! printed. These cases ran, so an error is a false alarm unless `UMCF_CHECK_EXPECT` lists it:
-//! `<case>=<code>,<code>;<case>=<code>` (a real problem in that case, found by the check).
+//! `<case>=<code>@<region>,<code>;<case>=<code>` (a real problem in that case, found by the
+//! check). `@<region>` limits the exception to that region's errors.
 
 use umcf_core::DirFs;
 use umcf_model::Case;
@@ -15,11 +16,14 @@ fn reference_cases_have_no_false_errors() {
         return;
     };
     let expect = std::env::var("UMCF_CHECK_EXPECT").unwrap_or_default();
-    let expected = |case: &str, code: &str| {
-        expect
-            .split(';')
-            .filter_map(|e| e.split_once('='))
-            .any(|(c, codes)| c == case && codes.split(',').any(|x| x == code))
+    let expected = |case: &str, d: &umcf_validate::Diagnostic| {
+        expect.split(';').filter_map(|e| e.split_once('=')).any(|(c, codes)| {
+            c == case
+                && codes.split(',').any(|x| match x.split_once('@') {
+                    Some((code, region)) => code == d.code && d.region.as_deref() == Some(region),
+                    None => x == d.code,
+                })
+        })
     };
     let mut failures = Vec::new();
     for dir in cases.split(':').filter(|c| !c.is_empty()) {
@@ -49,7 +53,7 @@ fn reference_cases_have_no_false_errors() {
                 d.field.as_deref().map(|f| format!(" field {f}")).unwrap_or_default(),
                 d.message
             );
-            if d.level == Level::Error && !expected(dir, d.code) {
+            if d.level == Level::Error && !expected(dir, d) {
                 failures.push(format!("{dir}: {} {}: {}", d.code, d.path, d.message));
             }
         }

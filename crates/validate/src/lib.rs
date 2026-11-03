@@ -669,14 +669,46 @@ fn coupling(case: &Case, out: &mut Vec<Diagnostic>) {
             let param = |key: &str| {
                 p.params.iter().find(|(k, _)| k == key).map(|(_, v)| umcf_foam_dict::unquote(v.trim()).to_string())
             };
-            // With `coupleGroup`, OpenFOAM finds the partner (region and patch) by group.
-            if param("coupleGroup").is_some() {
+            let v8 = version == Some(OfVersion::V8);
+            // OpenFOAM-12 `mappedInternal` has its own base and reads no `coupleGroup`.
+            let group = p.kind != "mappedInternal" && param("coupleGroup").is_some();
+            let region =
+                if v8 { param("sampleRegion") } else { param("neighbourRegion").or_else(|| param("sampleRegion")) };
+            // A missing region is the patch's own (both versions); an empty one is not a word,
+            // and OpenFOAM stops reading the boundary file. OpenFOAM-8 reads it even next to a
+            // `coupleGroup`; OpenFOAM-12 then stops on the pair (below).
+            if region.as_deref() == Some("") && !(group && !v8) {
+                let key = if !v8 && param("neighbourRegion").is_some() { "neighbourRegion" } else { "sampleRegion" };
+                out.push(diag(
+                    Level::Error,
+                    "coupling.region",
+                    format!("`{}` has an empty `{key}`: OpenFOAM stops reading the boundary file", p.name),
+                ));
                 continue;
             }
-            let region = match version {
-                Some(OfVersion::V8) => param("sampleRegion"),
-                _ => param("neighbourRegion").or_else(|| param("sampleRegion")),
-            };
+            // With `coupleGroup`, OpenFOAM finds the partner (region and patch) by group.
+            // OpenFOAM-12 refuses one together with partner keywords (mappedPatchBaseBase.C:
+            // "Either neighbourRegion/Patch information or a coupleGroup should be specified,
+            // not both"); OpenFOAM-8 ignores them.
+            if group {
+                let same_patch =
+                    param("samePatch").is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on" | "y" | "t" | "any"));
+                let key = ["neighbourRegion", "sampleRegion", "neighbourPatch", "samplePatch"]
+                    .into_iter()
+                    .find(|k| param(k).is_some())
+                    .or(same_patch.then_some("samePatch"));
+                if !v8 && let Some(k) = key {
+                    out.push(diag(
+                        Level::Error,
+                        "coupling.group",
+                        format!(
+                            "`{}` has both a `coupleGroup` and `{k}`: OpenFOAM-12 stops, it takes one or the other",
+                            p.name
+                        ),
+                    ));
+                }
+                continue;
+            }
             if let Some(nr) = &region
                 && case.region(nr).is_none()
             {
