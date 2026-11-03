@@ -17,9 +17,3 @@ allow = [
     "CC0-1.0",
 ]
 confidence-threshold = 0.9
-
-[[licenses.clarify]]
-# Workspace crates and xtask: GPL-3.0-or-later via [workspace.package].
-crate = "xtask"
-expression = "GPL-3.0-or-later"
-license-files = []

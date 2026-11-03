@@ -1,0 +1,54 @@
+name: CI
+
+# Every quality gate (`cargo xtask ci`) on every push to main and every pull request: fmt, clippy
+# (default and --no-default-features), tests (both feature sets), layers, assets, wasm, docs
+# (rustdoc -D warnings, nav, strict site build) and deny (licences).
+#
+# The tests against real cases (UMCF_CASES, UMCF_DICT_TREES, …) need files that are not in the
+# repository; they report a skip here and run locally before merging (docs/contributing.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run; every push to main runs to the end.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # More fuzz iterations than a local run.
+  UMCF_FUZZ_ITERS: "100000"
+
+jobs:
+  gate:
+    name: cargo xtask ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+      - name: Install Zensical
+        run: |
+          uv venv --python 3.12
+          uv pip install -r requirements_docs.txt
+      - name: cargo xtask ci
+        run: cargo xtask ci

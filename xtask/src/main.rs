@@ -166,6 +166,9 @@ fn cmd_docs() -> Result<(), String> {
     } else {
         None
     };
+    if zensical.is_none() && strict() {
+        return Err("docs: Zensical is not installed (required on CI)".into());
+    }
     let Some(zensical) = zensical else {
         println!("==> docs: site SKIPPED (Zensical not installed: see docs/contributing.md)");
         return Ok(());
@@ -175,8 +178,16 @@ fn cmd_docs() -> Result<(), String> {
     run("docs: site (strict)", c)
 }
 
+/// On CI (`CI` is set, as GitHub Actions does) a missing tool fails the gate instead of skipping it.
+fn strict() -> bool {
+    std::env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false")
+}
+
 fn cmd_deny() -> Result<(), String> {
     let installed = cargo().args(["deny", "--version"]).output().is_ok_and(|o| o.status.success());
+    if !installed && strict() {
+        return Err("deny: cargo-deny is not installed (required on CI)".into());
+    }
     if !installed {
         println!("==> deny: SKIPPED (cargo-deny not installed: `cargo install cargo-deny`)");
         return Ok(());
