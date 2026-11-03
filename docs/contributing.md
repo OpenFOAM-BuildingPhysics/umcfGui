@@ -12,6 +12,22 @@ The short version:
 - **The solver is the spec.** Read the urbanMicroclimateFoam source freely; ported code keeps
   its copyright line and names its source file and commit.
 
+## The solver source
+
+`solver/` is a git submodule: the urbanMicroclimateFoam repository, branch `master` (the
+OpenFOAM-12 port), pinned to the commit umcfGui was last checked against. Read it freely, it is
+the specification. Every version is a tag in the same clone:
+
+```sh
+git submodule update --init                                       # after a plain clone
+git -C solver show of-org_v8.0:urbanMicroclimateFoam.C            # the OpenFOAM-8 version of a file
+git submodule update --remote solver && git add solver            # move the pin to the solver's latest master
+```
+
+Never commit inside `solver/` from this repository: changes to the solver are pull requests to
+[urbanMicroclimateFoam](https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam).
+Moving the pin is a commit of its own.
+
 ## Quality gates
 
 `cargo xtask ci` runs every gate, stopping at the first failure:

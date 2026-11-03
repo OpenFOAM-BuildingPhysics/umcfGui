@@ -20,6 +20,8 @@ reviews:
     - "!**/Cargo.lock"
     - "!target/**"
     - "!plan/**"
+    # The solver submodule: reviewed in its own repository.
+    - "!solver/**"
   path_instructions:
     - path: "**/*.rs"
       instructions: |

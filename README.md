@@ -9,6 +9,8 @@ umcfGui is in early development (see [ROADMAP.md](ROADMAP.md)). The libraries th
 edit OpenFOAM-8 and OpenFOAM-12 cases exist; the desktop app does not yet.
 
 ```sh
+git clone --recurse-submodules https://github.com/OpenFOAM-BuildingPhysics/umcfGui.git
+cd umcfGui
 cargo build --release
 cargo xtask ci     # every quality gate
 ```
