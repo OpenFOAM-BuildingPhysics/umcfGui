@@ -1,8 +1,11 @@
 # Checking a case
 
-The case check finds the mistakes that make urbanMicroclimateFoam stop at the start, or
-compute something other than what the case says. It reads nothing beyond what opening the case
-already read, so it is fast enough to run again after every edit.
+The case check finds many of the mistakes that make urbanMicroclimateFoam stop at the start,
+or compute something other than what the case says (the codes below). Others, such as a
+misspelt standard OpenFOAM boundary condition type, are not caught yet.
+
+The check reads nothing beyond what opening the case already read, so it is fast enough to run
+again after every edit.
 
 For now the check is a library call, `umcf_validate::check(&case)`, which returns the problems
 found. The command line (`umcf-cli check`) and the GUI, which will run it before a run, are
