@@ -69,7 +69,11 @@ Also, in both versions:
   failed*). Later builds read them from `constant/`. The copies work with both;
 - `Allclean` removes the files exactly, by name (no `F*`), and only the meshes `Allprepare`
   builds;
-- names and paths are quoted for the shell when they need it.
+- names and paths are quoted for the shell when they need it. Since they come from the case,
+  no script is written with a region, field or file name that isn't a plain name (`/`, `..`,
+  a control character, a leading `-`) or a dictionary path outside the case. A region
+  directory that is a symbolic link out of the case is not caught: the scripts' `rm` and `mv`
+  would follow it.
 
 A mesh built in `constant/polyMesh` keeps its steps in the order the case's script ran them
 (`createPatch` before or after `snappyHexMesh`); a variant copied into `system/` or passed

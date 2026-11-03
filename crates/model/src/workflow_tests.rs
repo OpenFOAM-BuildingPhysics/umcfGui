@@ -250,3 +250,21 @@ fn names_starting_with_a_dash_are_refused() {
     wf.regions.push("-rf".into());
     assert_eq!(wf.generate(OfVersion::V8), Err(UnsafeName("-rf".into())));
 }
+
+#[test]
+fn names_and_paths_must_stay_in_the_case() {
+    for region in ["../../x", "a/b", "..", "."] {
+        let mut wf = imported();
+        wf.meshes[2].region = region.into();
+        assert_eq!(wf.generate(OfVersion::V12), Err(UnsafeName(region.into())), "{region}");
+    }
+    for dict in ["/etc/passwd", "system/../../x"] {
+        let mut wf = imported();
+        wf.meshes[0].build = MeshBuild::Root(vec![RootStep::BlockMesh(dict.into())]);
+        assert_eq!(wf.generate(OfVersion::V12), Err(UnsafeName(dict.into())), "{dict}");
+    }
+    // Paths inside the case are fine.
+    let mut wf = imported();
+    wf.meshes[0].build = MeshBuild::Root(vec![RootStep::BlockMesh("system/air/blockMeshDict".into())]);
+    assert!(wf.generate(OfVersion::V12).is_ok());
+}

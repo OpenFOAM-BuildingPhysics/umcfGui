@@ -280,6 +280,18 @@ fn hostile_scripts_are_read_within_limits() {
         ),
     );
     assert!(s.truncated);
+    // A skipped body (`case`) scanned on every pass counts as work.
+    let s = parse(
+        "Allrun",
+        &format!("for a in {}; do\ncase x in\n{}esac\ndone\n", words(1000), "y) echo ;;\n".repeat(10_000)),
+    );
+    assert!(s.truncated);
+    // Subshells nested past the limit stop the reading.
+    let s = parse("Allrun", &format!("{}cd x\n{}blockMesh\n", "( ".repeat(40), ") ".repeat(40)));
+    assert!(s.truncated);
+    // Also inside an `if` condition: nothing after the limit is read.
+    let s = parse("Allrun", &format!("if true\n{}blockMesh\nthen\n  echo\nfi\n", "(\n".repeat(40)));
+    assert!(s.truncated && s.steps.is_empty(), "{:?}", s.steps);
     // Within the limits nothing is cut.
     let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
     assert!(!s.truncated && s.steps.len() == 4);

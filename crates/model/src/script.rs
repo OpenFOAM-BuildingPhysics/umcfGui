@@ -778,7 +778,7 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
                         .collect(),
                     _ => None,
                 };
-                let body = block(cmds, i, "done");
+                let body = block(cmds, i, "done", env);
                 let inner = Ctx { conditional: ctx.conditional };
                 match values {
                     Some(vs) => {
@@ -809,7 +809,7 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
             }
             "while" | "until" => {
                 *i += 1;
-                let body = block(cmds, i, "done");
+                let body = block(cmds, i, "done", env);
                 // The condition, then the body after `do`; both may run any number of times.
                 let mut k = 0;
                 exec(body, &mut k, env, Ctx { conditional: true }, out, &["do"]);
@@ -823,7 +823,7 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
             }
             "if" => {
                 *i += 1;
-                let body = block(cmds, i, "fi");
+                let body = block(cmds, i, "fi", env);
                 // The condition is the rest of the `if` line and what follows up to `then`.
                 let cond = Cmd {
                     line: c.line,
@@ -883,7 +883,7 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
             }
             "case" => {
                 *i += 1;
-                let _ = block(cmds, i, "esac");
+                let _ = block(cmds, i, "esac", env);
                 out.push(step(c.line, StepKind::Other { command: "case".into() }, ctx, false));
             }
             _ if head.ends_with("()") || c.words.get(1).and_then(Word::literal).as_deref() == Some("()") => {
@@ -895,7 +895,7 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
                     if cmds.get(*i).and_then(first_word).as_deref() == Some("{") {
                         *i += 1;
                     }
-                    let _ = block(cmds, i, "}");
+                    let _ = block(cmds, i, "}", env);
                 }
             }
             "{" | "}" | "done" | "fi" | "esac" | "then" | "do" | "else" | "elif" => *i += 1,
@@ -909,10 +909,18 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
 
 /// The commands up to the `end` word that closes the block just opened (nesting counted), which
 /// is consumed. A slice of `cmds`: nested blocks don't copy.
-fn block<'a>(cmds: &'a [Cmd], i: &mut usize, end: &str) -> &'a [Cmd] {
+fn block<'a>(cmds: &'a [Cmd], i: &mut usize, end: &str, env: &mut Env) -> &'a [Cmd] {
     let start = *i;
     let mut depth = 0usize;
     while let Some(c) = cmds.get(*i) {
+        // Scanning is work too: a body skipped unread (`case`, a function, `for x in ;`) inside
+        // a loop is scanned on every pass.
+        env.work += 1;
+        if env.work > MAX_WORK {
+            env.truncated = true;
+            *i = cmds.len();
+            return &[];
+        }
         *i += 1;
         // The block keyword: the first word, or the one after `do`/`then`/`else` on its line.
         // Compared in place: this runs for every command at every nesting level.
@@ -1053,14 +1061,21 @@ const CLEAN: &[&str] = &[
 const PREFIX: &[&str] = &["time", "nohup", "exec", "nice", "stdbuf", "builtin", "eval"];
 
 fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
+    // Reading stopped at a limit: nothing more is read, also from an `if` condition's lines.
+    if env.truncated || out.len() >= MAX_STEPS {
+        env.truncated = true;
+        return;
+    }
     // Subshell markers (also inside an `if` condition): what changes inside stays inside.
     match first_word(c).as_deref() {
         Some("(") if c.words.len() == 1 => {
-            // Subshells nested deeper than blocks may be are not tracked (their `)` then
-            // restores nothing): the saved states stay bounded.
-            if env.outer.len() < MAX_DEPTH {
-                env.outer.push((env.vars.clone(), env.globs.clone(), env.lost));
+            // Subshells nested deeper than MAX_DEPTH stop the reading, like deep blocks: the
+            // saved states stay bounded, and no `)` restores another subshell's state.
+            if env.outer.len() >= MAX_DEPTH {
+                env.truncated = true;
+                return;
             }
+            env.outer.push((env.vars.clone(), env.globs.clone(), env.lost));
             return;
         }
         Some(")") if c.words.len() == 1 => {

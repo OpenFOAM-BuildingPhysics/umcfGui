@@ -64,14 +64,18 @@ pub enum MeshBuild {
     Root(Vec<RootStep>),
 }
 
-/// A name or path with a control character or a leading `-`: [`Workflow::generate`] writes no
-/// script with it.
+/// A name that isn't one path component, or a path that leaves the case, or either with a
+/// control character or a leading `-`: [`Workflow::generate`] writes no script with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsafeName(pub String);
 
 impl std::fmt::Display for UnsafeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} has a control character or starts with `-`: no script is written with it", self.0)
+        write!(
+            f,
+            "{:?} is not a plain name or a path inside the case (a control character, a leading `-`, `/` or `..`): no script is written with it",
+            self.0
+        )
     }
 }
 
@@ -360,12 +364,15 @@ impl Workflow {
 
     /// The scripts for `version`: `(file name, text)` for `Allprepare`, `Allrun` and `Allclean`.
     ///
-    /// Names and paths come from the case's scripts and files, so they are untrusted: one with
-    /// a control character (a newline would end a comment or command and start another) or a
-    /// leading `-` is refused, the rest are quoted where the shell needs it.
+    /// Names and paths come from the case's scripts and files, so they are untrusted: a name
+    /// that isn't one path component, a path that leaves the case, or either with a control
+    /// character or a leading `-` is refused (see `safe_name`, `safe_path`); the rest are
+    /// quoted where the shell needs it.
     pub fn generate(&self, version: OfVersion) -> Result<Vec<(&'static str, String)>, UnsafeName> {
-        // A control character, or a leading `-` (read as an option even when quoted).
-        if let Some(bad) = self.words().find(|w| w.chars().any(char::is_control) || w.starts_with('-')) {
+        let (names, paths) = self.words();
+        if let Some(bad) =
+            names.into_iter().find(|w| !safe_name(w)).or_else(|| paths.into_iter().find(|p| !safe_path(p)))
+        {
             return Err(UnsafeName(bad.to_string()));
         }
         Ok(vec![
@@ -375,45 +382,43 @@ impl Workflow {
         ])
     }
 
-    /// Every name and path the scripts are written with.
-    fn words(&self) -> impl Iterator<Item = &str> {
-        let meshes = self.meshes.iter().flat_map(|m| {
-            let root: Vec<&str> = match &m.build {
-                MeshBuild::Block => Vec::new(),
-                MeshBuild::Root(steps) => steps
-                    .iter()
-                    .filter_map(|st| match st {
-                        RootStep::BlockMesh(d) | RootStep::SnappyHexMesh(d) => Some(d.as_str()),
-                        RootStep::CreatePatch => None,
-                    })
-                    .collect(),
-            };
-            let steps: Vec<&str> = m
-                .steps
-                .iter()
-                .flat_map(|st| match st {
-                    RegionStep::Sets { setset_batch: Some(b) } => vec![b.as_str()],
-                    RegionStep::SetFields { restore } => {
-                        restore.iter().flat_map(|(b, f)| [b.as_str(), f.as_str()]).collect()
+    /// What the scripts are written with: (names: regions, fields, files, the solver — single
+    /// path components; paths: dictionaries and backups, relative to the case).
+    fn words(&self) -> (Vec<&str>, Vec<&str>) {
+        let mut names: Vec<&str> = self.regions.iter().map(String::as_str).collect();
+        let mut paths = Vec::new();
+        for m in &self.meshes {
+            names.push(&m.region);
+            if let MeshBuild::Root(steps) = &m.build {
+                for st in steps {
+                    if let RootStep::BlockMesh(d) | RootStep::SnappyHexMesh(d) = st {
+                        paths.push(d.as_str());
                     }
-                    _ => Vec::new(),
-                })
-                .collect();
-            std::iter::once(m.region.as_str()).chain(root).chain(steps)
-        });
-        let radiation =
-            self.radiation.iter().flat_map(|r| std::iter::once(r.region.as_str()).chain(r.lai_region.as_deref()));
-        let files = self
-            .constant_files
-            .iter()
-            .flat_map(|(r, fs)| std::iter::once(r.as_str()).chain(fs.iter().map(String::as_str)));
-        self.regions
-            .iter()
-            .map(String::as_str)
-            .chain(meshes)
-            .chain(radiation)
-            .chain(self.solver.as_deref())
-            .chain(files)
+                }
+            }
+            for st in &m.steps {
+                match st {
+                    RegionStep::Sets { setset_batch: Some(b) } => paths.push(b),
+                    RegionStep::SetFields { restore } => {
+                        for (b, f) in restore {
+                            paths.push(b);
+                            names.push(f);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(r) = &self.radiation {
+            names.push(&r.region);
+            names.extend(r.lai_region.as_deref());
+        }
+        names.extend(self.solver.as_deref());
+        for (r, files) in &self.constant_files {
+            names.push(r);
+            names.extend(files.iter().map(String::as_str));
+        }
+        (names, paths)
     }
 
     fn allprepare(&self, version: OfVersion) -> String {
@@ -583,6 +588,22 @@ impl Workflow {
         }
         s
     }
+}
+
+/// A name the scripts may be written with: one path component (no `/`, not `.` or `..`), no
+/// control character (a newline would end a comment or command and start another), no leading
+/// `-` (an option even when quoted).
+fn safe_name(s: &str) -> bool {
+    !s.is_empty() && !s.contains('/') && s != "." && s != ".." && safe_word(s)
+}
+
+/// A path the scripts may be written with: relative, inside the case (no `..` component).
+fn safe_path(p: &str) -> bool {
+    !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|c| c == "..") && safe_word(p)
+}
+
+fn safe_word(s: &str) -> bool {
+    !s.chars().any(char::is_control) && !s.starts_with('-')
 }
 
 /// A word for the shell: as it is when it has only safe characters, else single-quoted.
