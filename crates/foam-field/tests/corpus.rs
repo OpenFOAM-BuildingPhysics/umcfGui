@@ -109,6 +109,8 @@ fn reference_case_fields() {
         };
         let (mut files, mut values, mut checked) = (0usize, 0usize, 0usize);
         let started = Instant::now();
+        // The mesh lives in constant/: read it once per region, report a broken one once.
+        let mut meshes: BTreeMap<String, Option<MeshSizes>> = BTreeMap::new();
         for t in picked {
             let regions = match regions(&fs, &t.name) {
                 Ok(r) => r,
@@ -119,13 +121,15 @@ fn reference_case_fields() {
             };
             for region in regions {
                 let dir = join(&t.name, &region);
-                let sizes = match mesh_sizes(&fs, &region) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        failures.push(format!("{case}: {e}"));
-                        None
-                    }
-                };
+                let sizes = meshes
+                    .entry(region.clone())
+                    .or_insert_with(|| {
+                        mesh_sizes(&fs, &region).unwrap_or_else(|e| {
+                            failures.push(format!("{case}: {e}"));
+                            None
+                        })
+                    })
+                    .clone();
                 let names = match times::fields(&fs, &dir) {
                     Ok(n) => n,
                     Err(e) => {
