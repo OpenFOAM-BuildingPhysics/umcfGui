@@ -249,3 +249,38 @@ fn workflow_name(k: &StepKind) -> String {
         k => format!("{k:?}"),
     }
 }
+
+#[test]
+fn hostile_scripts_are_read_within_limits() {
+    // 30 nested loops over 10 words would be 10^30 passes.
+    let mut text = String::new();
+    for k in 0..30 {
+        text.push_str(&format!("for v{k} in a b c d e f g h i j; do\n"));
+    }
+    text.push_str("blockMesh -region $v0\n");
+    text.push_str(&"done\n".repeat(30));
+    let s = parse("Allrun", &text);
+    assert!(s.truncated && s.steps.len() <= MAX_STEPS);
+    // 100 000 nested ifs: no deep recursion, no copies per level.
+    let deep = format!("{}blockMesh\n{}", "if true; then\n".repeat(100_000), "fi\n".repeat(100_000));
+    let s = parse("Allrun", &deep);
+    assert!(s.truncated && s.steps.is_empty());
+    // A value doubled in a loop stops being resolved at MAX_VALUE, without the memory.
+    let s = parse("Allrun", &format!("x=a\nfor i in {}; do x=$x$x; done\ncp $x b\n", "1 ".repeat(40)));
+    assert!(s.steps.iter().all(|st| st.unresolved), "{}", s.steps.len());
+    // Empty loop bodies count: 1000 × 1000 × 10 000 passes stop at MAX_WORK.
+    let words = |n: usize| "w ".repeat(n);
+    let s = parse(
+        "Allrun",
+        &format!(
+            "for a in {}; do for b in {}; do for c in {}; do\ndone; done; done\n",
+            words(1000),
+            words(1000),
+            words(10_000)
+        ),
+    );
+    assert!(s.truncated);
+    // Within the limits nothing is cut.
+    let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
+    assert!(!s.truncated && s.steps.len() == 4);
+}

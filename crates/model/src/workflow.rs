@@ -64,6 +64,19 @@ pub enum MeshBuild {
     Root(Vec<RootStep>),
 }
 
+/// A name or path with a control character or a leading `-`: [`Workflow::generate`] writes no
+/// script with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsafeName(pub String);
+
+impl std::fmt::Display for UnsafeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} has a control character or starts with `-`: no script is written with it", self.0)
+    }
+}
+
+impl std::error::Error for UnsafeName {}
+
 /// A step building a mesh in `constant/polyMesh`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RootStep {
@@ -346,8 +359,61 @@ impl Workflow {
     }
 
     /// The scripts for `version`: `(file name, text)` for `Allprepare`, `Allrun` and `Allclean`.
-    pub fn generate(&self, version: OfVersion) -> Vec<(&'static str, String)> {
-        vec![("Allprepare", self.allprepare(version)), ("Allrun", self.allrun(version)), ("Allclean", self.allclean())]
+    ///
+    /// Names and paths come from the case's scripts and files, so they are untrusted: one with
+    /// a control character (a newline would end a comment or command and start another) or a
+    /// leading `-` is refused, the rest are quoted where the shell needs it.
+    pub fn generate(&self, version: OfVersion) -> Result<Vec<(&'static str, String)>, UnsafeName> {
+        // A control character, or a leading `-` (read as an option even when quoted).
+        if let Some(bad) = self.words().find(|w| w.chars().any(char::is_control) || w.starts_with('-')) {
+            return Err(UnsafeName(bad.to_string()));
+        }
+        Ok(vec![
+            ("Allprepare", self.allprepare(version)),
+            ("Allrun", self.allrun(version)),
+            ("Allclean", self.allclean()),
+        ])
+    }
+
+    /// Every name and path the scripts are written with.
+    fn words(&self) -> impl Iterator<Item = &str> {
+        let meshes = self.meshes.iter().flat_map(|m| {
+            let root: Vec<&str> = match &m.build {
+                MeshBuild::Block => Vec::new(),
+                MeshBuild::Root(steps) => steps
+                    .iter()
+                    .filter_map(|st| match st {
+                        RootStep::BlockMesh(d) | RootStep::SnappyHexMesh(d) => Some(d.as_str()),
+                        RootStep::CreatePatch => None,
+                    })
+                    .collect(),
+            };
+            let steps: Vec<&str> = m
+                .steps
+                .iter()
+                .flat_map(|st| match st {
+                    RegionStep::Sets { setset_batch: Some(b) } => vec![b.as_str()],
+                    RegionStep::SetFields { restore } => {
+                        restore.iter().flat_map(|(b, f)| [b.as_str(), f.as_str()]).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect();
+            std::iter::once(m.region.as_str()).chain(root).chain(steps)
+        });
+        let radiation =
+            self.radiation.iter().flat_map(|r| std::iter::once(r.region.as_str()).chain(r.lai_region.as_deref()));
+        let files = self
+            .constant_files
+            .iter()
+            .flat_map(|(r, fs)| std::iter::once(r.as_str()).chain(fs.iter().map(String::as_str)));
+        self.regions
+            .iter()
+            .map(String::as_str)
+            .chain(meshes)
+            .chain(radiation)
+            .chain(self.solver.as_deref())
+            .chain(files)
     }
 
     fn allprepare(&self, version: OfVersion) -> String {

@@ -80,7 +80,7 @@ fn reference_case_workflows() {
         if print == dir
             && let Some(v) = case.layout.version
         {
-            for (n, t) in wf.generate(v) {
+            for (n, t) in wf.generate(v).unwrap_or_default() {
                 eprintln!("---- {n}\n{t}");
             }
         }

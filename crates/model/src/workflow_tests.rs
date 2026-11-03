@@ -121,7 +121,7 @@ fn the_case_scripts_fit_the_pattern() {
 fn generated_scripts_import_to_the_same_workflow() {
     let wf = imported();
     for version in [OfVersion::V8, OfVersion::V12] {
-        let scripts: Vec<Script> = wf.generate(version).iter().map(|(n, t)| parse(n, t)).collect();
+        let scripts: Vec<Script> = wf.generate(version).unwrap().iter().map(|(n, t)| parse(n, t)).collect();
         let again = Workflow::import(&regions(), Some("urbanMicroclimateFoam"), &scripts);
         // OpenFOAM-12 has no setSet: its scripts use topoSet.
         let mut meshes = wf.meshes.clone();
@@ -154,7 +154,7 @@ fn generated_scripts_import_to_the_same_workflow() {
 #[test]
 fn version_choices() {
     let wf = imported();
-    let text = |v| wf.generate(v).into_iter().map(|(n, t)| format!("== {n}\n{t}")).collect::<String>();
+    let text = |v| wf.generate(v).unwrap().into_iter().map(|(n, t)| format!("== {n}\n{t}")).collect::<String>();
     let of8 = text(OfVersion::V8);
     let of12 = text(OfVersion::V12);
     // OpenFOAM-12 has no setSet: the solid regions use topoSet (system/<r>/topoSetDict).
@@ -195,7 +195,7 @@ cp 0.orig/air/U 0/air/\n";
             RootStep::CreatePatch,
         ])
     );
-    let text = wf.generate(OfVersion::V12).remove(0).1;
+    let text = wf.generate(OfVersion::V12).unwrap().remove(0).1;
     let snappy = text.find("snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air").unwrap();
     assert!(text.find("createPatch -overwrite").unwrap() > snappy, "{text}");
     // -dict, not a copy over (and removal of) the case's own system/blockMeshDict.
@@ -205,7 +205,7 @@ cp 0.orig/air/U 0/air/\n";
     assert!(what.iter().any(|w| w.starts_with("topoSet -region air -dict")), "{what:?}");
     assert!(what.iter().any(|w| w.starts_with("cp 0.orig/air/U 0/air/U")), "{what:?}");
     // Allclean removes only the meshes Allprepare builds.
-    let clean = wf.generate(OfVersion::V12).remove(2).1;
+    let clean = wf.generate(OfVersion::V12).unwrap().remove(2).1;
     assert!(clean.contains("for r in air\n"), "{clean}");
 }
 
@@ -213,7 +213,7 @@ cp 0.orig/air/U 0/air/\n";
 fn names_are_quoted_and_openfoam_8_counts_processes_per_region() {
     let mut wf = imported();
     wf.meshes[0].region = "my air".into();
-    let text: String = wf.generate(OfVersion::V8).into_iter().map(|(_, t)| t).collect();
+    let text: String = wf.generate(OfVersion::V8).unwrap().into_iter().map(|(_, t)| t).collect();
     assert!(text.contains("runApplication -o -s 'my air' blockMesh"), "{text}");
     assert!(text.contains("nProcs=$(foamDictionary -entry numberOfSubdomains -value system/air/decomposeParDict)"));
     // runParallel would read system/decomposeParDict, which OpenFOAM-8 cases may not have.
@@ -229,4 +229,24 @@ fn a_directory_copy_is_not_a_field_restore() {
     assert_eq!(wf.meshes[0].steps, [RegionStep::SetFields { restore: vec![("0/air.bckp/LAD".into(), "LAD".into())] }]);
     let u = wf.unmatched.iter().find(|u| u.what.contains("0.orig")).unwrap();
     assert_eq!(u.line, 2);
+}
+
+#[test]
+fn names_with_control_characters_are_refused() {
+    // A region name read from `blockMesh -region 'x<newline>rm -rf ~'` must not become a command.
+    let prepare = "#!/bin/sh\nblockMesh -region 'x\nrm -rf ~'\n";
+    let wf = Workflow::import(&regions(), None, &[parse("Allprepare", prepare)]);
+    assert_eq!(wf.meshes[0].region, "x\nrm -rf ~");
+    assert_eq!(wf.generate(OfVersion::V12), Err(UnsafeName("x\nrm -rf ~".into())));
+}
+
+#[test]
+fn names_starting_with_a_dash_are_refused() {
+    let wf = Workflow::import(&regions(), None, &[parse("Allprepare", "#!/bin/sh\nblockMesh -region -rf\n")]);
+    if !wf.meshes.is_empty() {
+        assert!(wf.generate(OfVersion::V12).is_err());
+    }
+    let mut wf = imported();
+    wf.regions.push("-rf".into());
+    assert_eq!(wf.generate(OfVersion::V8), Err(UnsafeName("-rf".into())));
 }

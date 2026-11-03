@@ -214,7 +214,17 @@ fn read_scripts(fs: &dyn CaseFs, options: OpenOptions, notes: &mut Vec<Note>) ->
             continue;
         }
         match fs.read(&name, options.dict_bytes) {
-            Ok(Some(bytes)) => out.push(script::parse(&name, &String::from_utf8_lossy(&bytes))),
+            Ok(Some(bytes)) => {
+                let s = script::parse(&name, &String::from_utf8_lossy(&bytes));
+                if s.truncated {
+                    notes.push(note(
+                        Severity::Warning,
+                        &name,
+                        "script read only in part (too deeply nested, or its loops run too many commands): it is checked only that far",
+                    ));
+                }
+                out.push(s);
+            }
             Ok(None) => {}
             Err(e) => notes.push(note(Severity::Info, &name, format!("script not read: {e}"))),
         }

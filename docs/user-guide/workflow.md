@@ -32,6 +32,11 @@ lines, and the OpenFOAM `RunFunctions` and `CleanFunctions` helpers. A word that
 without running the script (`$(…)`, a variable set from a command, a `cd` elsewhere) is kept
 and marked; the check doesn't guess it.
 
+Scripts are case files, read every time a case opens, so their reading is bounded: blocks
+nested more than 32 deep are not read, and a script stops being read after a million
+commands (loops count each pass) or 100 000 steps. Such a script gets a note, and is
+checked only as far as it was read.
+
 Steps that don't fit the pattern are listed (`workflow.custom`), as are steps that fit but
 aren't needed (`workflow.not-needed`, for example a serial `faceAgglomerate` before the
 parallel one).
@@ -76,4 +81,5 @@ and run the case through to its first written time.
 
 For now this is the `workflow` example of the `umcf-model` crate:
 `cargo run -p umcf-model --example workflow -- <case> [--write]` prints the scripts, or with
-`--write` replaces the case's (the old ones are kept as `<name>.bak`).
+`--write` replaces the case's, writing each atomically; the old ones are kept as `<name>.bak`, then
+`<name>.1.bak`, `<name>.2.bak`, … (a backup is never overwritten).

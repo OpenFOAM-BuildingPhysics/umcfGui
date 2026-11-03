@@ -22,7 +22,20 @@ pub struct Script {
     pub shebang: bool,
     /// The first line, when it is not a `#!` line but looks like a broken one (`$#!/bin/sh`).
     pub first_line: String,
+    /// Reading stopped at a limit ([`MAX_DEPTH`], [`MAX_WORK`], [`MAX_STEPS`]): the steps are the
+    /// script's first ones only.
+    pub truncated: bool,
 }
+
+/// Deepest nesting of `for`/`while`/`if` blocks read; deeper blocks are not read.
+pub const MAX_DEPTH: usize = 32;
+/// Most commands visited (loops count each pass), so nested loops can't multiply without end.
+pub const MAX_WORK: usize = 1_000_000;
+/// Most steps a script is read into.
+pub const MAX_STEPS: usize = 100_000;
+/// Longest variable value or expanded word kept (`x=$x$x` in a loop would double without end);
+/// a longer one is not resolved.
+pub const MAX_VALUE: usize = 64 << 10;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
@@ -116,7 +129,7 @@ pub fn parse(path: &str, text: &str) -> Script {
     let mut env = Env::default();
     let mut i = 0;
     exec(&cmds, &mut i, &mut env, Ctx::default(), &mut steps, &[]);
-    Script { path: path.to_string(), steps, ntasks: ntasks(text), shebang, first_line }
+    Script { path: path.to_string(), steps, ntasks: ntasks(text), shebang, first_line, truncated: env.truncated }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -490,6 +503,21 @@ fn commands(text: &str) -> (Vec<Cmd>, usize) {
         cur.or = next_or;
         out.push(cur);
     }
+    // `do for …`, `then if …`, `else cp …`, `{ cp …`: the keyword is a command of its own, so
+    // what follows it on the line is read like any command (a loop, an `if`).
+    let mut split = Vec::with_capacity(out.len());
+    for c in out {
+        let keyword = matches!(first_word(&c).as_deref(), Some("do" | "then" | "else" | "{"));
+        if keyword && c.words.len() > 1 {
+            let mut words = c.words;
+            let rest = words.split_off(1);
+            split.push(Cmd { line: c.line, words, writes: Vec::new(), or: c.or });
+            split.push(Cmd { line: c.line, words: rest, writes: c.writes, or: false });
+        } else {
+            split.push(c);
+        }
+    }
+    let mut out = split;
     // A group (`( … )`, `{ …; }`) joined conditionally makes everything in it conditional.
     let mut groups: Vec<bool> = Vec::new();
     for c in &mut out {
@@ -605,6 +633,12 @@ struct Env {
     lost: bool,
     /// The state outside each subshell `( … )` being read.
     outer: Vec<Saved>,
+    /// Blocks being read inside each other.
+    depth: usize,
+    /// Commands visited so far.
+    work: usize,
+    /// A limit was reached: reading stopped.
+    truncated: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -625,11 +659,15 @@ fn expand_words(w: &Word, env: &Env) -> Vec<(String, bool)> {
     vec![expand(w, env)]
 }
 
-/// Words, expanded: (text, resolved).
+/// Words, expanded: (text, resolved). Past [`MAX_VALUE`] bytes the rest is left out and the
+/// word is not resolved.
 fn expand(w: &Word, env: &Env) -> (String, bool) {
     let mut out = String::new();
     let mut ok = true;
     for p in &w.parts {
+        if out.len() > MAX_VALUE {
+            return (out, false);
+        }
         match p {
             Part::Lit(s) => out.push_str(s),
             Part::Var(v, _) => match env.vars.get(v) {
@@ -649,6 +687,9 @@ fn expand(w: &Word, env: &Env) -> (String, bool) {
                 out.push_str("$(…)");
             }
         }
+    }
+    if out.len() > MAX_VALUE {
+        ok = false;
     }
     (out, ok)
 }
@@ -680,8 +721,26 @@ fn split_keyword(c: &Cmd) -> Option<(String, Cmd)> {
 }
 
 /// Run the commands from `cmds[*i]` until one whose first word is in `stop` (not consumed).
+/// [`exec_block`], within the limits: a block nested deeper than [`MAX_DEPTH`] is not read.
 fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>, stop: &[&str]) {
+    if env.truncated || env.depth >= MAX_DEPTH {
+        env.truncated = true;
+        *i = cmds.len();
+        return;
+    }
+    env.depth += 1;
+    exec_block(cmds, i, env, ctx, out, stop);
+    env.depth -= 1;
+}
+
+fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>, stop: &[&str]) {
     while let Some(c) = cmds.get(*i) {
+        env.work += 1;
+        if env.truncated || env.work > MAX_WORK || out.len() >= MAX_STEPS {
+            env.truncated = true;
+            *i = cmds.len();
+            return;
+        }
         let head = first_word(c).unwrap_or_default();
         if stop.contains(&head.as_str()) {
             return;
@@ -724,6 +783,12 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
                 match values {
                     Some(vs) => {
                         for (v, glob) in vs {
+                            // Each pass is work, also when the body is empty.
+                            env.work += 1;
+                            if env.truncated || env.work > MAX_WORK {
+                                env.truncated = true;
+                                break;
+                            }
                             if glob {
                                 env.globs.insert(var.clone());
                             } else {
@@ -731,14 +796,14 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
                             }
                             env.vars.insert(var.clone(), Some(v));
                             let mut k = 0;
-                            exec(&body, &mut k, env, inner, out, &[]);
+                            exec(body, &mut k, env, inner, out, &[]);
                         }
                     }
                     None => {
                         env.globs.remove(&var);
                         env.vars.insert(var.clone(), None);
                         let mut k = 0;
-                        exec(&body, &mut k, env, inner, out, &[]);
+                        exec(body, &mut k, env, inner, out, &[]);
                     }
                 }
             }
@@ -747,14 +812,14 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
                 let body = block(cmds, i, "done");
                 // The condition, then the body after `do`; both may run any number of times.
                 let mut k = 0;
-                exec(&body, &mut k, env, Ctx { conditional: true }, out, &["do"]);
+                exec(body, &mut k, env, Ctx { conditional: true }, out, &["do"]);
                 if let Some(d) = body.get(k)
                     && let Some((_, rest)) = split_keyword(d)
                 {
                     run_one(&rest, env, Ctx { conditional: true }, out);
                 }
                 k += 1;
-                exec(&body, &mut k, env, Ctx { conditional: true }, out, &[]);
+                exec(body, &mut k, env, Ctx { conditional: true }, out, &[]);
             }
             "if" => {
                 *i += 1;
@@ -788,7 +853,7 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
                         run_one(&rest, env, arms, out);
                     }
                     k += 1;
-                    exec(&body, &mut k, env, arms, out, &["elif", "else"]);
+                    exec(body, &mut k, env, arms, out, &["elif", "else"]);
                     match body.get(k).and_then(first_word).as_deref() {
                         Some("elif") => {
                             if let Some(e) = body.get(k) {
@@ -809,7 +874,7 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
                                 run_one(&rest, env, arms, out);
                             }
                             k += 1;
-                            exec(&body, &mut k, env, arms, out, &[]);
+                            exec(body, &mut k, env, arms, out, &[]);
                             break;
                         }
                         _ => break,
@@ -843,28 +908,32 @@ fn exec(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Vec<Step
 }
 
 /// The commands up to the `end` word that closes the block just opened (nesting counted), which
-/// is consumed.
-fn block(cmds: &[Cmd], i: &mut usize, end: &str) -> Vec<Cmd> {
+/// is consumed. A slice of `cmds`: nested blocks don't copy.
+fn block<'a>(cmds: &'a [Cmd], i: &mut usize, end: &str) -> &'a [Cmd] {
+    let start = *i;
     let mut depth = 0usize;
-    let mut body = Vec::new();
     while let Some(c) = cmds.get(*i) {
         *i += 1;
-        let head = first_word(c).unwrap_or_default();
-        let head = split_keyword(c)
-            .map(|(_, r)| first_word(&r).unwrap_or_default())
-            .filter(|_| head == "do" || head == "then" || head == "else")
-            .unwrap_or(head);
-        if closer(&head).is_some() {
+        // The block keyword: the first word, or the one after `do`/`then`/`else` on its line.
+        // Compared in place: this runs for every command at every nesting level.
+        let word = |k: usize| match c.words.get(k).map(|w| w.parts.as_slice()) {
+            Some([Part::Lit(s)]) => s.as_str(),
+            _ => "",
+        };
+        let mut head = word(0);
+        if matches!(head, "do" | "then" | "else") && c.words.len() > 1 {
+            head = word(1);
+        }
+        if closer(head).is_some() {
             depth += 1;
-        } else if matches!(head.as_str(), "done" | "fi" | "esac" | "}") {
+        } else if matches!(head, "done" | "fi" | "esac" | "}") {
             if depth == 0 && head == end {
-                return body;
+                return cmds.get(start..*i - 1).unwrap_or(&[]);
             }
             depth = depth.saturating_sub(1);
         }
-        body.push(c.clone());
     }
-    body
+    cmds.get(start..).unwrap_or(&[])
 }
 
 fn step(line: usize, kind: StepKind, ctx: Ctx, unresolved: bool) -> Step {
@@ -987,7 +1056,11 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
     // Subshell markers (also inside an `if` condition): what changes inside stays inside.
     match first_word(c).as_deref() {
         Some("(") if c.words.len() == 1 => {
-            env.outer.push((env.vars.clone(), env.globs.clone(), env.lost));
+            // Subshells nested deeper than blocks may be are not tracked (their `)` then
+            // restores nothing): the saved states stay bounded.
+            if env.outer.len() < MAX_DEPTH {
+                env.outer.push((env.vars.clone(), env.globs.clone(), env.lost));
+            }
             return;
         }
         Some(")") if c.words.len() == 1 => {
@@ -1015,6 +1088,7 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
                 ok.then(|| s.split_once('=').map(|(_, v)| v.to_string())).flatten()
             });
             env.globs.remove(name);
+            let value = value.filter(|v| v.len() <= MAX_VALUE);
             env.vars.insert(name.to_string(), value);
         }
         writes(c, env, ctx, out);
@@ -1321,7 +1395,9 @@ fn ntasks(text: &str) -> Option<u32> {
             while let Some(t) = toks.get(k) {
                 let (name, val) = match t.split_once('=') {
                     Some((n, v)) => (n, Some(v)),
-                    None if t.len() > 2 && t.starts_with("-n") && !t.starts_with("--") => ("-n", Some(&t[2..])),
+                    None if !t.starts_with("--") && t.strip_prefix("-n").is_some_and(|v| !v.is_empty()) => {
+                        ("-n", t.strip_prefix("-n"))
+                    }
                     None => (*t, toks.get(k + 1).copied()),
                 };
                 let num = val.and_then(|v| v.parse::<u32>().ok());
