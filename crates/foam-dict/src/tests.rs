@@ -1,0 +1,298 @@
+use super::*;
+
+const FV_SCHEMES: &str = r#"/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+ddtSchemes
+{
+    default         steadyState;
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U); // momentum
+    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
+}
+
+// ************************************************************************* //
+"#;
+
+const FIELD: &str = r#"FoamFile { version 2.0; format ascii; class volVectorField; object U; }
+#include "include/initialConditions"
+dimensions      [0 1 -1 0 0 0 0];
+internalField   uniform $flowVelocity;
+boundaryField
+{
+    #includeEtc "caseDicts/setConstraintTypes"
+    inlet
+    {
+        type            fixedValue;
+        value           $internalField;
+    }
+    "(wall|ground).*" { type noSlip; }
+    $:defaults;
+    code
+    {
+        code #{ Info<< "hi" << endl; #};
+        n    #calc "$a * 2";
+        v    3{0.5};
+    }
+}
+"#;
+
+fn round_trip(src: &str) {
+    let doc = Document::parse(src).unwrap();
+    assert_eq!(doc.to_string(), src);
+}
+
+#[test]
+fn round_trips_byte_for_byte() {
+    round_trip(FV_SCHEMES);
+    round_trip(FIELD);
+    round_trip("");
+    round_trip("   \n// only a comment\n");
+    round_trip("a 1;;b 2;\n");
+    round_trip("missing semi 1\n");
+    round_trip("d { x 1 }\n");
+    round_trip("5\n(\n(0 0 0)\n(1 0 0)\n)\n");
+    round_trip("(\t\t\t\n(\t0\t0\t)\n(\t3600\t223.7\t)\n)\n");
+}
+
+#[test]
+fn function_call_directives() {
+    let src = "functions\n{\n    #includeFunc fieldAverage(U, p, prime2Mean = yes)\n    #includeFunc residuals(p, sigma)\n\n    #includeFunc cutPlaneSurface\n    (\n        point=(0 0 0),\n        normal=(0 0 1),\n        fields=(alpha.water p_rgh)\n    )\n    #includeFunc patchSurface(patch=\".*(Walls|NonCouple)\")\n    #includeConstraint limitPressure(minFactor=0.1, maxFactor=2)\n}\nnext 1;\n";
+    let doc = Document::parse(src).unwrap();
+    assert_eq!(doc.to_string(), src);
+    let f = doc.get(&["functions"]).and_then(Entry::dict).unwrap();
+    let names: Vec<_> = f.directives().map(|(n, _)| n).collect();
+    assert_eq!(names, ["#includeFunc"; 4].into_iter().chain(["#includeConstraint"]).collect::<Vec<_>>());
+    assert_eq!(doc.value(&["next"]).as_deref(), Some("1"));
+}
+
+#[test]
+fn bare_list_data_files() {
+    // constant/IDN, sunPosVector, T_room.dat: OpenFOAM reads these as a plain List.
+    let doc = Document::parse("(\n(0 298.15)\n(518400 298.15)\n)\n").unwrap();
+    let data: Vec<String> = doc.root.values().map(Node::compact).collect();
+    assert_eq!(data, ["((0 298.15) (518400 298.15))"]);
+    assert_eq!(doc.root.entries().count(), 0);
+    assert!(Document::parse("] x").is_err());
+}
+
+#[test]
+fn lookups() {
+    let doc = Document::parse(FV_SCHEMES).unwrap();
+    assert_eq!(doc.header("class").as_deref(), Some("dictionary"));
+    assert_eq!(doc.header("location").as_deref(), Some("system"));
+    assert_eq!(doc.value(&["divSchemes", "div(phi,U)"]).as_deref(), Some("bounded Gauss linearUpwind grad(U)"));
+    assert_eq!(doc.value(&["ddtSchemes", "default"]).as_deref(), Some("steadyState"));
+    assert!(doc.get(&["divSchemes", "nope"]).is_none());
+    assert!(doc.get(&[]).is_none());
+    let keys: Vec<_> = doc.root.keys().collect();
+    assert_eq!(keys, ["FoamFile", "ddtSchemes", "divSchemes"]);
+
+    let doc = Document::parse(FIELD).unwrap();
+    assert_eq!(doc.value(&["dimensions"]).as_deref(), Some("[0 1 -1 0 0 0 0]"));
+    assert_eq!(doc.value(&["internalField"]).as_deref(), Some("uniform $flowVelocity"));
+    assert_eq!(doc.value(&["boundaryField", "(wall|ground).*", "type"]).as_deref(), Some("noSlip"));
+    assert_eq!(doc.value(&["boundaryField", "code", "n"]).as_deref(), Some("#calc \"$a * 2\""));
+    let dirs: Vec<_> = doc.root.directives().collect();
+    assert_eq!(dirs, [("#include", Some("include/initialConditions".to_string()))]);
+    let bf = doc.get(&["boundaryField"]).and_then(Entry::dict).unwrap();
+    assert!(bf.items.iter().any(|i| matches!(i, Item::Macro { name, .. } if name.text == "$:defaults")));
+    assert!(bf.items.iter().any(|i| matches!(i, Item::Directive { name, .. } if name.text == "#includeEtc")));
+}
+
+#[test]
+fn last_duplicate_wins() {
+    let doc = Document::parse("a 1;\na 2;\n").unwrap();
+    assert_eq!(doc.get(&["a"]).and_then(Entry::as_f64), Some(2.0));
+}
+
+#[test]
+fn set_existing_keeps_alignment_and_comments() {
+    let mut doc = Document::parse(FV_SCHEMES).unwrap();
+    doc.set(&["divSchemes", "div(phi,U)"], "bounded Gauss upwind").unwrap();
+    let out = doc.to_string();
+    assert!(out.contains("    div(phi,U)      bounded Gauss upwind; // momentum\n"), "{out}");
+    assert_eq!(out.len(), FV_SCHEMES.len() - "linearUpwind grad(U)".len() + "upwind".len());
+}
+
+#[test]
+fn set_missing_appends_like_siblings() {
+    let mut doc = Document::parse(FV_SCHEMES).unwrap();
+    doc.set(&["ddtSchemes", "ddt(rho,U)"], "Euler").unwrap();
+    let out = doc.to_string();
+    assert!(out.contains("    default         steadyState;\n    ddt(rho,U)      Euler;\n}"), "{out}");
+}
+
+#[test]
+fn set_creates_parent_dictionaries() {
+    let mut doc = Document::parse(FV_SCHEMES).unwrap();
+    doc.set(&["laplacianSchemes", "default"], "Gauss linear corrected").unwrap();
+    let out = doc.to_string();
+    let expect = "\n\nlaplacianSchemes\n{\n    default         Gauss linear corrected;\n}\n\n// ****";
+    assert!(out.contains(expect), "{out}");
+    // Reparse: the edit is valid OpenFOAM syntax.
+    let again = Document::parse(&out).unwrap();
+    assert_eq!(again.value(&["laplacianSchemes", "default"]).as_deref(), Some("Gauss linear corrected"));
+    assert!(again.root.problems().is_empty());
+}
+
+#[test]
+fn set_dictionary_value() {
+    let mut doc = Document::parse(FIELD).unwrap();
+    doc.set(&["boundaryField", "outlet"], "{ type inletOutlet; inletValue uniform (0 0 0); }").unwrap();
+    let out = doc.to_string();
+    let expect =
+        "\n    outlet\n    {\n        type            inletOutlet;\n        inletValue      uniform (0 0 0);\n    }\n}";
+    assert!(out.contains(expect), "{out}");
+    assert_eq!(
+        Document::parse(&out).unwrap().value(&["boundaryField", "outlet", "type"]).as_deref(),
+        Some("inletOutlet")
+    );
+}
+
+#[test]
+fn set_into_value_entry_is_an_error() {
+    let mut doc = Document::parse("a 1;\n").unwrap();
+    assert_eq!(doc.set(&["a", "b"], "2"), Err(Error::NotADict("a".into())));
+    assert_eq!(doc.set(&[], "2"), Err(Error::EmptyPath));
+    assert!(doc.set(&["a"], "2;").is_err());
+    assert!(doc.set(&["a"], "(1 2").is_err());
+    assert_eq!(doc.to_string(), "a 1;\n");
+}
+
+#[test]
+fn quoted_keys() {
+    let mut doc = Document::parse("x { }\n").unwrap();
+    doc.set(&["x", "(U|k) cells"], "1").unwrap();
+    assert!(doc.to_string().contains("\n    \"(U|k) cells\"   1;"), "{}", doc);
+    assert_eq!(Document::parse(&doc.to_string()).unwrap().value(&["x", "(U|k) cells"]).as_deref(), Some("1"));
+}
+
+#[test]
+fn remove_entries() {
+    let mut doc = Document::parse(FV_SCHEMES).unwrap();
+    assert!(doc.remove(&["divSchemes", "div(phi,U)"]).unwrap());
+    assert!(!doc.remove(&["divSchemes", "div(phi,U)"]).unwrap());
+    assert!(!doc.remove(&["nope", "x"]).unwrap());
+    let out = doc.to_string();
+    assert!(out.contains("    default         none;\n    div(((rho"), "{out}");
+    assert!(!out.contains("momentum"));
+    // The last entry of a dictionary and of the file, with a trailing comment each.
+    let mut doc = Document::parse("d\n{\n    a 1;\n    b 2; // bee\n}\nc 3; // sea\n").unwrap();
+    assert!(doc.remove(&["d", "b"]).unwrap());
+    assert!(doc.remove(&["c"]).unwrap());
+    assert_eq!(doc.to_string(), "d\n{\n    a 1;\n}\n");
+    // Duplicates all go, so an earlier one doesn't resurface.
+    let mut doc = Document::parse("a 1;\na 2;\nb 3;\n").unwrap();
+    assert!(doc.remove(&["a"]).unwrap());
+    assert_eq!(doc.to_string(), "\nb 3;\n");
+}
+
+#[test]
+fn problems_are_reported_not_fatal() {
+    let doc = Document::parse("a 1\n").unwrap();
+    assert_eq!(doc.root.problems(), ["a: missing `;`"]);
+    let doc = Document::parse("d { x 1; ; }\n").unwrap();
+    assert_eq!(doc.root.problems(), ["d: stray `;`"]);
+}
+
+#[test]
+fn errors_have_positions() {
+    let e = Document::parse("a {\n  b (1 2;\n}\n").unwrap_err();
+    assert!(matches!(e, Error::Unexpected { at: (3, 1), .. }), "{e}");
+    let e = Document::parse("a {\n b 1;\n").unwrap_err();
+    assert!(matches!(e, Error::Unclosed { open: '{', at: (1, 3) }), "{e}");
+    // A stray `}` at the top level is kept (OpenFOAM tolerates it) and reported.
+    let doc = Document::parse("a 1;\n}\nb 2;\n").unwrap();
+    assert_eq!(doc.to_string(), "a 1;\n}\nb 2;\n");
+    assert_eq!(doc.root.problems(), ["stray `}`"]);
+    assert_eq!(doc.value(&["b"]).as_deref(), Some("2"));
+    assert_eq!(Document::parse_bytes(&[0xff, 0xfe, 0x00]), Err(Error::NotText));
+}
+
+#[test]
+fn limits_hold() {
+    let deep = "(".repeat(10_000);
+    assert!(matches!(Document::parse(&format!("a {deep};")), Err(Error::TooDeep { .. })));
+    let small = Limits { max_bytes: 10, ..Limits::default() };
+    assert!(matches!(Document::parse_with("a 1; b 2; c 3;", &small), Err(Error::TooLarge { .. })));
+    let few = Limits { max_tokens: 5, ..Limits::default() };
+    assert!(matches!(Document::parse_with("a 1; b 2; c 3;", &few), Err(Error::TooLarge { .. })));
+}
+
+/// xorshift: deterministic pseudo-random input without a dependency.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+}
+
+#[test]
+fn fuzz_never_panics_and_round_trips() {
+    const ALPHABET: &[&str] = &[
+        "a", "1", " ", "\n", "{", "}", "(", ")", "[", "]", ";", "\"", "\\", "//", "/*", "*/", "#{", "#}", "$", "${",
+        "#include", "é", "-", "e5",
+    ];
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let seeds = std::env::var("UMCF_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000);
+    for _ in 0..seeds {
+        let len = rng.below(40);
+        let src: String = (0..len).map(|_| ALPHABET[rng.below(ALPHABET.len())]).collect();
+        if let Ok(doc) = Document::parse(&src) {
+            assert_eq!(doc.to_string(), src, "round trip failed for {src:?}");
+            let _ = doc.root.problems();
+            let mut d = doc.clone();
+            let _ = d.set(&["a", "b"], "1");
+            let _ = d.remove(&["a"]);
+            let _ = Document::parse(&d.to_string());
+        }
+    }
+}
+
+#[test]
+fn fuzz_mutations_of_real_files() {
+    let mut rng = Rng(42);
+    for base in [FV_SCHEMES, FIELD] {
+        let bytes = base.as_bytes();
+        for _ in 0..2_000 {
+            let mut m = bytes.to_vec();
+            for _ in 0..1 + rng.below(4) {
+                if m.is_empty() {
+                    break;
+                }
+                let i = rng.below(m.len());
+                match rng.below(3) {
+                    0 => {
+                        m.remove(i);
+                    }
+                    1 => m.insert(i, b"{}();\"#$/*"[rng.below(10)]),
+                    _ => m.truncate(i),
+                }
+            }
+            if let Ok(doc) = Document::parse_bytes(&m) {
+                assert_eq!(doc.to_string().as_bytes(), &m[..]);
+            }
+        }
+    }
+}

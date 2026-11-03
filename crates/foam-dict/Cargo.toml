@@ -1,0 +1,13 @@
+[package]
+name = "umcf-foam-dict"
+description = "Lossless OpenFOAM dictionary parser and editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

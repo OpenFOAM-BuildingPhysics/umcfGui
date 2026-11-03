@@ -15,4 +15,4 @@
 
 ## Progress log
 
-- 2026-11-03 — M0.1 workspace and `xtask`.
+- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`.
