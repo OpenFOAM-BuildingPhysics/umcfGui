@@ -7,6 +7,10 @@ reviews:
   high_level_summary: true
   poem: false
   review_status: true
+  # The "CodeRabbit" commit status is a required check on main (ruleset "main"): it must
+  # report success before a pull request can merge, and failure when no review was possible.
+  commit_status: true
+  fail_commit_status: true
   collapse_walkthrough: true
   auto_review:
     enabled: true
