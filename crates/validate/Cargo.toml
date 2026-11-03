@@ -1,0 +1,21 @@
+[package]
+name = "umcf-validate"
+description = "Checks an urbanMicroclimateFoam case before it runs: controls, regions, boundary conditions against the mesh, region coupling, solver types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+umcf-foam-mesh.workspace = true
+umcf-schema.workspace = true
+umcf-model.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+umcf-foam-field.workspace = true
+
+[lints]
+workspace = true

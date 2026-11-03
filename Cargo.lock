@@ -218,6 +218,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "umcf-validate"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "umcf-core",
+ "umcf-foam-dict",
+ "umcf-foam-field",
+ "umcf-foam-mesh",
+ "umcf-model",
+ "umcf-schema",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"

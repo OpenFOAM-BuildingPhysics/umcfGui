@@ -17,11 +17,13 @@ umcf-foam-dict = { path = "crates/foam-dict" }
 umcf-foam-field = { path = "crates/foam-field" }
 umcf-foam-mesh = { path = "crates/foam-mesh" }
 umcf-model = { path = "crates/model" }
+umcf-validate = { path = "crates/validate" }
 
 # foundation
 thiserror = "2"
 serde_json = "1"
-# Tooling only (xtask catalog): scanning the solver source.
+# Scanning the solver source (xtask catalog), and the quoted patch patterns of field files
+# (validate), which OpenFOAM matches as regular expressions.
 regex = "1"
 # gzip-compressed case files (writeCompression on). zlib-rs: pure Rust, about twice the speed of
 # the miniz_oxide backend on multi-GB fields.

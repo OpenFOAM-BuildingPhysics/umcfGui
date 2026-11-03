@@ -17,6 +17,7 @@ nav = [
     "user-guide/dictionaries.md",
     "user-guide/fields.md",
     "user-guide/meshes.md",
+    "user-guide/checks.md",
   ] },
   { "Solver Coverage" = "solver-coverage.md" },
   { "Gaps" = "gaps.md" },

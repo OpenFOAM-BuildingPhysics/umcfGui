@@ -21,7 +21,8 @@ pub struct Controls {
 
 impl Controls {
     pub fn read(doc: &Document) -> Controls {
-        let v = |key: &str| doc.value(&[key]);
+        // Words may be written quoted (`startFrom "latestTime";`): OpenFOAM reads them the same.
+        let v = |key: &str| doc.value(&[key]).map(|v| umcf_foam_dict::unquote(v.trim()).to_string());
         Controls {
             application: v("application"),
             start_from: v("startFrom"),
@@ -41,12 +42,13 @@ impl Controls {
     }
 
     /// The time directory a run starts from, as OpenFOAM picks it: the first or the latest time,
-    /// or the one at `startTime` (also when `startFrom` is missing or unknown).
+    /// or the one at `startTime`. Without `startFrom`, OpenFOAM resumes from the latest time
+    /// (`Time::setControls`); an unknown value is an error there, and gives `None` here.
     pub fn start_dir(&self, times: &[TimeDir]) -> Option<TimeDir> {
         match self.start_from.as_deref() {
             Some("firstTime") => times.first().cloned(),
-            Some("latestTime") => times.last().cloned(),
-            _ => {
+            Some("latestTime") | None => times.last().cloned(),
+            Some("startTime") => {
                 // By name first (`startTime 3600;` and `3600/`), then by value: OpenFOAM names
                 // time directories with 6 significant digits by default, which rounds a value
                 // by at most 5e-6 of itself.
@@ -61,6 +63,7 @@ impl Controls {
                     .min_by(|a, b| (a.value - t).abs().total_cmp(&(b.value - t).abs()))
                     .cloned()
             }
+            Some(_) => None,
         }
     }
 
@@ -68,7 +71,9 @@ impl Controls {
     pub fn describe_start(&self) -> String {
         match self.start_from.as_deref() {
             Some(s @ ("firstTime" | "latestTime")) => s.to_string(),
-            _ => format!("startTime {}", self.start_time.as_deref().unwrap_or("(not set)")),
+            None => "latestTime, the default".to_string(),
+            Some("startTime") => format!("startTime {}", self.start_time.as_deref().unwrap_or("(not set)")),
+            Some(other) => format!("startFrom {other}"),
         }
     }
 }
