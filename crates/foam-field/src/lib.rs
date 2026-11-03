@@ -270,7 +270,9 @@ pub fn gunzip(bytes: &[u8], limit: u64) -> Result<Vec<u8>> {
 pub fn read_header(bytes: &[u8]) -> Result<Header> {
     let mut h =
         Header { format: Format::Ascii, arch: Arch::default(), class: None, object: None, location: None, note: None };
-    let head = bytes.get(..bytes.len().min(8192)).unwrap_or(bytes);
+    // The header usually follows a short banner, but a long comment block may push it further:
+    // search the whole input. No header at all means an ASCII data file.
+    let head = bytes;
     let Some(start) = head.windows(8).position(|w| w == b"FoamFile") else { return Ok(h) };
     let Some(close) = head.get(start..).and_then(|s| s.iter().position(|b| *b == b'}')) else { return Ok(h) };
     let text = String::from_utf8_lossy(head.get(start..start + close + 1).unwrap_or(&[]));

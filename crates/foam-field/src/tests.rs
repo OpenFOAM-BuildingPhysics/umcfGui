@@ -188,6 +188,39 @@ fn hostile_lengths_and_data() {
 }
 
 #[test]
+fn spherical_tensors_are_parenthesised() {
+    // Review finding: `List<sphericalTensor>` is written `(1)`, one component in parentheses.
+    let src = format!(
+        "{}internalField nonuniform List<sphericalTensor> 2((1) (2.5));\nboundaryField {{ w {{ type fixedValue; value uniform (3); }} }}\n",
+        header("ascii", "volSphericalTensorField", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    let Some(Value::List(l)) = f.internal() else { panic!("{:?}", f.internal()) };
+    assert_eq!((l.kind, l.as_flat().unwrap()), (Kind::SphericalTensor, &[1.0, 2.5][..]));
+    assert_eq!(f.patch_value("w", "value"), Some(Value::Uniform(vec![3.0])));
+    // Untyped lists: `(1)` elements are sphericalTensors, bare numbers scalars.
+    let src = format!("{}internalField nonuniform 2((1) (2));\n", header("ascii", "volSphericalTensorField", ""));
+    let f = Field::parse(src.as_bytes()).unwrap();
+    let Some(Value::List(l)) = f.internal() else { panic!() };
+    assert_eq!((l.kind, l.as_flat().unwrap()), (Kind::SphericalTensor, &[1.0, 2.0][..]));
+    let src = format!("{}internalField nonuniform 2(1 2);\n", header("ascii", "volScalarField", ""));
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(matches!(f.internal(), Some(Value::List(l)) if l.kind == Kind::Scalar));
+}
+
+#[test]
+fn header_after_a_long_banner() {
+    // Review finding: a header past the first 8 KB was ignored, and with it the class.
+    let banner = format!("/*{}*/\n", "-".repeat(20_000));
+    let src = format!("{banner}{}internalField uniform 1;\n", header("ascii", "volScalarField", ""));
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert_eq!(f.class(), Some("volScalarField"));
+    // No header at all: an ASCII data file, read with defaults.
+    let f = Field::parse(b"internalField uniform 1;\n").unwrap();
+    assert_eq!((f.class(), f.header.format), (None, Format::Ascii));
+}
+
+#[test]
 fn nan_and_inf_values() {
     // A diverged run writes nan; the fast number path hands these to the slow one.
     let src = format!(

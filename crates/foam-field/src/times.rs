@@ -1,6 +1,6 @@
 //! Time and processor directories of a case.
 
-use umcf_core::CaseFs;
+use umcf_core::{CaseFs, FsError};
 
 /// A time directory: its name as written (`3600`, `1e+06`, `0.5`) and its value.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,10 +11,10 @@ pub struct TimeDir {
 
 /// Time directories directly under `base` (`""` for the case, `processor3` for one processor),
 /// sorted by time. `0.orig`, `constant`, `system` and the like are not times.
-pub fn time_dirs(fs: &dyn CaseFs, base: &str) -> Vec<TimeDir> {
+pub fn time_dirs(fs: &dyn CaseFs, base: &str) -> Result<Vec<TimeDir>, FsError> {
     let join = |n: &str| if base.is_empty() { n.to_string() } else { format!("{base}/{n}") };
     let mut out: Vec<TimeDir> = fs
-        .list(base)
+        .list(base)?
         .into_iter()
         .filter(|n| n.bytes().next().is_some_and(|b| b.is_ascii_digit() || b == b'-' || b == b'.'))
         .filter_map(|n| {
@@ -23,14 +23,14 @@ pub fn time_dirs(fs: &dyn CaseFs, base: &str) -> Vec<TimeDir> {
         })
         .collect();
     out.sort_by(|a, b| a.value.total_cmp(&b.value));
-    out
+    Ok(out)
 }
 
 /// `processorN` directories, sorted by N. A collated case (`processors4`) has one directory
 /// holding every processor; it is reported by [`collated_dirs`] instead.
-pub fn processor_dirs(fs: &dyn CaseFs) -> Vec<(usize, String)> {
+pub fn processor_dirs(fs: &dyn CaseFs) -> Result<Vec<(usize, String)>, FsError> {
     let mut out: Vec<(usize, String)> = fs
-        .list("")
+        .list("")?
         .into_iter()
         .filter_map(|n| {
             let k: usize = n.strip_prefix("processor")?.parse().ok()?;
@@ -38,22 +38,23 @@ pub fn processor_dirs(fs: &dyn CaseFs) -> Vec<(usize, String)> {
         })
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// `processorsN` directories of the collated file format.
-pub fn collated_dirs(fs: &dyn CaseFs) -> Vec<String> {
-    fs.list("")
+pub fn collated_dirs(fs: &dyn CaseFs) -> Result<Vec<String>, FsError> {
+    Ok(fs
+        .list("")?
         .into_iter()
         .filter(|n| n.strip_prefix("processors").is_some_and(|k| k.parse::<usize>().is_ok()))
-        .collect()
+        .collect())
 }
 
 /// Field files in `<time>/<region>` (or `<time>` for a single-region case): file names with any
 /// `.gz` removed, sorted, without subdirectories such as `uniform/`.
-pub fn fields(fs: &dyn CaseFs, dir: &str) -> Vec<String> {
+pub fn fields(fs: &dyn CaseFs, dir: &str) -> Result<Vec<String>, FsError> {
     let mut out: Vec<String> = fs
-        .list(dir)
+        .list(dir)?
         .into_iter()
         .filter(|n| fs.is_file(&format!("{dir}/{n}")))
         .map(|n| n.strip_suffix(".gz").map(str::to_string).unwrap_or(n))
@@ -61,7 +62,7 @@ pub fn fields(fs: &dyn CaseFs, dir: &str) -> Vec<String> {
         .collect();
     out.sort();
     out.dedup();
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -84,12 +85,13 @@ mod tests {
             .with("processor10/0/air/U", "")
             .with("processors4/0/air/U", "")
             .with("123abc", "");
-        let names: Vec<_> = time_dirs(&fs, "").into_iter().map(|t| t.name).collect();
+        let names: Vec<_> = time_dirs(&fs, "").unwrap().into_iter().map(|t| t.name).collect();
         assert_eq!(names, ["0", "0.5", "3600", "1e+06"]);
-        assert_eq!(time_dirs(&fs, "processor1")[0].name, "3600");
-        let procs: Vec<usize> = processor_dirs(&fs).into_iter().map(|p| p.0).collect();
+        assert_eq!(time_dirs(&fs, "processor1").unwrap()[0].name, "3600");
+        let procs: Vec<usize> = processor_dirs(&fs).unwrap().into_iter().map(|p| p.0).collect();
         assert_eq!(procs, [0, 1, 10]);
-        assert_eq!(collated_dirs(&fs), ["processors4"]);
+        assert_eq!(collated_dirs(&fs).unwrap(), ["processors4"]);
+        assert!(time_dirs(&fs, "../x").is_err());
     }
 
     #[test]
@@ -100,6 +102,6 @@ mod tests {
             .with("3600/air/T.gz", "")
             .with("3600/air/p.orig", "")
             .with("3600/air/uniform/time", "");
-        assert_eq!(fields(&fs, "3600/air"), ["T", "U"]);
+        assert_eq!(fields(&fs, "3600/air").unwrap(), ["T", "U"]);
     }
 }

@@ -200,7 +200,12 @@ fn read_ascii_elements(
             let close = find(bytes, first, b")").ok_or_else(|| bad(bytes, first, "unclosed element"))?;
             let inner = bytes.get(first + 1..close).unwrap_or(&[]);
             let comps = inner.split(|b| is_ws(*b)).filter(|w| !w.is_empty()).count();
-            Kind::from_components(comps).ok_or_else(|| bad(bytes, first, format!("{comps}-component element")))?
+            // One component in parentheses is how a sphericalTensor is written.
+            if comps == 1 {
+                Kind::SphericalTensor
+            } else {
+                Kind::from_components(comps).ok_or_else(|| bad(bytes, first, format!("{comps}-component element")))?
+            }
         }
         None => Kind::Scalar,
     };
@@ -209,7 +214,9 @@ fn read_ascii_elements(
     let room = bytes.len().saturating_sub(i) / 2 + 1;
     let mut values = Vec::with_capacity(n.saturating_mul(comps).min(room).min(limits.max_values));
     for _ in 0..n {
-        if comps == 1 {
+        // Scalars and labels are bare numbers; every other type, sphericalTensor's one
+        // component included, is written in parentheses: `(1)`.
+        if matches!(kind, Kind::Scalar | Kind::Label) {
             let (v, end) = number(bytes, i)?;
             values.push(v);
             i = end;

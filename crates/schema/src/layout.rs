@@ -163,11 +163,14 @@ pub fn detect(fs: &dyn CaseFs) -> Result<Layout, Error> {
     let candidates: Vec<String> = match (&from_control, &from_properties) {
         (Some(r), _) | (None, Some(r)) => r.all().map(str::to_string).collect(),
         (None, None) => {
-            let mut dirs: Vec<String> = ["system", "constant"]
-                .iter()
-                .flat_map(|d| fs.list(d).into_iter().filter(move |n| fs.is_dir(&format!("{d}/{n}"))))
-                .filter(|n| valid_region_name(n) && n != "polyMesh" && n != "triSurface")
-                .collect();
+            let mut dirs = Vec::new();
+            for d in ["system", "constant"] {
+                for n in fs.list(d)? {
+                    if fs.is_dir(&format!("{d}/{n}")) && valid_region_name(&n) && n != "polyMesh" && n != "triSurface" {
+                        dirs.push(n);
+                    }
+                }
+            }
             dirs.sort();
             dirs.dedup();
             dirs
@@ -258,7 +261,7 @@ pub fn detect(fs: &dyn CaseFs) -> Result<Layout, Error> {
     }
 
     let kind = if regions.is_empty() && regions_from.is_none() { CaseKind::Meshing } else { CaseKind::Solver };
-    let tools = tools(fs, &candidates);
+    let tools = tools(fs, &candidates)?;
     // A meshing step has no regions by design: not a warning.
     if kind == CaseKind::Meshing {
         notes.retain(|n| n.message != "no regions defined");
@@ -383,15 +386,15 @@ fn snappy_evidence(fs: &dyn CaseFs, notes: &mut Vec<Note>) -> Result<Option<Evid
     })
 }
 
-fn tools(fs: &dyn CaseFs, regions: &[String]) -> Vec<&'static str> {
-    let mut names = fs.list("system");
+fn tools(fs: &dyn CaseFs, regions: &[String]) -> Result<Vec<&'static str>, Error> {
+    let mut names = fs.list("system")?;
     for r in regions {
-        names.extend(fs.list(&format!("system/{r}")));
+        names.extend(fs.list(&format!("system/{r}"))?);
     }
     // `extrudeMeshDict.east`, `topoSetDict_cellZones`, … are variants of the same dictionary.
     let base = |n: &str| n.split(['.', '_']).next().unwrap_or("").to_string();
     let bases: Vec<String> = names.iter().map(|n| base(n)).collect();
-    TOOLS.iter().filter(|(dict, _)| bases.iter().any(|b| b == dict)).map(|(_, tool)| *tool).collect()
+    Ok(TOOLS.iter().filter(|(dict, _)| bases.iter().any(|b| b == dict)).map(|(_, tool)| *tool).collect())
 }
 
 /// `Version:  12` in the controlDict banner comment. `2.2.2` and the like say nothing.
