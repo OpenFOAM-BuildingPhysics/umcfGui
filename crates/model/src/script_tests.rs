@@ -292,6 +292,18 @@ fn hostile_scripts_are_read_within_limits() {
     // Also inside an `if` condition: nothing after the limit is read.
     let s = parse("Allrun", &format!("if true\n{}blockMesh\nthen\n  echo\nfi\n", "(\n".repeat(40)));
     assert!(s.truncated && s.steps.is_empty(), "{:?}", s.steps);
+    // Many large variables stay within MAX_VARS, and copying them for each subshell is work.
+    let mut big = format!("x={}\n", "a".repeat(60_000));
+    for k in 0..200 {
+        big.push_str(&format!("v{k}=$x\n"));
+    }
+    big.push_str(&format!("for i in {}; do ( ) ; done\n", words(100_000)));
+    let s = parse("Allrun", &big);
+    assert!(s.truncated);
+    // Long names count too: the second megabyte-long name isn't kept.
+    let n = "n".repeat(MAX_VARS - 10);
+    let s = parse("Allrun", &format!("{n}=a\nm{n}=b\ncp $m{n} c\n"));
+    assert!(s.steps.iter().all(|st| st.unresolved));
     // Within the limits nothing is cut.
     let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
     assert!(!s.truncated && s.steps.len() == 4);

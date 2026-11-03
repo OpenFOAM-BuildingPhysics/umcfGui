@@ -36,6 +36,8 @@ pub const MAX_STEPS: usize = 100_000;
 /// Longest variable value or expanded word kept (`x=$x$x` in a loop would double without end);
 /// a longer one is not resolved.
 pub const MAX_VALUE: usize = 64 << 10;
+/// Most bytes all variable names and values hold together; past it a value is not resolved.
+pub const MAX_VARS: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
@@ -620,12 +622,14 @@ fn dollar(chars: &[char], i: usize) -> (Part, usize, usize) {
 // Running through the commands
 
 /// The variables, glob loop variables and `cd` state outside a subshell.
-type Saved = (BTreeMap<String, Option<String>>, std::collections::BTreeSet<String>, bool);
+type Saved = (BTreeMap<String, Option<String>>, std::collections::BTreeSet<String>, bool, usize);
 
 #[derive(Debug, Default, Clone)]
 struct Env {
     /// Variables set to a literal value; `None` for one set to something not resolved.
     vars: BTreeMap<String, Option<String>>,
+    /// Bytes the names and values in `vars` hold (at most [`MAX_VARS`]).
+    var_bytes: usize,
     /// Loop variables over a glob (`for p in processor*`): bound to the pattern, which expands
     /// to that text but is not resolved.
     globs: std::collections::BTreeSet<String>,
@@ -644,6 +648,28 @@ struct Env {
 #[derive(Debug, Default, Clone, Copy)]
 struct Ctx {
     conditional: bool,
+}
+
+impl Env {
+    /// Set a variable. Names and values count against the [`MAX_VARS`] budget: a value that
+    /// doesn't fit is not resolved, a new name that doesn't fit is not kept (an unknown
+    /// variable is not resolved either).
+    fn set(&mut self, name: &str, value: Option<String>) {
+        let old = match self.vars.get(name) {
+            Some(v) => v.as_ref().map_or(0, String::len),
+            None => {
+                if self.var_bytes + name.len() > MAX_VARS {
+                    return;
+                }
+                self.var_bytes += name.len();
+                0
+            }
+        };
+        self.var_bytes = self.var_bytes.saturating_sub(old);
+        let value = value.filter(|v| self.var_bytes + v.len() <= MAX_VARS);
+        self.var_bytes += value.as_ref().map_or(0, String::len);
+        self.vars.insert(name.to_string(), value);
+    }
 }
 
 /// A word expanded into words: an unquoted `$x` alone is split at blanks, as the shell does
@@ -794,14 +820,14 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
                             } else {
                                 env.globs.remove(&var);
                             }
-                            env.vars.insert(var.clone(), Some(v));
+                            env.set(&var, Some(v));
                             let mut k = 0;
                             exec(body, &mut k, env, inner, out, &[]);
                         }
                     }
                     None => {
                         env.globs.remove(&var);
-                        env.vars.insert(var.clone(), None);
+                        env.set(&var, None);
                         let mut k = 0;
                         exec(body, &mut k, env, inner, out, &[]);
                     }
@@ -1075,12 +1101,19 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
                 env.truncated = true;
                 return;
             }
-            env.outer.push((env.vars.clone(), env.globs.clone(), env.lost));
+            // Saving the state copies it: charged as work by its size (at most MAX_VARS).
+            env.work += 1 + env.var_bytes / 1024 + env.vars.len() + env.globs.len();
+            if env.work > MAX_WORK {
+                env.truncated = true;
+                return;
+            }
+            env.outer.push((env.vars.clone(), env.globs.clone(), env.lost, env.var_bytes));
             return;
         }
         Some(")") if c.words.len() == 1 => {
-            if let Some((vars, globs, lost)) = env.outer.pop() {
+            if let Some((vars, globs, lost, var_bytes)) = env.outer.pop() {
                 env.vars = vars;
+                env.var_bytes = var_bytes;
                 env.globs = globs;
                 env.lost = lost;
             }
@@ -1104,7 +1137,7 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
             });
             env.globs.remove(name);
             let value = value.filter(|v| v.len() <= MAX_VALUE);
-            env.vars.insert(name.to_string(), value);
+            env.set(name, value);
         }
         writes(c, env, ctx, out);
         return;
