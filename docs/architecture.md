@@ -4,8 +4,8 @@ An OpenFOAM case editor, runner and viewer for urbanMicroclimateFoam, built as s
 Rust crates.
 
 !!! info "Status"
-    The crates that exist today are `core`, `foam-dict`, `foam-field`, `foam-mesh` and `schema` (case layout
-    and the generated [solver catalog](solver-coverage.md)), plus the `xtask` tooling.
+    The crates that exist today are `core`, `foam-dict`, `foam-field`, `foam-mesh`, `schema` (case layout
+    and the generated [solver catalog](solver-coverage.md)) and `model`, plus the `xtask` tooling.
     The others in the table below are planned.
 
 ## Core patterns
@@ -86,9 +86,73 @@ The split, given that most cases are too big to run locally:
 - **Results** (`post`): time directories per region, `postProcessing/` probes, and the residuals
   and continuity errors parsed from `log.*`.
 
+## Geometry, meshing and the 3D view
+
+The workflow the GUI supports end to end:
+
+1. **Import geometry** (`geometry.import`): STL files (ASCII or binary, with or without named
+   `solid`s) for buildings, terrain and trees go to `constant/triSurface`. `geom` reads them
+   without trusting the header, and reports what would break meshing:
+   - open and non-manifold edges;
+   - inconsistent or inward normals;
+   - degenerate and duplicate triangles;
+   - coordinates that look like millimetres;
+   - surfaces outside the domain.
+
+   Each report carries the triangles involved. Safe repairs are commands of their own:
+   - welding with a tolerance;
+   - dropping degenerate triangles;
+   - making normals consistent;
+   - scaling.
+2. **Set up the mesh** (`mesh.setup`, `mesh.block`, `mesh.refine`, `mesh.layers`): typed views
+   in `model` over `blockMeshDict`, `snappyHexMeshDict` and `surfaceFeaturesDict`, edited
+   losslessly like every other dictionary. The keyword set differs per OpenFOAM version
+   (`insidePoint` vs `locationInMesh`), so `schema` profiles decide which ones are used. Before
+   anything runs, `validate` checks the set-up:
+   - the inside point lies in the fluid, not inside a building;
+   - refinement surfaces exist and are closed where they must be;
+   - the background mesh covers the geometry;
+   - the cell size matches the refinement levels.
+3. **Mesh** (pipeline steps): `blockMesh`, `surfaceFeatures`, `snappyHexMesh`, `checkMesh` and
+   the region-extrusion steps of the urbanMicroclimateFoam workflow. They are always exported as
+   scripts, and run locally with `runner`.
+4. **Check the mesh** (`mesh.check`): the result of `checkMesh` (its log, and the face and cell
+   sets of `-writeSets`) is the authority. `validate` also computes the same metrics natively
+   from `foam-mesh`, with `checkMesh`'s thresholds, as a fast preview and for meshes that were
+   never checked:
+   - non-orthogonality, skewness, aspect ratio;
+   - negative or tiny volumes, open cells;
+   - layer coverage.
+
+   Every problem carries the faces or cells involved.
+5. **Assign boundary conditions in 3D** (`bc.set`): picking in the view selects patches (or
+   groups, or a region's whole boundary). `bc.set` takes that selection as its parameters, so
+   the same assignment is a CLI or MCP call too. Picking faces to create a new patch
+   (`patch.create`, via `createPatch`/`topoSet`) is the same flow.
+
+### The 3D view
+
+The GUI's 3D view borrows proven patterns from
+[SolidCraft](https://github.com/tangency-labs/solidcraft) (MIT/Apache-2.0, also a pure-Rust,
+egui, command-driven app). Code ported from it keeps its copyright notice and gets a row in
+`ATTRIBUTION.md`.
+
+| Pattern | Here |
+|---|---|
+| Renderer-agnostic scene in a low layer | `render::Scene` (meshes, per-face colour classes, opacity) is built from `foam-mesh` and `geom` data and stays wasm-clean. The wgpu viewport in `ui-egui` and the CPU rasteriser (headless snapshots, CI, remote machines without a GPU) draw the same scene |
+| Colour by palette, not by vertex | Patches, regions and quality metrics are colour classes. Recolouring (by patch, by BC type, by non-orthogonality) changes the palette, never re-uploads a 50-million-face mesh |
+| Level of detail | Big surfaces and meshes get simplified display meshes built off the UI thread. Picking always uses the full data |
+| CPU picking with a BVH | Ray casts against a triangle BVH (`geom`), built lazily off the UI thread. Each triangle maps back to its patch and face (or STL triangle), so a pick is a patch name, not a pixel |
+| Selection lives in the engine | `Session.selection` (`Sel::Patch`, `Sel::Faces`, `Sel::Cells`, `Sel::Surface`) is plain data. A command run with no explicit target uses the current selection, which is how "pick, then assign" works |
+| Hover and "select other" | Hovering highlights the patch under the cursor. Holding still lists everything under it (overlapping regions, internal patches) |
+| Navigation in one place | One input handler with presets (orbit / pan / zoom to cursor, ParaView-like and CAD-like), view cube, standard views, section planes to see inside the domain |
+| UI built from the command registry | Toolbar, menus and the command palette are generated from `CommandSpec`. A disabled command shows its reason |
+| Headless UI scenarios | Scripted steps (open, pick at a world point, run a command) run the real app without a window, plus PNG snapshots from the CPU renderer |
+
 ## Command families (initial)
 
-`case.*` (new, open, save, clean, export-allrun) · `region.*` · `material.*` · `bc.*` ·
+`case.*` (new, open, save, clean, export-allrun) · `geometry.*` (import, repair, scale) ·
+`mesh.*` (setup, block, refine, layers, check) · `patch.*` · `region.*` · `material.*` · `bc.*` ·
 `control.*` (controlDict, fvSolution, fvSchemes entries) · `mesh.*` · `veg.*` · `solar.*` ·
 `run.*` (export always; start, stop, status only with `runner`) · `post.*` (probe, slice, timeseries) · `view.*` (UI-only,
 in `ui-egui`) · `edit.undo` / `edit.redo`.

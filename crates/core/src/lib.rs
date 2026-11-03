@@ -3,6 +3,7 @@
 //!
 //! Case access goes through [`CaseFs`] so that layers above work on a directory ([`DirFs`]),
 //! in memory ([`MemFs`], for tests and the web viewer) or anything else, and stay wasm-clean.
+//! Saving goes through [`CaseWrite`], whose writes are atomic.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -61,6 +62,25 @@ pub trait CaseFs {
     /// doesn't exist or isn't a directory lists as empty; any other failure (permissions, I/O)
     /// is an error, never an empty listing.
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError>;
+
+    /// What the file at `rel` really is: two paths with the same identity are one file (a
+    /// symlinked dictionary shared by two regions). `None` when it can't be told.
+    fn identity(&self, rel: &str) -> Option<PathBuf> {
+        Some(PathBuf::from(rel))
+    }
+
+    /// How many hard links the file has (1 for a plain file). A save replaces the file at one
+    /// path, so the other links keep the old text.
+    fn hard_links(&self, _rel: &str) -> u64 {
+        1
+    }
+}
+
+/// Write access to a case. A write is atomic: readers see the old file or the new one, never a
+/// half-written file (on disk: a temporary file next to the target, then a rename). Missing
+/// parent directories are created.
+pub trait CaseWrite: CaseFs {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError>;
 }
 
 /// Rejects absolute paths and `..`, so a path taken from a dictionary can't leave the case.
@@ -112,6 +132,16 @@ impl CaseFs for DirFs {
         self.path(rel).is_some_and(|p| p.is_dir())
     }
 
+    fn identity(&self, rel: &str) -> Option<PathBuf> {
+        std::fs::canonicalize(self.path(rel)?).ok()
+    }
+
+    #[cfg(unix)]
+    fn hard_links(&self, rel: &str) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        self.path(rel).and_then(|p| std::fs::metadata(p).ok()).map_or(1, |m| m.nlink())
+    }
+
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
         let io = |source| FsError::Io { path: rel.to_string(), source };
@@ -128,6 +158,85 @@ impl CaseFs for DirFs {
         Ok(names)
     }
 }
+
+impl CaseWrite for DirFs {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        use std::io::Write;
+        let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+        let io = |source| FsError::Io { path: rel.to_string(), source };
+        // A symlinked file is written through the link, as an editor would, instead of being
+        // replaced by a plain file. Only inside the case: a case from elsewhere must not make a
+        // save write to `~/.bashrc`, through a linked file or a linked directory.
+        let root = std::fs::canonicalize(&self.root).map_err(io)?;
+        let target = match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(&path).map_err(io)?,
+            _ => path,
+        };
+        let dir = target.parent().ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+        // The nearest directory that exists decides where new ones would be created.
+        let existing = dir.ancestors().find(|a| a.exists()).unwrap_or(dir);
+        let real = std::fs::canonicalize(existing).map_err(io)?;
+        if !real.starts_with(&root) {
+            return Err(FsError::BadPath(format!("{rel} (leads to {}, outside the case)", real.display())));
+        }
+        std::fs::create_dir_all(dir).map_err(io)?;
+        let dir = std::fs::canonicalize(dir).map_err(io)?;
+        if !dir.starts_with(&root) {
+            return Err(FsError::BadPath(format!("{rel} (leads to {}, outside the case)", dir.display())));
+        }
+        // The name as the OS has it (not lossily converted: a link to a non-UTF-8 name must
+        // write that file, not a new one).
+        let name = target.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
+        let target = dir.join(&name);
+        // The temporary file is created new, never opened: a file or symlink already at that
+        // name (planted by a case, or another save running) makes this try the next name
+        // instead of writing through it.
+        let (tmp, mut f) = {
+            let mut attempt = 0u32;
+            loop {
+                let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut tmp_name = std::ffi::OsString::from(".");
+                tmp_name.push(&name);
+                tmp_name.push(format!(".umcfgui-tmp-{}-{n}", std::process::id()));
+                let tmp = dir.join(tmp_name);
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                    Ok(f) => break (tmp, f),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
+                    Err(e) => return Err(io(e)),
+                }
+            }
+        };
+        let result = (|| {
+            f.write_all(bytes)?;
+            // Keep the mode of the file being replaced (an executable script stays executable).
+            // Unix only: elsewhere a read-only flag would make the rename fail.
+            #[cfg(unix)]
+            if let Ok(m) = std::fs::metadata(&target) {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(m.permissions().mode()))?;
+            }
+            f.sync_all()?;
+            drop(f);
+            std::fs::rename(&tmp, &target)?;
+            // The rename itself survives a power cut only once the directory is synced. Best
+            // effort: the new file is in place either way, and some filesystems (network,
+            // FUSE) refuse to sync a directory. Failing here would report a save that happened
+            // as one that didn't.
+            #[cfg(unix)]
+            if let Ok(d) = std::fs::File::open(&dir) {
+                let _ = d.sync_all();
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result.map_err(io)
+    }
+}
+
+/// Makes temporary-file names unique within the process.
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A case held in memory: `path → bytes`. Directories exist implicitly.
 #[derive(Debug, Clone, Default)]
@@ -187,9 +296,81 @@ impl CaseFs for MemFs {
     }
 }
 
+impl CaseWrite for MemFs {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        check_rel(rel)?;
+        self.insert(rel, bytes.to_vec());
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_replace_files_atomically_and_keep_links() {
+        let root = std::env::temp_dir().join(format!("umcf-core-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut d = DirFs::new(&root);
+        // The case itself must exist; directories inside it are created.
+        assert!(d.write("system/x", b"").is_err());
+        std::fs::create_dir_all(&root).unwrap();
+        d.write("system/air/fvSchemes", b"a 1;").unwrap();
+        assert_eq!(d.read("system/air/fvSchemes", 100).unwrap().as_deref(), Some(&b"a 1;"[..]));
+        d.write("system/air/fvSchemes", b"a 2;").unwrap();
+        assert_eq!(d.read("system/air/fvSchemes", 100).unwrap().as_deref(), Some(&b"a 2;"[..]));
+        // No temporary file is left behind.
+        assert_eq!(d.list("system/air").unwrap(), ["fvSchemes"]);
+        // A hard-linked file is replaced, not written through: the other link keeps the old
+        // text (an atomic save can't do otherwise; documented).
+        assert!(matches!(d.write("../x", b""), Err(FsError::BadPath(_))));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(root.join("shared"), b"old").unwrap();
+            std::os::unix::fs::symlink(root.join("shared"), root.join("system/link")).unwrap();
+            d.write("system/link", b"new").unwrap();
+            assert!(std::fs::symlink_metadata(root.join("system/link")).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(root.join("shared")).unwrap(), b"new");
+            // A link out of the case is refused, and the file it points to is untouched.
+            let outside = std::env::temp_dir().join(format!("umcf-core-outside-{}", std::process::id()));
+            std::fs::write(&outside, b"keep").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("system/escape")).unwrap();
+            assert!(matches!(d.write("system/escape", b"x"), Err(FsError::BadPath(_))));
+            assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+            std::fs::remove_file(&outside).unwrap();
+            // A symlink planted where the temporary file would go is not written through.
+            let victim = std::env::temp_dir().join(format!("umcf-core-victim-{}", std::process::id()));
+            std::fs::write(&victim, b"victim").unwrap();
+            let next = TMP_COUNTER.load(std::sync::atomic::Ordering::Relaxed);
+            for n in next..next + 5 {
+                let planted = root.join(format!("system/.planted.umcfgui-tmp-{}-{n}", std::process::id()));
+                std::os::unix::fs::symlink(&victim, planted).unwrap();
+            }
+            d.write("system/planted", b"new text").unwrap();
+            assert_eq!(std::fs::read(&victim).unwrap(), b"victim");
+            assert_eq!(std::fs::read(root.join("system/planted")).unwrap(), b"new text");
+            assert!(!std::fs::symlink_metadata(root.join("system/planted")).unwrap().file_type().is_symlink());
+            std::fs::remove_file(&victim).unwrap();
+            // So is a linked directory leading out.
+            let out_dir = std::env::temp_dir().join(format!("umcf-core-outdir-{}", std::process::id()));
+            std::fs::create_dir_all(&out_dir).unwrap();
+            std::os::unix::fs::symlink(&out_dir, root.join("constant")).unwrap();
+            assert!(matches!(d.write("constant/air/g", b"x"), Err(FsError::BadPath(_))));
+            assert!(std::fs::read_dir(&out_dir).unwrap().next().is_none(), "nothing created outside");
+            std::fs::remove_dir_all(&out_dir).unwrap();
+            std::fs::write(root.join("Allrun"), b"#!/bin/sh").unwrap();
+            std::fs::set_permissions(root.join("Allrun"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            d.write("Allrun", b"#!/bin/sh\n").unwrap();
+            assert_eq!(std::fs::metadata(root.join("Allrun")).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+        let mut m = MemFs::new();
+        m.write("a/b", b"x").unwrap();
+        assert!(m.is_file("a/b"));
+        assert!(matches!(m.write("/abs", b""), Err(FsError::BadPath(_))));
+    }
 
     #[test]
     fn memfs_files_and_dirs() {

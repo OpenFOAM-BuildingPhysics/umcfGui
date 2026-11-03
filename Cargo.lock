@@ -196,6 +196,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "umcf-model"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "thiserror",
+ "umcf-core",
+ "umcf-foam-dict",
+ "umcf-foam-field",
+ "umcf-foam-mesh",
+ "umcf-schema",
+]
+
+[[package]]
 name = "umcf-schema"
 version = "0.1.0"
 dependencies = [

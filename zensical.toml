@@ -19,6 +19,7 @@ nav = [
     "user-guide/meshes.md",
   ] },
   { "Solver Coverage" = "solver-coverage.md" },
+  { "Gaps" = "gaps.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
   { "urbanMicroclimateFoam" = "https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam" },
