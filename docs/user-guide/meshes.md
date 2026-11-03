@@ -33,4 +33,6 @@ back identical to their ASCII originals.
 
 The largest, 16 million cells with 51 million faces and 19 million points, takes about
 13 seconds: the four big files are read in parallel. Mesh indices are stored as 32-bit
-integers, so that mesh needs about 1.7 GB of memory.
+integers, so the mesh, once read, takes about 1.7 GB of memory. Reading it needs more: the
+files' text is held while they are parsed, and the measured peak was 3.7 GB. Plan memory for the
+peak.

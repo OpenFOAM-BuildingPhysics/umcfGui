@@ -184,7 +184,7 @@ impl PolyMesh {
         let boundary = parse_boundary(&bytes)?;
 
         let cell_zones = match read_file(fs, dir, "cellZones", limits)? {
-            Some((path, bytes)) => parse_zones(&path, &bytes)?,
+            Some((path, bytes)) => parse_zones(&path, &bytes, limits)?,
             None => Vec::new(),
         };
 
@@ -359,9 +359,11 @@ fn parse_boundary(bytes: &[u8]) -> Result<Vec<Patch>> {
     Ok(out)
 }
 
-fn parse_zones(path: &str, bytes: &[u8]) -> Result<Vec<Zone>> {
-    // The field reader splices `cellLabels List<label> N (…)` out into numbers.
-    let f = Field::parse(bytes)?;
+fn parse_zones(path: &str, bytes: &[u8], limits: &Limits) -> Result<Vec<Zone>> {
+    // The field reader splices `cellLabels List<label> N (…)` out into numbers, under the mesh's
+    // limits rather than the field defaults.
+    let field_limits = umcf_foam_field::Limits { max_bytes: limits.max_bytes, max_values: limits.max_elements };
+    let f = Field::parse_with(bytes, &field_limits)?;
     let bad = |msg: String| Error::Bad { file: path.to_string(), line: 0, msg };
     let mut out = Vec::new();
     for (name, body) in named_dicts(&f.doc) {
@@ -372,7 +374,14 @@ fn parse_zones(path: &str, bytes: &[u8]) -> Result<Vec<Zone>> {
                 _ => None,
             })
             .ok_or_else(|| bad(format!("zone {name} has no cellLabels list")))?;
-        let mut cells = Vec::with_capacity(list.len());
+        // `N{v}` costs a few bytes of input for any N: cap it like the owner and neighbour lists.
+        if list.is_repeated() && list.len() > limits.max_uniform {
+            return Err(Error::TooLarge { what: "uniform list", limit: limits.max_uniform });
+        }
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(list.len())
+            .map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: list.len() })?;
         for e in list.iter() {
             let v = e.first().copied().unwrap_or(-1.0);
             if !(0.0..=f64::from(u32::MAX)).contains(&v) || v.fract() != 0.0 {

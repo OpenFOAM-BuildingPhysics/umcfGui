@@ -284,6 +284,13 @@ fn hostile_files_are_errors() {
     assert!(matches!(e, Error::TooLarge { what: "uniform list", .. }), "{e}");
     let ok = read(&with(ascii_mesh(), "neighbour", format!("{}1{{1}}\n", h("labelList"))));
     assert!(ok.is_ok(), "{ok:?}");
+    // Review finding: a repeated `cellLabels` list skipped the mesh limits (field defaults only).
+    let small = Limits { max_uniform: 4, ..Limits::default() };
+    let zones = |n: usize| with(ascii_mesh(), "cellZones", ZONES.replace("2(0 1)", &format!("{n}{{1}}")));
+    let e = PolyMesh::read(&zones(5), "constant/air/polyMesh", &small).unwrap_err();
+    assert!(matches!(e, Error::TooLarge { what: "uniform list", .. }), "{e}");
+    let ok = PolyMesh::read(&zones(4), "constant/air/polyMesh", &small).map(|m| m.cell_zones[1].cells.clone());
+    assert_eq!(ok.ok(), Some(vec![1; 4]));
     // Review finding: a cell label of u32::MAX overflowed `max + 1` (wrapping on wasm32).
     let e = read(&with(ascii_mesh(), "owner", format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 4294967295\n)\n", h("labelList"))))
         .unwrap_err();

@@ -140,6 +140,11 @@ impl ListData {
         self.len == 0
     }
 
+    /// Written as `N{value}`: one stored element stands for all of them.
+    pub fn is_repeated(&self) -> bool {
+        self.repeated
+    }
+
     /// Element `i` as its components.
     pub fn get(&self, i: usize) -> Option<&[f64]> {
         if i >= self.len {
