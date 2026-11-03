@@ -420,8 +420,11 @@ fn failing_bare_lists_cost_linear_time() {
     let many = "List<scalar> ;\n".repeat(200_000);
     let src = format!("{h}internalField uniform 1;\na ( {many} );\n");
     let _ = Field::parse(src.as_bytes());
+    // Unquoted, so every `List<` is an attempt and each bad word `x;List<…` reaches the slow
+    // number path (no whitespace, parenthesis or `}` ends it): capped at 64 bytes, not scanned
+    // to the end of the file.
     let chain = "List<scalar>1{x;".repeat(40_000);
-    let src = format!("{h}internalField uniform 1;\na \"{chain}\";\n");
+    let src = format!("{h}internalField uniform 1;\na {chain}\n");
     let _ = Field::parse(src.as_bytes());
     // The line number of a real error is still right.
     let src = format!("{h}internalField nonuniform List<scalar> 2(1 x);\n");
