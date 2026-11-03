@@ -47,6 +47,14 @@ pub(crate) fn scan(bytes: &[u8], binary: bool, arch: Arch, limits: &Limits) -> R
             (b'/', Some(b'*')) => find(bytes, i + 2, b"*/").map_or(bytes.len(), |p| p + 2),
             (b'#', Some(b'{')) => find(bytes, i + 2, b"#}").map_or(bytes.len(), |p| p + 2),
             (b'"', _) => string_end(bytes, i),
+            // `List<T> N (…)` without `nonuniform`: zone files (`cellLabels List<label> …`).
+            _ if starts_typed_list(bytes, i) => {
+                let (list, end) = read_list(bytes, i, binary, arch, limits)?;
+                text.extend_from_slice(placeholder(lists.len()).as_bytes());
+                lists.push(list);
+                i = end;
+                continue;
+            }
             _ if starts_keyword(bytes, i, b"nonuniform") => {
                 text.extend_from_slice(b"nonuniform ");
                 let (list, end) = read_list(bytes, i + b"nonuniform".len(), binary, arch, limits)?;
@@ -79,6 +87,10 @@ fn starts_keyword(bytes: &[u8], i: usize, word: &[u8]) -> bool {
     let before_ok = i == 0 || bytes.get(i - 1).is_some_and(|b| is_delim(*b));
     let after_ok = bytes.get(i + word.len()).is_some_and(|b| is_ws(*b));
     before_ok && after_ok && bytes.get(i..i + word.len()) == Some(word)
+}
+
+fn starts_typed_list(bytes: &[u8], i: usize) -> bool {
+    (i == 0 || bytes.get(i - 1).is_some_and(|b| is_delim(*b))) && bytes.get(i..i + 5) == Some(b"List<")
 }
 
 fn skip_ws(bytes: &[u8], mut i: usize) -> usize {

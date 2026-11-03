@@ -268,13 +268,19 @@ pub fn gunzip(bytes: &[u8], limit: u64) -> Result<Vec<u8>> {
 
 /// Reads the `FoamFile { … }` header from the start of a file.
 pub fn read_header(bytes: &[u8]) -> Result<Header> {
+    read_header_end(bytes).map(|(h, _)| h)
+}
+
+/// The header and the offset just past its closing `}` (`None` when there is no header), where
+/// the data of a list file (`points`, `owner`, `faces`) starts.
+pub fn read_header_end(bytes: &[u8]) -> Result<(Header, Option<usize>)> {
     let mut h =
         Header { format: Format::Ascii, arch: Arch::default(), class: None, object: None, location: None, note: None };
     // The header usually follows a short banner, but a long comment block may push it further:
     // search the whole input. No header at all means an ASCII data file.
     let head = bytes;
-    let Some(start) = head.windows(8).position(|w| w == b"FoamFile") else { return Ok(h) };
-    let Some(close) = head.get(start..).and_then(|s| s.iter().position(|b| *b == b'}')) else { return Ok(h) };
+    let Some(start) = head.windows(8).position(|w| w == b"FoamFile") else { return Ok((h, None)) };
+    let Some(close) = head.get(start..).and_then(|s| s.iter().position(|b| *b == b'}')) else { return Ok((h, None)) };
     let text = String::from_utf8_lossy(head.get(start..start + close + 1).unwrap_or(&[]));
     let doc = Document::parse(&text)?;
     if doc.header("format").as_deref() == Some("binary") {
@@ -287,7 +293,7 @@ pub fn read_header(bytes: &[u8]) -> Result<Header> {
     h.object = doc.header("object");
     h.location = doc.header("location");
     h.note = doc.header("note");
-    Ok(h)
+    Ok((h, Some(start + close + 1)))
 }
 
 impl Field {
@@ -366,8 +372,19 @@ impl Field {
                     None => Value::Other(e.value_text().unwrap_or_default()),
                 }
             }
+            // A bare typed list, as in zone files: `cellLabels List<label> 3(…);`.
+            [Node::Atom(p)] => match scan::placeholder_index(&p.text).and_then(|k| self.lists.get(k)) {
+                Some(l) => Value::List(l),
+                None => Value::Other(e.value_text().unwrap_or_default()),
+            },
             _ => Value::Other(e.value_text().unwrap_or_default()),
         }
+    }
+
+    /// The list a placeholder word in [`Field::doc`] stands for (for lists the dictionary paths of
+    /// [`Field::value`] can't reach, such as those inside the zone list of `cellZones`).
+    pub fn placeholder_list(&self, word: &str) -> Option<&ListData> {
+        scan::placeholder_index(word).and_then(|k| self.lists.get(k))
     }
 
     /// Every list in the file, in file order.

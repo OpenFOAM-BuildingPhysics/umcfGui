@@ -237,6 +237,29 @@ fn nan_and_inf_values() {
 }
 
 #[test]
+fn bare_typed_lists_as_in_zone_files() {
+    let src = format!(
+        "{}2\n(\nheating\n{{\n    type cellZone;\n    cellLabels      List<label> 3(4 7 9);\n}}\nempty\n{{\n    type cellZone;\n    cellLabels List<label> 0();\n}}\n)\n",
+        header("ascii", "regIOobject", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert_eq!(f.lists().len(), 2);
+    assert_eq!(f.lists()[0].as_flat().unwrap(), [4.0, 7.0, 9.0]);
+    // `MyList<label>` is a word, not a list.
+    let src = format!("{}internalField uniform 1;\nx MyList<label>;\n", header("ascii", "volScalarField", ""));
+    assert!(Field::parse(src.as_bytes()).unwrap().lists().is_empty());
+}
+
+#[test]
+fn header_end_offset() {
+    let src = format!("{}3\n(\n0 1 2\n)\n", header("ascii", "labelList", ""));
+    let (h, end) = read_header_end(src.as_bytes()).unwrap();
+    assert_eq!(h.class.as_deref(), Some("labelList"));
+    assert!(src[end.unwrap()..].trim_start().starts_with('3'));
+    assert_eq!(read_header_end(b"3(0 1 2)").unwrap().1, None);
+}
+
+#[test]
 fn note_counts() {
     let src = "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nPoints:30416  nCells:25588  nFaces:81504  nInternalFaces:72072\";\n    object owner;\n}\n";
     let h = read_header(src.as_bytes()).unwrap();
