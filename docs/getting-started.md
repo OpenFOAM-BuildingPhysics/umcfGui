@@ -11,8 +11,8 @@ cargo xtask ci          # every quality gate: formatting, lints, tests, layering
 ```
 
 `--recurse-submodules` also fetches the urbanMicroclimateFoam source into `solver/` (about 9 MB).
-umcfGui doesn't build or link it: it is there to read, and later for the catalog check. In a clone
-without it, `git submodule update --init` fetches it.
+umcfGui doesn't build or link it: it is read by `cargo xtask catalog`, which `cargo xtask ci` runs, so
+the gates need it. In a clone without it, `git submodule update --init` fetches it.
 
 ## What you can use today
 

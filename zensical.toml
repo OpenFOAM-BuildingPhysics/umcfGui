@@ -17,6 +17,7 @@ nav = [
     "user-guide/dictionaries.md",
     "user-guide/fields.md",
   ] },
+  { "Solver Coverage" = "solver-coverage.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
   { "urbanMicroclimateFoam" = "https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam" },

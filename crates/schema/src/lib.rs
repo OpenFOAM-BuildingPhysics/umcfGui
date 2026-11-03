@@ -1,8 +1,8 @@
 //! What urbanMicroclimateFoam reads, per OpenFOAM version.
 //!
 //! [`layout::detect`] works out which OpenFOAM version a case is written for and which regions
-//! it has. The solver's catalog of run-time-selectable types will live here too
-//! (`cargo xtask catalog`).
+//! it has. [`catalog::catalog`] lists every type and keyword the solver reads, generated from the
+//! `solver/` submodule by `cargo xtask catalog`.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,6 +12,7 @@
     clippy::unreachable
 )]
 
+pub mod catalog;
 pub mod layout;
 
 pub use layout::{CaseKind, Layout, Note, Regions, Severity, detect};

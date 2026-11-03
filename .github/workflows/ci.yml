@@ -35,6 +35,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # solver/ for `cargo xtask catalog --check`.
+          submodules: true
+      - name: Fetch the solver's version tags
+        # The catalog scans the tag of-org_v8.0 too; the checkout fetched only the pinned commit.
+        run: git -C solver fetch --quiet --tags --unshallow || git -C solver fetch --quiet --tags
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

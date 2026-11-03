@@ -22,7 +22,11 @@ the specification. Every version is a tag in the same clone:
 git submodule update --init                                       # after a plain clone
 git -C solver show of-org_v8.0:urbanMicroclimateFoam.C            # the OpenFOAM-8 version of a file
 git submodule update --remote solver && git add solver            # move the pin to the solver's latest master
+cargo xtask catalog                                               # regenerate the catalog for the new pin
 ```
+
+After moving the pin, the diff of `docs/solver-coverage.md` shows what the solver gained or lost:
+new types, removed keywords, changed defaults.
 
 Never commit inside `solver/` from this repository: changes to the solver are pull requests to
 [urbanMicroclimateFoam](https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam).
@@ -39,6 +43,7 @@ Moving the pin is a commit of its own; check it with `cargo xtask ci` and the
 | `clippy` | lints as errors, with and without default features |
 | `test` | all tests, with and without default features |
 | `layers` | the crate layering ([Architecture](architecture.md)) |
+| `catalog --check` | the [solver catalog](solver-coverage.md) matches the pinned `solver/` (needs the submodule and its tags) |
 | `assets` | every file under `assets/` and `docs/images/` has a row in `ATTRIBUTION.md` |
 | `wasm` | the L0–L3 crates build for `wasm32-unknown-unknown` |
 | `docs` | the API reference builds without warnings, and the site builds in strict mode |
