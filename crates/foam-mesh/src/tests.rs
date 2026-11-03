@@ -295,6 +295,15 @@ fn hostile_files_are_errors() {
     let both = with(ascii_mesh(), "cellZones", ZONES.replace("1(0)", "3{0}").replace("2(0 1)", "3{1}"));
     let e = PolyMesh::read(&both, "constant/air/polyMesh", &small).unwrap_err();
     assert!(matches!(e, Error::TooLarge { what: "uniform list", .. }), "{e}");
+    // Review finding: one written list reused by name from other zones.
+    for word in ["__umcfList0", "__umcfListA0"] {
+        let shared = ZONES.replace("List<label> 2(0 1)", word);
+        let e = read(&with(ascii_mesh(), "cellZones", shared)).unwrap_err();
+        assert!(e.to_string().contains("no cellLabels list"), "{e}");
+    }
+    // Review finding: digits after a list ran on into its placeholder (`0()1` named list 1).
+    let run_on = ZONES.replace("List<label> 1(0)", "List<label> 0()1");
+    assert!(read(&with(ascii_mesh(), "cellZones", run_on)).is_err());
     // Review finding: a cell label of u32::MAX overflowed `max + 1` (wrapping on wasm32).
     let e = read(&with(ascii_mesh(), "owner", format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 4294967295\n)\n", h("labelList"))))
         .unwrap_err();
@@ -349,4 +358,44 @@ fn fuzz_mutations_never_panic() {
             }
         }
     }
+}
+
+#[test]
+fn empty_binary_lists_have_no_parentheses() {
+    // Review finding: OpenFOAM writes an empty binary list as its size alone (`UListIO.C`), so a
+    // processor without internal faces has a `neighbour` of `0`, and a zone that misses a
+    // processor has `cellLabels List<label> 0;` (both from decomposePar on a binary case).
+    let a = Arch::default();
+    let lim = Limits::default();
+    for class in ["labelList", "vectorField"] {
+        let src = format!("{}\n0\n\n// ****** //\n", header("binary", class, Some(a), ""));
+        let (h, start) = umcf_foam_field::read_header_end(src.as_bytes()).unwrap();
+        let mut r = crate::lists::Reader::new("f", src.as_bytes(), start.unwrap(), &h);
+        let n = if class == "labelList" { r.labels(&lim).unwrap().len() } else { r.vectors(&lim).unwrap().len() };
+        assert_eq!(n, 0, "{class}");
+        // `0()` is still read too.
+        let src = format!("{}\n0()\n", header("binary", class, Some(a), ""));
+        let (h, start) = umcf_foam_field::read_header_end(src.as_bytes()).unwrap();
+        let mut r = crate::lists::Reader::new("f", src.as_bytes(), start.unwrap(), &h);
+        let n = if class == "labelList" { r.labels(&lim).unwrap().len() } else { r.vectors(&lim).unwrap().len() };
+        assert_eq!(n, 0, "{class} 0()");
+    }
+    // A binary faceCompactList with no faces: offsets `1(0)`, points a bare `0`.
+    let mut src = header("binary", "faceCompactList", Some(a), "").into_bytes();
+    src.extend(binary_labels(a, &[0]));
+    src.extend_from_slice(b"\n0\n\n");
+    let (h, start) = umcf_foam_field::read_header_end(&src).unwrap();
+    let mut r = crate::lists::Reader::new("f", &src, start.unwrap(), &h);
+    let (offsets, points) = r.face_compact_list(&lim).unwrap();
+    assert_eq!((offsets, points.len()), (vec![0], 0));
+    let zones = format!(
+        "{}2\n(\nempty\n{{\n    type cellZone;\ncellLabels      List<label> \n0\n;\n}}\nfull\n{{\n    type cellZone;\ncellLabels      List<label> \n1\n(",
+        header("binary", "regIOobject", Some(a), "")
+    )
+    .into_bytes();
+    let mut zones = zones;
+    zones.extend(label_bytes(a, 1));
+    zones.extend_from_slice(b");\n}\n)\n");
+    let m = read(&binary_mesh(a).with("constant/air/polyMesh/cellZones", zones)).unwrap();
+    assert_eq!(m.cell_zones.iter().map(|z| z.cells.len()).collect::<Vec<_>>(), [0, 1]);
 }

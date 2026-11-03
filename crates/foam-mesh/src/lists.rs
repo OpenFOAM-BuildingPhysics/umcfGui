@@ -188,7 +188,14 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// `N (l l l)`, `N{l}` or, binary, `N(raw)`.
+    /// OpenFOAM writes an empty binary list as its size alone, with no parentheses (they come
+    /// with the data, `UListIO.C`): `neighbour` of a processor without internal faces is `0`.
+    fn empty_binary(&mut self, n: usize) -> bool {
+        self.skip_trivia();
+        self.binary && n == 0 && self.peek() != Some(b'(')
+    }
+
+    /// `N (l l l)`, `N{l}`, binary `N(raw)`, or binary `0` alone.
     pub fn labels(&mut self, limits: &Limits) -> Result<Vec<u32>, Error> {
         let n = self.count(limits)?;
         self.skip_trivia();
@@ -202,6 +209,9 @@ impl<'a> Reader<'a> {
             let mut out = alloc(n)?;
             out.resize(n, v);
             return Ok(out);
+        }
+        if self.empty_binary(n) {
+            return Ok(Vec::new());
         }
         self.expect(b'(')?;
         let out = if self.binary && n > 0 {
@@ -226,6 +236,9 @@ impl<'a> Reader<'a> {
     /// `N ((x y z) …)` or, binary, `N(raw)`.
     pub fn vectors(&mut self, limits: &Limits) -> Result<Vec<[f64; 3]>, Error> {
         let n = self.count(limits)?;
+        if self.empty_binary(n) {
+            return Ok(Vec::new());
+        }
         self.expect(b'(')?;
         let out = if self.binary && n > 0 {
             let width = self.arch.scalar_bytes;

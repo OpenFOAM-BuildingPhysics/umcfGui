@@ -254,6 +254,7 @@ pub struct Field {
     /// The file with its lists replaced by placeholders.
     pub doc: Document,
     lists: Vec<ListData>,
+    tag: scan::Tag,
 }
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -319,7 +320,8 @@ impl Field {
         let header = read_header(bytes)?;
         let scanned = scan::scan(bytes, header.format == Format::Binary, header.arch, limits)?;
         let doc = Document::parse_bytes(&scanned.text)?;
-        Ok(Field { header, doc, lists: scanned.lists })
+        scanned.tag.check(&doc, scanned.lists.len())?;
+        Ok(Field { header, doc, lists: scanned.lists, tag: scanned.tag })
     }
 
     /// Reads `rel` from a case, or `rel.gz` when only the compressed file exists.
@@ -371,14 +373,12 @@ impl Field {
                 Some(n) => Value::Uniform(n),
                 None => Value::Other(e.value_text().unwrap_or_default()),
             },
-            [Node::Atom(t), Node::Atom(p)] if t.text == "nonuniform" => {
-                match scan::placeholder_index(&p.text).and_then(|k| self.lists.get(k)) {
-                    Some(l) => Value::List(l),
-                    None => Value::Other(e.value_text().unwrap_or_default()),
-                }
-            }
+            [Node::Atom(t), Node::Atom(p)] if t.text == "nonuniform" => match self.placeholder_list(&p.text) {
+                Some(l) => Value::List(l),
+                None => Value::Other(e.value_text().unwrap_or_default()),
+            },
             // A bare typed list, as in zone files: `cellLabels List<label> 3(…);`.
-            [Node::Atom(p)] => match scan::placeholder_index(&p.text).and_then(|k| self.lists.get(k)) {
+            [Node::Atom(p)] => match self.placeholder_list(&p.text) {
                 Some(l) => Value::List(l),
                 None => Value::Other(e.value_text().unwrap_or_default()),
             },
@@ -389,7 +389,7 @@ impl Field {
     /// The list a placeholder word in [`Field::doc`] stands for (for lists the dictionary paths of
     /// [`Field::value`] can't reach, such as those inside the zone list of `cellZones`).
     pub fn placeholder_list(&self, word: &str) -> Option<&ListData> {
-        scan::placeholder_index(word).and_then(|k| self.lists.get(k))
+        self.tag.index(word).and_then(|k| self.lists.get(k))
     }
 
     /// Every list in the file, in file order.
