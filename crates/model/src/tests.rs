@@ -410,6 +410,8 @@ struct Faulty {
     unreadable: Option<String>,
     /// On the first write, this file gets this text (another program writing meanwhile).
     meanwhile: Option<(String, Vec<u8>)>,
+    /// On the first write, this path becomes unreadable.
+    breaks: Option<String>,
 }
 
 impl CaseFs for Faulty {
@@ -435,6 +437,9 @@ impl CaseWrite for Faulty {
         if let Some((path, text)) = self.meanwhile.take() {
             self.inner.insert(&path, text);
         }
+        if let Some(path) = self.breaks.take() {
+            self.unreadable = Some(path);
+        }
         self.inner.write(rel, bytes)
     }
 }
@@ -442,7 +447,7 @@ impl CaseWrite for Faulty {
 #[test]
 fn an_unreadable_dictionary_is_a_note() {
     // Review finding: one unreadable file (another user's, mode 600) aborted the whole open.
-    let fs = Faulty { inner: case(), unreadable: Some("system/air/fvSchemes".into()), meanwhile: None };
+    let fs = Faulty { inner: case(), unreadable: Some("system/air/fvSchemes".into()), meanwhile: None, breaks: None };
     let c = Case::open(&fs).unwrap();
     assert!(c.dict("system/air/fvSchemes").is_none());
     assert!(c.notes.iter().any(|n| n.path == "system/air/fvSchemes" && n.message.contains("can't be read")));
@@ -455,6 +460,7 @@ fn each_file_is_checked_again_right_before_it_is_replaced() {
         inner: case(),
         unreadable: None,
         meanwhile: Some((CONTROL_DICT.into(), b"written by another program".to_vec())),
+        breaks: None,
     };
     let mut c = Case::open(&fs).unwrap();
     c.set("system/air/fvSolution", &["a"], "1").unwrap();
@@ -502,4 +508,15 @@ fn an_oversized_boundary_is_a_note() {
     let c = Case::open_with(&fs, options).unwrap();
     assert!(c.region("air").unwrap().patches.is_none());
     assert!(over_limit(&c), "{:?}", c.notes);
+}
+
+#[test]
+fn a_read_error_during_save_is_reported_as_itself() {
+    // Review finding: a read error in the re-check was reported as "changed on disk".
+    let mut fs = Faulty { inner: case(), unreadable: None, meanwhile: None, breaks: Some(CONTROL_DICT.into()) };
+    let mut c = Case::open(&fs).unwrap();
+    c.set("system/air/fvSolution", &["a"], "1").unwrap();
+    c.set(CONTROL_DICT, &["endTime"], "5").unwrap();
+    let e = c.save(&mut fs, None).unwrap_err();
+    assert!(matches!(&e, Error::Partial { source, .. } if matches!(**source, Error::Fs(FsError::Io { .. }))), "{e}");
 }

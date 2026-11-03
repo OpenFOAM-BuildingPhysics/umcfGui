@@ -461,14 +461,13 @@ impl Case {
         for (rel, doc, original) in plan {
             let text = doc.to_string().into_bytes();
             let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
-            let still = match fs.read(&rel, limit) {
-                Ok(on_disk) => on_disk.as_deref() == original.as_deref().map(Vec::as_slice),
-                Err(_) => false,
-            };
-            let result = if still {
-                fs.write(&rel, &text).map_err(Error::from)
-            } else {
-                Err(Error::Conflict { path: rel.clone() })
+            // A read error is reported as itself: it doesn't mean the file changed.
+            let result = match fs.read(&rel, limit) {
+                Ok(on_disk) if on_disk.as_deref() == original.as_deref().map(Vec::as_slice) => {
+                    fs.write(&rel, &text).map_err(Error::from)
+                }
+                Ok(_) => Err(Error::Conflict { path: rel.clone() }),
+                Err(e) => Err(e.into()),
             };
             if let Err(e) = result {
                 return Err(if saved.is_empty() { e } else { Error::Partial { saved, source: Box::new(e) } });
