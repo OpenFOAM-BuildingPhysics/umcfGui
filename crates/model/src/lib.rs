@@ -260,6 +260,12 @@ impl Case {
                         notes.push(note(Severity::Info, &rel, "too large for a dictionary: not loaded"));
                         continue;
                     }
+                    // Only controlDict is required (and layout has read it already): any other
+                    // file that can't be read (permissions, I/O) is a note.
+                    Err(e) if rel != CONTROL_DICT => {
+                        notes.push(note(Severity::Warning, &rel, format!("can't be read, not loaded: {e}")));
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
                 match Document::parse_bytes(&bytes) {
@@ -287,7 +293,10 @@ impl Case {
         let mut out = Vec::new();
         for (name, kind) in regions {
             let mesh = umcf_foam_mesh::mesh_dir(&name);
-            let patches = match umcf_foam_mesh::read_boundary(fs, &mesh, &umcf_foam_mesh::Limits::default()) {
+            // `boundary` is a small dictionary: the dictionary cap, not the mesh one, also for
+            // what a `boundary.gz` decompresses to.
+            let limits = umcf_foam_mesh::Limits { max_bytes: options.dict_bytes, ..Default::default() };
+            let patches = match umcf_foam_mesh::read_boundary(fs, &mesh, &limits) {
                 Ok(p) => p,
                 Err(e) => {
                     notes.push(note(Severity::Warning, format!("{mesh}/boundary"), e.to_string()));
@@ -387,8 +396,10 @@ impl Case {
     ///    original goes to `<backup>/<path>` the first time the file is saved in the session.
     ///    If a different file is already there, the copy gets the next free `.1`, `.2`, …
     ///    name: a backup is never skipped or overwritten.
-    /// 3. The files are written atomically, one by one. If a write fails, [`Error::Partial`]
-    ///    names the files already saved.
+    /// 3. The files are written atomically, one by one, each checked once more right before
+    ///    it is replaced. If a write fails or a file changed in the meantime,
+    ///    [`Error::Partial`] names the files already saved. The check and the rename are not
+    ///    one step: a program writing the same file in that instant can still lose its change.
     pub fn save(&mut self, fs: &mut dyn CaseWrite, backup: Option<&str>) -> Result<Vec<String>> {
         if let Some(dir) = backup {
             let dir = dir.trim_end_matches('/');
@@ -447,14 +458,20 @@ impl Case {
         }
         // 3. Write.
         let mut saved = Vec::new();
-        for (rel, doc, _) in plan {
+        for (rel, doc, original) in plan {
             let text = doc.to_string().into_bytes();
-            if let Err(e) = fs.write(&rel, &text) {
-                return Err(if saved.is_empty() {
-                    e.into()
-                } else {
-                    Error::Partial { saved, source: Box::new(e.into()) }
-                });
+            let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
+            let still = match fs.read(&rel, limit) {
+                Ok(on_disk) => on_disk.as_deref() == original.as_deref().map(Vec::as_slice),
+                Err(_) => false,
+            };
+            let result = if still {
+                fs.write(&rel, &text).map_err(Error::from)
+            } else {
+                Err(Error::Conflict { path: rel.clone() })
+            };
+            if let Err(e) = result {
+                return Err(if saved.is_empty() { e } else { Error::Partial { saved, source: Box::new(e) } });
             }
             lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: Arc::new(text), doc });
             saved.push(rel);

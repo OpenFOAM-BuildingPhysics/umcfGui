@@ -37,6 +37,12 @@ impl CaseFs for Overlay {
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         self.disk.list(rel)
     }
+    fn identity(&self, rel: &str) -> Option<std::path::PathBuf> {
+        self.disk.identity(rel)
+    }
+    fn hard_links(&self, rel: &str) -> u64 {
+        self.disk.hard_links(rel)
+    }
 }
 
 impl CaseWrite for Overlay {
@@ -106,7 +112,9 @@ fn reference_cases_open_and_save() {
         let one_line = diff.len() == 1
             && diff[0].0.replacen(&old_end, "123456789", 1) == diff[0].1
             && before.lines().count() == after.lines().count();
-        if !one_line {
+        // Bytes, not only lines: line endings and the final newline must be kept too.
+        let same_length = after.len() + old_end.len() == before.len() + "123456789".len();
+        if !one_line || !same_length {
             failures.push(format!("{dir}: the edit changed {diff:?}"));
         }
         let backup = fs.written.get(".umcfgui/backup/test/system/controlDict");

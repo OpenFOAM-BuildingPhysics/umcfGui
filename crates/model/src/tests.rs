@@ -1,4 +1,4 @@
-use umcf_core::{CaseFs, MemFs};
+use umcf_core::{CaseFs, CaseWrite, FsError, MemFs};
 
 use super::*;
 
@@ -402,4 +402,104 @@ fn start_time_takes_the_nearest_directory() {
         ["100000", "100000.4"].iter().map(|n| TimeDir { name: n.to_string(), value: n.parse().unwrap() }).collect();
     let c = Controls { start_time: Some("1.000004e5".into()), ..Controls::default() };
     assert_eq!(c.start_dir(&times).map(|d| d.name).as_deref(), Some("100000.4"));
+}
+
+/// A case in memory that can fail reads of one path, and change a file during a save.
+struct Faulty {
+    inner: MemFs,
+    unreadable: Option<String>,
+    /// On the first write, this file gets this text (another program writing meanwhile).
+    meanwhile: Option<(String, Vec<u8>)>,
+}
+
+impl CaseFs for Faulty {
+    fn read(&self, rel: &str, limit: u64) -> std::result::Result<Option<Vec<u8>>, FsError> {
+        if self.unreadable.as_deref() == Some(rel) {
+            return Err(FsError::Io { path: rel.into(), source: std::io::Error::other("permission denied") });
+        }
+        self.inner.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.inner.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.inner.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> std::result::Result<Vec<String>, FsError> {
+        self.inner.list(rel)
+    }
+}
+
+impl CaseWrite for Faulty {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> std::result::Result<(), FsError> {
+        if let Some((path, text)) = self.meanwhile.take() {
+            self.inner.insert(&path, text);
+        }
+        self.inner.write(rel, bytes)
+    }
+}
+
+#[test]
+fn an_unreadable_dictionary_is_a_note() {
+    // Review finding: one unreadable file (another user's, mode 600) aborted the whole open.
+    let fs = Faulty { inner: case(), unreadable: Some("system/air/fvSchemes".into()), meanwhile: None };
+    let c = Case::open(&fs).unwrap();
+    assert!(c.dict("system/air/fvSchemes").is_none());
+    assert!(c.notes.iter().any(|n| n.path == "system/air/fvSchemes" && n.message.contains("can't be read")));
+}
+
+#[test]
+fn each_file_is_checked_again_right_before_it_is_replaced() {
+    // Review finding: a file changed between the first check and its write was overwritten.
+    let mut fs = Faulty {
+        inner: case(),
+        unreadable: None,
+        meanwhile: Some((CONTROL_DICT.into(), b"written by another program".to_vec())),
+    };
+    let mut c = Case::open(&fs).unwrap();
+    c.set("system/air/fvSolution", &["a"], "1").unwrap();
+    c.set(CONTROL_DICT, &["endTime"], "5").unwrap();
+    let e = c.save(&mut fs, None).unwrap_err();
+    assert!(
+        matches!(&e, Error::Partial { saved, source } if saved == &["system/air/fvSolution"] && matches!(**source, Error::Conflict { .. })),
+        "{e}"
+    );
+    assert_eq!(fs.inner.read(CONTROL_DICT, 100).unwrap().unwrap(), b"written by another program");
+    assert_eq!(c.changed(), [CONTROL_DICT], "the saved file is no longer a change");
+}
+
+#[test]
+fn an_oversized_boundary_is_a_note() {
+    // Review finding: `boundary` was read with the mesh limit (16 GiB), also after gunzip.
+    use std::io::Write;
+    let options = OpenOptions { dict_bytes: 4000, ..OpenOptions::default() };
+    let mut fs = case();
+    fs.insert(
+        "constant/air/polyMesh/boundary",
+        format!("{}{BOUNDARY}// {}\n", header("polyBoundaryMesh", "boundary"), "x".repeat(5000)),
+    );
+    let c = Case::open_with(&fs, options).unwrap();
+    assert!(c.region("air").unwrap().patches.is_none());
+    assert!(c.notes.iter().any(|n| n.path.ends_with("polyMesh/boundary")), "{:?}", c.notes);
+    let over_limit =
+        |c: &Case| c.notes.iter().any(|n| n.path.ends_with("polyMesh/boundary") && n.message.contains("limit"));
+    assert!(over_limit(&c), "{:?}", c.notes);
+    // A valid boundary that is small gzipped and too large unpacked: only the unpacked-size
+    // cap rejects it (it parses fine otherwise).
+    let text = format!("{}{BOUNDARY}// {}\n", header("polyBoundaryMesh", "boundary"), " ".repeat(1 << 20));
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gz.write_all(text.as_bytes()).unwrap();
+    let packed = gz.finish().unwrap();
+    assert!(packed.len() < 4000);
+    let base = case();
+    let mut fs = MemFs::new();
+    for rel in ["system/controlDict", "constant/air/g"] {
+        fs.insert(rel, base.read(rel, 1 << 20).unwrap().unwrap());
+    }
+    fs.insert("constant/air/polyMesh/boundary.gz", packed.clone());
+    let roomy = OpenOptions { dict_bytes: 2 << 20, ..options };
+    assert_eq!(Case::open_with(&fs, roomy).unwrap().region("air").unwrap().patches.as_ref().map(Vec::len), Some(2));
+    let c = Case::open_with(&fs, options).unwrap();
+    assert!(c.region("air").unwrap().patches.is_none());
+    assert!(over_limit(&c), "{:?}", c.notes);
 }
