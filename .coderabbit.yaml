@@ -3,9 +3,11 @@ language: en-US
 
 reviews:
   profile: assertive
-  request_changes_workflow: false
+  # Request changes when the review has findings; approve once every comment is resolved and
+  # the pre-merge checks pass.
+  request_changes_workflow: true
   high_level_summary: true
-  poem: false
+  poem: true
   review_status: true
   # The "CodeRabbit" commit status is a required check on main (ruleset "main"): it must
   # report success before a pull request can merge, and failure when no review was possible.
