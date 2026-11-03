@@ -177,6 +177,35 @@ fn binary_mesh_reads_in_every_arch() {
 }
 
 #[test]
+fn polygon_faces_grow_past_the_quad_reservation() {
+    // Review finding: faces with more than four points grow the point list beyond its first
+    // reservation; that growth must work (and be fallible). The internal face becomes a 20-gon
+    // through points added on its edges (they are listed but used by no other face, which the
+    // reader accepts).
+    let mut extra = String::new();
+    for k in 0..16 {
+        extra.push_str(&format!("(1 {} {})\n", 0.5 * f64::from(k + 1) / 17.0, 0.0));
+    }
+    let pts: String = points().iter().map(|p| format!("({} {} {})\n", p[0], p[1], p[2])).collect();
+    let big: Vec<String> = [1u32, 4, 10, 7].iter().map(u32::to_string).chain((12..28).map(|i| i.to_string())).collect();
+    let mut fcs = format!("{}(", big.len());
+    fcs.push_str(&big.join(" "));
+    fcs.push_str(")\n");
+    for f in faces().iter().skip(1) {
+        fcs.push_str(&format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3]));
+    }
+    let h = |class| header("ascii", class, None, "");
+    let fs = with(
+        with(ascii_mesh(), "points", format!("{}28\n(\n{pts}{extra})\n", h("vectorField"))),
+        "faces",
+        format!("{}11\n(\n{fcs})\n", h("faceList")),
+    );
+    let m = read(&fs).unwrap();
+    assert_eq!(m.face(0).map(<[u32]>::len), Some(20));
+    assert_eq!(m.face(10), Some(&[4, 10, 11, 5][..]));
+}
+
+#[test]
 fn gzip_files() {
     let mut fs = ascii_mesh();
     let d = "constant/air/polyMesh";

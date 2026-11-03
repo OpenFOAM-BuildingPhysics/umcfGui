@@ -21,6 +21,12 @@ fn alloc<T>(n: usize) -> Result<Vec<T>, Error> {
     Ok(v)
 }
 
+/// Room for `more` elements beyond the current length, or an error instead of an abort.
+fn grow<T>(v: &mut Vec<T>, more: usize) -> Result<(), Error> {
+    v.try_reserve(more)
+        .map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: v.len().saturating_add(more) })
+}
+
 fn is_ws(b: u8) -> bool {
     b.is_ascii_whitespace()
 }
@@ -201,7 +207,11 @@ impl<'a> Reader<'a> {
         let out = if self.binary && n > 0 {
             let width = self.arch.label_bytes;
             let data = self.binary_block(n, width)?;
-            data.chunks_exact(width).map(|c| self.binary_label(c)).collect::<Result<Vec<_>, _>>()?
+            let mut out = alloc(n)?;
+            for c in data.chunks_exact(width) {
+                out.push(self.binary_label(c)?);
+            }
+            out
         } else {
             let mut out = alloc(self.room(n, 1))?;
             for _ in 0..n {
@@ -258,12 +268,16 @@ impl<'a> Reader<'a> {
         for _ in 0..n {
             let k = self.count(limits)?;
             self.expect(b'(')?;
+            // The reservation above assumes quads; polygon faces grow it, fallibly. A face can't
+            // hold more points than its text has room for.
+            grow(&mut points, k.min(self.room(k, 1)))?;
             for _ in 0..k {
                 points.push(self.label()?);
             }
             self.expect(b')')?;
             let end = u32::try_from(points.len())
                 .map_err(|_| Error::TooLarge { what: "face points", limit: u32::MAX as usize })?;
+            grow(&mut offsets, 1)?;
             offsets.push(end);
         }
         self.expect(b')')?;
