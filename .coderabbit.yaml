@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: ["main"]
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!target/**"
+    - "!plan/**"
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        AGENTS.md is binding. Flag in non-test code:
+        - unwrap(), expect(), panic!, unreachable!, todo!, unimplemented!, unsafe, and slice/array
+          indexing ([i], [a..b]) on input-derived values (use get(), checked/saturating math).
+        - allocations sized by file or param input without a cap; unbounded recursion
+          (#include chains, nested dictionaries).
+        - errors swallowed instead of returned through the crate's Result type.
+        Every crash fix needs a regression test.
+    - path: "crates/foam-*/**"
+      instructions: |
+        Format crates may depend only on core and geom. Dictionary editing must be lossless:
+        comments, ordering, whitespace, #include, $macros, #calc, #codeStream and unknown keys
+        survive a parse -> write round-trip byte-identically. Must handle both OpenFOAM-8 and
+        OpenFOAM-12 cases.
+    - path: "crates/{core,geom,foam-dict,foam-mesh,foam-field,schema,model,validate,post,render,runner,engine}/**"
+      instructions: |
+        Layering (docs/architecture.md, enforced by cargo xtask layers): no dependency on
+        egui, eframe, winit, rfd or wgpu below L6, and no dependency on a higher layer.
+        L0-L3 must stay wasm-clean (no process spawning, no std::time::Instant::now).
+        runner is optional (feature "runner"); everything except local execution must work
+        without it.
+    - path: "crates/engine/**"
+      instructions: |
+        Every user-visible behaviour is a command (id, label, menu, shortcut, params doc,
+        enabled, run) with tests. Programmatic calls never open dialogs. The GUI never
+        presents a ported calculation as a result; results come from solver runs.
+    - path: "crates/ui-egui/**"
+      instructions: |
+        The UI is thin: panels read engine state and act through app.run(id, params).
+        Colours come from theme tokens. No vendor icons or artwork.
+    - path: "**/*.{rs,md}"
+      instructions: |
+        Code ported from urbanMicroclimateFoam keeps its original copyright line, names the
+        source file and solver commit, and has a test that compares it with solver output.
+        The project is GPL-3.0-or-later; flag dependencies with incompatible licences
+        (GPL-2.0-only, proprietary).
+    - path: "{assets,docs/images}/**"
+      instructions: |
+        Every asset needs a row in ATTRIBUTION.md with author, source and licence.
+        No meshes, field data or solver results in the repo.
+  tools:
+    clippy:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "docs/architecture.md"
+
+chat:
+  auto_reply: true
