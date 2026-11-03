@@ -1,0 +1,25 @@
+# cargo deny check licenses (run by `cargo xtask ci` when cargo-deny is installed).
+# umcfGui is GPL-3.0-or-later: every dependency's licence must be GPL-3-compatible.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "LGPL-3.0-or-later",
+    "GPL-3.0-or-later",
+    "OFL-1.1",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[[licenses.clarify]]
+# Workspace crates and xtask: GPL-3.0-or-later via [workspace.package].
+crate = "xtask"
+expression = "GPL-3.0-or-later"
+license-files = []

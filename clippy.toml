@@ -1,0 +1,10 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# L0-L3 must run on wasm32-unknown-unknown, where these trap. Read the clock only off wasm.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "traps on wasm; read the clock only off wasm" },
+    { path = "std::time::SystemTime::now", reason = "traps on wasm; read the clock only off wasm" },
+]
