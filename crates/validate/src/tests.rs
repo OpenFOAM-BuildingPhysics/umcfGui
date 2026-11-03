@@ -810,3 +810,162 @@ fn a_quoted_key_with_the_patch_name_beats_patterns() {
     );
     assert!(errors(&fs).is_empty(), "{:?}", errors(&fs));
 }
+
+fn dict(body: &str) -> String {
+    format!("{}{body}", header("dictionary"))
+}
+
+fn with_script(mut fs: MemFs, name: &str, text: &str) -> MemFs {
+    fs.insert(name, text);
+    fs
+}
+
+#[test]
+fn all_regions_needs_region_solvers_in_openfoam_12() {
+    let run = "#!/bin/sh\ndecomposePar -allRegions\nmpirun -np 2 urbanMicroclimateFoam -parallel\nreconstructPar -allRegions\n";
+    let mut fs = with_script(case(), "Allrun", run);
+    fs.insert("system/decomposeParDict", dict("numberOfSubdomains 2;\n"));
+    let e = errors(&fs);
+    assert_eq!(e.iter().filter(|d| d.code == "workflow.all-regions").count(), 2, "{e:?}");
+    assert!(e[0].message.starts_with("line 2:"), "{}", e[0].message);
+    // With regionSolvers naming the regions: fine.
+    edit(
+        &mut fs,
+        "system/controlDict",
+        "regions\n",
+        "regionSolvers { air fluid; street solid; vegetation vegetation; }\nregions\n",
+    );
+    assert_eq!(codes(&fs), []);
+    // Naming other regions: a warning.
+    edit(&mut fs, "system/controlDict", "street solid;", "streets solid;");
+    assert!(codes(&fs).contains(&(Level::Warning, "workflow.all-regions")));
+}
+
+#[test]
+fn utilities_the_version_lacks_and_process_counts() {
+    let mut fs = with_script(
+        case(),
+        "Allprepare",
+        "#!/bin/sh\nsetSet -region street -batch system/street/setset.batch\nif [ -d x ]; then foamCleanPolyMesh -region air; fi\n",
+    );
+    fs.insert("system/street/setset.batch", "cellSet x new boxToCell (0 0 0) (1 1 1)\n");
+    let c = codes(&fs);
+    assert!(c.contains(&(Level::Error, "workflow.utility")), "{c:?}");
+    // In an `if`, only a warning: it may not run.
+    assert!(c.contains(&(Level::Warning, "workflow.utility")), "{c:?}");
+    let e = errors(&fs);
+    assert!(e[0].message.contains("`setSet` is not in OpenFOAM-12: use topoSet"), "{}", e[0].message);
+
+    let mut fs = with_script(
+        case(),
+        "job_run.sh",
+        "#!/bin/bash\n#SBATCH --ntasks=2\nmpirun -np 4 urbanMicroclimateFoam -parallel\n",
+    );
+    fs.insert("system/decomposeParDict", dict("numberOfSubdomains 4;\n"));
+    assert!(codes(&fs).contains(&(Level::Warning, "workflow.ntasks")));
+    edit(&mut fs, "system/decomposeParDict", "numberOfSubdomains 4;", "numberOfSubdomains 8;");
+    let e = errors(&fs);
+    assert!(e.iter().any(|d| d.code == "workflow.np" && d.message.contains("decomposed into 8")), "{e:?}");
+}
+
+#[test]
+fn files_a_step_reads_must_be_there_at_that_step() {
+    let prepare = "#!/bin/sh\n\
+cp system/blockMeshDict.air system/blockMeshDict\n\
+blockMesh\n\
+mv constant/polyMesh constant/air/.\n\
+rm -f system/blockMeshDict\n\
+topoSet -region air\n\
+cp 0/air.bckp/LAD 0/air/\n\
+setFields -region air\n";
+    let mut fs = with_script(case(), "Allprepare", prepare);
+    fs.insert("system/blockMeshDict.air", dict(""));
+    fs.insert("system/air/topoSetDict", dict(""));
+    fs.insert("system/air/setFieldsDict", dict(""));
+    fs.insert("0/air.bckp/LAD", field("volScalarField", ""));
+    assert_eq!(codes(&fs), []);
+    // A renamed variant, a missing dictionary, a missing backup: each at its line.
+    let mut fs = with_script(case(), "Allprepare", prepare);
+    fs.insert("system/blockMeshDict.veg", dict(""));
+    fs.insert("system/air/setFieldsDict", dict(""));
+    let c = Case::open(&fs).unwrap();
+    let missing: Vec<String> =
+        check(&c).into_iter().filter(|d| d.code == "workflow.missing").map(|d| d.message).collect();
+    // The cause only: blockMesh reading the copy that wasn't made is not reported again.
+    assert_eq!(missing.len(), 3, "{missing:#?}");
+    assert!(missing[0].starts_with("line 2: `cp system/blockMeshDict.air system/blockMeshDict` copies"));
+    assert!(missing[1].starts_with("line 6: `topoSet -region air` reads system/air/topoSetDict"));
+    assert!(missing[2].contains("copies 0/air.bckp/LAD"));
+    // A step after one the check doesn't follow is not judged.
+    let mut fs = with_script(case(), "Allprepare", "#!/bin/sh\n./makeDicts.py\ntopoSet -region air\n");
+    fs.insert("makeDicts.py", "");
+    assert!(!codes(&fs).iter().any(|(_, c)| *c == "workflow.missing"));
+}
+
+#[test]
+fn copies_over_dictionaries_and_broken_first_lines() {
+    let mut fs = with_script(
+        case(),
+        "Allrun",
+        "$#!/bin/sh\ncp constant/vegetation/viewFactorsDict system/vegetation/viewFactorsDict\n",
+    );
+    fs.insert("constant/vegetation/viewFactorsDict", dict("nFacesInCoarsestLevel 15000;\n"));
+    fs.insert("system/vegetation/viewFactorsDict", dict("nFacesInCoarsestLevel 3000;\n"));
+    let c = Case::open(&fs).unwrap();
+    let d = check(&c);
+    let over = d.iter().find(|d| d.code == "workflow.overwrites").unwrap();
+    assert_eq!((over.level, over.path.as_str()), (Level::Warning, "system/vegetation/viewFactorsDict"));
+    assert!(d.iter().any(|d| d.code == "workflow.shebang"));
+    // The same text: nothing to say.
+    fs.insert("system/vegetation/viewFactorsDict", dict("nFacesInCoarsestLevel 15000;\n"));
+    assert!(!codes(&fs).contains(&(Level::Warning, "workflow.overwrites")));
+}
+
+#[test]
+fn openfoam_12_fv_constraints_and_pressure_limits() {
+    let mut fs = case();
+    fs.insert("system/air/fvConstraints", dict("limitp { type limitPressure; minFactor 0.5; }\n"));
+    fs.insert("system/air/fvOptions", dict("limitT { type limitTemperature; min 250; }\n"));
+    fs.insert("system/air/fvSolution", dict("SIMPLE\n{\n    pMinFactor 0.5;\n    nNonOrthogonalCorrectors 0;\n}\n"));
+    let c = codes(&fs);
+    assert!(c.contains(&(Level::Warning, "fv.options-ignored")), "{c:?}");
+    assert!(c.contains(&(Level::Warning, "fv.limit-pressure")), "{c:?}");
+    assert!(c.contains(&(Level::Error, "control.pressure-limits")), "{c:?}");
+    // OpenFOAM-8 reads fvOptions and the SIMPLE limits.
+    let mut of8 = of8_case();
+    of8.insert("system/air/fvSolution", dict("SIMPLE\n{\n    pMinFactor 0.5;\n}\n"));
+    assert_eq!(codes(&of8), []);
+}
+
+#[test]
+fn calc_lai_needs_a_region_named_vegetation() {
+    let mut fs = with_script(case(), "Allrun", "#!/bin/sh\ncalcLAI -region air\n");
+    assert_eq!(codes(&fs), []);
+    edit(&mut fs, "system/controlDict", "vegetation (vegetation);", "vegetation (trees);");
+    assert!(errors(&fs).iter().any(|d| d.code == "workflow.calclai"));
+}
+
+#[test]
+fn review_false_alarms() {
+    // A test guarding a copy: it may not run, so its source isn't required.
+    let fs = with_script(case(), "Allprepare", "#!/bin/sh\n[ -f system/foo ] && cp system/foo system/bar\n");
+    assert_eq!(codes(&fs), [(Level::Info, "workflow.custom")]);
+    // blockMesh finds its dictionary in constant/<r>/polyMesh/ too.
+    let mut fs = with_script(case(), "Allprepare", "#!/bin/sh\nblockMesh -region street\n");
+    fs.insert("constant/street/polyMesh/blockMeshDict", dict(""));
+    assert_eq!(codes(&fs), []);
+    // OpenFOAM-8 decomposePar -allRegions reads each region's own decomposeParDict.
+    let fs = with_script(of8_case(), "Allrun", "#!/bin/sh\ndecomposePar -allRegions\n");
+    assert!(!codes(&fs).iter().any(|(_, c)| *c == "workflow.missing"), "{:?}", codes(&fs));
+    // An OpenFOAM-12 script that runs the replacement: a warning, not an error.
+    let not_info = |fs: &MemFs| codes(fs).into_iter().filter(|(l, _)| *l != Level::Info).collect::<Vec<_>>();
+    let fs = with_script(case(), "Allrun", "#!/bin/sh\npostProcess -func yPlus\n");
+    assert_eq!(not_info(&fs), [(Level::Warning, "workflow.utility")]);
+    // runParallel without system/decomposeParDict.
+    let fs = with_script(
+        case(),
+        "Allrun",
+        "#!/bin/sh\n. $WM_PROJECT_DIR/bin/tools/RunFunctions\nrunParallel urbanMicroclimateFoam\n",
+    );
+    assert_eq!(not_info(&fs), [(Level::Warning, "workflow.np")]);
+}

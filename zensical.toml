@@ -18,6 +18,7 @@ nav = [
     "user-guide/fields.md",
     "user-guide/meshes.md",
     "user-guide/checks.md",
+    "user-guide/workflow.md",
   ] },
   { "Solver Coverage" = "solver-coverage.md" },
   { "Gaps" = "gaps.md" },
