@@ -245,6 +245,14 @@ fn bare_typed_lists_as_in_zone_files() {
     let f = Field::parse(src.as_bytes()).unwrap();
     assert_eq!(f.lists().len(), 2);
     assert_eq!(f.lists()[0].as_flat().unwrap(), [4.0, 7.0, 9.0]);
+    // Review finding: typed lists of other types stay text, as in field boundaryField entries.
+    let src = format!(
+        "{}internalField uniform 1;\nboundaryField\n{{\n    wall\n    {{\n        type zeroGradient;\n        inGroups List<word> 1(wall);\n    }}\n}}\n",
+        header("ascii", "volScalarField", "")
+    );
+    let f = Field::parse(src.as_bytes()).unwrap();
+    assert!(f.lists().is_empty());
+    assert_eq!(f.doc.value(&["boundaryField", "wall", "inGroups"]).as_deref(), Some("List<word> 1 (wall)"));
     // `MyList<label>` is a word, not a list.
     let src = format!("{}internalField uniform 1;\nx MyList<label>;\n", header("ascii", "volScalarField", ""));
     assert!(Field::parse(src.as_bytes()).unwrap().lists().is_empty());

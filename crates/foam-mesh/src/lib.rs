@@ -52,11 +52,14 @@ pub struct Limits {
     pub max_bytes: u64,
     /// Elements in one list.
     pub max_elements: usize,
+    /// Elements of an `N{value}` list: a few bytes can ask for any size, and no real mesh file
+    /// needs a big one.
+    pub max_uniform: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_bytes: 16 << 30, max_elements: u32::MAX as usize }
+        Limits { max_bytes: 16 << 30, max_elements: u32::MAX as usize, max_uniform: 1 << 20 }
     }
 }
 
@@ -251,7 +254,14 @@ impl PolyMesh {
         if let Some(i) = (0..n_faces).find(|i| self.face(*i).is_none_or(|f| f.len() < 3)) {
             return bad(format!("face {i} has fewer than 3 points"));
         }
-        let max_cell = self.owner.iter().chain(&self.neighbour).max().map_or(0, |m| *m as usize + 1);
+        // Checked: a label of u32::MAX would overflow, and wrap to 0 cells in release builds.
+        let max_cell = match self.owner.iter().chain(&self.neighbour).max() {
+            None => 0,
+            Some(m) => match m.checked_add(1) {
+                Some(n) => n as usize,
+                None => return bad(format!("cell label {m} is out of range")),
+            },
+        };
         if let Some(n) = n_cells_note
             && n != max_cell as u64
         {

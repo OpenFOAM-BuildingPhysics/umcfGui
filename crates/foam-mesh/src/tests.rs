@@ -250,6 +250,15 @@ fn hostile_files_are_errors() {
         read(&with(ascii_mesh(), "owner", format!("{}11\n(\n0 0 99999999999 0 1 0 1 0 1 0 1\n)\n", h("labelList"))))
             .unwrap_err();
     assert!(e.to_string().contains("32 bits"), "{e}");
+    // Review finding: `N{value}` asked for any size from a few bytes.
+    let e = read(&with(ascii_mesh(), "owner", format!("{}4000000000{{1}}\n", h("labelList")))).unwrap_err();
+    assert!(matches!(e, Error::TooLarge { what: "uniform list", .. }), "{e}");
+    let ok = read(&with(ascii_mesh(), "neighbour", format!("{}1{{1}}\n", h("labelList"))));
+    assert!(ok.is_ok(), "{ok:?}");
+    // Review finding: a cell label of u32::MAX overflowed `max + 1` (wrapping on wasm32).
+    let e = read(&with(ascii_mesh(), "owner", format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 4294967295\n)\n", h("labelList"))))
+        .unwrap_err();
+    assert!(e.to_string().contains("out of range"), "{e}");
     // Truncated binary.
     let mut fs = binary_mesh(Arch::default());
     let pts = fs.read("constant/air/polyMesh/points", 1 << 20).unwrap().unwrap();

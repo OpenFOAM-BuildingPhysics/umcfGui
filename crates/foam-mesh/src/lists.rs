@@ -14,6 +14,13 @@ pub(crate) struct Reader<'a> {
     arch: Arch,
 }
 
+/// A vector with room for `n`, or an error when the memory isn't there (instead of aborting).
+fn alloc<T>(n: usize) -> Result<Vec<T>, Error> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: n })?;
+    Ok(v)
+}
+
 fn is_ws(b: u8) -> bool {
     b.is_ascii_whitespace()
 }
@@ -180,10 +187,15 @@ impl<'a> Reader<'a> {
         let n = self.count(limits)?;
         self.skip_trivia();
         if self.peek() == Some(b'{') {
+            if n > limits.max_uniform {
+                return Err(Error::TooLarge { what: "uniform list", limit: limits.max_uniform });
+            }
             self.i += 1;
             let v = self.label()?;
             self.expect(b'}')?;
-            return Ok(vec![v; n]);
+            let mut out = alloc(n)?;
+            out.resize(n, v);
+            return Ok(out);
         }
         self.expect(b'(')?;
         let out = if self.binary && n > 0 {
@@ -191,7 +203,7 @@ impl<'a> Reader<'a> {
             let data = self.binary_block(n, width)?;
             data.chunks_exact(width).map(|c| self.binary_label(c)).collect::<Result<Vec<_>, _>>()?
         } else {
-            let mut out = Vec::with_capacity(self.room(n, 1));
+            let mut out = alloc(self.room(n, 1))?;
             for _ in 0..n {
                 out.push(self.label()?);
             }
@@ -209,7 +221,7 @@ impl<'a> Reader<'a> {
             let width = self.arch.scalar_bytes;
             let data =
                 self.binary_block(n.checked_mul(3).ok_or(Error::Truncated { file: self.file.to_string() })?, width)?;
-            let mut out = Vec::with_capacity(n);
+            let mut out = alloc(n)?;
             for c in data.chunks_exact(width * 3) {
                 let (x, rest) = c.split_at(width);
                 let (y, z) = rest.split_at(width);
@@ -217,7 +229,7 @@ impl<'a> Reader<'a> {
             }
             out
         } else {
-            let mut out = Vec::with_capacity(self.room(n, 1));
+            let mut out = alloc(self.room(n, 1))?;
             for _ in 0..n {
                 self.expect(b'(')?;
                 let p = [self.real()?, self.real()?, self.real()?];
@@ -240,8 +252,8 @@ impl<'a> Reader<'a> {
         }
         let n = self.count(limits)?;
         self.expect(b'(')?;
-        let mut offsets = Vec::with_capacity(self.room(n, 1).saturating_add(1));
-        let mut points = Vec::with_capacity(self.room(n, 4));
+        let mut offsets = alloc(self.room(n, 1).saturating_add(1))?;
+        let mut points = alloc(self.room(n, 4))?;
         offsets.push(0u32);
         for _ in 0..n {
             let k = self.count(limits)?;

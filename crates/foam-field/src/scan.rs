@@ -89,8 +89,16 @@ fn starts_keyword(bytes: &[u8], i: usize, word: &[u8]) -> bool {
     before_ok && after_ok && bytes.get(i..i + word.len()) == Some(word)
 }
 
+/// `List<T>` with a value type the scanner reads. Other typed lists (`inGroups List<word>
+/// 1(wall);`) stay text for the dictionary parser.
 fn starts_typed_list(bytes: &[u8], i: usize) -> bool {
-    (i == 0 || bytes.get(i - 1).is_some_and(|b| is_delim(*b))) && bytes.get(i..i + 5) == Some(b"List<")
+    let at_token = i == 0 || bytes.get(i - 1).is_some_and(|b| is_delim(*b));
+    if !at_token || bytes.get(i..i + 5) != Some(b"List<") {
+        return false;
+    }
+    let name_end = bytes.get(i + 5..).and_then(|r| r.iter().take(32).position(|b| *b == b'>'));
+    let name = name_end.and_then(|n| bytes.get(i + 5..i + 5 + n)).and_then(|n| std::str::from_utf8(n).ok());
+    name.is_some_and(|n| Kind::from_name(n).is_some())
 }
 
 fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
