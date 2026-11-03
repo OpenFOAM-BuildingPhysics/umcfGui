@@ -1,6 +1,7 @@
 [project]
 site_name = "umcfGui"
 site_description = "An open-source GUI for urbanMicroclimateFoam: set up, run and inspect urban microclimate simulations"
+site_url = "https://openfoam-buildingphysics.github.io/umcfGui/"
 repo_url = "https://github.com/OpenFOAM-BuildingPhysics/umcfGui"
 repo_name = "OpenFOAM-BuildingPhysics/umcfGui"
 copyright = "Copyright &copy; 2026 the umcfGui contributors · GPL-3.0-or-later"
