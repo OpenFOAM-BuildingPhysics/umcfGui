@@ -1,0 +1,4 @@
+[submodule "solver"]
+	path = solver
+	url = https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam.git
+	branch = master

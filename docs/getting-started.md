@@ -4,11 +4,15 @@ There are no releases yet. umcfGui builds from source with a recent stable Rust 
 (1.90 or newer).
 
 ```sh
-git clone https://github.com/OpenFOAM-BuildingPhysics/umcfGui.git
+git clone --recurse-submodules https://github.com/OpenFOAM-BuildingPhysics/umcfGui.git
 cd umcfGui
 cargo build --release
 cargo xtask ci          # every quality gate: formatting, lints, tests, layering, wasm, licences
 ```
+
+`--recurse-submodules` also fetches the urbanMicroclimateFoam source into `solver/` (about 9 MB).
+umcfGui doesn't build or link it: it is there to read, and later for the catalog check. In a clone
+without it, `git submodule update --init` fetches it.
 
 ## What you can use today
 

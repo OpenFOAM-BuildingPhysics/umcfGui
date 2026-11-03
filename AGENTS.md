@@ -12,9 +12,16 @@ and shows the results. It never re-implements the physics.
 
 ## 1. The solver is the spec
 
-- The solver source (`../urbanMicroclimateFoam`, GPL-3.0) is the authoritative reference for
-  dictionary keywords, run-time-selectable types (`TypeName("…")`), defaults, region names and
-  file layout. **Read it freely.**
+- The solver source (GPL-3.0) is the authoritative reference for dictionary keywords,
+  run-time-selectable types (`TypeName("…")`), defaults, region names and file layout. **Read it
+  freely.** It is the git submodule `solver/` (upstream urbanMicroclimateFoam, branch `master`,
+  the OpenFOAM-12 port), pinned to one commit. Other versions are tags in the same clone:
+  `git -C solver show of-org_v8.0:urbanMicroclimateFoam.C`.
+- **`solver/` is read-only from here.** Never commit inside it from this repo: solver changes
+  are pull requests to urbanMicroclimateFoam. Moving the pin (`git submodule update --remote
+  solver`) is its own commit. Until `cargo xtask catalog` exists (M0.6), check a new pin with
+  `cargo xtask ci` and the real-case tests (`docs/contributing.md`); after that, the catalog
+  check must pass too.
 - **Licence: GPL-3.0-or-later, the same as UMCF and OpenFOAM** (`LICENSE`, copied from the
   solver). Every crate sets `license = "GPL-3.0-or-later"` through `[workspace.package]`.
   Dependencies must be GPL-3-compatible: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0 and
@@ -28,8 +35,8 @@ and shows the results. It never re-implements the physics.
   needs (material curves for a plot, say), and never present a ported calculation as a result.
   Results always come from a solver run. Where it can, the GUI runs the solver's own utilities
   rather than re-implementing them, so the two don't drift apart.
-- **Catalog check:** `cargo xtask catalog` scans the solver source for `TypeName("…")` and the
-  keywords each type reads, then diffs that against `crates/schema`. A type the solver has but
+- **Catalog check (planned, M0.6):** `cargo xtask catalog` will scan `solver/` for `TypeName("…")` and the
+  keywords each type reads, and diff that against `crates/schema`. A type the solver has but
   the GUI doesn't expose is a gap (`docs/gaps.md`). A type the GUI offers but the solver doesn't
   have is a bug.
 - Target OpenFOAM version: **OpenFOAM-org v12** (the version the reference cases run on). Older
