@@ -520,3 +520,24 @@ fn a_read_error_during_save_is_reported_as_itself() {
     let e = c.save(&mut fs, None).unwrap_err();
     assert!(matches!(&e, Error::Partial { source, .. } if matches!(**source, Error::Fs(FsError::Io { .. }))), "{e}");
 }
+
+#[test]
+fn a_file_grown_past_the_limit_is_a_conflict() {
+    // Review finding: a file that grew past the read limit during the save was reported as a
+    // read error, not as changed.
+    let options = OpenOptions { dict_bytes: 2000, ..OpenOptions::default() };
+    let big = vec![b' '; 5000];
+    // Grown before the save starts: the first check.
+    let mut fs = Faulty { inner: case(), unreadable: None, meanwhile: None, breaks: None };
+    let mut c = Case::open_with(&fs, options).unwrap();
+    c.set("system/air/fvSolution", &["a"], "1").unwrap();
+    fs.inner.insert("system/air/fvSolution", big.clone());
+    assert!(matches!(c.save(&mut fs, None), Err(Error::Conflict { .. })));
+    // Grown during the save: the check right before the write.
+    let mut fs = Faulty { inner: case(), unreadable: None, meanwhile: Some((CONTROL_DICT.into(), big)), breaks: None };
+    let mut c = Case::open_with(&fs, options).unwrap();
+    c.set("system/air/fvSolution", &["a"], "1").unwrap();
+    c.set(CONTROL_DICT, &["endTime"], "5").unwrap();
+    let e = c.save(&mut fs, None).unwrap_err();
+    assert!(matches!(&e, Error::Partial { source, .. } if matches!(**source, Error::Conflict { .. })), "{e}");
+}

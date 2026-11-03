@@ -414,7 +414,11 @@ impl Case {
             let Some(doc) = self.files.get(&rel) else { continue };
             let original = lock(&self.disk).files.get(&rel).map(|d| Arc::clone(&d.bytes));
             let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
-            let on_disk = fs.read(&rel, limit)?;
+            // Grown past the limit: changed (it was read within it). Other errors are themselves.
+            let on_disk = match fs.read(&rel, limit) {
+                Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
+                r => r?,
+            };
             if on_disk.as_deref() != original.as_deref().map(Vec::as_slice) {
                 return Err(Error::Conflict { path: rel });
             }
@@ -461,12 +465,13 @@ impl Case {
         for (rel, doc, original) in plan {
             let text = doc.to_string().into_bytes();
             let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
-            // A read error is reported as itself: it doesn't mean the file changed.
+            // A read error is reported as itself (it doesn't mean the file changed), except a
+            // file grown past the limit, which did change.
             let result = match fs.read(&rel, limit) {
                 Ok(on_disk) if on_disk.as_deref() == original.as_deref().map(Vec::as_slice) => {
                     fs.write(&rel, &text).map_err(Error::from)
                 }
-                Ok(_) => Err(Error::Conflict { path: rel.clone() }),
+                Ok(_) | Err(FsError::TooLarge { .. }) => Err(Error::Conflict { path: rel.clone() }),
                 Err(e) => Err(e.into()),
             };
             if let Err(e) = result {
