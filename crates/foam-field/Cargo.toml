@@ -1,0 +1,20 @@
+[package]
+name = "umcf-foam-field"
+description = "OpenFOAM field files: ASCII and binary lists, gzip, time and processor directories"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+thiserror.workspace = true
+flate2.workspace = true
+fast-float2.workspace = true
+
+[dev-dependencies]
+flate2 = { workspace = true }
+
+[lints]
+workspace = true
