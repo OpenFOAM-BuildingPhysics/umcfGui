@@ -106,10 +106,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "umcf-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "umcf-foam-dict"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "umcf-schema"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "umcf-core",
+ "umcf-foam-dict",
 ]
 
 [[package]]

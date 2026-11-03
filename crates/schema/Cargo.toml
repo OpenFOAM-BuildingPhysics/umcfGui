@@ -1,0 +1,15 @@
+[package]
+name = "umcf-schema"
+description = "What urbanMicroclimateFoam reads: case layout per OpenFOAM version, solver types and keywords"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
