@@ -39,6 +39,8 @@ use umcf_foam_mesh::Patch;
 use umcf_schema::{CaseKind, Layout, Note, Severity};
 
 mod controls;
+pub mod script;
+pub mod workflow;
 
 pub use controls::Controls;
 
@@ -183,6 +185,10 @@ pub struct Case {
     /// `processorN` directories: the case is decomposed, and a parallel run reads its times
     /// and meshes from there.
     pub processors: usize,
+    /// The case's scripts (`Allrun`, `Allprepare`, job scripts), read into steps.
+    pub scripts: Vec<script::Script>,
+    /// The paths in the case when it was opened (see [`Case::exists`]).
+    paths: std::collections::BTreeSet<String>,
     files: BTreeMap<String, Arc<Document>>,
     /// Paths that are the same file as a loaded one (a symlinked dictionary): path → that one.
     aliases: BTreeMap<String, String>,
@@ -198,6 +204,71 @@ fn note(severity: Severity, path: impl Into<String>, message: impl Into<String>)
 
 fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") }
+}
+
+/// The scripts in the case directory, read into steps.
+fn read_scripts(fs: &dyn CaseFs, options: OpenOptions, notes: &mut Vec<Note>) -> Result<Vec<script::Script>> {
+    let mut out = Vec::new();
+    for name in fs.list("")? {
+        if !script::is_script_name(&name) || !fs.is_file(&name) {
+            continue;
+        }
+        match fs.read(&name, options.dict_bytes) {
+            Ok(Some(bytes)) => out.push(script::parse(&name, &String::from_utf8_lossy(&bytes))),
+            Ok(None) => {}
+            Err(e) => notes.push(note(Severity::Info, &name, format!("script not read: {e}"))),
+        }
+    }
+    Ok(out)
+}
+
+/// The most entries [`snapshot`] lists.
+const SNAPSHOT_LIMIT: usize = 50_000;
+
+/// The paths of the case that scripts copy, move and read: everything to a depth of five,
+/// except inside `processor*`, time directories other than `0`, and meshes (a `polyMesh` lists
+/// its files and `sets/`, no deeper). A directory that wasn't listed is marked
+/// `<dir>/\u{1}`: what is below it is not known.
+fn snapshot(fs: &dyn CaseFs) -> Result<std::collections::BTreeSet<String>> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack: Vec<(String, usize)> = vec![(String::new(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        let names = match fs.list(&dir) {
+            Ok(n) => n,
+            // A directory that can't be listed: what is below it is not known.
+            Err(_) => {
+                out.insert(format!("{dir}/\u{1}"));
+                continue;
+            }
+        };
+        for n in names {
+            let rel = join(&dir, &n);
+            if out.len() >= SNAPSHOT_LIMIT {
+                // Not everything was listed: a path not in the set is not known to be absent.
+                out.insert("\u{1}".to_string());
+                return Ok(out);
+            }
+            let is_dir = fs.is_dir(&rel);
+            out.insert(rel.clone());
+            if !is_dir {
+                continue;
+            }
+            let time = n != "0" && n.bytes().next().is_some_and(|b| b.is_ascii_digit()) && n.parse::<f64>().is_ok();
+            let mesh_inner = dir.ends_with("polyMesh") && n != "sets";
+            if depth >= 4
+                || time
+                || n.starts_with("processor")
+                || mesh_inner
+                || n == "dynamicCode"
+                || n == "postProcessing"
+            {
+                out.insert(format!("{rel}/\u{1}"));
+            } else {
+                stack.push((rel, depth + 1));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Files that are not dictionaries of the case: hidden files, editor backups, compressed data.
@@ -330,8 +401,72 @@ impl Case {
             out.push(Region { name, kind, patches, fields });
         }
 
+        let scripts = read_scripts(fs, options, &mut notes)?;
+        let paths = snapshot(fs)?;
         let disk = Arc::new(std::sync::Mutex::new(DiskState { files: disk, backed_up: Default::default() }));
-        Ok(Case { layout, controls, start, regions: out, notes, processors, files, aliases, disk, options })
+        Ok(Case {
+            layout,
+            controls,
+            start,
+            regions: out,
+            notes,
+            processors,
+            scripts,
+            paths,
+            files,
+            aliases,
+            disk,
+            options,
+        })
+    }
+
+    /// Whether `rel` (a file or directory) was in the case when it was opened. Covers the case
+    /// directory, `system/`, `constant/` (not mesh internals beyond `polyMesh/` itself and its
+    /// `sets/`), `0/`-like directories and other non-time directories, to a depth of five;
+    /// not processor or later time directories. `None` when `rel` is outside what was listed.
+    pub fn exists(&self, rel: &str) -> Option<bool> {
+        let rel = rel.trim_end_matches('/');
+        if self.paths.contains(rel) {
+            return Some(true);
+        }
+        // Below a listed mesh, processor or time directory: not listed, so not known.
+        let mut dir = rel;
+        while let Some((parent, _)) = dir.rsplit_once('/') {
+            if self.paths.contains(&format!("{parent}/\u{1}")) {
+                return None;
+            }
+            dir = parent;
+        }
+        let top = rel.split('/').next().unwrap_or(rel);
+        if top.starts_with("processor") || self.paths.contains(&format!("{top}/\u{1}")) || self.paths.contains("\u{1}")
+        {
+            return None;
+        }
+        Some(false)
+    }
+
+    /// Whether `rel` was a directory with entries when the case was opened.
+    pub fn is_dir(&self, rel: &str) -> bool {
+        let prefix = format!("{}/", rel.trim_end_matches('/'));
+        self.paths.range(prefix.clone()..).next().is_some_and(|p| p.starts_with(&prefix))
+    }
+
+    /// The case's workflow, read from its scripts (see [`workflow::Workflow::import`]).
+    pub fn workflow(&self) -> workflow::Workflow {
+        let regions: Vec<String> = self.regions.iter().map(|r| r.name.clone()).filter(|n| !n.is_empty()).collect();
+        let mut wf = workflow::Workflow::import(&regions, self.controls.application.as_deref(), &self.scripts);
+        for r in &regions {
+            let dir = format!("constant/{r}/");
+            let files: Vec<String> = self
+                .files
+                .keys()
+                .filter_map(|p| p.strip_prefix(&dir))
+                .filter(|f| !f.contains('/') && !workflow::RADIATION_OUTPUTS.contains(f) && *f != "divqrsw")
+                .map(String::from)
+                .collect();
+            wf.constant_files.push((r.clone(), files));
+        }
+        wf
     }
 
     pub fn region(&self, name: &str) -> Option<&Region> {

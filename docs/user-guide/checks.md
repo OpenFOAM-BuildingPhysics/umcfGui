@@ -115,10 +115,44 @@ twice counts once, with its last value.
 
 Values written as `$macros` are not judged.
 
+## Scripts
+
+The case's scripts (`Allprepare`, `Allrun`, `Allclean`, `*.sh` and batch job files) are read
+as described in [The case workflow](workflow.md) and checked against the case and its
+OpenFOAM version. Each problem names the script and line.
+
+| Code | Level | What it means |
+|---|---|---|
+| `workflow.utility` | Error | A utility the case's OpenFOAM version doesn't have: `setSet` and `foamCleanPolyMesh` are not in OpenFOAM-12, `foamCleanCase` and `foamRun` not in OpenFOAM-8, `surfaceFeatureExtract` in neither (OpenFOAM-12 only prints that `surfaceFeatures` replaced it). Only a Warning inside an `if`, and for OpenFOAM-12 names that run their replacement (`simpleFoam` runs `foamRun -solver incompressibleFluid`, `postProcess` runs `foamPostProcess`) |
+| `workflow.all-regions` | Error | `-allRegions` (decomposePar, reconstructPar) in OpenFOAM-12 without `regionSolvers` in `controlDict`, from which OpenFOAM-12 takes the region list, or in OpenFOAM-8 without `constant/regionProperties`. A Warning when `regionSolvers` names other regions than the case has |
+| `workflow.np` | Error | `mpirun -np N` (or `runParallel`) starts another number of processes than the case is decomposed into. A Warning when `runParallel` has no `system/decomposeParDict` to take the count from |
+| `workflow.ntasks` | Warning | A batch job asks for fewer tasks (`#SBATCH --ntasks`) than it starts processes |
+| `workflow.decompose` | Warning | OpenFOAM-8: regions decomposed into different counts (`system/<r>/decomposeParDict`, which `decomposePar -region` reads) |
+| `workflow.decomposed` | Warning | The processor directories are from another decomposition than `decomposeParDict` says |
+| `workflow.calclai` | Error | `calcLAI` runs, and the case has no region named `vegetation`: calcLAI reads that region by name |
+| `workflow.missing` | Warning | A file a step reads isn't there when the step runs: a copy's or move's source, or the dictionary the utility reads, where the version reads it (for example `system/<r>/topoSetDict`; OpenFOAM-8 `viewFactorsGen` reads `constant/<r>/viewFactorsDict`). Earlier copies, moves, removals and meshing steps are followed, `Allprepare` then `Allrun`. After a command whose effect isn't known, the rest of the script (and of the scripts after it) is not judged; steps in an `if`, or after a test and `&&`, are not judged. `blockMesh` also finds its dictionary in `constant/[<r>/]polyMesh/` |
+| `workflow.overwrites` | Warning | `Allprepare` or `Allrun` copies one dictionary over another that differs: the copy is what the run uses, and edits to the other are lost each time the script runs. Info for `system/blockMeshDict` and `system/snappyHexMeshDict`, the working copies of the region variants |
+| `workflow.shebang` | Warning | The first line is a broken `#!` line (`$#!/bin/sh`): the script runs only because a shell runs it itself |
+| `workflow.custom` | Info | A step that doesn't fit the [workflow](workflow.md) |
+| `workflow.not-needed` | Info | A step that fits but isn't needed |
+
+## Finite-volume constraints and pressure limits (OpenFOAM-12)
+
+| Code | Level | What it means |
+|---|---|---|
+| `fv.options-ignored` | Warning | A region has both `fvConstraints` and `fvOptions`: OpenFOAM-12 reads `fvOptions` only when there is no `fvConstraints`, so its constraints (a `limitTemperature`, say) don't apply |
+| `fv.limit-pressure` | Warning | A `limitPressure` constraint: urbanMicroclimateFoam (commit `5da4b3a`) constrains the `p_rgh` equation and `U`, never `p`, so it has no effect |
+| `control.pressure-limits` | Error | `SIMPLE` in a fluid region's `fvSolution` has `pMin`, `pMax`, `pMinFactor`, `pMaxFactor`, `rhoMin` or `rhoMax`: OpenFOAM-12 stops and asks for them in `fvConstraints` |
+
 ## Tested on
 
 The check runs on the local reference cases: the Hong Kong project's meshing chain and runs,
 the 3×3 test cases and the large parallel cases, in OpenFOAM-8 and 12. These cases ran, so
-every error there must be real. One is: the solid-initialisation run of the Hong Kong
-project starts from its latest time, which has no `air` fields, so running it again would
-fail.
+every error there must be real. Those found:
+- the solid-initialisation run of the Hong Kong project starts from its latest time, which
+  has no `air` fields, so running it again would fail;
+- a 3×3 case ported to OpenFOAM-12 ends its `Allrun` with `reconstructPar -allRegions` and
+  has no `regionSolvers`; its `fvConstraints` also hides the `fvOptions` with the air's
+  temperature limit;
+- the large 3×3 cases (OpenFOAM-12) clean with `foamCleanPolyMesh`, which OpenFOAM-12 doesn't
+  have.
