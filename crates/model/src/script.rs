@@ -815,12 +815,14 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
                                 env.truncated = true;
                                 break;
                             }
-                            if glob {
+                            env.set(&var, Some(v));
+                            // A glob variable is marked only once kept: its name is then in the
+                            // MAX_VARS budget, which bounds what a subshell copies.
+                            if glob && env.vars.contains_key(&var) {
                                 env.globs.insert(var.clone());
                             } else {
                                 env.globs.remove(&var);
                             }
-                            env.set(&var, Some(v));
                             let mut k = 0;
                             exec(body, &mut k, env, inner, out, &[]);
                         }
@@ -1102,6 +1104,7 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
                 return;
             }
             // Saving the state copies it: charged as work by its size (at most MAX_VARS).
+            // Glob names are names in `vars`, so `var_bytes` covers their bytes too.
             env.work += 1 + env.var_bytes / 1024 + env.vars.len() + env.globs.len();
             if env.work > MAX_WORK {
                 env.truncated = true;

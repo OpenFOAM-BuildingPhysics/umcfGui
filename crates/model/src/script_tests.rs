@@ -303,7 +303,11 @@ fn hostile_scripts_are_read_within_limits() {
     // Long names count too: the second megabyte-long name isn't kept.
     let n = "n".repeat(MAX_VARS - 10);
     let s = parse("Allrun", &format!("{n}=a\nm{n}=b\ncp $m{n} c\n"));
-    assert!(s.steps.iter().all(|st| st.unresolved));
+    assert!(!s.steps.is_empty() && s.steps.iter().all(|st| st.unresolved), "{}", s.steps.len());
+    // A glob loop variable whose name doesn't fit the budget isn't kept, so subshells don't
+    // copy it; the subshells still stop at MAX_WORK.
+    let s = parse("Allrun", &format!("for {n}x in processor*; do\n{}done\n", "(\n)\n".repeat(600_000)));
+    assert!(s.truncated);
     // Within the limits nothing is cut.
     let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
     assert!(!s.truncated && s.steps.len() == 4);
