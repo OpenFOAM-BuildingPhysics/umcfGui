@@ -19,6 +19,8 @@ umcf-foam-field = { path = "crates/foam-field" }
 # foundation
 thiserror = "2"
 serde_json = "1"
+# Tooling only (xtask catalog): scanning the solver source.
+regex = "1"
 # gzip-compressed case files (writeCompression on). zlib-rs: pure Rust, about twice the speed of
 # the miniz_oxide backend on multi-GB fields.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

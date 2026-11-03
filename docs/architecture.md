@@ -4,8 +4,8 @@ An OpenFOAM case editor, runner and viewer for urbanMicroclimateFoam, built as s
 Rust crates.
 
 !!! info "Status"
-    The crates that exist today are `core`, `foam-dict`, `foam-field` and `schema`, plus the
-    `xtask` tooling.
+    The crates that exist today are `core`, `foam-dict`, `foam-field` and `schema` (case layout
+    and the generated [solver catalog](solver-coverage.md)), plus the `xtask` tooling.
     The others in the table below are planned.
 
 ## Core patterns

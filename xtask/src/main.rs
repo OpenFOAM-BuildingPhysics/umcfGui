@@ -8,6 +8,7 @@
     clippy::unreachable
 )]
 
+mod catalog;
 mod layers;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,10 @@ commands:
   layers    enforce the crate dependency layering (docs/architecture.md)
   assets    check that every file under assets/ and docs/images/ has a row in ATTRIBUTION.md
   wasm      cargo check --target wasm32-unknown-unknown for the L0-L3 crates
+  catalog [--check]
+            scan solver/ (pinned commit and of-org_v8.0) for solver types and keywords; write
+            crates/schema/src/catalog/generated.rs and docs/solver-coverage.md (--check: fail if
+            they are out of date; skipped with a notice if solver/ is not checked out)
   docs      API reference with warnings as errors, every docs/ page in the zensical.toml nav, and
             the site in strict mode (skipped with a notice if Zensical is not installed)
   deny      cargo deny check licenses (skipped with a notice if cargo-deny is not installed)
@@ -35,6 +40,7 @@ fn main() -> ExitCode {
         Some("assets") => cmd_assets(),
         Some("wasm") => cmd_wasm(),
         Some("docs") => cmd_docs(),
+        Some("catalog") => cmd_catalog(args.get(1).map(String::as_str) == Some("--check")),
         Some("deny") => cmd_deny(),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
@@ -84,6 +90,7 @@ fn cmd_ci() -> Result<(), String> {
     c.args(["test", "--workspace", "--no-default-features"]);
     run("test --no-default-features", c)?;
     cmd_layers()?;
+    cmd_catalog(true)?;
     cmd_assets()?;
     cmd_wasm()?;
     cmd_docs()?;
@@ -134,6 +141,48 @@ fn cmd_wasm() -> Result<(), String> {
         c.args(["-p", p]);
     }
     run(&format!("wasm ({})", pkgs.join(", ")), c)
+}
+
+fn cmd_catalog(check: bool) -> Result<(), String> {
+    println!("==> catalog{}", if check { " --check" } else { "" });
+    let root = root();
+    let solver = root.join("solver");
+    if !solver.join("urbanMicroclimateFoam.C").is_file() {
+        let msg = "solver/ is not checked out: git submodule update --init";
+        if strict() {
+            return Err(format!("catalog: {msg} (required on CI)"));
+        }
+        println!("==> catalog: SKIPPED ({msg})");
+        return Ok(());
+    }
+    let pat = catalog::Patterns::new()?;
+    let v12 = catalog::scan(&pat, &catalog::load(&solver, "HEAD")?)?;
+    let v8_files = catalog::load(&solver, catalog::V8_REV)
+        .map_err(|e| format!("{e}\n  (is the tag missing? git -C solver fetch --tags)"))?;
+    let v8 = catalog::scan(&pat, &v8_files)?;
+    let mut merged = catalog::merge(vec![(catalog::Ver::V8, v8), (catalog::Ver::V12, v12)]);
+    merged.solver_commit = catalog::git(&solver, &["rev-parse", "HEAD"])?.trim().to_string();
+    merged.v8_commit =
+        catalog::git(&solver, &["rev-parse", &format!("{}^{{commit}}", catalog::V8_REV)])?.trim().to_string();
+    let outputs =
+        [(catalog::GENERATED_RS, catalog::render_rs(&merged)), (catalog::COVERAGE_MD, catalog::render_md(&merged))];
+    for (path, content) in outputs {
+        let full = root.join(path);
+        let current = std::fs::read_to_string(&full).unwrap_or_default();
+        if check {
+            if current != content {
+                return Err(format!("catalog: {path} does not match solver/: run `cargo xtask catalog`"));
+            }
+        } else if current != content {
+            if let Some(dir) = full.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(&full, content).map_err(|e| format!("{path}: {e}"))?;
+            println!("catalog: wrote {path}");
+        }
+    }
+    println!("catalog: up to date with solver/ at {}", merged.solver_commit.get(..7).unwrap_or(""));
+    Ok(())
 }
 
 fn cmd_docs() -> Result<(), String> {

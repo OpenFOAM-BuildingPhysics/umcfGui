@@ -10,11 +10,11 @@
 | Docs site (Zensical) + `docs` gate (rustdoc `-D warnings`, nav, strict build) | ✅ |
 | `foam-field`: fields (ASCII, binary, gzip), time and processor directories | ✅ matches the mesh on every field of 6 projects; bit-identical to OpenFOAM-8/12 binary output |
 | `foam-mesh` (polyMesh) | ⬜ |
-| `schema` + `cargo xtask catalog` (solver types from `TypeName`) | ⬜ |
+| Solver catalog: `schema::catalog` + `cargo xtask catalog` | ✅ 7 families, 41 types (13 BCs), 176 keyword reads, OF8 and OF12; checked in CI |
 | `model`, `engine` commands, CLI | ⬜ |
 | `ui-egui`, control channel, MCP | ⬜ |
 | `run.export` (Allrun + SLURM/PBS), optional local `runner` | ⬜ |
 
 ## Progress log
 
-- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`.
+- 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog.

@@ -19,9 +19,9 @@ and shows the results. It never re-implements the physics.
   `git -C solver show of-org_v8.0:urbanMicroclimateFoam.C`.
 - **`solver/` is read-only from here.** Never commit inside it from this repo: solver changes
   are pull requests to urbanMicroclimateFoam. Moving the pin (`git submodule update --remote
-  solver`) is its own commit. Until `cargo xtask catalog` exists (M0.6), check a new pin with
-  `cargo xtask ci` and the real-case tests (`docs/contributing.md`); after that, the catalog
-  check must pass too.
+  solver`) is its own commit: run `cargo xtask catalog` to regenerate the catalog, review the
+  diff of `docs/solver-coverage.md` (it shows what the solver gained or lost), then
+  `cargo xtask ci` and the real-case tests (`docs/contributing.md`).
 - **Licence: GPL-3.0-or-later, the same as UMCF and OpenFOAM** (`LICENSE`, copied from the
   solver). Every crate sets `license = "GPL-3.0-or-later"` through `[workspace.package]`.
   Dependencies must be GPL-3-compatible: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0 and
@@ -35,10 +35,12 @@ and shows the results. It never re-implements the physics.
   needs (material curves for a plot, say), and never present a ported calculation as a result.
   Results always come from a solver run. Where it can, the GUI runs the solver's own utilities
   rather than re-implementing them, so the two don't drift apart.
-- **Catalog check (planned, M0.6):** `cargo xtask catalog` will scan `solver/` for `TypeName("…")` and the
-  keywords each type reads, and diff that against `crates/schema`. A type the solver has but
-  the GUI doesn't expose is a gap (`docs/gaps.md`). A type the GUI offers but the solver doesn't
-  have is a bug.
+- **Catalog:** `cargo xtask catalog` scans `solver/` (the pinned commit and the tag
+  `of-org_v8.0`) for every model family, selectable type and keyword, and writes
+  `crates/schema/src/catalog/generated.rs` and `docs/solver-coverage.md`. Never edit either by
+  hand; `cargo xtask ci` fails when they don't match the pinned solver. The GUI offers solver
+  types only from this catalog: a type the solver has but the GUI doesn't expose is a gap
+  (`docs/gaps.md`), and the GUI cannot offer one the solver doesn't have.
 - Target OpenFOAM version: **OpenFOAM-org v12** (the version the reference cases run on). Older
   versions (v6/v7/v8, per solver tags) are a `schema` profile, never `if`s scattered through the
   code.
