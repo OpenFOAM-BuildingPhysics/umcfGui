@@ -366,6 +366,8 @@ fn parse_zones(path: &str, bytes: &[u8], limits: &Limits) -> Result<Vec<Zone>> {
     let f = Field::parse_with(bytes, &field_limits)?;
     let bad = |msg: String| Error::Bad { file: path.to_string(), line: 0, msg };
     let mut out = Vec::new();
+    // Labels expanded from `N{v}` across every zone: many small repeated lists add up.
+    let mut repeated_total = 0usize;
     for (name, body) in named_dicts(&f.doc) {
         let list = body
             .get("cellLabels")
@@ -374,9 +376,13 @@ fn parse_zones(path: &str, bytes: &[u8], limits: &Limits) -> Result<Vec<Zone>> {
                 _ => None,
             })
             .ok_or_else(|| bad(format!("zone {name} has no cellLabels list")))?;
-        // `N{v}` costs a few bytes of input for any N: cap it like the owner and neighbour lists.
-        if list.is_repeated() && list.len() > limits.max_uniform {
-            return Err(Error::TooLarge { what: "uniform list", limit: limits.max_uniform });
+        // `N{v}` costs a few bytes of input for any N: cap it like the owner and neighbour lists,
+        // summed over the file's zones. Written-out lists are bounded by the file size.
+        if list.is_repeated() {
+            repeated_total = repeated_total.saturating_add(list.len());
+            if repeated_total > limits.max_uniform {
+                return Err(Error::TooLarge { what: "uniform list", limit: limits.max_uniform });
+            }
         }
         let mut cells = Vec::new();
         cells
