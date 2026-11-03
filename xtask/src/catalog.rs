@@ -534,31 +534,33 @@ fn vers_md(v: &BTreeSet<Ver>) -> &'static str {
     }
 }
 
-fn kw_md(k: &Kw, v: &BTreeSet<Ver>) -> String {
-    let access = match &k.access {
+fn kw_md(name: &str, access: &Access, v: &BTreeSet<Ver>) -> String {
+    let access = match access {
         Access::Required => String::new(),
         Access::Default(d) => format!(" = `{}`", d.replace('|', "\\|")),
         Access::Optional => " (optional)".into(),
         Access::SubDict => " { }".into(),
     };
     let only = match vers_md(v) {
-        "8, 12" => "",
-        other => other,
+        "8, 12" => String::new(),
+        other => format!(" *({other})*"),
     };
-    let only = if only.is_empty() { String::new() } else { format!(" *({only})*") };
-    format!("`{}`{access}{only}", k.name)
+    format!("`{name}`{access}{only}")
 }
 
+/// Keywords for a table cell: each way a keyword is read (required, each default, optional,
+/// sub-dictionary) once, with the versions of every receiver it is read through combined. The
+/// receiver itself is left out: the same key read from `dict` in OpenFOAM-8 and from
+/// `vegetationProperties` in OpenFOAM-12 is one keyword in both versions.
 fn kws_md(kws: &Versioned<Kw>) -> String {
-    // One entry per keyword name: the ways it is read, merged.
-    let mut by_name: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut variants: BTreeMap<(&str, &Access), BTreeSet<Ver>> = BTreeMap::new();
     for (k, v) in kws {
-        by_name.entry(&k.name).or_default().push(kw_md(k, v));
+        variants.entry((&k.name, &k.access)).or_default().extend(v);
     }
-    if by_name.is_empty() {
+    if variants.is_empty() {
         return "–".into();
     }
-    by_name.values().map(|v| v.first().cloned().unwrap_or_default()).collect::<Vec<_>>().join(", ")
+    variants.iter().map(|((name, access), v)| kw_md(name, access, v)).collect::<Vec<_>>().join(", ")
 }
 
 pub fn render_md(m: &Merged) -> String {
@@ -690,6 +692,26 @@ mod tests {
         assert_eq!((bc.kind, bc.class.as_str()), (Kind::ScalarBc, "myBcFvPatchScalarField"));
         assert!(bc.keywords.iter().any(|k| k.name == "Tnbr"));
         assert!(s.apps.contains_key(&("urbanMicroclimateFoam".into(), "solid/readSolid.H".into())));
+    }
+
+    #[test]
+    fn markdown_merges_receivers_and_keeps_every_access() {
+        // Review finding: one keyword read through two receivers in different versions is in
+        // both versions; a keyword read two ways shows both.
+        let kw =
+            |name: &str, access: Access, receiver: &str| Kw { name: name.into(), access, receiver: receiver.into() };
+        let mut kws: Versioned<Kw> = BTreeMap::new();
+        kws.insert(kw("vegetationModel", Access::Required, "dict"), [Ver::V8].into());
+        kws.insert(kw("vegetationModel", Access::Required, "vegetationProperties"), [Ver::V12].into());
+        kws.insert(kw("Tg", Access::Default("0.5".into()), "coeffs_"), [Ver::V8, Ver::V12].into());
+        kws.insert(kw("Tg", Access::Default("1e-8".into()), "residualControlDict"), [Ver::V12].into());
+        kws.insert(kw("regions", Access::SubDict, "controlDict()"), [Ver::V12].into());
+        kws.insert(kw("regions", Access::Optional, "controlDict()"), [Ver::V12].into());
+        assert_eq!(
+            kws_md(&kws),
+            "`Tg` = `0.5`, `Tg` = `1e-8` *(12 only)*, `regions` (optional) *(12 only)*, `regions` { } *(12 only)*, `vegetationModel`"
+        );
+        assert_eq!(kws_md(&BTreeMap::new()), "–");
     }
 
     #[test]

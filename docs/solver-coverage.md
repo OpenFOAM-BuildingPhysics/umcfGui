@@ -56,7 +56,7 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 | Type | Versions | Keywords | Source |
 |---|---|---|---|
 | `none` | 8, 12 | – | `_LIB/grassModel/noGrass/noGrass.H` |
-| `simpleGrass` | 8, 12 | `Cd` = `0.2`, `LAI` = `2.0`, `SIMPLE` { } *(12 only)*, `Tg` = `0.5`, `albedoSoil` = `0.2366`, `beta` = `0.78`, `betaLW` = `0.83`, `debug` = `0`, `emissivitySoil` = `0.95`, `grassPatches`, `l` = `0.1`, `nEvapSides` = `1`, `ra` = `-1`, `relaxationFactors` { } *(12 only)*, `residualControl` { }, `rs` = `200` | `_LIB/grassModel/simpleGrass/simpleGrass.H` |
+| `simpleGrass` | 8, 12 | `Cd` = `0.2`, `LAI` = `2.0`, `SIMPLE` { }, `Tg` = `0.5`, `Tg` = `1e-8`, `albedoSoil` = `0.2366`, `beta` = `0.78`, `betaLW` = `0.83`, `debug` = `0`, `emissivitySoil` = `0.95`, `grassPatches`, `l` = `0.1`, `nEvapSides` = `1`, `ra` = `-1`, `relaxationFactors` { }, `residualControl` { }, `rs` = `200` | `_LIB/grassModel/simpleGrass/simpleGrass.H` |
 
 ### `searchableSurface`
 
@@ -74,7 +74,7 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 
 | Type | Versions | Keywords | Source |
 |---|---|---|---|
-| `directAndDiffuse` | 8, 12 | `constantAlbedo`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)* | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.H` |
+| `directAndDiffuse` | 8, 12 | `constantAlbedo`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)*, `viewFactorWorkflow` = `coeffs_.lookupOrDefault<word>("viewFactorWorkflow", "sparse")` *(12 only)* | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.H` |
 | `none` | 8, 12 | – | `_LIB/solarLoadModel/noSolarLoad/noSolarLoad.H` |
 
 ### `solarLoadScatterModel`
@@ -88,7 +88,7 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 | Type | Versions | Keywords | Source |
 |---|---|---|---|
 | `none` | 8, 12 | – | `_LIB/vegetationModels/noVegetation/noVegetation.H` |
-| `simplifiedVegetation` | 8, 12 | `C`, `Cd` = `0.2`, `D0`, `H`, `Rg0`, `Rl0`, `SIMPLE` { } *(12 only)*, `Tl` = `0.5`, `a1`, `a2`, `a3`, `kc`, `l`, `nEvapSides`, `relaxationFactors` { } *(12 only)*, `residualControl` { }, `rsMin` | `_LIB/vegetationModels/simplifiedVegetation/simplifiedVegetation.H` |
+| `simplifiedVegetation` | 8, 12 | `C`, `Cd` = `0.2`, `D0`, `H`, `Rg0`, `Rl0`, `SIMPLE` { }, `Tl` = `0.5`, `Tl` = `1e-8`, `a1`, `a2`, `a3`, `kc`, `l`, `nEvapSides`, `relaxationFactors` { }, `residualControl` { }, `rsMin` | `_LIB/vegetationModels/simplifiedVegetation/simplifiedVegetation.H` |
 
 ### Boundary conditions (scalar fields)
 
@@ -117,7 +117,7 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 
 | Type | Versions | Keywords | Source |
 |---|---|---|---|
-| `porousrealizableKE` | 8, 12 | `Cd` = `0.2`, `vegetationModel` *(8 only)* | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.H` |
+| `porousrealizableKE` | 8, 12 | `Cd` = `0.2`, `vegetationModel` | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.H` |
 
 ## Application keywords
 
@@ -128,15 +128,15 @@ What the solver, its utilities and its libraries read outside the model classes.
 | `calcLAI` | `_APP/calcLAI/calcLAI.C` | `vegetationModel` |
 | `lib/blendingLayer` | `_LIB/blendingLayer/blendingLayer.C` | `alphaCoeffT`, `alphaCoeffU`, `blendingCoeffs` { }, `dampingThickness` |
 | `lib/solarLoadModel` | `_LIB/solarLoadModel/derivedFvPatchFields/solarRadiationCoupledBase/solarRadiationCoupledBase.C` | `albedo` (optional), `albedoMode` |
-| `lib/solarLoadModel` | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` | `constantEmissivity`, `grassModel`, `grassPatches`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorReferenceDump` = `false` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)* |
+| `lib/solarLoadModel` | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` | `constantEmissivity`, `grassModel`, `grassPatches`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorReferenceDump` = `false` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)*, `viewFactorWorkflow` = `coeffs_.lookupOrDefault<word>("viewFactorWorkflow", "sparse")` *(12 only)* |
 | `solarRayTracingGen` | `_APP/solarRayTracingGen/shootRaysFINE.H` | `maxDynListLength` = `100000` |
-| `solarRayTracingGen` | `_APP/solarRayTracingGen/solarRayTracingGen.C` | `debug` = `0`, `regions` (optional) *(12 only)*, `skyPosVector`, `vegetation` *(12 only)* |
-| `urbanMicroclimateFoam` | `fluid/createFluidFields.H` | `SIMPLE` { } *(12 only)* |
+| `solarRayTracingGen` | `_APP/solarRayTracingGen/solarRayTracingGen.C` | `debug` = `0`, `regions` (optional) *(12 only)*, `regions` { } *(12 only)*, `skyPosVector`, `vegetation` *(12 only)*, `vegetation` (optional) *(12 only)* |
+| `urbanMicroclimateFoam` | `fluid/createFluidFields.H` | `SIMPLE` { } |
 | `urbanMicroclimateFoam` | `fluid/readFluidControls.H` | `maxFluidIteration` = `10000`, `minFluidIteration` = `1` |
-| `urbanMicroclimateFoam` | `fluid/readFluidMultiRegionSIMPLEControls.H` | `SIMPLE` { } *(12 only)*, `nNonOrthogonalCorrectors` = `0` |
+| `urbanMicroclimateFoam` | `fluid/readFluidMultiRegionSIMPLEControls.H` | `SIMPLE` { }, `nNonOrthogonalCorrectors` = `0` |
 | `urbanMicroclimateFoam` | `fluid/setRegionFluidFields.H` | `blending` = `false` |
 | `urbanMicroclimateFoam` | `fluid/solveFluid.H` | `frozenFlow` = `0` |
 | `urbanMicroclimateFoam` | `solid/readSolidControls.H` | `PicardToleranceTs` = `0.01`, `PicardTolerancews` = `0.01`, `decrease_factor` = `0.5`, `increase_factor` = `1.2`, `initialSolidTimestepFactor` = `0.1`, `maxDeltaT` = `600.0`, `minCrel` = `VSMALL`, `minDeltaT` = `1.0`, `nInternalIterMax` = `10`, `pcEqnForm` = `"pc-based"` |
 | `urbanMicroclimateFoam` | `solid/setRegionSolidFields.H` | `buildingMaterials` |
 | `urbanMicroclimateFoam` | `solid/updatebuildingMaterials.H` | `buildingMaterialModel`, `cap`, `lambda1`, `lambda2`, `name`, `rho` |
-| `urbanMicroclimateFoam` | `urbanMicroclimateFoam.C` | `fluid` *(12 only)*, `regions` { } *(12 only)*, `solid` *(12 only)*, `vegetation` *(12 only)* |
+| `urbanMicroclimateFoam` | `urbanMicroclimateFoam.C` | `fluid` *(12 only)*, `fluid` (optional) *(12 only)*, `regions` { } *(12 only)*, `solid` *(12 only)*, `solid` (optional) *(12 only)*, `vegetation` *(12 only)*, `vegetation` (optional) *(12 only)* |

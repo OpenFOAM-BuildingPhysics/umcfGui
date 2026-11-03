@@ -26,7 +26,7 @@ commands:
   catalog [--check]
             scan solver/ (pinned commit and of-org_v8.0) for solver types and keywords; write
             crates/schema/src/catalog/generated.rs and docs/solver-coverage.md (--check: fail if
-            they are out of date; skipped with a notice if solver/ is not checked out)
+            they are out of date; solver/ must be checked out: git submodule update --init)
   docs      API reference with warnings as errors, every docs/ page in the zensical.toml nav, and
             the site in strict mode (skipped with a notice if Zensical is not installed)
   deny      cargo deny check licenses (skipped with a notice if cargo-deny is not installed)
@@ -40,7 +40,14 @@ fn main() -> ExitCode {
         Some("assets") => cmd_assets(),
         Some("wasm") => cmd_wasm(),
         Some("docs") => cmd_docs(),
-        Some("catalog") => cmd_catalog(args.get(1).map(String::as_str) == Some("--check")),
+        Some("catalog") => match args.get(1).map(String::as_str) {
+            None => cmd_catalog(false),
+            Some("--check") if args.len() == 2 => cmd_catalog(true),
+            Some(_) => {
+                let bad = args.iter().skip(1).find(|a| *a != "--check").map_or("--check", String::as_str);
+                Err(format!("catalog: unexpected argument `{bad}` (usage: cargo xtask catalog [--check])"))
+            }
+        },
         Some("deny") => cmd_deny(),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
@@ -147,13 +154,10 @@ fn cmd_catalog(check: bool) -> Result<(), String> {
     println!("==> catalog{}", if check { " --check" } else { "" });
     let root = root();
     let solver = root.join("solver");
+    // The submodule is part of the repository: without it there is nothing to check, and a
+    // skipped check would let `cargo xtask ci` pass locally and fail on CI.
     if !solver.join("urbanMicroclimateFoam.C").is_file() {
-        let msg = "solver/ is not checked out: git submodule update --init";
-        if strict() {
-            return Err(format!("catalog: {msg} (required on CI)"));
-        }
-        println!("==> catalog: SKIPPED ({msg})");
-        return Ok(());
+        return Err("catalog: solver/ is not checked out: run `git submodule update --init`".into());
     }
     let pat = catalog::Patterns::new()?;
     let v12 = catalog::scan(&pat, &catalog::load(&solver, "HEAD")?)?;
@@ -168,7 +172,11 @@ fn cmd_catalog(check: bool) -> Result<(), String> {
         [(catalog::GENERATED_RS, catalog::render_rs(&merged)), (catalog::COVERAGE_MD, catalog::render_md(&merged))];
     for (path, content) in outputs {
         let full = root.join(path);
-        let current = std::fs::read_to_string(&full).unwrap_or_default();
+        let current = match std::fs::read_to_string(&full) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("{path}: {e}")),
+        };
         if check {
             if current != content {
                 return Err(format!("catalog: {path} does not match solver/: run `cargo xtask catalog`"));
