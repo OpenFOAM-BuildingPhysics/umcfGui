@@ -11,7 +11,13 @@
 //! | `fvModels` / `fvConstraints` in a region's `system/` or `constant/` | OF12 | 2 each |
 //! | `fvOptions` in a region's `system/` or `constant/` | OF8 | 2 each |
 //! | `constant/<region>/physicalProperties` (OF10+) | OF12 | 2 each |
+//! | `castellatedMeshControls/insidePoint` in `snappyHexMeshDict` (OF8 doesn't know it) | OF12 | 2 |
+//! | `castellatedMeshControls/locationInMesh` (OF12 still accepts it as a fallback) | OF8 | 1 |
 //! | `Version: 8` / `Version: 9`–`12` in the controlDict banner | OF8 / OF12 | 1 |
+//!
+//! A case without a region list is a meshing step ([`CaseKind::Meshing`]): the urbanMicroclimateFoam
+//! workflow builds the multi-region mesh in several single-region cases (terrain blockMesh,
+//! snappyHexMesh, extruding facades/ground/roofs into solid regions) before the solver runs.
 //!
 //! Files that the detected version ignores (a leftover `regionProperties` or `fvOptions` in an
 //! OF12 case) are reported as [`Note`]s: they are often what is left over after porting a case.
@@ -64,8 +70,38 @@ pub struct Evidence {
     pub why: &'static str,
 }
 
+/// What a case is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseKind {
+    /// A multi-region urbanMicroclimateFoam case (it defines its regions).
+    Solver,
+    /// A meshing or pre-processing step: no region list.
+    Meshing,
+}
+
+/// System dictionaries and the utilities that read them.
+const TOOLS: &[(&str, &str)] = &[
+    ("blockMeshDict", "blockMesh"),
+    ("terrainBlockMesherDict", "terrainBlockMesher"),
+    ("snappyHexMeshDict", "snappyHexMesh"),
+    ("meshDict", "cartesianMesh (cfMesh)"),
+    ("surfaceFeaturesDict", "surfaceFeatures"),
+    ("extrudeMeshDict", "extrudeMesh"),
+    ("refineMeshDict", "refineMesh"),
+    ("topoSetDict", "topoSet"),
+    ("createPatchDict", "createPatch"),
+    ("changeDictionaryDict", "changeDictionary"),
+    ("setFieldsDict", "setFields"),
+    ("viewFactorsDict", "viewFactorsGen"),
+    ("decomposeParDict", "decomposePar"),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
+    pub kind: CaseKind,
+    /// Utilities this case has dictionaries for (`system/` and `system/<region>/`), in
+    /// [`TOOLS`] order.
+    pub tools: Vec<&'static str>,
     /// `None` when nothing points to either version.
     pub version: Option<OfVersion>,
     pub evidence: Vec<Evidence>,
@@ -153,6 +189,9 @@ pub fn detect(fs: &dyn CaseFs) -> Result<Layout, Error> {
             }
         }
     }
+    if let Some(e) = snappy_evidence(fs, &mut notes)? {
+        evidence.push(e);
+    }
     if let Some(v) = banner_version(fs) {
         evidence.push(Evidence {
             path: CONTROL_DICT.into(),
@@ -201,7 +240,8 @@ pub fn detect(fs: &dyn CaseFs) -> Result<Layout, Error> {
         notes.push(warn("", "no regions defined"));
     }
 
-    // Files the detected version does not read.
+    // Files the detected version does not read. Weight-1 evidence (banner, `locationInMesh`)
+    // is only a hint: the other version reads those files fine.
     if let Some(v) = version {
         for e in evidence.iter().filter(|e| e.points_to != v && e.weight > 1) {
             notes.push(Note {
@@ -217,7 +257,13 @@ pub fn detect(fs: &dyn CaseFs) -> Result<Layout, Error> {
         }
     }
 
-    Ok(Layout { version, evidence, regions, regions_from, notes })
+    let kind = if regions.is_empty() && regions_from.is_none() { CaseKind::Meshing } else { CaseKind::Solver };
+    let tools = tools(fs, &candidates);
+    // A meshing step has no regions by design: not a warning.
+    if kind == CaseKind::Meshing {
+        notes.retain(|n| n.message != "no regions defined");
+    }
+    Ok(Layout { kind, tools, version, evidence, regions, regions_from, notes })
 }
 
 fn warn(path: &str, message: &str) -> Note {
@@ -311,6 +357,41 @@ fn regions_from_list(entry: &Entry, path: &str, notes: &mut Vec<Note>) -> Option
         }
     }
     Some(regions)
+}
+
+/// `locationInMesh` (OF8) became `insidePoint` (OF9+) in `castellatedMeshControls`.
+fn snappy_evidence(fs: &dyn CaseFs, notes: &mut Vec<Note>) -> Result<Option<Evidence>, Error> {
+    const PATH: &str = "system/snappyHexMeshDict";
+    let Some(doc) = read_dict(fs, PATH, notes)? else { return Ok(None) };
+    let found = |key: &str| doc.get(&["castellatedMeshControls", key]).is_some();
+    Ok(if found("locationInMesh") {
+        Some(Evidence {
+            path: PATH.into(),
+            points_to: OfVersion::V8,
+            weight: 1,
+            why: "snappyHexMesh `locationInMesh` (OpenFOAM-8 name; OpenFOAM-12 still accepts it)",
+        })
+    } else if found("insidePoint") {
+        Some(Evidence {
+            path: PATH.into(),
+            points_to: OfVersion::V12,
+            weight: 2,
+            why: "snappyHexMesh `insidePoint` (OpenFOAM-9+)",
+        })
+    } else {
+        None
+    })
+}
+
+fn tools(fs: &dyn CaseFs, regions: &[String]) -> Vec<&'static str> {
+    let mut names = fs.list("system");
+    for r in regions {
+        names.extend(fs.list(&format!("system/{r}")));
+    }
+    // `extrudeMeshDict.east`, `topoSetDict_cellZones`, … are variants of the same dictionary.
+    let base = |n: &str| n.split(['.', '_']).next().unwrap_or("").to_string();
+    let bases: Vec<String> = names.iter().map(|n| base(n)).collect();
+    TOOLS.iter().filter(|(dict, _)| bases.iter().any(|b| b == dict)).map(|(_, tool)| *tool).collect()
 }
 
 /// `Version:  12` in the controlDict banner comment. `2.2.2` and the like say nothing.

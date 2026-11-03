@@ -32,6 +32,7 @@ fn of12_case() {
     );
     let l = detect(&fs).unwrap();
     assert_eq!(l.version, Some(OfVersion::V12));
+    assert_eq!(l.kind, CaseKind::Solver);
     assert_eq!(l.regions, expected_regions());
     assert_eq!(l.regions_from.as_deref(), Some("system/controlDict"));
     assert!(!l.mixed());
@@ -151,5 +152,43 @@ fn falls_back_to_region_directories_for_signals() {
     let fs = MemFs::new().with("system/controlDict", "a 1;\n").with("system/air/fvOptions", "");
     let l = detect(&fs).unwrap();
     assert_eq!(l.version, Some(OfVersion::V8));
-    assert!(l.warnings().any(|n| n.message == "no regions defined"));
+    assert_eq!(l.kind, CaseKind::Meshing);
+    assert_eq!(l.warnings().count(), 0, "{:?}", l.notes);
+}
+
+#[test]
+fn meshing_steps() {
+    // Like HK 0c_mesh_sHM_of8: snappyHexMesh with locationInMesh, extrude variants.
+    let shm8 = "castellatedMeshControls\n{\n    maxLocalCells 100;\n    locationInMesh (1000 1000 100);\n}\n";
+    let fs = MemFs::new()
+        .with("system/controlDict", "application cartesianMesh;\n")
+        .with("system/snappyHexMeshDict", shm8)
+        .with("system/blockMeshDict", "")
+        .with("system/extrudeMeshDict", "")
+        .with("system/extrudeMeshDict.east", "")
+        .with("system/topoSetDict_cellZones", "")
+        .with("system/fvSchemes", "");
+    let l = detect(&fs).unwrap();
+    assert_eq!(l.kind, CaseKind::Meshing);
+    assert_eq!(l.version, Some(OfVersion::V8));
+    assert_eq!(l.score(OfVersion::V8), 1);
+    assert_eq!(l.tools, ["blockMesh", "snappyHexMesh", "extrudeMesh", "topoSet"]);
+    assert!(l.notes.is_empty(), "{:?}", l.notes);
+
+    let shm12 = "castellatedMeshControls { insidePoint (0 0 1); }\n";
+    let fs = MemFs::new().with("system/controlDict", "a 1;\n").with("system/snappyHexMeshDict", shm12);
+    assert_eq!(detect(&fs).unwrap().version, Some(OfVersion::V12));
+
+    // An OF12 case may keep `locationInMesh` (OF12 accepts it): no leftover note.
+    let fs =
+        with_region_dirs(MemFs::new().with("system/controlDict", CD_REGIONS).with("system/snappyHexMeshDict", shm8));
+    let l = detect(&fs).unwrap();
+    assert_eq!(l.version, Some(OfVersion::V12));
+    assert!(l.notes.is_empty(), "{:?}", l.notes);
+
+    // Like HK 0d_*Extrusion: nothing tells the version apart.
+    let fs = MemFs::new().with("system/controlDict", "a 1;\n").with("system/extrudeMeshDict", "");
+    let l = detect(&fs).unwrap();
+    assert_eq!((l.kind, l.version), (CaseKind::Meshing, None));
+    assert_eq!(l.tools, ["extrudeMesh"]);
 }

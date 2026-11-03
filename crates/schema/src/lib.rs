@@ -14,7 +14,7 @@
 
 pub mod layout;
 
-pub use layout::{Layout, Note, Regions, Severity, detect};
+pub use layout::{CaseKind, Layout, Note, Regions, Severity, detect};
 pub use umcf_core::OfVersion;
 
 #[derive(Debug, thiserror::Error)]
