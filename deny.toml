@@ -17,3 +17,5 @@ allow = [
     "CC0-1.0",
 ]
 confidence-threshold = 0.9
+# The list covers dependencies to come (egui, …): an allowance nothing uses yet is fine.
+unused-allowed-license = "allow"
