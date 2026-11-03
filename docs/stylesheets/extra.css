@@ -1,0 +1,4 @@
+/* Tables in the user guide hold code and short sentences: keep code from breaking mid-word. */
+.md-typeset table code {
+  white-space: nowrap;
+}

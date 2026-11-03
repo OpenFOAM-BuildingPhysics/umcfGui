@@ -3,6 +3,10 @@
 An OpenFOAM case editor, runner and viewer for urbanMicroclimateFoam, built as strictly layered
 Rust crates.
 
+!!! info "Status"
+    The crates that exist today are `core`, `foam-dict` and `schema`, plus the `xtask` tooling.
+    The others in the table below are planned.
+
 ## Core patterns
 
 | Pattern | How it works here |

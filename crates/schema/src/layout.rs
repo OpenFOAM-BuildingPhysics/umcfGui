@@ -100,7 +100,7 @@ const TOOLS: &[(&str, &str)] = &[
 pub struct Layout {
     pub kind: CaseKind,
     /// Utilities this case has dictionaries for (`system/` and `system/<region>/`), in
-    /// [`TOOLS`] order.
+    /// pipeline order (blockMesh first, decomposePar last).
     pub tools: Vec<&'static str>,
     /// `None` when nothing points to either version.
     pub version: Option<OfVersion>,

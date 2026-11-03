@@ -22,6 +22,8 @@ commands:
   layers    enforce the crate dependency layering (docs/architecture.md)
   assets    check that every file under assets/ and docs/images/ has a row in ATTRIBUTION.md
   wasm      cargo check --target wasm32-unknown-unknown for the L0-L3 crates
+  docs      API reference with warnings as errors, every docs/ page in the zensical.toml nav, and
+            the site in strict mode (skipped with a notice if Zensical is not installed)
   deny      cargo deny check licenses (skipped with a notice if cargo-deny is not installed)
 ";
 
@@ -32,6 +34,7 @@ fn main() -> ExitCode {
         Some("layers") => cmd_layers(),
         Some("assets") => cmd_assets(),
         Some("wasm") => cmd_wasm(),
+        Some("docs") => cmd_docs(),
         Some("deny") => cmd_deny(),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
@@ -83,6 +86,7 @@ fn cmd_ci() -> Result<(), String> {
     cmd_layers()?;
     cmd_assets()?;
     cmd_wasm()?;
+    cmd_docs()?;
     cmd_deny()?;
     println!("ci: all gates passed");
     Ok(())
@@ -130,6 +134,45 @@ fn cmd_wasm() -> Result<(), String> {
         c.args(["-p", p]);
     }
     run(&format!("wasm ({})", pkgs.join(", ")), c)
+}
+
+fn cmd_docs() -> Result<(), String> {
+    let mut c = cargo();
+    c.args(["doc", "--workspace", "--no-deps", "--quiet"]).env("RUSTDOCFLAGS", "-D warnings");
+    run("docs: API reference", c)?;
+
+    println!("==> docs: nav");
+    let root = root();
+    let config = std::fs::read_to_string(root.join("zensical.toml")).map_err(|e| format!("zensical.toml: {e}"))?;
+    let mut pages = Vec::new();
+    walk(&root, &root.join("docs"), &mut pages)?;
+    let missing: Vec<&String> = pages
+        .iter()
+        .filter(|p| p.ends_with(".md"))
+        .filter(|p| !config.contains(&format!("\"{}\"", p.trim_start_matches("docs/"))))
+        .collect();
+    if !missing.is_empty() {
+        for m in &missing {
+            eprintln!("  not in the zensical.toml nav: {m}");
+        }
+        return Err(format!("docs: {} page(s) missing from the nav", missing.len()));
+    }
+
+    let venv = root.join(".venv/bin/zensical");
+    let zensical = if venv.is_file() {
+        Some(venv.into_os_string())
+    } else if Command::new("zensical").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        Some("zensical".into())
+    } else {
+        None
+    };
+    let Some(zensical) = zensical else {
+        println!("==> docs: site SKIPPED (Zensical not installed: see docs/contributing.md)");
+        return Ok(());
+    };
+    let mut c = Command::new(zensical);
+    c.current_dir(&root).args(["build", "--strict", "--clean"]);
+    run("docs: site (strict)", c)
 }
 
 fn cmd_deny() -> Result<(), String> {

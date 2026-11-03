@@ -2,7 +2,7 @@
 //!
 //! [`Document::parse`] keeps every byte: comments, alignment, `#include`, `$macros`, `#calc`,
 //! `#codeStream` and keys it doesn't understand. Writing the document back
-//! ([`Document::to_string`]) gives the input unchanged, and the edit operations ([`Document::set`],
+//! (`doc.to_string()`) gives the input unchanged, and the edit operations ([`Document::set`],
 //! [`Document::remove`]) change only the entry they touch.
 //!
 //! The crate knows OpenFOAM syntax only. It does not expand `#include` or `$macros` (that
