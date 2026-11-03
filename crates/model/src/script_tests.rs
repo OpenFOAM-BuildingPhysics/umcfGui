@@ -305,8 +305,17 @@ fn hostile_scripts_are_read_within_limits() {
     let s = parse("Allrun", &format!("{n}=a\nm{n}=b\ncp $m{n} c\n"));
     assert!(!s.steps.is_empty() && s.steps.iter().all(|st| st.unresolved), "{}", s.steps.len());
     // A glob loop variable whose name doesn't fit the budget isn't kept, so subshells don't
-    // copy it; the subshells still stop at MAX_WORK.
-    let s = parse("Allrun", &format!("for {n}x in processor*; do\n{}done\n", "(\n)\n".repeat(600_000)));
+    // copy (or pay for) it: 100 000 pairs cost about 5 each (scanned, visited, charged) and stay
+    // within MAX_WORK. A name that fits is kept, and each pair then pays for its megabyte
+    // (about 1000): the same script is cut.
+    let pairs = "(\n)\n".repeat(100_000);
+    let long = "n".repeat(MAX_VARS + 1);
+    let s = parse("Allrun", &format!("for {long} in processor*; do\n{pairs}done\n"));
+    assert!(!s.truncated);
+    let s = parse("Allrun", &format!("for {n} in processor*; do\n{pairs}done\n"));
+    assert!(s.truncated);
+    // Subshells alone still stop at MAX_WORK.
+    let s = parse("Allrun", &"(\n)\n".repeat(600_000));
     assert!(s.truncated);
     // Within the limits nothing is cut.
     let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
