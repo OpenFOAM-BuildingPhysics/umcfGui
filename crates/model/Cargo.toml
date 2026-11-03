@@ -1,0 +1,18 @@
+[package]
+name = "umcf-model"
+description = "The typed urbanMicroclimateFoam case: regions, controls, boundary conditions, lossless editing and saving"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+umcf-foam-field.workspace = true
+umcf-foam-mesh.workspace = true
+umcf-schema.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

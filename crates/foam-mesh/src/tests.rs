@@ -399,3 +399,11 @@ fn empty_binary_lists_have_no_parentheses() {
     let m = read(&binary_mesh(a).with("constant/air/polyMesh/cellZones", zones)).unwrap();
     assert_eq!(m.cell_zones.iter().map(|z| z.cells.len()).collect::<Vec<_>>(), [0, 1]);
 }
+
+#[test]
+fn boundary_alone() {
+    let fs = ascii_mesh();
+    let patches = crate::read_boundary(&fs, "constant/air/polyMesh", &Limits::default()).unwrap().unwrap();
+    assert_eq!(patches, read(&fs).unwrap().boundary);
+    assert!(crate::read_boundary(&fs, "constant/none/polyMesh", &Limits::default()).unwrap().is_none());
+}

@@ -109,6 +109,15 @@ pub fn mesh_dir(region: &str) -> String {
     if region.is_empty() { "constant/polyMesh".to_string() } else { format!("constant/{region}/polyMesh") }
 }
 
+/// Only the patches of a mesh (`<dir>/boundary`): what a case editor needs, without reading the
+/// mesh itself. `Ok(None)` when there is no boundary file.
+pub fn read_boundary(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Option<Vec<Patch>>> {
+    match read_file(fs, dir, "boundary", limits)? {
+        Some((_, bytes)) => parse_boundary(&bytes).map(Some),
+        None => Ok(None),
+    }
+}
+
 /// The bytes of `dir/name` or `dir/name.gz`, decompressed; `None` if neither exists.
 fn read_file(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<Option<(String, Vec<u8>)>> {
     for path in [format!("{dir}/{name}"), format!("{dir}/{name}.gz")] {

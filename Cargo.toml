@@ -16,6 +16,7 @@ umcf-schema = { path = "crates/schema" }
 umcf-foam-dict = { path = "crates/foam-dict" }
 umcf-foam-field = { path = "crates/foam-field" }
 umcf-foam-mesh = { path = "crates/foam-mesh" }
+umcf-model = { path = "crates/model" }
 
 # foundation
 thiserror = "2"

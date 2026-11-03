@@ -85,10 +85,10 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
 
 | Layer | Crates |
 |---|---|
-| L0 | `core` (ids, units, errors, paths), `geom` (vectors, bbox, STL) |
+| L0 | `core` (ids, units, errors, paths), `geom` (vectors, bbox, STL read/write, repair and diagnostics, ray-cast BVH) |
 | L1 | `foam-dict` (lossless dictionary parser/writer), `foam-mesh` (polyMesh), `foam-field` (fields, time dirs, processor dirs) |
 | L2 | `schema` (catalog of solver types and keywords), `model` (typed case: regions, materials, BCs, controls) |
-| L3 | `validate` (case checks), `post` (probes, time series, slices, log/residual parsing), `render` (CPU render of mesh and fields) |
+| L3 | `validate` (case checks, meshing set-up checks, mesh quality), `post` (probes, time series, slices, log/residual parsing), `render` (renderer-agnostic 3D scene, CPU rasteriser, picking) |
 | L4 | `runner` (**optional**, cargo feature `runner`: runs the pipeline locally, with processes, MPI and cancel; native only) |
 | L5 | `engine` (session, commands, history, journal, guard) |
 | L6 | `ui-egui`, `mcp` |
@@ -111,6 +111,20 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
   defaults or returns an error. Only menu-style invocation opens a dialog (`UiRequest::Dialog`).
 - **The UI is thin:** panels read engine state and act through `app.run(id, params)`. Colours
   come from `theme::Tokens`. **egui only, never Tauri.**
+- **From geometry to a case, in the GUI.** People import STL geometry (buildings, terrain,
+  trees), set up and run the meshing (blockMesh background, snappyHexMesh refinement and layers,
+  the solid-region extrusion steps), look at the mesh in 3D and assign boundary conditions by
+  picking patches there. Every one of these is a command first (`geometry.import`,
+  `mesh.setup`, `bc.set` with the picked patches as parameters); the 3D view only produces the
+  selection. Meshing writes the same dictionaries and runs the same OpenFOAM utilities a user
+  would, never a mesher of our own.
+- **Common mesh problems are caught and explained, not left to a failed run.** STL defects
+  (open or non-manifold edges, flipped normals, degenerate triangles, wrong units), meshing
+  set-up mistakes (insidePoint inside a building, a leak through an open surface, missing
+  feature edges) and mesh-quality problems (non-orthogonality, skewness, negative volumes,
+  failed layers) are reported with a location that is highlighted in the 3D view and, where it
+  is safe, a command that fixes it. Mesh quality follows `checkMesh` (its thresholds and, when
+  available, its `-writeSets` output); a native check is a preview, never a replacement.
 - **Time goes through `chrono`** (simulation start dates, weather files, solar time). Never
   hand-roll calendar math.
 - **Rust only** (no handwritten JS/TS, no Python in the product). L0–L3 stay wasm-clean
