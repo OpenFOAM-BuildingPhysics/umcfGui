@@ -832,10 +832,16 @@ impl Case {
                     }
                 } else if visible.is_none() && from_elsewhere {
                     // Kept, with the type and entries set after what it brings in (the last
-                    // one read wins).
+                    // one read wins), and the defaults for keys it doesn't show.
+                    let shown: Vec<String> = own.map(|d| d.keys().map(str::to_string).collect()).unwrap_or_default();
                     doc.set(&["boundaryField", p, "type"], kind)?;
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
+                    }
+                    for (k, v) in defaults {
+                        if !shown.iter().any(|s| s == k) && !entries.iter().any(|(e, _)| e == k) {
+                            doc.set(&["boundaryField", p, k], v)?;
+                        }
                     }
                 } else {
                     if from_elsewhere || indirect_value {

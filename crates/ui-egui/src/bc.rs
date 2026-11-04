@@ -61,6 +61,9 @@ impl BcForm {
                 .map(|(k, v)| (k, v.trim().trim_end_matches(';').trim()))
                 .filter(|(_, v)| !v.is_empty())
                 .ok_or_else(|| format!("`{line}`: write an entry as `key value`."))?;
+            if k == "value" || k == "type" {
+                return Err(format!("Give the {k} in its own field, not as another entry."));
+            }
             entries.insert(k.to_string(), json!(v));
         }
         if !entries.is_empty() {

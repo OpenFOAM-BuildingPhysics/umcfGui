@@ -612,6 +612,8 @@ fn the_condition_card_reads_its_entries() {
     let kept = crate::bc::BcForm { filled_value: "uniform (1 0 0)".into(), ..form.clone() };
     assert!(kept.params().unwrap().get("value").is_none());
     assert_eq!(kept.params().unwrap()["defaults"], json!({ "value": "uniform (1 0 0)" }));
+    let twice = crate::bc::BcForm { more: "value uniform (0 0 1)".into(), ..form.clone() };
+    assert!(twice.params().unwrap_err().contains("its own field"));
     let bad = crate::bc::BcForm { more: "lonely".into(), ..form.clone() };
     assert!(bad.params().unwrap_err().contains("key value"));
     assert!(crate::bc::BcForm { kind: " ".into(), ..form }.params().is_err());

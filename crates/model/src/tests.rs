@@ -821,6 +821,29 @@ fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
     .unwrap();
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(text.contains("$inletCommon") && text.contains("type") && text.contains("uniform (1 0 0)"), "{text}");
+    // Defaults fill what such an entry doesn't show (`value` is in the entry here).
+    let fs = case().with(
+        "0/air/U",
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    ground\n    {{\n        $inletCommon\n        value uniform (1 0 0);\n    }}\n}}\n",
+            header("volVectorField", "U")
+        ),
+    );
+    let mut c = Case::open(&fs).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "U",
+        &["ground"],
+        &Condition {
+            kind: "inletOutlet",
+            entries: &[],
+            defaults: &[("inletValue", "uniform (0 0 0)"), ("value", "uniform (9 9 9)")],
+        },
+    )
+    .unwrap();
+    let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
+    assert!(text.contains("inletValue") && !text.contains("uniform (9 9 9)"), "{text}");
     for (kind, k) in [("__umcfListA0", "value"), ("fixedValue", "__umcfListA0")] {
         let e = c
             .set_bc(&fs, "air", "U", &["top"], &Condition { kind, entries: &[(k, "uniform (0 0 0)")], defaults: &[] })
