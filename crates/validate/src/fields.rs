@@ -65,7 +65,7 @@ const RAS_KO: &str = "src/MomentumTransportModels/momentumTransportModels/RAS/kO
 const RAS_SST: &str = "src/MomentumTransportModels/momentumTransportModels/Base/kOmegaSST/kOmegaSSTBase.C";
 
 /// The catalog's name for a kind of region.
-fn kind_name(k: RegionKind) -> Option<&'static str> {
+pub(crate) fn kind_name(k: RegionKind) -> Option<&'static str> {
     match k {
         RegionKind::Fluid => Some("fluid"),
         RegionKind::Solid => Some("solid"),
@@ -84,14 +84,14 @@ struct Need {
 }
 
 /// The word value of a top-level entry of `constant/<region>/<file>`, `$macros` skipped.
-fn selected(case: &Case, region: &str, file: &str, path: &[&str]) -> Option<String> {
+pub(crate) fn selected(case: &Case, region: &str, file: &str, path: &[&str]) -> Option<String> {
     let doc = case.dict(&format!("constant/{region}/{file}"))?;
     let v = doc.value(path)?;
     let v = umcf_foam_dict::unquote(v.trim()).to_string();
     (!v.is_empty() && !v.starts_with('$') && !v.contains(char::is_whitespace)).then_some(v)
 }
 
-fn in_version(versions: &[OfVersion], v: Option<OfVersion>) -> bool {
+pub(crate) fn in_version(versions: &[OfVersion], v: Option<OfVersion>) -> bool {
     match v {
         Some(v) => versions.contains(&v),
         // Version unknown: only what both versions do.

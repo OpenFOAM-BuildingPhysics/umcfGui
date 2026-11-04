@@ -118,6 +118,8 @@ pub struct Scan {
     fields: BTreeSet<FieldRead>,
     /// (region kind, class) for each `<class>::New(…)` the solver calls for a region kind.
     builds: BTreeSet<(String, String)>,
+    /// (family, type, keyword, receiver): required keywords a type reads whenever it is built.
+    startup: BTreeSet<(String, String, String, String)>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -301,7 +303,12 @@ fn split_args(args: &str) -> Vec<String> {
 
 /// Keywords read with a literal key in `text`.
 pub fn keywords(pat: &Patterns, text: &str) -> BTreeSet<Kw> {
-    let mut out = BTreeSet::new();
+    keywords_at(pat, text).into_iter().map(|(_, k)| k).collect()
+}
+
+/// [`keywords`] with the offset of each lookup, in source order.
+fn keywords_at(pat: &Patterns, text: &str) -> Vec<(usize, Kw)> {
+    let mut out = Vec::new();
     for m in pat.call.captures_iter(text) {
         let (Some(all), Some(method)) = (m.get(0), m.get(2)) else { continue };
         let Some(args) = call_args(text, all.end() - 1) else { continue };
@@ -318,7 +325,7 @@ pub fn keywords(pat: &Patterns, text: &str) -> BTreeSet<Kw> {
             _ => Access::Optional,
         };
         let receiver = m.get(1).map(|r| r.as_str().split_whitespace().collect::<String>()).unwrap_or_default();
-        out.insert(Kw { name: key.to_string(), access, receiver });
+        out.push((all.start(), Kw { name: key.to_string(), access, receiver }));
     }
     out
 }
@@ -380,6 +387,18 @@ fn field_reads_at(pat: &Patterns, text: &str) -> Vec<(usize, (String, Instance, 
     out
 }
 
+/// For a match ending at the `(` of `…::name(`: the number of parameters, when this is a
+/// definition: its parameter list is followed by the body `{`, an initialiser list `:` or
+/// `const`, never by what follows a call (`;`, `.y`, `+ g`).
+fn definition_params(text: &str, open: usize) -> Option<usize> {
+    let args = call_args(text, open)?;
+    let after = text.get(open + args.len() + 2..)?.trim_start();
+    let body = after.starts_with('{')
+        || (after.starts_with(':') && !after.starts_with("::"))
+        || Regex::new(r"^const\b").is_ok_and(|r| r.is_match(after));
+    body.then(|| split_args(args).len())
+}
+
 /// A constructor of a class defined in a file: its byte span (`Foam::…::class::class(`, or
 /// `class<Base>::class(`, up to the `}` at the start of a line that ends the body) and its
 /// number of parameters.
@@ -390,12 +409,15 @@ struct Ctor {
 
 fn constructors(text: &str, class: &str) -> Vec<Ctor> {
     let c = regex::escape(class);
-    let Ok(re) = Regex::new(&format!(r"\b{c}\s*(?:<[^<>;{{}}()]*>)?\s*::\s*{c}\s*\(")) else { return Vec::new() };
+    // At the start of a line (after the return type and scope), never inside a string.
+    let Ok(re) = Regex::new(&format!(r#"(?m)^[^"\n;{{}}=?]*?\b{c}\s*(?:<[^<>;{{}}()]*>)?\s*::\s*{c}\s*\("#)) else {
+        return Vec::new();
+    };
     re.find_iter(text)
-        .map(|m| {
-            let params = call_args(text, m.end() - 1).map_or(0, |a| split_args(a).len());
+        .filter_map(|m| {
+            let params = definition_params(text, m.end() - 1)?;
             let end = text.get(m.end()..).and_then(|rest| rest.find("\n}")).map_or(text.len(), |k| m.end() + k);
-            Ctor { span: m.start()..end, params }
+            Some(Ctor { span: m.start()..end, params })
         })
         .collect()
 }
@@ -412,12 +434,7 @@ fn model_reads(pat: &Patterns, text: &str, class: &str, arity: Option<usize>) ->
     if ctors.is_empty() {
         return reads.into_iter().map(|(_, r)| r).collect();
     }
-    let matching = |c: &&Ctor| arity.is_some_and(|n| c.params == n);
-    let used: Vec<&Ctor> = if ctors.iter().any(|c| matching(&c)) {
-        ctors.iter().filter(matching).collect()
-    } else {
-        ctors.iter().collect()
-    };
+    let used = used_ctors(&ctors, arity);
     let in_ctor = |at: usize, c: &Ctor| c.span.contains(&at);
     reads
         .iter()
@@ -430,6 +447,113 @@ fn model_reads(pat: &Patterns, text: &str, class: &str, arity: Option<usize>) ->
                 .all(|c| reads.iter().any(|(at2, (n, i, r))| *r && n == name && i == instance && in_ctor(*at2, c)));
             (name.clone(), *instance, *required && here && every)
         })
+        .collect()
+}
+
+/// The constructors the solver builds with: those with `arity` parameters when there are any,
+/// else all of them.
+fn used_ctors(ctors: &[Ctor], arity: Option<usize>) -> Vec<&Ctor> {
+    let matching = |c: &&Ctor| arity.is_some_and(|n| c.params == n);
+    if ctors.iter().any(|c| matching(&c)) { ctors.iter().filter(matching).collect() } else { ctors.iter().collect() }
+}
+
+/// What runs whenever the solver builds the model: each used constructor, plus the member
+/// functions of the class (`initialise()`) that every used constructor calls. One list of
+/// spans per used constructor.
+fn startup(text: &str, class: &str, arity: Option<usize>) -> Vec<Vec<std::ops::Range<usize>>> {
+    let ctors = constructors(text, class);
+    let used = used_ctors(&ctors, arity);
+    let c = regex::escape(class);
+    // A definition starts a line (`void Foam::…::m::initialise()`); `"m::initialise() "` in a
+    // message is not one.
+    let Ok(def) = Regex::new(&format!(r#"(?m)^[^"\n;{{}}=?]*?\b{c}\s*(?:<[^<>;{{}}()]*>)?\s*::\s*(\w+)\s*\("#)) else {
+        return Vec::new();
+    };
+    let functions: Vec<(String, usize, std::ops::Range<usize>)> = def
+        .captures_iter(text)
+        .filter_map(|m| {
+            let (all, name) = (m.get(0)?, m.get(1)?);
+            if name.as_str() == class {
+                return None;
+            }
+            let params = definition_params(text, all.end() - 1)?;
+            let end = text.get(all.end()..).and_then(|r| r.find("\n}")).map_or(text.len(), |k| all.end() + k);
+            Some((name.as_str().to_string(), params, all.start()..end))
+        })
+        .collect();
+    used.iter()
+        .map(|ctor| {
+            let body = text.get(ctor.span.clone()).unwrap_or("");
+            let mut spans = vec![ctor.span.clone()];
+            for (name, params, span) in &functions {
+                // A call of this object's function, not another object's (`dict.read(`), with
+                // as many arguments as this overload takes.
+                let Ok(call) = Regex::new(&format!(r"(?:^|[^\w.>]){}\s*\(", regex::escape(name))) else { continue };
+                let called = call
+                    .find_iter(body)
+                    .any(|c| call_args(body, c.end() - 1).is_some_and(|a| split_args(a).len() == *params));
+                if called {
+                    spans.push(span.clone());
+                }
+            }
+            spans
+        })
+        .collect()
+}
+
+/// Whether the code at `at` runs every time the function starting at `span.start` runs: not
+/// after a `return`, not in a nested block (`if`, a loop), and not in a statement with a
+/// condition (`if (…) x;`, `else x;`, `forAll(…) x;`, `a ? b : c`, `&&`, `||`). A block under
+/// `if (Pstream::master())` counts as taken: it runs on one process in every run.
+fn unconditional(text: &str, span: &std::ops::Range<usize>, at: usize) -> bool {
+    let Some(code) = text.get(span.start..at) else { return false };
+    if Regex::new(r"\breturn\b").is_ok_and(|r| r.is_match(code)) {
+        return false;
+    }
+    let Ok(master) = Regex::new(r"^\s*if\s*\(\s*Pstream\s*::\s*master\s*\(\s*\)\s*\)\s*$") else { return false };
+    // Open braces: whether each one counts (false for a master block).
+    let mut open: Vec<bool> = Vec::new();
+    let mut from = 0;
+    for (i, c) in code.char_indices() {
+        match c {
+            '{' => {
+                let header = code.get(from..i).unwrap_or("");
+                open.push(!master.is_match(header));
+                from = i + 1;
+            }
+            '}' => {
+                open.pop();
+                from = i + 1;
+            }
+            ';' => from = i + 1,
+            _ => {}
+        }
+    }
+    if open.iter().filter(|counts| **counts).count() > 1 {
+        return false;
+    }
+    let statement = code.get(from..).unwrap_or("");
+    !(statement.contains('?')
+        || statement.contains("&&")
+        || statement.contains("||")
+        || Regex::new(r"\b(if|while|for|switch|forAll\w*|else|do|case)\b").is_ok_and(|r| r.is_match(statement)))
+}
+
+/// Required keywords (`lookup`) the model reads every time the solver builds it: in every used
+/// constructor, or a function each of them calls, unconditionally.
+fn startup_keywords(pat: &Patterns, text: &str, class: &str, arity: Option<usize>) -> BTreeSet<Kw> {
+    let runs = startup(text, class, arity);
+    if runs.is_empty() {
+        return BTreeSet::new();
+    }
+    let kws = keywords_at(pat, text);
+    let always = |at: usize, spans: &[std::ops::Range<usize>]| {
+        spans.iter().any(|s| s.contains(&at) && unconditional(text, s, at))
+    };
+    kws.iter()
+        .filter(|(_, k)| k.access == Access::Required)
+        .filter(|(_, k)| runs.iter().all(|spans| kws.iter().any(|(at, k2)| k2 == k && always(*at, spans))))
+        .map(|(_, k)| k.clone())
         .collect()
 }
 
@@ -621,6 +745,23 @@ pub fn scan(pat: &Patterns, files: &BTreeMap<String, String>) -> Result<Scan, St
         Some(set) if set.len() == 1 => set.iter().next().copied().filter(|n| passes_on(family, *n)),
         _ => None,
     };
+    // Required keywords each model type reads whenever the solver builds it.
+    for ((family, name), t) in &s.types {
+        let dir = dir_of(&t.source);
+        if t.kind != Kind::Model || dir.is_empty() {
+            continue;
+        }
+        // The whole directory at once: constructors and the functions they call may be split
+        // over several files.
+        let text: String = files
+            .iter()
+            .filter(|(p, _)| dir_of(p) == dir && p.ends_with(".C"))
+            .map(|(_, t)| format!("{t}\n"))
+            .collect();
+        for k in startup_keywords(pat, &text, &t.class, arity(family)) {
+            s.startup.insert((family.clone(), name.clone(), k.name, k.receiver));
+        }
+    }
     for (path, text) in files {
         let (owner, reads) = match (owners.get(dir_of(path)), region_of(path)) {
             (Some((o, class)), _) => {
@@ -671,6 +812,7 @@ pub struct Merged {
     apps: BTreeMap<(String, String), Versioned<Kw>>,
     fields: Versioned<FieldRead>,
     builds: Versioned<(String, String)>,
+    startup: Versioned<(String, String, String, String)>,
 }
 
 fn add_kws(into: &mut Versioned<Kw>, kws: &BTreeSet<Kw>, v: Ver) {
@@ -703,6 +845,9 @@ pub fn merge(scans: Vec<(Ver, Scan)>) -> Merged {
         }
         for b in s.builds {
             m.builds.entry(b).or_default().insert(v);
+        }
+        for k in s.startup {
+            m.startup.entry(k).or_default().insert(v);
         }
     }
     m
@@ -807,6 +952,13 @@ pub fn render_rs(m: &Merged) -> String {
     for ((region, class), v) in &m.builds {
         s.push_str(&format!(
             "        RegionBuild {{ region: {region:?}, class: {class:?}, versions: {} }},\n",
+            vers_rs(v)
+        ));
+    }
+    s.push_str("    ],\n    startup_keywords: &[\n");
+    for ((family, type_name, name, receiver), v) in &m.startup {
+        s.push_str(&format!(
+            "        StartupKeyword {{ family: {family:?}, type_name: {type_name:?}, name: {name:?}, receiver: {receiver:?}, versions: {} }},\n",
             vers_rs(v)
         ));
     }
@@ -925,6 +1077,10 @@ pub fn render_md(m: &Merged) -> String {
             f.file
         ));
     }
+    s.push_str("\n## Keywords read at start\n\nThe required keywords each type reads whenever the solver builds it: in the constructors it\nis built with, or a function each of them calls, outside any condition. `coeffs_` is the\ntype's `<Type>Coeffs` dictionary.\n\n| Type | Keyword | Read from | Versions |\n|---|---|---|---|\n");
+    for ((family, type_name, name, receiver), v) in &m.startup {
+        s.push_str(&format!("| `{family}` `{type_name}` | `{name}` | `{receiver}` | {} |\n", vers_md(v)));
+    }
     s.push_str("\n## Built per region\n\nThe classes the solver constructs (`<class>::New`) for each kind of region.\n\n| Region | Class | Versions |\n|---|---|---|\n");
     for ((region, class), v) in &m.builds {
         s.push_str(&format!("| {region} | `{class}` | {} |\n", vers_md(v)));
@@ -1016,6 +1172,70 @@ Foam::m::m(const dictionary& dict, const volScalarField& T)
             1,
         );
         assert!(model_reads(&pat, &mixed, "m", None).iter().filter(|r| r.0 == "qr").all(|r| !r.2));
+    }
+
+    #[test]
+    fn calls_are_not_definitions() {
+        let src = "    m::f();\nvoid Foam::m::f(const label n) const\n{\n}\n";
+        let call = src.find("f(").unwrap() + 1;
+        assert_eq!(definition_params(src, call), None);
+        for c in ["    m::f(x).y;\n", "    m::f(x) + g;\n", "    (m::f())\n", "    m::f(x) constant;\n"] {
+            assert_eq!(definition_params(c, c.find("f(").unwrap() + 1), None, "{c}");
+        }
+        let ctor = "Foam::m::m(const T& t)\n:\n    a_(1)\n{\n}\n";
+        assert_eq!(definition_params(ctor, ctor.find("m(").unwrap() + 1), Some(1));
+        let def = src.rfind("f(").unwrap() + 1;
+        assert_eq!(definition_params(src, def), Some(1));
+    }
+
+    /// Required keywords read whenever the model is built: in the constructor, or a function it
+    /// calls, outside any condition.
+    #[test]
+    fn keywords_read_at_start() {
+        let pat = Patterns::new().unwrap();
+        let src = r#"
+void Foam::m::initialise()
+{
+    bool s = readBool(coeffs_.lookup("smoothing"));
+    if (Pstream::master())
+    {
+        x = readBool(coeffs_.lookup("onMaster"));
+    }
+    if (dict.found("y")) y = readScalar(coeffs_.lookup("ifFound"));
+    if (a) { b(); } else c = readScalar(coeffs_.lookup("inElse"));
+    forAll(p, i) q = readScalar(coeffs_.lookup("inLoop"));
+    Pout<< "m::later() " << endl;
+    m::correct();
+    z = flag ? readScalar(coeffs_.lookup("ternary")) : 0;
+}
+
+void Foam::m::correct()
+{
+    w = readScalar(coeffs_.lookup("later"));
+}
+
+Foam::m::m(const volScalarField& T)
+:
+    a_(coeffs_.lookup("a1"))
+{
+    initialise();
+}
+"#;
+        let names: Vec<String> = startup_keywords(&pat, src, "m", Some(1)).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["a1", "onMaster", "smoothing"]);
+        // After an early return: not always.
+        let ret = src.replace("    bool s = readBool", "    if (!on) return;\n    bool s = readBool");
+        let names: Vec<String> = startup_keywords(&pat, &ret, "m", Some(1)).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["a1"]);
+        // A second constructor that doesn't call initialise(): only what both read.
+        let two = format!(
+            "{src}\nFoam::m::m(const dictionary& d, const volScalarField& T)\n:\n    a_(coeffs_.lookup(\"a1\"))\n{{\n}}\n"
+        );
+        let names: Vec<String> = startup_keywords(&pat, &two, "m", None).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["a1"]);
+        // Built with one argument: the dictionary constructor doesn't count.
+        let names: Vec<String> = startup_keywords(&pat, &two, "m", Some(1)).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["a1", "onMaster", "smoothing"]);
     }
 
     #[test]

@@ -130,6 +130,25 @@ Notes:
 |---|---|---|
 | `field.missing` | Error | A field the solver or a selected model reads is not where it is read from. Only a Warning in a decomposed case, whose parallel run reads `processor*/`. Fields read from the start time are not reported for a region that has none there (`region.no-fields`); those read from `0` or `constant/<region>` still are |
 
+## Keywords the selected models need
+
+The vegetation, grass, solar load and radiation model selected in a region's dictionary
+(`vegetationProperties`, `grassProperties`, `solarLoadProperties`, `radiationProperties`)
+reads its coefficients from `<Type>Coeffs` in the same file. The keywords it reads with
+`lookup` whenever the solver builds it must be there. Those are the keywords read in the
+constructors the solver uses, or in a function each of them calls, outside any condition (a
+block run only on the master process counts: every run has one)
+([Solver coverage](../solver-coverage.md#keywords-read-at-start)). For example,
+`simplifiedVegetation` needs `a1`, `a2`, `a3`, `C`, `D0`, `H`, `kc`, `l`, `nEvapSides`, `Rg0`,
+`Rl0` and `rsMin`, and `viewFactorSky` needs `smoothing` and `constantEmissivity`.
+
+A dictionary whose entries can come from elsewhere (`#include`, `$macro`) or match by pattern
+(`"a.*"`) is not judged.
+
+| Code | Level | What it means |
+|---|---|---|
+| `keyword.missing` | Error | A keyword the selected model reads when it is built is not in its `<Type>Coeffs` dictionary (or that dictionary is not in the file) |
+
 ## Regions and run controls
 
 | Code | Level | What it means |

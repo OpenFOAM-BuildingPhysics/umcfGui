@@ -24,6 +24,21 @@ pub struct Catalog {
     pub fields: &'static [FieldRead],
     /// The classes the solver constructs (`<class>::New`) for each kind of region.
     pub builds: &'static [RegionBuild],
+    /// Required keywords each type reads whenever the solver builds it.
+    pub startup_keywords: &'static [StartupKeyword],
+}
+
+/// A required keyword (`lookup`) a type reads whenever the solver builds it: in the
+/// constructors it is built with, or a function each of them calls, outside any condition.
+#[derive(Debug)]
+pub struct StartupKeyword {
+    pub family: &'static str,
+    pub type_name: &'static str,
+    pub name: &'static str,
+    /// What it is looked up in, as written in the source: `coeffs_` is the type's
+    /// `<Type>Coeffs` dictionary for the vegetation, grass, solar load and radiation models.
+    pub receiver: &'static str,
+    pub versions: &'static [OfVersion],
 }
 
 /// Where a field is read from.

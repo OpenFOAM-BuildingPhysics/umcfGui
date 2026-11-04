@@ -24,6 +24,9 @@ fn field(class: &str, bcs: &str) -> String {
 
 const CONTROL: &str = "application urbanMicroclimateFoam;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime 3600;\ndeltaT 60;\nwriteInterval 600;\nregions\n{\n    fluid (air);\n    solid (street);\n    vegetation (vegetation);\n}\n";
 
+/// The coefficients simplifiedVegetation reads when it is built.
+const SIMPLIFIED_VEGETATION: &str = "simplifiedVegetationCoeffs\n{\n    a1 a1 [1 0 -3 0 0 0 0] 169;\n    a2 a2 [1 0 -3 0 0 0 0] 18;\n    a3 a3 [1 -1 -2 0 0 0 0] 0.005;\n    D0 D0 [1 -1 -2 0 0 0 0] 1.2;\n    C C [0 -1 0.5 0 0 0 0] 131;\n    H H [0 1 0 0 0 0 0] 1.5;\n    kc kc [0 0 0 0 0 0 0] 0.5;\n    l l [0 1 0 0 0 0 0] 0.1;\n    rsMin rsMin [0 -1 1 0 0 0 0] 150;\n    Rg0 Rg0 [1 0 -3 0 0 0 0] 800;\n    Rl0 Rl0 [1 0 -3 0 0 0 0] 350;\n    nEvapSides nEvapSides [0 0 0 0 0 0 0] 1;\n}\n";
+
 /// A small OF12 case that checks clean: air couples to street both ways, vegetation samples
 /// the air's cells.
 fn case() -> MemFs {
@@ -60,7 +63,7 @@ fn case() -> MemFs {
         .with("constant/air/fvModels", format!("{}\n", header("dictionary")))
         .with(
             "constant/air/vegetationProperties",
-            format!("{}vegetationModel simplifiedVegetation;\n", header("dictionary")),
+            format!("{}vegetationModel simplifiedVegetation;\n{SIMPLIFIED_VEGETATION}", header("dictionary")),
         )
         .with(
             "constant/street/transportProperties",
@@ -1160,4 +1163,75 @@ fn openfoam_reads_match_the_sources() {
             );
         }
     }
+}
+
+fn keywords_missing(fs: &MemFs) -> Vec<String> {
+    let c = Case::open(&complete(fs)).unwrap();
+    check(&c)
+        .into_iter()
+        .filter(|d| d.code == "keyword.missing")
+        .map(|d| format!("{} {}", d.path, d.message.split('`').nth(3).unwrap_or("")))
+        .collect()
+}
+
+#[test]
+fn keywords_the_selected_models_read() {
+    let fs = case();
+    assert_eq!(keywords_missing(&fs), Vec::<String>::new());
+    // One coefficient missing.
+    let mut one = case();
+    edit(&mut one, "constant/air/vegetationProperties", "    a1 a1 [1 0 -3 0 0 0 0] 169;\n", "");
+    assert_eq!(keywords_missing(&one), ["constant/air/vegetationProperties a1"]);
+    // No coefficients at all: every one is missing (the type reads an empty dictionary).
+    let mut none = case();
+    none.insert("constant/air/vegetationProperties", dict("vegetationModel simplifiedVegetation;\n"));
+    assert_eq!(keywords_missing(&none).len(), 12);
+    // Keys that may come from elsewhere or match a pattern: not judged.
+    for body in ["#include \"common\"\n", "\"a.*\" a [1 0 -3 0 0 0 0] 1;\n", "$common\n"] {
+        let mut fs = case();
+        edit(&mut fs, "constant/air/vegetationProperties", "    a1 a1 [1 0 -3 0 0 0 0] 169;\n", body);
+        assert_eq!(keywords_missing(&fs), Vec::<String>::new(), "{body}");
+    }
+    let mut fs = case();
+    fs.insert(
+        "constant/air/vegetationProperties",
+        dict("vegetationModel simplifiedVegetation;\nsimplifiedVegetationCoeffs $c;\n"),
+    );
+    assert_eq!(keywords_missing(&fs), Vec::<String>::new());
+
+    // Written twice, the blocks merge.
+    let mut fs = case();
+    edit(&mut fs, "constant/air/vegetationProperties", "    a1 a1 [1 0 -3 0 0 0 0] 169;\n", "");
+    let text = String::from_utf8(fs.read("constant/air/vegetationProperties", 1 << 20).unwrap().unwrap()).unwrap();
+    fs.insert(
+        "constant/air/vegetationProperties",
+        text.replacen(
+            "simplifiedVegetationCoeffs",
+            "simplifiedVegetationCoeffs\n{\n    a1 a1 [1 0 -3 0 0 0 0] 169;\n}\nsimplifiedVegetationCoeffs",
+            1,
+        ),
+    );
+    assert_eq!(keywords_missing(&fs), Vec::<String>::new());
+
+    // viewFactorSky (radiationProperties), in the vegetation region.
+    let mut fs = case();
+    fs.insert(
+        "constant/vegetation/radiationProperties",
+        dict("radiationModel viewFactorSky;\nviewFactorSkyCoeffs\n{\n    smoothing true;\n}\n"),
+    );
+    assert_eq!(keywords_missing(&fs), ["constant/vegetation/radiationProperties constantEmissivity"]);
+    // directAndDiffuse reads its coefficients at start in both versions (in OpenFOAM-8 on the
+    // master process, which every run has).
+    let mut fs = case();
+    fs.insert("constant/vegetation/solarLoadProperties", dict("solarLoadModel directAndDiffuse;\n"));
+    assert_eq!(
+        keywords_missing(&fs),
+        ["constant/vegetation/solarLoadProperties constantAlbedo", "constant/vegetation/solarLoadProperties smoothing"]
+    );
+    let mut of8 = of8_case();
+    of8.insert("constant/vegetation/solarLoadProperties", dict("solarLoadModel directAndDiffuse;\n"));
+    assert_eq!(
+        keywords_missing(&of8),
+        ["constant/vegetation/solarLoadProperties constantAlbedo", "constant/vegetation/solarLoadProperties smoothing"]
+    );
 }
