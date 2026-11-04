@@ -915,6 +915,9 @@ fn boundary_conditions_refuse_what_would_break_the_file() {
         json!({"field": "T", "type": "fixedValue", "value": "{ x 1; }; y", "patches": p}),
         json!({"field": "T", "type": "fixedValue", "value": "uniform 1 // note", "patches": p}),
         json!({"field": "T", "type": "__umcfListA0", "patches": p}),
+        json!({"field": "U", "type": "fixedValue", "value": 300, "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "value": [2, 0, 0], "patches": p}),
+        json!({"field": "U", "type": "inletOutlet", "entries": {"inletValue": "uniform (1 0)"}, "patches": p}),
         json!({"field": "T", "type": "fixedValue", "entries": {"type": "x"}, "patches": p}),
         json!({"field": "T", "type": "fixedValue", "patches": [{"region": "air", "patch": "nowhere"}]}),
         json!({"field": "T", "type": "fixedValue", "patches": [{"region": "street", "patch": "inlet"}]}),
@@ -922,6 +925,11 @@ fn boundary_conditions_refuse_what_would_break_the_file() {
     ] {
         assert!(s.execute("bc.set", &bad).is_err(), "{bad}");
     }
+    let e = s
+        .execute("bc.set", &json!({"field": "U", "type": "fixedValue", "value": 300, "patches": p}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("has 1 component; U is a volVectorField (3)"), "{e}");
     assert!(s.case().unwrap().changed().is_empty());
     assert!(!s.can_undo());
 }

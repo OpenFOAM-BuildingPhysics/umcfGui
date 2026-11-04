@@ -54,9 +54,16 @@ umcf-cli run --case my-case \
   in. Otherwise the patch gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
   had none (a condition from a group or a pattern then still applies to the other patches).
 - **Nothing else in the file changes, byte for byte**: not the other entries, the comments, the
-  layout nor the data lists, ASCII or binary; a `.gz` file is compressed again. A file that
-  wouldn't come back unchanged without an edit is refused rather than rewritten. Every field
-  file of the test projects comes back byte for byte.
+  layout nor the data lists, ASCII or binary. A file that wouldn't come back unchanged without
+  an edit is refused rather than rewritten. Every field file of the test projects comes back
+  byte for byte. A `.gz` file is compressed again: its text is kept byte for byte, its
+  compressed bytes generally not.
+- A **uniform value must fit the field**: one number for a scalar field, three for a vector
+  (`uniform (2 0 0)`), and so on, for `value` and the `…Value` entries (`inletValue`); a mismatch
+  is refused. A field of another class (`volVector2DField`) is not checked.
+- A **new entry replacing one that took text from an `#include` or a `$macro`** is reported
+  (`bc.replaced`): that text no longer applies to the patch. A value in the old entry that
+  names a variable (`value $internalField;`) is not reported.
 - When `boundaryField` itself takes entries from an `#include` or a `$macro`, the command warns
   (`bc.indirect`): one of them may set the same patches after the entries set here.
 - A field whose `boundaryField` comes from elsewhere (`boundaryField $common;`, an `#include`)

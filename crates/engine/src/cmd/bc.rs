@@ -55,16 +55,48 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         by_region.entry(r.as_str()).or_default().push(patch.as_str());
     }
     let pairs: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    // A uniform value has as many components as the field's type.
+    for region in by_region.keys() {
+        let class = s.case().and_then(|c| c.region(region)).and_then(|r| r.field(field)).and_then(|f| f.class.clone());
+        if let Some(n) = class.as_deref().and_then(components) {
+            for (k, v) in &entries {
+                if let Some(got) = uniform_components(v)
+                    && got != n
+                    && (k == "value" || k.ends_with("Value"))
+                {
+                    let class = class.as_deref().unwrap_or("");
+                    return Err(Error::Params(format!(
+                        "{id}: {k} `{v}` has {got} component{}; {field} is a {class} ({n})",
+                        if got == 1 { "" } else { "s" }
+                    )));
+                }
+            }
+        }
+    }
     let o = s.opened_mut()?;
     let mut files = Vec::new();
+    let mut dropped: Vec<(String, String)> = Vec::new();
     for (region, names) in &by_region {
-        o.case.set_bc(o.fs.as_ref(), region, field, names, kind, &pairs)?;
+        let gone = o.case.set_bc(o.fs.as_ref(), region, field, names, kind, &pairs)?;
+        dropped.extend(gone.into_iter().map(|p| (region.to_string(), p)));
         if let Some(f) = o.case.region(region).and_then(|r| r.field(field)) {
             files.push(f.path.clone());
         }
     }
     // What the case check says now about these patches' conditions.
     let mut found: Vec<Value> = Vec::new();
+    for (region, patch) in &dropped {
+        let path = o.case.region(region).and_then(|r| r.field(field)).map(|f| f.path.clone()).unwrap_or_default();
+        found.push(json!({
+            "level": "warning",
+            "code": "bc.replaced",
+            "path": path,
+            "region": region,
+            "patch": patch,
+            "field": field,
+            "message": "the entry it had took text from an #include or a $macro: the new entry replaces it, and that text is no longer used here",
+        }));
+    }
     // Entries the file brings in from elsewhere can still override the ones set here.
     for region in by_region.keys() {
         if let Some(f) = o.case.region(region).and_then(|r| r.field(field)).filter(|f| f.indirect) {
@@ -105,6 +137,33 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "diagnostics": found,
         }),
     ))
+}
+
+/// The components of a field class's values: `volScalarField` 1, `volVectorField` 3, …;
+/// `None` for a class it doesn't know (`volVector2DField`): the value isn't checked then.
+fn components(class: &str) -> Option<usize> {
+    let kind =
+        ["vol", "surface", "point"].iter().find_map(|p| class.strip_prefix(p)).and_then(|k| k.strip_suffix("Field"))?;
+    match kind {
+        "Scalar" | "SphericalTensor" => Some(1),
+        "Vector" => Some(3),
+        "SymmTensor" => Some(6),
+        "Tensor" => Some(9),
+        _ => None,
+    }
+}
+
+/// The components of a `uniform` value written out (`uniform 1`, `uniform (1 0 0)`); `None` for
+/// anything else (`$internalField`, a list, a table).
+fn uniform_components(text: &str) -> Option<usize> {
+    let v = text.trim().strip_prefix("uniform")?.trim();
+    match v.strip_prefix('(').and_then(|v| v.strip_suffix(')')) {
+        Some(inner) => {
+            let parts: Vec<&str> = inner.split_whitespace().collect();
+            parts.iter().all(|p| p.parse::<f64>().is_ok()).then_some(parts.len())
+        }
+        None => v.parse::<f64>().is_ok().then_some(1),
+    }
 }
 
 /// A value: a number or a list of numbers is `uniform`, text is OpenFOAM text as given.
@@ -236,5 +295,32 @@ impl Session {
             out.extend(solver);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn components_by_class() {
+        for (class, n) in [
+            ("volScalarField", Some(1)),
+            ("surfaceVectorField", Some(3)),
+            ("volSymmTensorField", Some(6)),
+            ("pointTensorField", Some(9)),
+            ("volSphericalTensorField", Some(1)),
+            ("volVector2DField", None),
+            ("dictionary", None),
+        ] {
+            assert_eq!(super::components(class), n, "{class}");
+        }
+        for (v, n) in [
+            ("uniform 1e-3", Some(1)),
+            ("uniform(1 0 0)", Some(3)),
+            ("uniform ( 1 0 0 )", Some(3)),
+            ("uniform $x", None),
+            ("$internalField", None),
+        ] {
+            assert_eq!(super::uniform_components(v), n, "{v}");
+        }
     }
 }

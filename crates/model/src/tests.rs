@@ -702,7 +702,7 @@ fn a_boundary_condition_changes_its_entry_only() {
     assert_eq!(c.save(&mut fs, None).unwrap(), ["0/air/T"]);
     assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), after.as_bytes());
     // What can't be edited says why.
-    let e = |r: Result<()>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    let e = |r: Result<Vec<String>>| r.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(e(c.set_bc(&fs, "air", "U", &["top"], "fixedValue", &[])).contains("no field U of region air"));
     assert!(e(c.set_bc(&fs, "nowhere", "T", &["top"], "fixedValue", &[])).contains("no region"));
 }
@@ -733,8 +733,9 @@ fn the_same_type_keeps_its_entry() {
         text.contains("        type            atmBoundaryLayerInletVelocity;\n        #include        \"include/ABLConditions\"\n        value           uniform (2 0 0); // from the profile\n"),
         "{text}"
     );
-    // Another type starts afresh.
-    c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (0 0 0)")]).unwrap();
+    // Another type starts afresh, and says what it dropped.
+    let dropped = c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (0 0 0)")]).unwrap();
+    assert_eq!(dropped, ["ground"]);
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("#include") && text.contains("type            fixedValue;"), "{text}");
 }

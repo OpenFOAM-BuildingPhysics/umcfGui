@@ -736,7 +736,8 @@ impl Case {
     /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
     /// or pattern entry stays for the other patches it covers. Nothing else in the file
     /// changes, byte for byte: not the other entries, the comments, nor the data lists.
-    /// [`Case::save`] writes it.
+    /// [`Case::save`] writes it. Returns the patches whose replaced entry brought in text from
+    /// elsewhere (an `#include`, a `$macro`): that is gone from them now.
     pub fn set_bc(
         &mut self,
         fs: &dyn CaseFs,
@@ -745,7 +746,7 @@ impl Case {
         patches: &[&str],
         kind: &str,
         entries: &[(&str, &str)],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
         let r = self
             .regions
@@ -792,8 +793,15 @@ impl Case {
             }
         };
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
+        // Patches whose replaced entry brought in text from elsewhere (`#include`, `$macro`).
+        let mut dropped = Vec::new();
         let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
             for p in patches {
+                let indirect_value = doc
+                    .get(&["boundaryField", p])
+                    .filter(|e| e.dict().is_none())
+                    .and_then(umcf_foam_dict::Entry::value_text)
+                    .is_some_and(|v| v.trim_start().starts_with(['$', '#']));
                 let own = doc.get(&["boundaryField", p]).and_then(umcf_foam_dict::Entry::dict);
                 let visible = own.and_then(|d| word(d, "type"));
                 // An entry whose type comes from an `#include` or a `$macro` in it.
@@ -814,6 +822,9 @@ impl Case {
                         doc.set(&["boundaryField", p, k], v)?;
                     }
                 } else {
+                    if from_elsewhere || indirect_value {
+                        dropped.push(p.to_string());
+                    }
                     doc.set(&["boundaryField", p], &body)?;
                 }
             }
@@ -826,7 +837,7 @@ impl Case {
         if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
             *f = summary;
         }
-        Ok(())
+        Ok(dropped)
     }
 
     /// Writes the changed dictionaries and returns their paths.

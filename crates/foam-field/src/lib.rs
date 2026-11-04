@@ -404,8 +404,10 @@ pub const PLACEHOLDER: &str = "__umcfList";
 
 /// Rewrites a field file with `edit` applied to its dictionary (a boundary condition changed,
 /// say), keeping every byte the edit doesn't touch: the lists go back exactly as they were
-/// (ASCII or binary), and a gzip file is compressed again. A file that wouldn't come back
-/// byte for byte unedited is refused, so an edit can never change it anywhere else.
+/// (ASCII or binary). A file whose text wouldn't come back byte for byte unedited is refused,
+/// so an edit can never change it anywhere else. A gzip file is compared and edited
+/// decompressed and compressed again: its text is kept byte for byte, its compressed bytes
+/// generally not.
 pub fn rewrite(bytes: &[u8], limits: &Limits, edit: impl FnOnce(&mut Document) -> Result<()>) -> Result<Vec<u8>> {
     if bytes.starts_with(&GZIP_MAGIC) {
         let raw = gunzip(bytes, limits.max_bytes)?;
