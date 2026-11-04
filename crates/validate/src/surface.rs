@@ -102,7 +102,7 @@ pub fn diagnostics(file: &str, stl: &Stl, r: &Report) -> Vec<Diagnostic> {
             Level::Warning,
             "surface.degenerate",
             format!(
-                "{} without area (two vertices in the same place, or all three in a line): they have no normal, and surfaceCheck warns they can upset snappyHexMesh's intersection tests. `geometry.repair` with `degenerate` removes them and keeps the surface closed around them",
+                "{} without area (two vertices in the same place, or all three in a line; OpenFOAM's triangle quality below 1e-15): they have no normal, and surfaceCheck warns they can upset snappyHexMesh's intersection tests. `geometry.repair` with `degenerate` removes them and keeps the surface closed around them",
                 plural(r.degenerate.count, "triangle", "triangles")
             ),
         );

@@ -25,10 +25,9 @@ use crate::{BBox, Vec3};
 /// The most triangles listed per finding; the counts are complete.
 pub const MAX_LISTED: usize = 1000;
 
-/// A triangle whose height is below this fraction of its longest edge, or within two steps of
-/// an `f32` coordinate where it is, is degenerate: its vertices are in a line, to the
-/// precision of an STL file's numbers.
-pub const DEGENERATE_HEIGHT: f64 = 1e-7;
+/// Below this [`quality`] a triangle is degenerate: the threshold below which `surfaceCheck`
+/// warns that a surface "might give problems in self-intersection testing" (`small`).
+pub const DEGENERATE_QUALITY: f64 = 1e-15;
 
 /// How many triangles have a defect, and the first [`MAX_LISTED`] of them (indices into
 /// [`Stl::triangles`]).
@@ -374,16 +373,34 @@ pub(crate) fn same_direction(a: &[u32; 3], b: &[u32; 3]) -> bool {
     })
 }
 
-/// Whether a triangle's vertices are in a line (it has no area to speak of). See
-/// [`DEGENERATE_HEIGHT`].
-pub fn is_degenerate(t: &Triangle) -> bool {
+/// A triangle's quality as OpenFOAM measures it: its area over that of the equilateral
+/// triangle with the same circumradius (1 for an equilateral triangle, 0 for a collapsed one).
+//
+// Ported from OpenFOAM-12, src/OpenFOAM/meshes/primitiveShapes/triangle/triangleI.H
+// (`triangle::circumCircle`, `triangle::quality`), Copyright (C) 2011-2024 OpenFOAM Foundation.
+pub fn quality(t: &Triangle) -> f64 {
+    const GREAT: f64 = 1e15;
+    const ROOT_VSMALL: f64 = 1e-150;
     let [a, b, c] = t.points();
-    let longest = (b - a).length_squared().max((c - b).length_squared()).max((a - c).length_squared()).sqrt();
-    // Twice the area is the longest edge times the height on it.
-    let height = t.cross().length() / longest;
-    let precision = 2.0 * f64::from(f32::EPSILON) * a.max_abs().max(b.max_abs()).max(c.max_abs());
-    // Not a number (a coordinate that isn't one, or no edge length) is degenerate too.
-    height.partial_cmp(&(DEGENERATE_HEIGHT * longest).max(precision)) != Some(std::cmp::Ordering::Greater)
+    let d1 = (c - a).dot(b - a);
+    let d2 = -(c - b).dot(b - a);
+    let d3 = (c - a).dot(c - b);
+    let (c1, c2, c3) = (d2 * d3, d3 * d1, d1 * d2);
+    let denom = c1 + c2 + c3;
+    let r = if denom.abs() < ROOT_VSMALL {
+        3f64.sqrt() * GREAT
+    } else {
+        ((d1 + d2) * (d2 + d3) * (d3 + d1) / (4.0 * denom)).max(0.0).sqrt()
+    };
+    let area = 0.5 * t.cross().length();
+    area / (0.75 * 3f64.sqrt() * r.min(GREAT).powi(2) + ROOT_VSMALL)
+}
+
+/// Whether a triangle has no area to speak of: its [`quality`] is below
+/// [`DEGENERATE_QUALITY`] (two vertices in the same place, or all three in a line), or not a
+/// number.
+pub fn is_degenerate(t: &Triangle) -> bool {
+    quality(t).partial_cmp(&DEGENERATE_QUALITY) != Some(std::cmp::Ordering::Greater)
 }
 
 /// The parts of the surface: triangles connected through edges of two triangles, each with

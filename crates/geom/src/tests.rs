@@ -353,22 +353,61 @@ fn foam_names() {
 }
 
 #[test]
-fn needles_as_thin_as_the_coordinates_are_degenerate() {
-    // From a real tree surface: about one f32 step high, 2 km from the origin.
-    let t = Triangle {
-        vertices: [
-            [0x3fe5989d, 0xc5024dea, 0x43c19c6a],
-            [0x3fe5989f, 0xc5024deb, 0x43c1a3d4],
-            [0x3fe5989f, 0xc5024deb, 0x43c2da88],
-        ]
-        .map(|p| p.map(f32::from_bits)),
+fn quality_is_openfoams() {
+    use crate::check::{is_degenerate, quality};
+    // Triangles of real surfaces, with the quality OpenFOAM-12's surfaceCheck prints for them.
+    let t = |bits: [u32; 9]| {
+        let f = bits.map(f32::from_bits);
+        Triangle { vertices: [[f[0], f[1], f[2]], [f[3], f[4], f[5]], [f[6], f[7], f[8]]], normal: [0.0; 3], solid: 0 }
+    };
+    let cases = [
+        // A tree surface 2 km from the origin: its worst triangle, 1.53181e-15.
+        (
+            [
+                0x4315a840, 0xc4d78708, 0x43bfbf5a, 0x43159b55, 0xc4d777d6, 0x43bfa969, 0x431566d9, 0xc4d73a1b,
+                0x43bf5045,
+            ],
+            1.53181e-15,
+        ),
+        // Walls of the same project: 2.1443e-12.
+        (
+            [
+                0x438e9d97, 0xc5133cd3, 0x43bfa2df, 0x438772c0, 0xc5140332, 0x43bfa312, 0x4394c8e5, 0xc5129214,
+                0x43bfa312,
+            ],
+            2.1443e-12,
+        ),
+        // The 3×3 case's tree crowns: min 0.670084, max 0.933615.
+        (
+            [
+                0x43870000, 0x437cc1e2, 0x40699bab, 0x43870000, 0x437f3e1e, 0x40699bab, 0x43870000, 0x437f3e1e,
+                0x40a3322a,
+            ],
+            0.670084,
+        ),
+        (
+            [
+                0x43891f0f, 0x437cc1e2, 0x40c40000, 0x43891f0f, 0x437b0000, 0x40a3322a, 0x438a0000, 0x437cc1e2,
+                0x40a3322a,
+            ],
+            0.933615,
+        ),
+    ];
+    for (bits, expected) in cases {
+        let q = quality(&t(bits));
+        assert!((q / expected - 1.0).abs() < 1e-4, "{q} vs {expected}");
+        assert!(!is_degenerate(&t(bits)), "above OpenFOAM's 1e-15");
+    }
+    // Fine triangles far from the origin are not degenerate.
+    let far = Triangle {
+        vertices: [[2_600_000.0, 0.0, 0.0], [2_600_000.5, 0.0, 0.0], [2_600_000.0, 0.5, 0.0]],
         normal: [0.0; 3],
         solid: 0,
     };
-    assert!(crate::check::is_degenerate(&t));
-    let mut fine = t;
-    fine.vertices[1][0] += 0.01;
-    assert!(!crate::check::is_degenerate(&fine));
+    assert!(!is_degenerate(&far));
+    let line = Triangle { vertices: [[0.0; 3], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]], normal: [0.0; 3], solid: 0 };
+    assert_eq!(quality(&line), 0.0);
+    assert!(is_degenerate(&line));
 }
 
 #[test]

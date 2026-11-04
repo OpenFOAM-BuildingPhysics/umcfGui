@@ -45,7 +45,7 @@ and part counts are the same as `surfaceCheck`'s.
 | `surface.summary` | Info | Format, triangles, regions, extent, parts and how many of them are closed |
 | `surface.empty` | Warning | The file has no triangles |
 | `surface.renamed` | Info | A solid whose name OpenFOAM changes, and the name it uses |
-| `surface.degenerate` | Warning | Triangles without area: two vertices in the same place, or all three in a line (their height is below 1e-7 of their longest edge, or within two steps of a 32-bit number at their coordinates). They have no normal, and `surfaceCheck` warns they can upset `snappyHexMesh`'s intersection tests |
+| `surface.degenerate` | Warning | Triangles without area: two vertices in the same place, or all three in a line. Measured as OpenFOAM measures a triangle's quality (its area over that of the equilateral triangle with the same circumcircle), below 1e-15: where `surfaceCheck` warns the surface "might give problems in self-intersection testing" |
 | `surface.duplicate` | Warning | Triangles with the same three vertices as another |
 | `surface.non-manifold` | Warning | Edges shared by more than two triangles: the surface has no single inside there |
 | `surface.normals` | Warning | Two triangles on an edge face opposite ways. `surfaceFeatures` then takes the edge for a fold (on the 3×3 case's tree crowns it classes 880 of 1920 convex edges as concave), and `snappyHexMesh` decides what is inside a closed surface from its normals (cell zones, `inside`/`outside` refinement) |
@@ -125,5 +125,6 @@ umcf-cli run --case path/to/case --cmd 'geometry.repair={"file": "walls.stl"}' -
 - Whether a surface lies inside the background mesh, and whether `snappyHexMesh` needs it
   closed (a cell zone, an `inside` refinement), is not checked yet: that comes with the meshing
   set-up checks.
-- A surface is read whole, up to 1 GB (decompressed) and 10 million triangles. Each unsaved
-  change keeps its own copy of the file's bytes in memory, for undo.
+- A surface is read whole, up to 1 GB (decompressed) and 10 million triangles. Checking 5
+  million triangles takes about 5 s and 1 GB of memory. Each unsaved change keeps its own copy
+  of the file's bytes in memory, for undo.
