@@ -5,7 +5,7 @@ Rust crates.
 
 !!! info "Status"
     The crates that exist today are `core`, `geom`, `foam-dict`, `foam-field`, `foam-mesh`, `schema` (case layout
-    and the generated [solver catalog](solver-coverage.md)), `model`, `validate`, `engine` and the `umcf-cli` app, plus the `xtask` tooling.
+    and the generated [solver catalog](solver-coverage.md)), `model`, `validate`, `render`, `engine` and the `umcf-cli` app, plus the `xtask` tooling.
     The others in the table below are planned.
 
 ## Core patterns
@@ -143,7 +143,7 @@ egui, command-driven app). Code ported from it keeps its copyright notice and ge
 | Colour by palette, not by vertex | Patches, regions and quality metrics are colour classes. Recolouring (by patch, by BC type, by non-orthogonality) changes the palette, never re-uploads a 50-million-face mesh |
 | Level of detail | Big surfaces and meshes get simplified display meshes built off the UI thread. Picking always uses the full data |
 | CPU picking with a BVH | Ray casts against a triangle BVH (`geom`), built lazily off the UI thread. Each triangle maps back to its patch and face (or STL triangle), so a pick is a patch name, not a pixel |
-| Selection lives in the engine | `Session.selection` (`Sel::Patch`, `Sel::Faces`, `Sel::Cells`, `Sel::Surface`) is plain data. A command run with no explicit target uses the current selection, which is how "pick, then assign" works |
+| Selection lives in the engine | `Session.selection` (`Sel::Patch`, `Sel::Solid` for a surface region; `Sel::Faces`, `Sel::Cells` to come) is plain data, set by the `select.*` commands. A command run with no explicit target uses the current selection, which is how "pick, then assign" works |
 | Hover and "select other" | Hovering highlights the patch under the cursor. Holding still lists everything under it (overlapping regions, internal patches) |
 | Navigation in one place | One input handler with presets (orbit / pan / zoom to cursor, ParaView-like and CAD-like), view cube, standard views, section planes to see inside the domain |
 | UI built from the command registry | Toolbar, menus and the command palette are generated from `CommandSpec`. A disabled command shows its reason |

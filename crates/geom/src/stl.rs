@@ -506,4 +506,39 @@ impl Stl {
     pub fn bbox(&self) -> Option<crate::BBox> {
         crate::BBox::of(self.triangles.iter().flat_map(|t| t.points()))
     }
+
+    /// The surface's regions as OpenFOAM makes them, and each triangle's region (an index into
+    /// the names). An ASCII file's regions are its solids' names as OpenFOAM reads them (see
+    /// [`foam_name`]), solids of the same name joined; a binary file's are `patch<N>` for each
+    /// attribute value N a triangle has (only those: the empty ones between hold nothing to
+    /// show or pick).
+    pub fn regions(&self) -> (Vec<String>, Vec<u32>) {
+        let mut names: Vec<String> = Vec::new();
+        let mut index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut of = |name: String, names: &mut Vec<String>| {
+            *index.entry(name.clone()).or_insert_with(|| {
+                names.push(name);
+                u32::try_from(names.len() - 1).unwrap_or(u32::MAX)
+            })
+        };
+        let per_solid: Vec<u32> = match self.format {
+            Format::Ascii => self.solids.iter().map(|raw| of(foam_name(raw), &mut names)).collect(),
+            Format::Binary => Vec::new(),
+        };
+        let mut by_value: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let region = self
+            .triangles
+            .iter()
+            .map(|t| match self.format {
+                Format::Ascii => match per_solid.get(t.solid as usize) {
+                    Some(r) => *r,
+                    None => of("solid".to_string(), &mut names),
+                },
+                Format::Binary => {
+                    *by_value.entry(t.solid).or_insert_with(|| of(format!("patch{}", t.solid), &mut names))
+                }
+            })
+            .collect();
+        (names, region)
+    }
 }

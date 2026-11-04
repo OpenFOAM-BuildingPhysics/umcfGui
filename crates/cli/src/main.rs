@@ -43,6 +43,22 @@ usage:
       Exit status: 0 no errors, 1 errors found (a file that can't be read is one), 2 the case
       or file could not be opened.
 
+  umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
+                 [--surface <file>]... [--edges] [--select <what>]... [--pick <x>,<y>] [--json]
+      Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
+      region with a mesh, or the STL surfaces when there is none, each in its own colour.
+      --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
+                   --elevation <deg> and --zoom <factor> adjust it
+      --size       image size in pixels (default 1280x800)
+      --region, --surface  what to draw (a mesh region, \"\" in a single-region case; an STL file
+                   in constant/triSurface); both can be repeated
+      --edges      draw the faces' edges (the mesh's cells at the boundary)
+      --select     draw a patch (<region>/<patch>, or <patch> in a single-region case) or a
+                   surface region (<file.stl>/<region>) as selected (orange); can be repeated
+      --pick       select what is under pixel x,y of the image, and list everything under it
+      --json       one JSON object: the image's camera and objects, and the pick
+      Exit status: 0 drawn, 2 the case could not be opened or drawn.
+
   umcf-cli run [--case <case>] [--cmd '<id>=<json>']... [--cmds <file>] [--journal <file>] [--json]
       Run commands in order, stopping at the first that fails. --case opens the case first
       (case.open). --cmd gives one command, with its parameters as a JSON object
@@ -76,6 +92,7 @@ fn main() -> ExitCode {
         Some("run") => run(args.get(1..).unwrap_or_default()),
         Some("mesh") => mesh(args.get(1..).unwrap_or_default()),
         Some("surface") => surface(args.get(1..).unwrap_or_default()),
+        Some("render") => render(args.get(1..).unwrap_or_default()),
         Some("commands") => commands(args.get(1..).unwrap_or_default()),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
@@ -203,6 +220,137 @@ fn surface(args: &[String]) -> Result<u8, String> {
     }
     let errors = report.data.get("errors").and_then(Value::as_u64).unwrap_or(0);
     Ok(if errors > 0 { 1 } else { 0 })
+}
+
+/// What `--select` names: `region/patch`, `patch` (single-region case) or `file.stl/region`.
+fn selection_item(arg: &str) -> Value {
+    let stl = |f: &str| [".stl", ".stlb", ".stl.gz", ".stlb.gz"].iter().any(|e| f.ends_with(e));
+    match arg.rsplit_once('/') {
+        Some((file, solid)) if stl(file) => json!({ "surface": file, "solid": solid }),
+        Some((region, patch)) => json!({ "region": region, "patch": patch }),
+        None => json!({ "region": "", "patch": arg }),
+    }
+}
+
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let abc = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let digits: Option<Vec<u32>> = text
+        .bytes()
+        .filter(|b| *b != b'=')
+        .map(|b| abc.iter().position(|a| *a == b).and_then(|p| u32::try_from(p).ok()))
+        .collect();
+    let mut out = Vec::new();
+    for c in digits?.chunks(4) {
+        let n = c.iter().zip([18, 12, 6, 0]).fold(0u32, |n, (d, s)| n | (d << s));
+        out.extend_from_slice(n.to_be_bytes().get(1..c.len())?);
+    }
+    Some(out)
+}
+
+fn render(args: &[String]) -> Result<u8, String> {
+    let mut case = None;
+    let (mut out_file, mut pick, mut as_json) = (None, None, false);
+    let (mut regions, mut surfaces, mut select) = (Vec::new(), Vec::new(), Vec::new());
+    let mut params = serde_json::Map::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = |name: &str| it.next().cloned().ok_or(format!("render: {name} needs a value"));
+        match a.as_str() {
+            "--json" => as_json = true,
+            "--edges" => {
+                params.insert("edges".into(), json!(true));
+            }
+            "--out" => out_file = Some(value("--out")?),
+            "--view" => {
+                params.insert("view".into(), json!(value("--view")?));
+            }
+            o @ ("--azimuth" | "--elevation" | "--zoom") => {
+                let v = value(o)?;
+                let x: f64 = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite())
+                    .ok_or_else(|| format!("render: {o} is a finite number, not `{v}`"))?;
+                params.insert(o.trim_start_matches('-').into(), json!(x));
+            }
+            "--size" => {
+                let v = value("--size")?;
+                let bad = || format!("render: --size is <width>x<height> in pixels, not `{v}`");
+                let (w, h) = v.split_once('x').ok_or_else(bad)?;
+                let (w, h): (u32, u32) = (w.parse().map_err(|_| bad())?, h.parse().map_err(|_| bad())?);
+                params.insert("width".into(), json!(w));
+                params.insert("height".into(), json!(h));
+            }
+            "--region" => regions.push(value("--region")?),
+            "--surface" => surfaces.push(value("--surface")?),
+            "--select" => select.push(selection_item(&value("--select")?)),
+            "--pick" => {
+                let v = value("--pick")?;
+                let bad = || format!("render: --pick is <x>,<y> in pixels, not `{v}`");
+                let (x, y) = v.split_once(',').ok_or_else(bad)?;
+                let (x, y): (f64, f64) = (x.trim().parse().map_err(|_| bad())?, y.trim().parse().map_err(|_| bad())?);
+                pick = Some(json!([x, y]));
+            }
+            s if s.starts_with('-') => return Err(format!("render: unknown option `{s}`")),
+            s if case.is_none() => case = Some(s.to_string()),
+            s => return Err(format!("render: one case at a time (`{s}`)")),
+        }
+    }
+    let case = case.ok_or("render: which case? (umcf-cli render <case> --out <file.png>)")?;
+    let out_file = out_file.ok_or("render: where to? (--out <file.png>)")?;
+    if !regions.is_empty() {
+        params.insert("regions".into(), json!(regions));
+    }
+    if !surfaces.is_empty() {
+        params.insert("surfaces".into(), json!(surfaces));
+    }
+    let mut s = Session::new();
+    s.execute("case.open", &json!({ "path": case, "fields": false })).map_err(|e| e.to_string())?;
+    if !select.is_empty() {
+        s.execute("select.set", &json!({ "items": select })).map_err(|e| e.to_string())?;
+    }
+    let picked = match pick {
+        Some(px) => {
+            let mut p = params.clone();
+            p.remove("edges");
+            p.insert("pixel".into(), px);
+            if !select.is_empty() {
+                p.insert("mode".into(), json!("add"));
+            }
+            Some(s.execute("select.pick", &Value::Object(p)).map_err(|e| e.to_string())?)
+        }
+        None => None,
+    };
+    let shot = s.execute("scene.snapshot", &Value::Object(params)).map_err(|e| e.to_string())?;
+    let png =
+        shot.data.get("png").and_then(Value::as_str).and_then(base64_decode).ok_or("render: no image came back")?;
+    std::fs::write(&out_file, &png).map_err(|e| format!("render: writing {out_file}: {e}"))?;
+    if as_json {
+        let mut data = shot.data.clone();
+        if let Some(o) = data.as_object_mut() {
+            o.remove("png");
+            o.insert("file".into(), json!(out_file));
+            o.insert("pick".into(), picked.map_or(Value::Null, |p| p.data));
+        }
+        out(&data.to_string())?;
+    } else {
+        if let Some(p) = &picked {
+            for h in p.data.get("hits").and_then(Value::as_array).into_iter().flatten() {
+                let st = |k: &str| h.get(k).and_then(Value::as_str);
+                let what = match (st("region"), st("patch"), st("surface"), st("solid")) {
+                    (Some(""), Some(patch), _, _) => format!("patch {patch}"),
+                    (Some(r), Some(patch), _, _) => format!("patch {patch} of region {r}"),
+                    (_, _, Some(f), Some(solid)) => format!("region {solid} of {f}"),
+                    _ => continue,
+                };
+                let d = h.get("distance").and_then(Value::as_f64).unwrap_or(f64::NAN);
+                out(&format!("under the cursor: {what}, {d:.3} m away"))?;
+            }
+            out(&p.message)?;
+        }
+        out(&format!("{}: {}", out_file, shot.message))?;
+    }
+    Ok(0)
 }
 
 /// `error    bc.missing  0/air/U [air inlet U]: message`

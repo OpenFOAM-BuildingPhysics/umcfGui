@@ -6,6 +6,7 @@ mod case;
 mod edit;
 mod geometry;
 mod mesh;
+pub(crate) mod scene;
 
 /// Every command, in menu order.
 pub static COMMANDS: &[CommandSpec] = &[
@@ -18,6 +19,10 @@ pub static COMMANDS: &[CommandSpec] = &[
     geometry::REPAIR,
     geometry::SCALE,
     mesh::CHECK,
+    scene::SNAPSHOT,
+    scene::PICK,
+    scene::SELECT,
+    scene::CLEAR,
     edit::CONTROL_SET,
     edit::DICT_SET,
     edit::DICT_REMOVE,

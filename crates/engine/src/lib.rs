@@ -39,6 +39,7 @@ mod cmd;
 mod params;
 
 pub use cmd::COMMANDS;
+pub use cmd::scene::Sel;
 
 /// The most undo steps kept; the oldest go first.
 pub const UNDO_DEPTH: usize = 100;
@@ -114,6 +115,11 @@ pub struct Session {
     /// How many times a case was opened: a failed command that opened one is told apart from
     /// one that didn't, even when it opened the same location again.
     opens: u64,
+    /// What is selected (patches, surface regions): what a command run without an explicit
+    /// target acts on. Set by the `select.*` commands; opening a case clears it.
+    selection: Vec<Sel>,
+    /// The 3D scene last built, for picking and snapshots.
+    scene: Option<cmd::scene::Cached>,
 }
 
 impl std::fmt::Debug for Session {
@@ -161,6 +167,8 @@ impl Session {
             journal: Vec::new(),
             backup: backup.into(),
             opens: 0,
+            selection: Vec::new(),
+            scene: None,
         }
     }
 
@@ -188,6 +196,11 @@ impl Session {
 
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// What is selected, in the order it was selected.
+    pub fn selection(&self) -> &[Sel] {
+        &self.selection
     }
 
     /// The edits made to the open case, in order, as `{"command", "params"}` objects.
@@ -236,6 +249,8 @@ impl Session {
         self.undo.clear();
         self.redo.clear();
         self.journal.clear();
+        self.selection.clear();
+        self.scene = None;
         self.opens += 1;
         Ok(())
     }

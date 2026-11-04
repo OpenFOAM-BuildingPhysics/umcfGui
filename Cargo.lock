@@ -184,6 +184,7 @@ dependencies = [
  "umcf-foam-mesh",
  "umcf-geom",
  "umcf-model",
+ "umcf-render",
  "umcf-schema",
  "umcf-validate",
 ]
@@ -237,6 +238,16 @@ dependencies = [
  "umcf-foam-field",
  "umcf-foam-mesh",
  "umcf-schema",
+]
+
+[[package]]
+name = "umcf-render"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "umcf-core",
+ "umcf-foam-mesh",
+ "umcf-geom",
 ]
 
 [[package]]

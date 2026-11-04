@@ -9,7 +9,7 @@ use umcf_core::{CaseFs, DirFs};
 use umcf_geom::check::{Listed, Report, analyse};
 use umcf_geom::repair;
 use umcf_geom::stl::{self, Limits, Stl};
-use umcf_model::MAX_FILE_BYTES;
+use umcf_model::{Case, MAX_FILE_BYTES};
 use umcf_validate::surface::{diagnostics, unreadable};
 use umcf_validate::{Diagnostic, Level};
 
@@ -53,7 +53,7 @@ fn is_stlb(rel: &str) -> bool {
 /// The case-relative path of surface `name` (`buildings.stl` or
 /// `constant/triSurface/buildings.stl`).
 /// `allow_miscased` takes `.STL` too (to check such a file, not to make one).
-fn surface_path(id: &str, name: &str, allow_miscased: bool) -> Result<String, Error> {
+pub(super) fn surface_path(id: &str, name: &str, allow_miscased: bool) -> Result<String, Error> {
     let file = name.strip_prefix("constant/triSurface/").unwrap_or(name);
     if file.is_empty() || file.starts_with('.') || file.contains(['/', '\\']) || file.chars().any(char::is_control) {
         return Err(Error::Params(format!(
@@ -69,7 +69,7 @@ fn surface_path(id: &str, name: &str, allow_miscased: bool) -> Result<String, Er
     Ok(format!("{SURFACE_DIR}/{file}"))
 }
 
-fn limits() -> Limits {
+pub(super) fn limits() -> Limits {
     Limits { max_bytes: MAX_FILE_BYTES, ..Limits::default() }
 }
 
@@ -188,6 +188,22 @@ fn store(
     Ok(out)
 }
 
+/// The STL surfaces of the case (case-relative paths, sorted): the files in [`SURFACE_DIR`]
+/// with an STL name (and, with `miscased`, those whose extension is in the wrong case), and
+/// those commands put there. The error says why the directory couldn't be listed.
+pub(super) fn surface_files(case: &Case, fs: &dyn CaseFs, miscased: bool) -> (Vec<String>, Result<(), String>) {
+    let (mut names, listed): (Vec<String>, _) = match fs.list(SURFACE_DIR) {
+        Ok(n) => (n.into_iter().map(|n| format!("{SURFACE_DIR}/{n}")).collect(), Ok(())),
+        Err(e) => (Vec::new(), Err(e.to_string())),
+    };
+    names.retain(|n| fs.is_file(n));
+    names.extend(case.put_paths().filter(|p| p.starts_with("constant/triSurface/")).map(String::from));
+    names.retain(|n| n.rsplit('/').next().is_some_and(|f| is_surface_name(f) || (miscased && is_miscased(f))));
+    names.sort();
+    names.dedup();
+    (names, listed)
+}
+
 /// The surface `rel` of the open case, as it now is.
 fn load(s: &Session, rel: &str) -> Result<(std::sync::Arc<Vec<u8>>, Stl), Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
@@ -238,18 +254,10 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             let files = match file {
                 Some(f) => vec![surface_path(CHECK.id, f, true)?],
                 None => {
-                    let mut names: Vec<String> = match fs.list(SURFACE_DIR) {
-                        Ok(n) => n.into_iter().map(|n| format!("{SURFACE_DIR}/{n}")).collect(),
-                        Err(e) => {
-                            all.push(unreadable(SURFACE_DIR, &format!("the directory can't be listed: {e}")));
-                            Vec::new()
-                        }
-                    };
-                    names.retain(|n| fs.is_file(n));
-                    names.extend(case.put_paths().filter(|p| p.starts_with("constant/triSurface/")).map(String::from));
-                    names.retain(|n| n.rsplit('/').next().is_some_and(|f| is_surface_name(f) || is_miscased(f)));
-                    names.sort();
-                    names.dedup();
+                    let (names, listed) = surface_files(case, fs, true);
+                    if let Err(e) = listed {
+                        all.push(unreadable(SURFACE_DIR, &format!("the directory can't be listed: {e}")));
+                    }
                     names
                 }
             };
