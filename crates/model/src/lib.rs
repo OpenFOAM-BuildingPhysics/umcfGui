@@ -789,8 +789,9 @@ impl Case {
         let path = info.path.clone();
         let name = info.name.clone();
         // A new entry: the entries, then the defaults not given, `value` last as OpenFOAM writes it.
+        let given: std::collections::HashSet<&str> = entries.iter().map(|(k, _)| *k).collect();
         let mut fresh: Vec<&(&str, &str)> =
-            entries.iter().chain(defaults.iter().filter(|(k, _)| !entries.iter().any(|(e, _)| e == k))).collect();
+            entries.iter().chain(defaults.iter().filter(|(k, _)| !given.contains(k))).collect();
         fresh.sort_by_key(|(k, _)| *k == "value");
         let mut body = format!("{{ type {kind};");
         for (k, v) in fresh {
@@ -832,16 +833,11 @@ impl Case {
                     }
                 } else if visible.is_none() && from_elsewhere {
                     // Kept, with the type and entries set after what it brings in (the last
-                    // one read wins), and the defaults for keys it doesn't show.
-                    let shown: Vec<String> = own.map(|d| d.keys().map(str::to_string).collect()).unwrap_or_default();
+                    // one read wins). No defaults: what it brings in isn't read here, and a
+                    // default could override a value it has.
                     doc.set(&["boundaryField", p, "type"], kind)?;
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
-                    }
-                    for (k, v) in defaults {
-                        if !shown.iter().any(|s| s == k) && !entries.iter().any(|(e, _)| e == k) {
-                            doc.set(&["boundaryField", p, k], v)?;
-                        }
                     }
                 } else {
                     if from_elsewhere || indirect_value {

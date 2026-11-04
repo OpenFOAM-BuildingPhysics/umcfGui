@@ -977,6 +977,21 @@ fn defaults_go_into_new_entries_only() {
     .unwrap();
     assert_eq!(bc_of(&s, "T", "inlet"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
     assert_eq!(bc_of(&s, "T", "outlet"), Some((Some("fixedValue".into()), Some("uniform 280".into()))));
+    // A key given as an entry wins over the same default in a new entry.
+    s.execute(
+        "bc.set",
+        &json!({"field": "T", "type": "zeroGradient", "patches": [{"region": "air", "patch": "outlet"}]}),
+    )
+    .unwrap();
+    s.execute(
+        "bc.set",
+        &json!({"field": "T", "type": "fixedValue", "entries": {"value": "uniform 310"}, "defaults": {"value": "uniform 280"}, "patches": [{"region": "air", "patch": "outlet"}]}),
+    )
+    .unwrap();
+    assert_eq!(bc_of(&s, "T", "outlet"), Some((Some("fixedValue".into()), Some("uniform 310".into()))));
+    // So many keys are refused.
+    let many: serde_json::Map<String, Value> = (0..65).map(|k| (format!("k{k}"), json!("1"))).collect();
+    assert!(s.execute("bc.set", &json!({"field": "T", "type": "fixedValue", "defaults": many, "patches": p})).is_err());
     // Defaults are checked like values.
     let bad = json!({"field": "U", "type": "fixedValue", "defaults": {"value": "uniform 1"}, "patches": p});
     assert!(s.execute("bc.set", &bad).is_err());

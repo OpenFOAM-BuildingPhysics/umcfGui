@@ -51,8 +51,9 @@ umcf-cli run --case my-case \
 - A patch whose own entry has that type already **keeps its entry**: the value and entries given
   are set in it, and its other keys, comments and `#include`s stay. So does an entry whose type
   comes from an `#include` or a `$macro` in it: the type and entries are set after what it brings
-  in, and the `defaults` for keys it doesn't show. Keys given as `defaults` otherwise go into new
-  entries only: a patch keeping its entry keeps its own (its value, say). Otherwise the patch gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
+  in. Keys given as `defaults` go into new entries only: a patch keeping its entry keeps its own
+  (its value, say); one whose entry brings text in from elsewhere gets none either, since that
+  text may hold the value. Otherwise the patch gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
   had none (a condition from a group or a pattern then still applies to the other patches).
 - **Nothing else in the file changes, byte for byte**: not the other entries, the comments, the
   layout nor the data lists, ASCII or binary. A file that wouldn't come back unchanged without

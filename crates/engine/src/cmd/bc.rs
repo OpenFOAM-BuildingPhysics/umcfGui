@@ -22,6 +22,9 @@ pub(super) const SET: CommandSpec = CommandSpec {
     undoable: true,
 };
 
+/// The most entries and defaults one condition takes (OpenFOAM's take a handful).
+const MAX_KEYS: usize = 64;
+
 fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SET.id;
     let p = Params::new(id, p, &["field", "type", "value", "entries", "defaults", "patches"])?;
@@ -64,6 +67,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let mut by_region: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (r, patch) in &patches {
         by_region.entry(r.as_str()).or_default().push(patch.as_str());
+    }
+    if entries.len() + defaults.len() > MAX_KEYS {
+        return Err(Error::Params(format!("{id}: more than {MAX_KEYS} entries and defaults")));
     }
     let pairs: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let fills: Vec<(&str, &str)> = defaults.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
