@@ -520,3 +520,14 @@ fn a_truncated_binary_with_a_solid_header_is_an_error() {
     let s = read(text.as_bytes(), &Limits::default()).unwrap();
     assert_eq!((s.format, s.triangles.len()), (Format::Ascii, 12));
 }
+
+#[test]
+fn ascii_with_a_non_ascii_byte_where_a_count_would_be() {
+    let mut name = "x".repeat(74);
+    name.push_str("Zürich_Gebäude");
+    let text = String::from_utf8(cube().to_bytes()).unwrap().replacen("solid box", &format!("solid {name}"), 1);
+    assert!(!text.as_bytes()[80..84].is_ascii());
+    let s = read(text.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!((s.format, s.triangles.len()), (Format::Ascii, 12));
+    assert!(s.openfoam.is_some(), "the name isn't ASCII");
+}

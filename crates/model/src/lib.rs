@@ -604,9 +604,13 @@ impl Case {
             self.raw
                 .iter()
                 .filter(|(rel, f)| {
-                    // Unchanged when it is the file it was made from, or what was last saved.
-                    Some(f.fingerprint) != f.base
-                        && Some(f.fingerprint) != disk.raw.get(rel.as_str()).copied().flatten()
+                    // Unchanged when it is what this session last saved there, or, before any
+                    // save, the file it was made from.
+                    let on_disk = match disk.raw.get(rel.as_str()) {
+                        Some(saved) => *saved,
+                        None => f.base,
+                    };
+                    Some(f.fingerprint) != on_disk
                 })
                 .map(|(rel, _)| rel.as_str()),
         );

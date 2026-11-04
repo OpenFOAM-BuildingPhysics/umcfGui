@@ -659,3 +659,18 @@ fn putting_back_the_first_bytes_over_a_newer_file_is_a_change() {
     assert!(c3.changed().is_empty());
     drop(c);
 }
+
+#[test]
+fn undo_after_saving_a_surface_is_a_change_to_save_again() {
+    let mut fs = case().with("constant/triSurface/box.stl", "O");
+    let mut c = Case::open(&fs).unwrap();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"O".to_vec()).unwrap();
+    let before = c.clone();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"scaled".to_vec()).unwrap();
+    c.save(&mut fs, None).unwrap();
+    // Undo: the case holds O again, the disk the scaled file.
+    let mut c = before;
+    assert_eq!(c.changed(), ["constant/triSurface/box.stl"]);
+    c.save(&mut fs, None).unwrap();
+    assert_eq!(fs.read("constant/triSurface/box.stl", 10).unwrap().unwrap(), b"O");
+}

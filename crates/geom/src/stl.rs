@@ -191,10 +191,11 @@ fn read_plain(bytes: &[u8], limits: &Limits, compressed: bool) -> Result<Stl, St
         let note = format!("{} bytes after the last triangle were ignored", len - expected);
         return read_binary(bytes, u64::from(n), limits, vec![note], foam(u64::from(n)), solid);
     }
-    // An ASCII file with a byte that isn't text near its start has text where a count would be
-    // (a count of hundreds of millions); a binary one cut short has a real count there.
-    let count_is_text = bytes.get(HEADER..HEADER + 4).is_some_and(is_text);
-    if solid && count_is_text {
+    // An ASCII file with a byte that isn't text near its start has text where a count would be:
+    // its last byte makes it at least 150 million, beyond any count read. A binary one cut
+    // short has a real count there.
+    let plausible = usize::try_from(n).is_ok_and(|n| n <= limits.max_triangles);
+    if solid && !plausible {
         return read_ascii(bytes, limits);
     }
     if expected > len && n > 0 {
