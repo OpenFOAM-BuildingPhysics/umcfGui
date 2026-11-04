@@ -1038,4 +1038,15 @@ fn renames_keep_cyclic_partners_gzip_and_refuse_taken_names() {
     assert!(
         e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("42"), ..Default::default() })).contains("number")
     );
+    // A non-conformal patch's original patch follows in its own region only.
+    let nc = "2\n(\n    wall_orig\n    {\n        type wall;\n        nFaces 1;\n        startFace 10;\n    }\n    nc_wall\n    {\n        type nonConformalMappedWall;\n        nFaces 0;\n        startFace 11;\n        neighbourRegion air;\n        neighbourPatch top;\n        originalPatch wall_orig;\n    }\n)\n";
+    let fs = fs.with("constant/street/polyMesh/boundary", format!("{}{nc}", header("polyBoundaryMesh", "boundary")));
+    let mut c = Case::open(&fs).unwrap();
+    let report =
+        c.set_patch(&fs, "street", "wall_orig", &PatchChange { name: Some("facade"), ..Default::default() }).unwrap();
+    assert_eq!(report.partners, ["street/nc_wall"]);
+    let ncw =
+        c.region("street").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "nc_wall").cloned().unwrap();
+    assert!(ncw.params.contains(&("originalPatch".into(), "facade".into())), "{:?}", ncw.params);
+    assert!(ncw.params.contains(&("neighbourPatch".into(), "top".into())), "{:?}", ncw.params);
 }

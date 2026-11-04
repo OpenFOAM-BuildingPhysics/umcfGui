@@ -1032,9 +1032,10 @@ impl Case {
                 .iter()
                 .map(|f| {
                     let own = f.bcs.as_ref().is_some_and(|b| b.iter().any(|b| b.patch == patch));
-                    // A pattern or text from elsewhere may name it too: not renamed there.
+                    // Without an entry of its own, a pattern or text from elsewhere may give it
+                    // its condition by the old name: not changed there.
                     let maybe = f.indirect || f.bcs.iter().flatten().any(|b| b.pattern);
-                    if maybe && f.bcs.is_some() {
+                    if maybe && !own && f.bcs.is_some() {
                         report.indirect.push(f.path.clone());
                     }
                     (f.name.clone(), f.path.clone(), f.bcs.is_some() && own)
@@ -1078,13 +1079,21 @@ impl Case {
                     // Without a region the partner is in the patch's own region (cyclic,
                     // nonConformal, a mapped patch within one region).
                     let nbr_region = get("neighbourRegion").or_else(|| get("sampleRegion")).unwrap_or(own.clone());
-                    let keys: Vec<(String, String)> = ["neighbourPatch", "samplePatch", "originalPatch"]
-                        .iter()
-                        .filter(|k| get(k).as_deref() == Some(patch))
-                        .map(|k| (k.to_string(), to.to_string()))
-                        .collect();
+                    let mut keys: Vec<(String, String)> = Vec::new();
+                    if nbr_region == region {
+                        keys.extend(
+                            ["neighbourPatch", "samplePatch"]
+                                .iter()
+                                .filter(|k| get(k).as_deref() == Some(patch))
+                                .map(|k| (k.to_string(), to.to_string())),
+                        );
+                    }
+                    // A non-conformal patch's original patch is in its own region.
+                    if i == r && get("originalPatch").as_deref() == Some(patch) {
+                        keys.push(("originalPatch".to_string(), to.to_string()));
+                    }
                     let itself = i == r && p.name == patch;
-                    (nbr_region == region && !keys.is_empty() && !itself).then(|| (i, p.name.clone(), keys))
+                    (!keys.is_empty() && !itself).then(|| (i, p.name.clone(), keys))
                 })
             })
             .collect();

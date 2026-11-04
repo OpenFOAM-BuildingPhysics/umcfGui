@@ -53,7 +53,8 @@ const MAX_ENTRIES: usize = 64;
 
 /// A patch name or type: one OpenFOAM word.
 fn word<'a>(id: &str, what: &str, w: &'a str) -> Result<&'a str, Error> {
-    if key(id, w).is_err() || w.contains(['(', ')']) {
+    // A number reads as a label, not a word.
+    if key(id, w).is_err() || w.contains(['(', ')']) || w.bytes().all(|b| b.is_ascii_digit()) {
         return Err(Error::Params(format!("{id}: `{w}` is not a {what}")));
     }
     Ok(w)
