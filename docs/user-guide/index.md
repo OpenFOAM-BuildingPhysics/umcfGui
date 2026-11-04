@@ -11,3 +11,4 @@ How umcfGui sees urbanMicroclimateFoam cases, and what it does with them.
 - [Meshes](meshes.md): the mesh of each region, and the checks it passes before use.
 - [Fields and results](fields.md): reading the solver's field files, ASCII or binary,
   compressed or not.
+- [Command line](command-line.md): `umcf-cli check` and `umcf-cli run`, without the GUI.

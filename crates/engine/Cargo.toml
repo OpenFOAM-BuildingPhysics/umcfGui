@@ -1,0 +1,19 @@
+[package]
+name = "umcf-engine"
+description = "The urbanMicroclimateFoam editing session: the command registry, undo and redo, the journal, and the panic guard the GUI, CLI and MCP act through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-core.workspace = true
+umcf-foam-dict.workspace = true
+umcf-schema.workspace = true
+umcf-model.workspace = true
+umcf-validate.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

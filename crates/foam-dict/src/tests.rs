@@ -171,7 +171,13 @@ fn set_into_value_entry_is_an_error() {
     assert_eq!(doc.set(&[], "2"), Err(Error::EmptyPath));
     assert!(doc.set(&["a"], "2;").is_err());
     assert!(doc.set(&["a"], "(1 2").is_err());
+    // A dictionary ends the entry: what follows would be read back as another entry.
+    assert!(doc.set(&["a"], "{ b 1; } c 2").is_err());
+    assert!(doc.set(&["a"], "{ b 1; } {}").is_err());
     assert_eq!(doc.to_string(), "a 1;\n");
+    // Something in front of the dictionary is fine (`#codeStream { … }`).
+    doc.set(&["a"], "#codeStream { code #{ #}; }").unwrap();
+    assert!(Document::parse(&doc.to_string()).unwrap().root.problems().is_empty(), "{doc}");
 }
 
 #[test]
@@ -180,6 +186,13 @@ fn quoted_keys() {
     doc.set(&["x", "(U|k) cells"], "1").unwrap();
     assert!(doc.to_string().contains("\n    \"(U|k) cells\"   1;"), "{}", doc);
     assert_eq!(Document::parse(&doc.to_string()).unwrap().value(&["x", "(U|k) cells"]).as_deref(), Some("1"));
+    // A key starting with `(` would read back as a list unquoted.
+    doc.set(&["x", "(U|k)"], "2").unwrap();
+    assert!(doc.to_string().contains("\n    \"(U|k)\"         2;"), "{}", doc);
+    assert_eq!(Document::parse(&doc.to_string()).unwrap().value(&["x", "(U|k)"]).as_deref(), Some("2"));
+    // `div(phi,U)` stays unquoted.
+    doc.set(&["x", "div(phi,U)"], "3").unwrap();
+    assert!(doc.to_string().contains("\n    div(phi,U)      3;"), "{}", doc);
 }
 
 #[test]

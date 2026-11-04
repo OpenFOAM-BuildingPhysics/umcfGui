@@ -18,6 +18,7 @@ umcf-foam-field = { path = "crates/foam-field" }
 umcf-foam-mesh = { path = "crates/foam-mesh" }
 umcf-model = { path = "crates/model" }
 umcf-validate = { path = "crates/validate" }
+umcf-engine = { path = "crates/engine" }
 
 # foundation
 thiserror = "2"

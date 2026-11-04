@@ -16,6 +16,13 @@ the gates need it. In a clone without it, `git submodule update --init` fetches 
 
 ## What you can use today
 
+The command line checks a case and edits it ([Command line](user-guide/command-line.md)):
+
+```sh
+cargo build --release -p umcf-cli
+target/release/umcf-cli check path/to/case
+```
+
 The foundation libraries, from Rust:
 
 | Crate | Does |

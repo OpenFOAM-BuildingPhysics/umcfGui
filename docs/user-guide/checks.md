@@ -7,9 +7,8 @@ misspelt standard OpenFOAM boundary condition type, are not caught yet.
 The check reads nothing beyond what opening the case already read, so it is fast enough to run
 again after every edit.
 
-For now the check is a library call, `umcf_validate::check(&case)`, which returns the problems
-found. The command line (`umcf-cli check`) and the GUI, which will run it before a run, are
-not there yet (see [Gaps](../gaps.md)).
+Run it with `umcf-cli check <case>` ([Command line](command-line.md)), or from Rust with
+`umcf_validate::check(&case)`. The GUI will run it before a run.
 
 Each problem has a level, a code and the file it is about, and where there is one, the region,
 patch and field:
