@@ -531,3 +531,16 @@ fn ascii_with_a_non_ascii_byte_where_a_count_would_be() {
     assert_eq!((s.format, s.triangles.len()), (Format::Ascii, 12));
     assert!(s.openfoam.is_some(), "the name isn't ASCII");
 }
+
+#[test]
+fn empty_solids_keep_their_place() {
+    let mut c = cube();
+    c.solids = vec!["empty".to_string(), "box".to_string()];
+    for t in &mut c.triangles {
+        t.solid = 1;
+    }
+    c.triangles[0].solid = 9;
+    let back = reread(&c);
+    assert_eq!(back.solids, vec!["empty", "box", "solid"]);
+    assert_eq!(back.triangles.iter().filter(|t| t.solid == 1).count(), 11);
+}

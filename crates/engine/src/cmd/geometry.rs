@@ -52,14 +52,15 @@ fn is_stlb(rel: &str) -> bool {
 
 /// The case-relative path of surface `name` (`buildings.stl` or
 /// `constant/triSurface/buildings.stl`).
-fn surface_path(id: &str, name: &str) -> Result<String, Error> {
+/// `allow_miscased` takes `.STL` too (to check such a file, not to make one).
+fn surface_path(id: &str, name: &str, allow_miscased: bool) -> Result<String, Error> {
     let file = name.strip_prefix("constant/triSurface/").unwrap_or(name);
     if file.is_empty() || file.starts_with('.') || file.contains(['/', '\\']) || file.chars().any(char::is_control) {
         return Err(Error::Params(format!(
             "{id}: `{name}` is not a surface of the case (a file name in {SURFACE_DIR})"
         )));
     }
-    if !is_surface_name(file) {
+    if !is_surface_name(file) && !(allow_miscased && is_miscased(file)) {
         return Err(Error::Params(format!(
             "{id}: `{name}` is not an STL file name (OpenFOAM reads {}, in lower case, as STL)",
             EXTENSIONS.join(", ")
@@ -235,10 +236,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 Error::Failed("no case is open (give `path` to check a file outside a case)".to_string())
             })?;
             let files = match file {
-                Some(f) if is_miscased(f.rsplit('/').next().unwrap_or(f)) => {
-                    vec![format!("{SURFACE_DIR}/{}", f.strip_prefix("constant/triSurface/").unwrap_or(f))]
-                }
-                Some(f) => vec![surface_path(CHECK.id, f)?],
+                Some(f) => vec![surface_path(CHECK.id, f, true)?],
                 None => {
                     let mut names: Vec<String> = match fs.list(SURFACE_DIR) {
                         Ok(n) => n.into_iter().map(|n| format!("{SURFACE_DIR}/{n}")).collect(),
@@ -293,7 +291,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let path = p.required_str("path")?;
     let own = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or_default();
     // `Building.STL` comes in as `Building.stl`: OpenFOAM knows only the lower-case extension.
-    let rel = surface_path(IMPORT.id, &p.str("name")?.map_or_else(|| lower_extension(own), String::from))?;
+    let rel = surface_path(IMPORT.id, &p.str("name")?.map_or_else(|| lower_extension(own), String::from), false)?;
     let replace = p.bool("replace")?.unwrap_or(false);
     let scale = p.number("scale")?;
     if scale.is_some_and(|f| f <= 0.0) {
@@ -355,7 +353,7 @@ pub(super) const REPAIR: CommandSpec = CommandSpec {
 
 fn repair_cmd(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(REPAIR.id, p, &["file", "weld", "degenerate", "orient"])?;
-    let rel = surface_path(REPAIR.id, p.required_str("file")?)?;
+    let rel = surface_path(REPAIR.id, p.required_str("file")?, false)?;
     let weld = p.number("weld")?;
     let (mut degenerate, mut orient) = (p.bool("degenerate")?, p.bool("orient")?);
     if weld.is_none() && degenerate.is_none() && orient.is_none() {
@@ -437,7 +435,7 @@ pub(super) const SCALE: CommandSpec = CommandSpec {
 
 fn scale(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(SCALE.id, p, &["file", "factor"])?;
-    let rel = surface_path(SCALE.id, p.required_str("file")?)?;
+    let rel = surface_path(SCALE.id, p.required_str("file")?, false)?;
     let factor =
         p.number("factor")?.ok_or_else(|| Error::Params("geometry.scale: `factor` is required".to_string()))?;
     let (_, mut stl) = load(s, &rel)?;

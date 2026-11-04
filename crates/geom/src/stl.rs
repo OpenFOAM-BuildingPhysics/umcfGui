@@ -445,18 +445,7 @@ impl Stl {
             let n: String = foam_name(raw).chars().filter(char::is_ascii_graphic).collect();
             if n.is_empty() { "solid".to_string() } else { n }
         };
-        let mut used = vec![false; self.solids.len()];
-        for t in order.iter().filter_map(|&k| self.triangles.get(k)).filter(|t| t.is_finite()) {
-            if let Some(u) = used.get_mut(t.solid as usize) {
-                *u = true;
-            }
-            if open != Some(t.solid) {
-                if let Some(s) = open {
-                    let _ = writeln!(out, "endsolid {}", name(s));
-                }
-                let _ = writeln!(out, "solid {}", name(t.solid));
-                open = Some(t.solid);
-            }
+        let facet = |out: &mut String, t: &Triangle| {
             let [nx, ny, nz] = unit_normal(t).map(number);
             let _ = writeln!(out, "  facet normal {nx} {ny} {nz}\n    outer loop");
             for v in t.vertices {
@@ -464,14 +453,31 @@ impl Stl {
                 let _ = writeln!(out, "      vertex {x} {y} {z}");
             }
             out.push_str("    endloop\n  endfacet\n");
+        };
+        // Every solid in its place (OpenFOAM numbers regions in order of appearance), empty
+        // ones too; then triangles of a solid the list doesn't have.
+        let mut sorted = order.iter().filter_map(|&k| self.triangles.get(k)).filter(|t| t.is_finite()).peekable();
+        for s in 0..self.solids.len() {
+            let s = u32::try_from(s).unwrap_or(u32::MAX);
+            let n = name(s);
+            let _ = writeln!(out, "solid {n}");
+            while let Some(t) = sorted.next_if(|t| t.solid == s) {
+                facet(&mut out, t);
+            }
+            let _ = writeln!(out, "endsolid {n}");
         }
-        if let Some(s) = open {
-            let _ = writeln!(out, "endsolid {}", name(s));
+        for t in sorted {
+            if open != Some(t.solid) {
+                if open.is_some() {
+                    out.push_str("endsolid solid\n");
+                }
+                out.push_str("solid solid\n");
+                open = Some(t.solid);
+            }
+            facet(&mut out, t);
         }
-        // Solids without triangles are regions too (empty patches): written empty.
-        for (k, _) in used.iter().enumerate().filter(|(_, u)| !**u) {
-            let n = name(u32::try_from(k).unwrap_or(u32::MAX));
-            let _ = writeln!(out, "solid {n}\nendsolid {n}");
+        if open.is_some() {
+            out.push_str("endsolid solid\n");
         }
         if out.is_empty() {
             out.push_str("solid solid\nendsolid solid\n");
