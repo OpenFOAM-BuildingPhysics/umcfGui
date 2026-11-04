@@ -248,6 +248,12 @@ fn mesh_checks_the_mesh() {
     let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(v["regions"][0]["quality"]["cells"], 1);
     assert!((v["regions"][0]["quality"]["total_volume"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+    assert!(v["regions"][0]["quality"]["all_geometry"].is_null(), "only with --all-geometry");
+    let o = cli(&["mesh", "--json", "--all-geometry", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let g = &v["regions"][0]["quality"]["all_geometry"];
+    assert_eq!((g["concave_cells"]["count"].as_u64(), g["min_flatness"].as_f64()), (Some(0), Some(1.0)), "{g}");
 
     let bad = cube("mesh-bad", true);
     let o = cli(&["mesh", bad.to_str().unwrap()]);

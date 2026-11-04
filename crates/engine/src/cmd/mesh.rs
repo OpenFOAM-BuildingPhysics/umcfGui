@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_validate::mesh::{
-    CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf, checkmesh_log_diagnostics,
-    diagnostics, parse_checkmesh_log, quality, soften_for_vegetation, stale_set, unreadable,
+    AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf,
+    checkmesh_log_diagnostics, diagnostics, parse_checkmesh_log, quality, quality_all, soften_for_vegetation,
+    stale_set, unreadable,
 };
 use umcf_validate::{Diagnostic, Level};
 
@@ -18,7 +19,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     label: "Check mesh",
     menu: "Mesh/Check",
     shortcut: None,
-    params: "region: one region (default: every region with a mesh). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each).",
+    params: "region: one region (default: every region with a mesh). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
     enabled: needs_case,
     run: check,
     journal: false,
@@ -177,6 +178,33 @@ fn found(f: &Found) -> Value {
     json!({ "count": f.count, "places": f.places, "first": f.first })
 }
 
+fn all_geometry_json(g: &AllGeometry) -> Value {
+    json!({
+        "low_quality_tets": found(&g.low_quality_tets),
+        "min_edge_length": g.min_edge_length,
+        "max_edge_length": g.max_edge_length,
+        "near_distance": g.near_distance,
+        "short_edge_points": found(&g.short_edge_points),
+        "near_points": found(&g.near_points),
+        "concave_faces": found(&g.concave_faces),
+        "max_concave_angle": g.max_concave_angle,
+        "min_flatness": g.min_flatness,
+        "average_flatness": g.average_flatness,
+        "warped_faces": found(&g.warped_faces),
+        "min_determinant": g.min_determinant,
+        "average_determinant": g.average_determinant,
+        "underdetermined_cells": found(&g.underdetermined_cells),
+        "concave_cells": found(&g.concave_cells),
+        "min_weight": g.min_weight,
+        "average_weight": g.average_weight,
+        "low_weight_faces": found(&g.low_weight_faces),
+        "min_volume_ratio": g.min_volume_ratio,
+        "average_volume_ratio": g.average_volume_ratio,
+        "low_volume_ratio_faces": found(&g.low_volume_ratio_faces),
+        "unchecked": g.unchecked,
+    })
+}
+
 fn quality_json(q: &Quality) -> Value {
     json!({
         "cells": q.n_cells,
@@ -204,12 +232,14 @@ fn quality_json(q: &Quality) -> Value {
         "non_finite_points": found(&q.non_finite_points),
         "non_finite_faces": found(&q.non_finite_faces),
         "non_finite_cells": found(&q.non_finite_cells),
+        "all_geometry": q.all.as_ref().map_or(Value::Null, all_geometry_json),
     })
 }
 
 fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let p = Params::new(CHECK.id, p, &["region"])?;
+    let p = Params::new(CHECK.id, p, &["region", "all_geometry"])?;
     let region = p.str("region")?;
+    let all_geometry = p.bool("all_geometry")?.unwrap_or(false);
     let case = s.case().ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let fs = s.fs().ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let names: Vec<String> = match region {
@@ -293,7 +323,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         let (q, sets) = match &mesh {
             Ok(mesh) => {
-                let q = quality(mesh);
+                let q = if all_geometry { quality_all(mesh) } else { quality(mesh) };
                 d.extend(diagnostics(&q, r));
                 let sets = checkmesh_sets(fs, r, mesh, &mut d);
                 (Some(q), sets)
