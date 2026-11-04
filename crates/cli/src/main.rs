@@ -23,10 +23,13 @@ usage:
       --no-fields  don't read field files (faster; boundary conditions are not checked)
       Exit status: 0 no errors, 1 errors found, 2 the case could not be checked.
 
-  umcf-cli mesh <case> [--region <region>] [--json]
+  umcf-cli mesh <case> [--region <region>] [--all-geometry] [--json]
       Check the mesh of each region (or one) as checkMesh does by default: closed cells and
       boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids,
       skewness, with checkMesh's thresholds. Prints the problems, then a line per region.
+      --all-geometry  also the checks of checkMesh -allGeometry: face tets, short edges, near
+                      points, concave faces and cells, warped faces, cell determinants, face
+                      interpolation weights, volume ratios (slower)
       --json  one JSON object, with each region's numbers and the faces and cells involved
       Exit status: 0 no errors, 1 errors found (a mesh that can't be read is one), 2 the case
       could not be opened.
@@ -120,11 +123,12 @@ fn check(args: &[String]) -> Result<u8, String> {
 }
 
 fn mesh(args: &[String]) -> Result<u8, String> {
-    let (mut case, mut region, mut as_json) = (None, None, false);
+    let (mut case, mut region, mut as_json, mut all_geometry) = (None, None, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => as_json = true,
+            "--all-geometry" => all_geometry = true,
             "--region" => region = Some(it.next().ok_or("mesh: --region needs a value")?.clone()),
             s if s.starts_with('-') => return Err(format!("mesh: unknown option `{s}`")),
             s if case.is_none() => case = Some(s.to_string()),
@@ -135,10 +139,7 @@ fn mesh(args: &[String]) -> Result<u8, String> {
     let mut s = Session::new();
     // Fields are not needed for the mesh.
     s.execute("case.open", &json!({ "path": case, "fields": false })).map_err(|e| e.to_string())?;
-    let params = match &region {
-        Some(r) => json!({ "region": r }),
-        None => Value::Null,
-    };
+    let params = json!({ "region": region, "all_geometry": all_geometry });
     let report = s.execute("mesh.check", &params).map_err(|e| e.to_string())?;
     if as_json {
         out(&report.data.to_string())?;

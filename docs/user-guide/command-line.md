@@ -36,11 +36,12 @@ when the case could not be checked (it isn't a directory, or doesn't open). In a
 ## Checking a mesh
 
 ```sh
-umcf-cli mesh path/to/case [--region air] [--json]
+umcf-cli mesh path/to/case [--region air] [--all-geometry] [--json]
 ```
 
 This reads each region's mesh (or only `--region`'s) and runs the
-[mesh quality checks](meshes.md#mesh-quality). It prints the problems found, then one line per
+[mesh quality checks](meshes.md#mesh-quality); `--all-geometry` adds those of
+`checkMesh -allGeometry`. It prints the problems found, then one line per
 region:
 
 ```text
@@ -113,7 +114,7 @@ bad arguments.
 | `case.save` | Writes the changed dictionaries, after a backup of each |
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |
-| `mesh.check` | The [mesh quality checks](meshes.md#mesh-quality): `region` (default: every region with a mesh) |
+| `mesh.check` | The [mesh quality checks](meshes.md#mesh-quality): `region` (default: every region with a mesh), `all_geometry` (`true`: also the checks of `checkMesh -allGeometry`) |
 | `control.set` | Sets `system/controlDict` entries, by name: `{"endTime": 7200, "writeInterval": 600}` |
 | `dict.set` | Sets one entry of any dictionary the case loaded: `file`, `path` (`"PIMPLE/nOuterCorrectors"`), `value`. Parent dictionaries that are missing are added |
 | `dict.remove` | Removes one entry: `file`, `path` |

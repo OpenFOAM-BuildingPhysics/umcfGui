@@ -1,4 +1,5 @@
-//! Mesh quality: the geometric checks `checkMesh` runs by default, computed from the mesh
+//! Mesh quality: the geometric checks `checkMesh` runs by default (and, in [`quality_all`],
+//! those of `-allGeometry`: the `all` module), computed from the mesh
 //! itself, with `checkMesh`'s thresholds.
 //!
 //! Ported from OpenFOAM-12 (GPL-3.0-or-later, as this crate):
@@ -26,6 +27,12 @@
 //! boundary formula. Wedge directions are not removed from the aspect ratio.
 
 use umcf_foam_mesh::PolyMesh;
+
+mod all;
+pub use all::{
+    AllGeometry, MAX_CONCAVE_DEG, MAX_PAIRWISE, MIN_TET_QUALITY, MIN_VOLUME_RATIO, MIN_WEIGHT, NEAR_FRACTION,
+    PLANAR_COS_ANGLE, WARN_DETERMINANT, WARN_FLATNESS, WORK_PER_LABEL, geometric_directions,
+};
 
 type V = [f64; 3];
 
@@ -231,6 +238,8 @@ pub struct Quality {
     /// too far apart, `1e300`).
     pub non_finite_faces: Found,
     pub non_finite_cells: Found,
+    /// The checks `checkMesh -allGeometry` adds ([`quality_all`]); `None` when not run.
+    pub all: Option<AllGeometry>,
 }
 
 /// `polyMesh::calcDirections` for `empty` patches: a direction is solved unless the empty
@@ -261,6 +270,18 @@ fn pyramid_volume(apex: V, area: V, centre: V) -> f64 {
 /// Runs the checks (see the module documentation).
 pub fn quality(mesh: &PolyMesh) -> Quality {
     let (centres, vols) = cell_centres_volumes(mesh);
+    quality_of(mesh, &centres, &vols)
+}
+
+/// Runs the checks and those `checkMesh -allGeometry` adds ([`Quality::all`]).
+pub fn quality_all(mesh: &PolyMesh) -> Quality {
+    let (centres, vols) = cell_centres_volumes(mesh);
+    let mut q = quality_of(mesh, &centres, &vols);
+    q.all = Some(all::all_geometry(mesh, &centres, &vols, q.directions));
+    q
+}
+
+fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64]) -> Quality {
     let n_cells = mesh.n_cells();
     let n_internal = mesh.n_internal_faces();
     let mut q = Quality {
@@ -358,7 +379,7 @@ pub fn quality(mesh: &PolyMesh) -> Quality {
     q.boundary_openness = scale(1.0 / (boundary_mag + V_SMALL), boundary_sum);
     // cellClosedness
     let dims = q.directions.iter().filter(|d| **d).count();
-    for (c, ((s, m), v)) in sum_closed.iter().zip(&sum_mag_closed).zip(&vols).enumerate() {
+    for (c, ((s, m), v)) in sum_closed.iter().zip(&sum_mag_closed).zip(vols).enumerate() {
         let openness = s.iter().zip(m).map(|(s, m)| s.abs() / (m + ROOT_V_SMALL)).fold(0.0, f64::max);
         q.max_openness = q.max_openness.max(openness);
         if openness > CLOSED_THRESHOLD {
@@ -565,6 +586,120 @@ pub fn diagnostics(q: &Quality, region: &str) -> Vec<crate::Diagnostic> {
                 listed(f)
             ),
         );
+    }
+    if let Some(g) = &q.all {
+        for (code, f, message) in all_geometry_problems(g) {
+            push(Level::Warning, code, format!("{message}: {}", listed(f)));
+        }
+        if g.unchecked > 0 {
+            push(
+                Level::Info,
+                "mesh.unchecked",
+                format!(
+                    "{} faces, cells or points were left out of the pairwise checks (tet base points, concave cells, near points): over {MAX_PAIRWISE} points or faces each, or past the work budget ({WORK_PER_LABEL} per face label)",
+                    g.unchecked
+                ),
+            );
+        }
+    }
+    out
+}
+
+/// The problems the `-allGeometry` checks found: all warnings, since they hurt accuracy or
+/// convergence (as `checkMesh` counts them, they don't fail a run).
+fn all_geometry_problems(g: &AllGeometry) -> Vec<(&'static str, &Found, String)> {
+    let mut out = Vec::new();
+    let f = &g.low_quality_tets;
+    if f.count > 0 {
+        out.push((
+            "mesh.face-tets",
+            f,
+            format!(
+                "{} tests on {} faces find low-quality or negative tets in their decomposition (used by particle tracking and cell-point interpolation, not by the flow solution): faces",
+                f.count, f.places
+            ),
+        ));
+    }
+    let f = &g.short_edge_points;
+    if f.count > 0 {
+        out.push((
+            "mesh.short-edges",
+            f,
+            format!(
+                "{} points are on edges shorter than {:.3e} (a millionth of the mesh's extent; edges {:.3e} to {:.3e}): points",
+                f.count, g.near_distance, g.min_edge_length, g.max_edge_length
+            ),
+        ));
+    }
+    let f = &g.near_points;
+    if f.count > 0 {
+        out.push((
+            "mesh.near-points",
+            f,
+            format!(
+                "{} pairs of points are closer than {:.3e} (duplicate points?), {} points: points",
+                f.count, g.near_distance, f.places
+            ),
+        ));
+    }
+    let f = &g.concave_faces;
+    if f.count > 0 {
+        out.push((
+            "mesh.concave-faces",
+            f,
+            format!(
+                "{} faces have a concave angle between consecutive edges (max {:.1}°, above {MAX_CONCAVE_DEG}°): faces",
+                f.count, g.max_concave_angle
+            ),
+        ));
+    }
+    let f = &g.warped_faces;
+    if f.count > 0 {
+        out.push((
+            "mesh.warped-faces",
+            f,
+            format!(
+                "{} faces are warped (projected over actual area below {WARN_FLATNESS}, min {:.3}): faces",
+                f.count, g.min_flatness
+            ),
+        ));
+    }
+    let f = &g.underdetermined_cells;
+    if f.count > 0 {
+        out.push((
+            "mesh.cell-determinant",
+            f,
+            format!(
+                "{} cells have a small determinant (below {WARN_DETERMINANT}, min {:.3e}, average {:.3e}): their internal faces leave a direction poorly determined, which gradients need; cells",
+                f.count, g.min_determinant, g.average_determinant
+            ),
+        ));
+    }
+    let f = &g.concave_cells;
+    if f.count > 0 {
+        out.push(("mesh.concave-cells", f, format!("{} cells are concave (using face planes): cells", f.count)));
+    }
+    let f = &g.low_weight_faces;
+    if f.count > 0 {
+        out.push((
+            "mesh.face-weights",
+            f,
+            format!(
+                "{} faces have a small interpolation weight (below {MIN_WEIGHT}, min {:.4}): faces",
+                f.count, g.min_weight
+            ),
+        ));
+    }
+    let f = &g.low_volume_ratio_faces;
+    if f.count > 0 {
+        out.push((
+            "mesh.volume-ratio",
+            f,
+            format!(
+                "{} faces are between cells of very different volume (ratio below {MIN_VOLUME_RATIO}, min {:.4}): faces",
+                f.count, g.min_volume_ratio
+            ),
+        ));
     }
     out
 }
@@ -848,7 +983,7 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
 }
 
 /// The failed checks (`***`) of `checkMesh` that are about quality, not correctness (the
-/// messages of OpenFOAM-8 and 12): warnings, like the native checks. Every other `***`
+/// messages of OpenFOAM-8 and 12), and face tets: warnings, like the native checks. Every other `***`
 /// message (wrong orientation, zero or negative volumes and areas, open cells,
 /// non-orthogonality errors, invalid labels, boundary and zone errors, wedge errors) is an
 /// error.
@@ -861,27 +996,47 @@ const CHECKMESH_WARNINGS: &[&str] = &[
     "Concave cells",
     "Number of edges not aligned",
     "Boundary openness",
+    // The finite-volume solvers don't use the tet decomposition (particle tracking and
+    // cell-point interpolation do).
+    "Error in face tets",
 ];
 
 fn checkmesh_level(line: &str) -> crate::Level {
     if CHECKMESH_WARNINGS.iter().any(|w| line.starts_with(w)) { crate::Level::Warning } else { crate::Level::Error }
 }
 
-/// Whether the native result found a problem.
-type FoundNatively = fn(&Quality) -> bool;
+/// Found (`count > 0`); not found only if nothing was left out (`unchecked`), else unknown.
+fn checked(count: usize, unchecked: usize) -> Option<bool> {
+    if count > 0 {
+        Some(true)
+    } else if unchecked > 0 {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+/// Whether the native result found a problem; `None` when the native check didn't run (an
+/// `-allGeometry` check without [`quality_all`]) or left part of the mesh out.
+type FoundNatively = fn(&Quality) -> Option<bool>;
 
 /// The failed checks (`***`) of `checkMesh` that the native check also makes (its default
 /// geometric checks), with whether the native result found the same problem.
 const NATIVE_COUNTERPARTS: &[(&str, FoundNatively)] = &[
-    ("High aspect ratio cells found", |q| q.high_aspect_cells.count > 0),
-    ("Max skewness", |q| q.skew_faces.count > 0),
-    ("Error in face pyramids", |q| q.wrong_pyramids.count > 0),
-    ("Zero or negative cell volume", |q| q.negative_volume_cells.count > 0),
-    ("Zero or negative face area", |q| q.zero_area_faces.count > 0),
+    ("High aspect ratio cells found", |q| Some(q.high_aspect_cells.count > 0)),
+    ("Max skewness", |q| Some(q.skew_faces.count > 0)),
+    ("Error in face pyramids", |q| Some(q.wrong_pyramids.count > 0)),
+    ("Zero or negative cell volume", |q| Some(q.negative_volume_cells.count > 0)),
+    ("Zero or negative face area", |q| Some(q.zero_area_faces.count > 0)),
     // Not "Open cells found, number of cells", the topological zip-up check.
-    ("Open cells found, max cell openness", |q| q.open_cells.count > 0),
-    ("Number of non-orthogonality errors", |q| q.non_orthogonality_errors.count > 0),
-    ("Boundary openness", |q| q.boundary_openness.iter().any(|x| x.abs() > CLOSED_THRESHOLD)),
+    ("Open cells found, max cell openness", |q| Some(q.open_cells.count > 0)),
+    ("Number of non-orthogonality errors", |q| Some(q.non_orthogonality_errors.count > 0)),
+    ("Boundary openness", |q| Some(q.boundary_openness.iter().any(|x| x.abs() > CLOSED_THRESHOLD))),
+    ("Error in face tets", |q| q.all.as_ref().and_then(|a| checked(a.low_quality_tets.count, a.unchecked))),
+    ("Cells with small determinant", |q| q.all.as_ref().map(|a| a.underdetermined_cells.count > 0)),
+    ("Concave cells", |q| q.all.as_ref().and_then(|a| checked(a.concave_cells.count, a.unchecked))),
+    ("Faces with small interpolation weight", |q| q.all.as_ref().map(|a| a.low_weight_faces.count > 0)),
+    ("Faces with small volume ratio", |q| q.all.as_ref().map(|a| a.low_volume_ratio_faces.count > 0)),
 ];
 
 /// The findings of a `checkMesh` log, for its region: each failed check (`***`) as an error or
@@ -901,14 +1056,15 @@ pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: Option<&Quality>) -
         out.push(if log.region.is_empty() { d } else { d.region(&log.region) });
     };
     for p in &log.problems {
-        let counterpart = NATIVE_COUNTERPARTS.iter().find(|(n, _)| p.starts_with(n)).map(|(_, found)| found);
-        match (native, counterpart) {
-            (Some(q), Some(found)) if found(q) => push(
+        let found =
+            NATIVE_COUNTERPARTS.iter().find(|(n, _)| p.starts_with(n)).and_then(|(_, found)| native.and_then(found));
+        match found {
+            Some(true) => push(
                 Level::Info,
                 "mesh.checkmesh",
                 format!("{source}: {p} (the native check of this mesh reports it too)"),
             ),
-            (Some(_), Some(_)) => push(
+            Some(false) => push(
                 checkmesh_level(p),
                 "mesh.checkmesh",
                 format!("{source}: {p} (the native check of this mesh doesn't find it)"),
