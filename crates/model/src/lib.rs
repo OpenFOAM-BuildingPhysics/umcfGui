@@ -237,6 +237,16 @@ pub struct Condition<'a> {
     pub defaults: &'a [(&'a str, &'a str)],
 }
 
+/// What [`Case::set_bc`] couldn't do as asked, by patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BcReport {
+    /// Their replaced entry brought in text from elsewhere (`#include`, `$macro`): it is gone.
+    pub replaced: Vec<String>,
+    /// Their kept entry brings in text from elsewhere, which isn't read here: the defaults were
+    /// not set in it, and it may have no value.
+    pub unfilled: Vec<String>,
+}
+
 /// What [`Case::save`] writes for one file.
 enum Pending {
     Dict(Arc<Document>),
@@ -741,14 +751,15 @@ impl Case {
 
     /// Sets the boundary condition of `patches` in a field of the start time. A patch whose own
     /// entry already has type `kind` keeps it, with `entries` set in it (its other keys,
-    /// comments and `#include`s stay). Otherwise its entry becomes `{ type <kind>; <key>
-    /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
-    /// or pattern entry stays for the other patches it covers. Nothing else in the file
-    /// changes, byte for byte: not the other entries, the comments, nor the data lists.
-    /// [`Case::save`] writes it. `defaults` go into new entries only, after `entries` (a key in
-    /// both is taken from `entries`): a kept entry keeps its own. Returns the patches whose
-    /// replaced entry brought in text from elsewhere (an `#include`, a `$macro`): that is gone
-    /// from them now.
+    /// comments and `#include`s stay). So does an entry without a type of its own that brings
+    /// text in from an `#include` or a `$macro`: the type and `entries` are set after it.
+    /// Otherwise its entry becomes `{ type <kind>; <key> <value>; … }`, replacing one of
+    /// exactly that name: a new type starts afresh, and a group or pattern entry stays for the
+    /// other patches it covers. Nothing else in the file changes, byte for byte: not the other
+    /// entries, the comments, nor the data lists. [`Case::save`] writes it. `defaults` go into
+    /// new entries only, after `entries` (a key in both is taken from `entries`): a kept entry
+    /// keeps its own. Returns which patches lost text from elsewhere and which kept an entry
+    /// from elsewhere without the defaults.
     pub fn set_bc(
         &mut self,
         fs: &dyn CaseFs,
@@ -756,7 +767,7 @@ impl Case {
         field: &str,
         patches: &[&str],
         condition: &Condition,
-    ) -> Result<Vec<String>> {
+    ) -> Result<BcReport> {
         let Condition { kind, entries, defaults } = *condition;
         let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
         let r = self
@@ -812,6 +823,7 @@ impl Case {
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
         // Patches whose replaced entry brought in text from elsewhere (`#include`, `$macro`).
         let mut dropped = Vec::new();
+        let mut unfilled = Vec::new();
         let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
             for p in patches {
                 let indirect_value = doc
@@ -839,6 +851,9 @@ impl Case {
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
                     }
+                    if defaults.iter().any(|(k, _)| !entries.iter().any(|(e, _)| e == k)) {
+                        unfilled.push(p.to_string());
+                    }
                 } else {
                     if from_elsewhere || indirect_value {
                         dropped.push(p.to_string());
@@ -855,7 +870,7 @@ impl Case {
         if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
             *f = summary;
         }
-        Ok(dropped)
+        Ok(BcReport { replaced: dropped, unfilled })
     }
 
     /// Writes the changed dictionaries and returns their paths.

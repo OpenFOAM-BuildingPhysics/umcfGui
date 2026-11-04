@@ -15,7 +15,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     label: "Set boundary condition",
     menu: "Boundary conditions/Set condition…",
     shortcut: None,
-    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. defaults: keys only a new entry gets ({\"value\": \"uniform 300\"}): a kept entry keeps its own. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; otherwise its entry is replaced. Nothing else in the file changes.",
+    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. defaults: keys only a new entry gets ({\"value\": \"uniform 300\"}): a kept entry keeps its own. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; so does an entry without a type of its own that brings text in from an #include or a $macro (no defaults then: bc.unfilled); otherwise its entry is replaced. Nothing else in the file changes.",
     enabled: needs_case,
     run: set,
     journal: true,
@@ -94,15 +94,17 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let o = s.opened_mut()?;
     let mut files = Vec::new();
     let mut dropped: Vec<(String, String)> = Vec::new();
+    let mut unfilled: Vec<(String, String)> = Vec::new();
     for (region, names) in &by_region {
-        let gone = o.case.set_bc(
+        let report = o.case.set_bc(
             o.fs.as_ref(),
             region,
             field,
             names,
             &umcf_model::Condition { kind, entries: &pairs, defaults: &fills },
         )?;
-        dropped.extend(gone.into_iter().map(|p| (region.to_string(), p)));
+        dropped.extend(report.replaced.into_iter().map(|p| (region.to_string(), p)));
+        unfilled.extend(report.unfilled.into_iter().map(|p| (region.to_string(), p)));
         if let Some(f) = o.case.region(region).and_then(|r| r.field(field)) {
             files.push(f.path.clone());
         }
@@ -119,6 +121,18 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "patch": patch,
             "field": field,
             "message": "the entry it had took text from an #include or a $macro: the new entry replaces it, and that text is no longer used here",
+        }));
+    }
+    for (region, patch) in &unfilled {
+        let path = o.case.region(region).and_then(|r| r.field(field)).map(|f| f.path.clone()).unwrap_or_default();
+        found.push(json!({
+            "level": "warning",
+            "code": "bc.unfilled",
+            "path": path,
+            "region": region,
+            "patch": patch,
+            "field": field,
+            "message": "the entry brings text in from an #include or a $macro, which isn't read here: it keeps that text, and the defaults (the value shown) were not set in it. Check that it has what the type needs, or give the value explicitly",
         }));
     }
     // Entries the file brings in from elsewhere can still override the ones set here.

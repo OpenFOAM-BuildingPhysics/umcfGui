@@ -709,7 +709,7 @@ fn a_boundary_condition_changes_its_entry_only() {
     assert_eq!(c.save(&mut fs, None).unwrap(), ["0/air/T"]);
     assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), after.as_bytes());
     // What can't be edited says why.
-    let e = |r: Result<Vec<String>>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    let e = |r: Result<BcReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(
         e(c.set_bc(&fs, "air", "U", &["top"], &Condition { kind: "fixedValue", entries: &[], defaults: &[] }))
             .contains("no field U of region air")
@@ -766,7 +766,7 @@ fn the_same_type_keeps_its_entry() {
             &Condition { kind: "fixedValue", entries: &[("value", "uniform (0 0 0)")], defaults: &[] },
         )
         .unwrap();
-    assert_eq!(dropped, ["ground"]);
+    assert_eq!(dropped.replaced, ["ground"]);
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("#include") && text.contains("type            fixedValue;"), "{text}");
 }
@@ -830,18 +830,20 @@ fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
         ),
     );
     let mut c = Case::open(&fs).unwrap();
-    c.set_bc(
-        &fs,
-        "air",
-        "U",
-        &["ground"],
-        &Condition {
-            kind: "inletOutlet",
-            entries: &[],
-            defaults: &[("inletValue", "uniform (0 0 0)"), ("value", "uniform (9 9 9)")],
-        },
-    )
-    .unwrap();
+    let report = c
+        .set_bc(
+            &fs,
+            "air",
+            "U",
+            &["ground"],
+            &Condition {
+                kind: "inletOutlet",
+                entries: &[],
+                defaults: &[("inletValue", "uniform (0 0 0)"), ("value", "uniform (9 9 9)")],
+            },
+        )
+        .unwrap();
+    assert_eq!(report.unfilled, ["ground"]);
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("inletValue") && !text.contains("uniform (9 9 9)"), "{text}");
     assert!(text.contains("$inletCommon") && text.contains("inletOutlet"), "{text}");

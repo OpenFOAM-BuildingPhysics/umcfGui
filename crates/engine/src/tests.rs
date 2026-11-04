@@ -991,7 +991,11 @@ fn defaults_go_into_new_entries_only() {
     assert_eq!(bc_of(&s, "T", "outlet"), Some((Some("fixedValue".into()), Some("uniform 310".into()))));
     // So many keys are refused.
     let many: serde_json::Map<String, Value> = (0..65).map(|k| (format!("k{k}"), json!("1"))).collect();
-    assert!(s.execute("bc.set", &json!({"field": "T", "type": "fixedValue", "defaults": many, "patches": p})).is_err());
+    let e = s
+        .execute("bc.set", &json!({"field": "T", "type": "fixedValue", "defaults": many, "patches": p}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("more than 64"), "{e}");
     // Defaults are checked like values.
     let bad = json!({"field": "U", "type": "fixedValue", "defaults": {"value": "uniform 1"}, "patches": p});
     assert!(s.execute("bc.set", &bad).is_err());
