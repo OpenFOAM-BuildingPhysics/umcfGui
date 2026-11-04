@@ -232,9 +232,25 @@ impl App {
         }
     }
 
+    /// Drops from what the 3D view shows the regions and surfaces the case no longer has (a
+    /// surface an undo took away): the scene would not build without them.
+    fn prune_shown(&mut self) {
+        let surfaces = self.session.surfaces();
+        let regions: Vec<String> = self
+            .session
+            .case()
+            .map_or(Vec::new(), |c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect());
+        let before = (self.shown_regions.len(), self.shown_surfaces.len());
+        self.shown_regions.retain(|r| regions.contains(r));
+        self.shown_surfaces.retain(|f| surfaces.contains(f));
+        if before != (self.shown_regions.len(), self.shown_surfaces.len()) {
+            self.revision += 1;
+        }
+    }
+
     /// Shows only these mesh regions and surfaces (by region name or surface file name) in the
     /// 3D view.
-    pub fn show_only(&mut self, names: &[String]) {
+    pub fn show_only(&mut self, names: &[String]) -> Vec<String> {
         let regions: Vec<String> = self.session.case().map_or(Vec::new(), |c| {
             c.regions
                 .iter()
@@ -252,10 +268,18 @@ impl App {
             self.expanded.insert("surfaces".into());
             self.expanded.extend(surfaces.iter().map(|f| format!("surface:{f}")));
         }
+        let unknown = names
+            .iter()
+            .filter(|n| {
+                !regions.contains(n) && !surfaces.iter().any(|f| f == *n || f.rsplit('/').next() == Some(n.as_str()))
+            })
+            .cloned()
+            .collect();
         self.shown_regions = regions;
         self.shown_surfaces = surfaces;
         self.viewport.camera = None;
         self.revision += 1;
+        unknown
     }
 
     /// Runs a command, logs it and redraws; returns its outcome.
@@ -276,6 +300,8 @@ impl App {
         }
         if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
             self.reset_shown();
+        } else {
+            self.prune_shown();
         }
         result.map_err(|e| e.to_string())
     }
@@ -374,6 +400,7 @@ impl App {
         let typing = ctx.memory(|m| m.focused().is_some());
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.dialog = None;
+            self.results_open = false;
             self.workspace_menu = false;
             self.search.clear();
             self.search_open = false;
@@ -1426,7 +1453,20 @@ impl App {
             let (d, u) = self.session.history();
             (d.into_iter().cloned().collect(), u.into_iter().cloned().collect())
         };
-        for (k, e) in done.iter().enumerate() {
+        // As many chips as fit beside the status text, around the marker: the newest done
+        // edits, then the next ones to redo; "+k" says how many are left out on each side.
+        let room = ((ui.available_width() - 440.0) / 30.0).floor().max(4.0) as usize;
+        let show_undone = nu.min(room / 3);
+        let show_done = nd.min(room.saturating_sub(show_undone));
+        let show_undone = nu.min(room.saturating_sub(show_done));
+        let more = |ui: &mut Ui, n: usize| {
+            if n > 0 {
+                ui.label(RichText::new(format!("+{n}")).size(12.0).color(t.text_muted))
+                    .on_hover_text(format!("{n} more edits"));
+            }
+        };
+        more(ui, nd - show_done);
+        for (k, e) in done.iter().enumerate().skip(nd - show_done) {
             let tip = if e.detail.is_empty() { e.label.to_string() } else { format!("{}: {}", e.label, e.detail) };
             if chip(ui, e.command, tip, false, k) {
                 target = Some(k + 1);
@@ -1437,12 +1477,13 @@ impl App {
             ui.painter().vline(rect.center().x, rect.top()..=rect.bottom() - 6.0, Stroke::new(2.5, t.accent));
             ui.painter().circle(pos2(rect.center().x, rect.bottom() - 4.0), 4.0, t.card, Stroke::new(2.0, t.accent));
         }
-        for (k, e) in undone.iter().enumerate() {
+        for (k, e) in undone.iter().enumerate().take(show_undone) {
             let detail = if e.detail.is_empty() { String::new() } else { format!(": {}", e.detail) };
             if chip(ui, e.command, format!("{} (undone){detail}", e.label), true, nd + k) {
                 target = Some(nd + k + 1);
             }
         }
+        more(ui, nu - show_undone);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let Some(e) = self.log.last() {
                 let colour = if e.ok { t.text_muted } else { t.error };
@@ -1541,7 +1582,9 @@ pub fn run(options: Options) -> Result<(), String> {
         }
     }
     if !options.show.is_empty() {
-        app.show_only(&options.show);
+        for n in app.show_only(&options.show) {
+            eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
+        }
     }
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     let native = eframe::NativeOptions {

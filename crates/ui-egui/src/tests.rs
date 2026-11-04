@@ -270,3 +270,61 @@ fn registry_shortcuts_parse() {
     assert_eq!(shortcut("F7").unwrap().logical_key, egui::Key::F7);
     assert!(shortcut("Ctrl+Nope").is_none());
 }
+
+/// A surface an undo takes away leaves the view, which still draws what is left.
+#[test]
+fn undoing_an_import_takes_its_surface_out_of_the_view() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-import", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("tri.stl");
+    std::fs::write(
+        &file,
+        "solid lid\nfacet normal 0 0 1\nouter loop\nvertex 0 0 2\nvertex 1 0 2\nvertex 0 1 2\nendloop\nendfacet\nendsolid lid\n",
+    )
+    .unwrap();
+    let mut h = harness(app());
+    h.state_mut().run("geometry.import", json!({ "path": file.to_str().unwrap() })).unwrap();
+    h.state_mut().show_only(&[String::new(), "tri.stl".to_string()]);
+    h.run();
+    assert_eq!(h.state().shown_surfaces, ["constant/triSurface/tri.stl"]);
+    tree_item(&h, "lid");
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().shown_surfaces.is_empty());
+    assert_eq!(h.state().shown_regions, [String::new()]);
+    // The mesh is still drawn and picked.
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    let rect = h.state().viewport.rect.unwrap();
+    click_at(&mut h, rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().session().selection().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Many edits: the strip shows the ones next to the marker and counts the others.
+#[test]
+fn the_history_strip_shows_what_fits() {
+    let mut h = harness(app());
+    for k in 0..60 {
+        h.state_mut().run("control.set", json!({ "endTime": 3600 + k })).unwrap();
+    }
+    h.state_mut().go_to(40);
+    h.run();
+    assert_eq!(h.state().session().history().0.len(), 40);
+    let shown = h.get_all_by_label_contains("Edit ").count();
+    assert!((4..60).contains(&shown), "{shown}");
+    let count = |l: &str| l.strip_prefix('+').is_some_and(|d| d.parse::<usize>().is_ok());
+    let shown_counts = h
+        .root()
+        .children_recursive()
+        .filter(|n| {
+            let a = n.accesskit_node();
+            a.label().is_some_and(|l| count(&l)) || a.value().is_some_and(|v| count(&v))
+        })
+        .count();
+    assert!(shown_counts >= 1, "a +k count is shown");
+    // The chip next to the marker on the redo side is there and goes one step on.
+    h.get_by_label("Edit 41").click();
+    h.run();
+    assert_eq!(h.state().session().history().0.len(), 41);
+}

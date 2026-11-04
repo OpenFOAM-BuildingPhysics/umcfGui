@@ -148,7 +148,19 @@ impl Viewport {
 
         // Draw at the screen's pixels; at half of them while turning, to keep up.
         let ppp = ui.ctx().pixels_per_point() * if dragging { 0.5 } else { 1.0 };
-        let size = [(rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32];
+        // Within what the renderer draws and a texture holds, with the view's aspect kept (the
+        // image is stretched over the view, and picking uses the size drawn).
+        let max_side = ui.ctx().input(|i| i.max_texture_side).clamp(1, umcf_render::raster::MAX_SIDE as usize) as f32;
+        let (mut w, mut h) = (rect.width().max(1.0) * ppp, rect.height().max(1.0) * ppp);
+        let fit =
+            (max_side / w).min(max_side / h).min((umcf_render::raster::MAX_PIXELS as f32 / (w * h)).sqrt()).min(1.0);
+        w *= fit;
+        h *= fit;
+        let size = [w.round().max(1.0) as u32, h.round().max(1.0) as u32];
+        let size = {
+            let (w, h) = umcf_render::raster::size(size[0], size[1]);
+            [w, h]
+        };
         let drawn = Drawn {
             camera: key(&cam),
             size,

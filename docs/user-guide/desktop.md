@@ -1,8 +1,10 @@
 # The desktop app
 
-`umcf-gui` shows a case in 3D and runs the same commands as `umcf-cli`: every button, menu entry
-and click in the view is a command of the [registry](command-line.md#the-commands), so what it
-does is in the edit history and can be undone, and a script can do the same.
+`umcf-gui` shows a case in 3D and runs the same commands as `umcf-cli`: every change it makes to
+the case is a command of the [registry](command-line.md#the-commands), so it is in the edit
+history and can be undone, and a script can do the same. Selecting is a command too (in the
+journal, not in the undo history); what the view shows, the camera and the theme are the
+window's own.
 
 ![umcfGui with the 3×3 case: the browser on the left, the buildings surface in the view with its roofs selected, the properties and the results of a case check on the right](../images/desktop.png)
 
@@ -50,10 +52,11 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **Results** (right): the last command's message and its diagnostics; it opens when a command
   reports some.
 - **History** (bottom): one chip per edit that can be undone, the marker after the last one
-  done; a click on a chip undoes or redoes up to it.
+  done; a click on a chip undoes or redoes up to it. When there are more than fit, the ones
+  nearest the marker are shown, with the number left out on each side.
 
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
-check. Escape closes a card or the search.
+check. Escape closes the parameter card, the results and the search.
 
 ## Limits
 
