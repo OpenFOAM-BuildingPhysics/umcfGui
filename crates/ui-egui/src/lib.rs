@@ -1541,6 +1541,8 @@ struct Desktop {
     frames: u32,
     /// Set once the screenshot is written (or failed): the window closes.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Why the screenshot was not written, for [`run`] to return.
+    failed: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl eframe::App for Desktop {
@@ -1555,7 +1557,7 @@ impl eframe::App for Desktop {
         ui.ctx().request_repaint();
         // A few frames for the panels to settle and the view to draw.
         if self.frames == 5 {
-            let (path, done, ctx) = (path.clone(), self.done.clone(), ui.ctx().clone());
+            let (path, done, failed, ctx) = (path.clone(), self.done.clone(), self.failed.clone(), ui.ctx().clone());
             let callback = egui::ScreenshotCallback::new(move |image| {
                 let [w, h] = image.size;
                 let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
@@ -1565,7 +1567,8 @@ impl eframe::App for Desktop {
                     rgba,
                 });
                 if let Err(e) = std::fs::write(&path, png) {
-                    eprintln!("umcf-gui: writing {path}: {e}");
+                    let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *f = Some(format!("writing the screenshot {path}: {e}"));
                 }
                 done.store(true, std::sync::atomic::Ordering::SeqCst);
                 ctx.request_repaint();
@@ -1601,6 +1604,20 @@ pub fn run(options: Options) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),
         ..Default::default()
     };
-    let desktop = Desktop { app, screenshot: options.screenshot, frames: 0, done: Default::default() };
-    eframe::run_native("umcfGui", native, Box::new(|_cc| Ok(Box::new(desktop)))).map_err(|e| e.to_string())
+    let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let wanted = options.screenshot.clone();
+    let done: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+    let desktop =
+        Desktop { app, screenshot: options.screenshot, frames: 0, done: done.clone(), failed: failed.clone() };
+    eframe::run_native("umcfGui", native, Box::new(|_cc| Ok(Box::new(desktop)))).map_err(|e| e.to_string())?;
+    if let Some(e) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        return Err(e);
+    }
+    // Closed before the screenshot was taken (the window was closed by hand).
+    match wanted {
+        Some(path) if !done.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err(format!("the window closed before the screenshot was written to {path}"))
+        }
+        _ => Ok(()),
+    }
 }
