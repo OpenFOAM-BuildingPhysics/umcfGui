@@ -19,6 +19,8 @@ pub struct Tokens {
     pub bar_muted: Color32,
     /// The bar's controls when hovered, and the open case's tab.
     pub bar_raised: Color32,
+    /// The icons' coloured parts on the bar.
+    pub bar_accent: Color32,
     /// Behind the ribbon cards.
     pub chrome: Color32,
     /// Cards: ribbon, browser, properties, navigation bar, history.
@@ -63,6 +65,7 @@ impl Tokens {
             bar_text: Color32::from_rgb(0xf2, 0xf4, 0xf7),
             bar_muted: Color32::from_rgb(0xa9, 0xb1, 0xbd),
             bar_raised: Color32::from_rgb(0x3b, 0x43, 0x50),
+            bar_accent: Color32::from_rgb(0x6a, 0xa8, 0xf0),
             chrome: Color32::from_rgb(0xe9, 0xec, 0xf0),
             card: Color32::from_rgb(0xff, 0xff, 0xff),
             card_border: Color32::from_rgb(0xd9, 0xdd, 0xe3),

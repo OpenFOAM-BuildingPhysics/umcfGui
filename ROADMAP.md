@@ -41,3 +41,5 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-04 — M0.18 STL surfaces: the `geom` crate (reading, checks, repairs), `geometry.import`, `geometry.check`, `geometry.repair`, `geometry.scale`, `umcf-cli surface`; surfaces saved with the case.
 - 2026-11-04 — M0.19 3D scene: the `render` crate (scene, CPU rasteriser, PNG), a triangle BVH in `geom`, `scene.snapshot`, `select.pick`, `select.set`, `select.clear`, the session's selection, `umcf-cli render`.
 - 2026-11-04 — M0.20 desktop app: `ui-egui` and `umcf-gui` with a SolidCraft-style layout; the engine names the edits in its undo history.
+- 2026-11-04 — M0.21 the Claude review workflow, run on a pull request by `/claude-review`.
+- 2026-11-04 — M0.22 the desktop app's review fixes: the scene and the surface list are not read again on every frame, and a panic while building the scene is caught; `--screenshot` fails when the case or a `--cmd` does.

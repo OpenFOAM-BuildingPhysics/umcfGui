@@ -5,7 +5,10 @@ use eframe::egui::{self, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use serde_json::json;
-use umcf_core::MemFs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use umcf_core::{CaseFs, CaseWrite, FsError, MemFs};
 use umcf_engine::{Sel, Session};
 use umcf_model::OpenOptions;
 use umcf_render::camera::View;
@@ -259,7 +262,6 @@ fn without_a_case_the_shell_says_what_to_do() {
     h.get_by_label("Open a case…").click();
     h.run();
     assert_eq!(h.state().dialog.as_ref().map(|d| d.id), Some("case.open"));
-    let _ = json!({});
 }
 
 #[test]
@@ -327,4 +329,108 @@ fn the_history_strip_shows_what_fits() {
     h.get_by_label("Edit 41").click();
     h.run();
     assert_eq!(h.state().session().history().0.len(), 41);
+}
+
+#[test]
+fn every_ribbon_command_is_in_the_registry() {
+    for w in crate::ribbon::Workspace::ALL {
+        for tab in w.tabs() {
+            for g in tab.groups {
+                for item in g.items {
+                    if let crate::ribbon::Item::Command(id, _, _) = item {
+                        assert!(Session::command(id).is_some(), "the ribbon places `{id}`, which isn't a command");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A case on [`MemFs`] that counts the reads of its surfaces and can be made to panic on them.
+struct Watched {
+    fs: MemFs,
+    reads: Arc<AtomicUsize>,
+    panics: Arc<AtomicBool>,
+}
+
+impl Watched {
+    fn surface(&self, rel: &str) {
+        if rel.starts_with("constant/triSurface") {
+            assert!(!self.panics.load(Ordering::SeqCst), "a bug while reading {rel}");
+        }
+    }
+}
+
+impl CaseFs for Watched {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        self.surface(rel);
+        if rel.ends_with(".stl") {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.fs.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        self.surface(rel);
+        self.fs.list(rel)
+    }
+}
+
+impl CaseWrite for Watched {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.fs.write(rel, bytes)
+    }
+}
+
+/// The case with a surface `bad.stl` that says it has 1000 triangles and has none.
+fn watched() -> (App, Arc<AtomicUsize>, Arc<AtomicBool>) {
+    let mut fs = case();
+    let mut bad = vec![0u8; 80];
+    bad.extend(1000u32.to_le_bytes());
+    fs.insert("constant/triSurface/bad.stl", bad);
+    let (reads, panics) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let fs = Watched { fs, reads: reads.clone(), panics: panics.clone() };
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    (App::new(s), reads, panics)
+}
+
+#[test]
+fn a_scene_that_fails_is_tried_once_per_change() {
+    let (mut app, reads, _) = watched();
+    assert_eq!(app.surfaces, ["constant/triSurface/bad.stl"]);
+    assert!(app.show_only(&["bad.stl".to_string()]).is_empty());
+    let mut h = harness(app);
+    let revision = h.state().revision;
+    let error = h.state().scene_error.clone();
+    assert!(matches!(&error, Some((r, e)) if *r == revision && e.contains("bad.stl")), "{error:?}");
+    let tried = reads.load(Ordering::SeqCst);
+    assert!(tried > 0);
+    for _ in 0..3 {
+        h.run();
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), tried, "the failed scene was built again");
+    assert_eq!(h.state().scene_error, error);
+    // A change to what is shown tries again.
+    h.state_mut().show_only(&["walls".to_string()]);
+    h.run();
+    assert!(h.state().scene_error.as_ref().is_none_or(|(r, _)| *r != h.state().revision));
+}
+
+#[test]
+fn a_bug_while_building_the_scene_is_an_error_not_a_crash() {
+    let (app, _, panics) = watched();
+    let mut s = app.session;
+    panics.store(true, Ordering::SeqCst);
+    let err = s.scene(&json!({ "surfaces": ["constant/triSurface/bad.stl"] })).err();
+    assert!(matches!(err, Some(umcf_engine::Error::Panicked { .. })), "{err:?}");
+    assert!(s.surfaces().is_empty());
+    panics.store(false, Ordering::SeqCst);
+    assert_eq!(s.surfaces(), ["constant/triSurface/bad.stl"]);
+    assert!(s.scene(&json!({ "regions": [""] })).is_ok());
 }

@@ -46,9 +46,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--cmd" => {
                 let v = value("--cmd")?;
                 let (id, params) = match v.split_once('=') {
-                    Some((id, p)) => {
-                        (id.trim().to_string(), serde_json_from(p).map_err(|e| format!("--cmd {id}: not JSON: {e}"))?)
-                    }
+                    Some((id, p)) => (
+                        id.trim().to_string(),
+                        umcf_ui_egui::parse_params(p).map_err(|e| format!("--cmd {id}: not JSON: {e}"))?,
+                    ),
                     None => (v.trim().to_string(), umcf_ui_egui::empty_params()),
                 };
                 o.commands.push((id, params));
@@ -59,10 +60,6 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
     }
     Ok(o)
-}
-
-fn serde_json_from(text: &str) -> Result<umcf_ui_egui::Value, String> {
-    umcf_ui_egui::parse_params(text)
 }
 
 fn main() -> ExitCode {
