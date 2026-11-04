@@ -117,8 +117,8 @@ The radiation region (`vegetation`, or `air` without trees):
 
 | Role | `T` (vegetation only) | `qr` | `qs` |
 |---|---|---|---|
-| every patch of `air`, by the same name | `mappedValue` *12* (`mapped` with `field`, `setAverage`, `average` *8*) | `greyDiffusiveRadiationViewFactor` with `emissivityMode lookup; emissivity …; qro uniform 0;` | `solarLoadRadiationViewFactor` with `albedoMode lookup; albedo …; qso uniform 0;` |
-| `air_to_vegetation` | `mappedLeafTemperature` (`field Tl; setAverage 0; average 0; interpolationScheme cell;`) | the same | the same |
+| every patch of `air`, by the same name | `mappedValue` *12* (`mapped` with `field`, `setAverage`, `average` *8*) | `greyDiffusiveRadiationViewFactor` with `emissivityMode lookup; emissivity …; qro uniform 0;` (`qro` R) | `solarLoadRadiationViewFactor` with `albedoMode lookup; albedo …; qso uniform 0;` (`qso` R) |
+| `air_to_vegetation` | `mappedLeafTemperature` with `field Tl;` (the tutorials also carry *8*'s `setAverage`, `average`, `interpolationScheme`, which *12* ignores) | the same | the same |
 
 The solid temperature conditions take `qr` and `qs` at the first iteration and then every 600 s
 of simulated time.
@@ -136,8 +136,9 @@ of simulated time.
    coupled to (`CFDHAMsolidTemperatureCoupledMixed…C:351`, and the same in
    `CFDHAMsolidTemperatureTransferCoeff`). So every air patch coupled to a solid needs a patch of
    the same name in `vegetation`. Without trees, it reads them from the air patch.
-4. **Sky or surface.** In the radiation region, every patch that is not a wall is **sky**: neither
-   `wall` nor `mappedInternal` *12* (`viewFactorSky.C:1294-1298`), not `wall` *8*. So the domain
+4. **Sky or surface.** In the radiation region, every patch that is not a surface is **sky**: the
+   surfaces are `wall` patches, and `mappedInternal` ones *12* (`viewFactorSky.C:1294-1298`;
+   *8* tests `wall` only). So the domain
    sides and top are `patch` or `mapped` (`mappedPatch` *8*), the ground and buildings `wall` or
    `mappedWall`. Patches with a fixed-value-derived `qr` take part in the view factors; the view
    factor dictionary sets how coarse each is (`nFacesInCoarsestLevel`). A patch without an entry
