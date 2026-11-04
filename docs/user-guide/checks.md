@@ -98,6 +98,38 @@ twice counts once, with its last value.
 | `model.unknown` | Error | The solver has no such type. The message lists the ones it has, and the closest match. Only a Warning when `controlDict` loads extra `libs`, which may add it |
 | `model.version` | Error | The type exists only in the solver for the other OpenFOAM version (for example `OSB` in an OpenFOAM-8 case) |
 
+## Fields the solver reads
+
+Every region needs the fields the solver reads for its kind of region, and the fields the
+models selected there read. A missing one stops the run at the start. The list comes from the
+solver source, per version ([Solver coverage](../solver-coverage.md#fields-read)), plus what
+OpenFOAM itself reads for what the solver sets up:
+
+| Region | Read by | Fields |
+|---|---|---|
+| Fluid | urbanMicroclimateFoam | `U`, `w`, `gcr`, `p_rgh` at the start time, `g` in `constant/<region>` |
+| Fluid | OpenFOAM's thermophysics | `T`, `p` |
+| Fluid | OpenFOAM's RAS or LES turbulence (`momentumTransport`) | `nut`, `alphat`, and the RAS model's own: `k` and `epsilon` (`kEpsilon`, `realizableKE`, `RNGkEpsilon`), `k` and `omega` (`kOmega`, `kOmegaSST`) |
+| Fluid | vegetationModel `simplifiedVegetation` | `LAD`, always from `0`, whatever time the run starts from |
+| Fluid | RAS model `porousrealizableKE` (the solver's) | `k`, `epsilon`; `LAD` from `0` (OpenFOAM-8) or `constant/<region>` (OpenFOAM-12) |
+| Solid | urbanMicroclimateFoam | `Ts`, `ws`, `pc`, and `g` in `constant/<region>` |
+| Vegetation | urbanMicroclimateFoam | `T` |
+| Fluid, vegetation | radiation model `viewFactorSky` (`radiationProperties`) | `qr` |
+| Fluid, vegetation | solar load model `directAndDiffuse` (`solarLoadProperties`) | `qs` |
+
+Notes:
+- Fields read only if present (`phi`, `Tl`, `Tg`) are not required.
+- Files the radiation utilities write (`F`, `finalAgglom`, …) are covered by the
+  [script checks](#scripts).
+- A model can read different fields in each of its constructors. Only the constructors the
+  solver builds it with count (it builds `solarLoadModel` from a field, so `directAndDiffuse`
+  needs `qs`, not the `Qs` its dictionary constructor reads). A read in a member function,
+  which may never run, is not required.
+
+| Code | Level | What it means |
+|---|---|---|
+| `field.missing` | Error | A field the solver or a selected model reads is not where it is read from. Only a Warning in a decomposed case, whose parallel run reads `processor*/`. Fields read from the start time are not reported for a region that has none there (`region.no-fields`); those read from `0` or `constant/<region>` still are |
+
 ## Regions and run controls
 
 | Code | Level | What it means |
