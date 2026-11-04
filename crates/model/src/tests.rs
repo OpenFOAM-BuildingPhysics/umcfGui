@@ -844,6 +844,40 @@ fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
         )
         .unwrap();
     assert_eq!(report.unfilled, ["ground"]);
+    // The same with a type of its own: kept, and reported too.
+    let fs2 = case().with(
+        "0/air/U",
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    ground\n    {{\n        type fixedValue;\n        #include \"ground\"\n    }}\n}}\n",
+            header("volVectorField", "U")
+        ),
+    );
+    let mut c2 = Case::open(&fs2).unwrap();
+    let report2 = c2
+        .set_bc(
+            &fs2,
+            "air",
+            "U",
+            &["ground"],
+            &Condition { kind: "fixedValue", entries: &[], defaults: &[("value", "uniform (1 0 0)")] },
+        )
+        .unwrap();
+    assert_eq!(report2.unfilled, ["ground"]);
+    // Every default given as an entry too: nothing missing.
+    let report3 = c2
+        .set_bc(
+            &fs2,
+            "air",
+            "U",
+            &["ground"],
+            &Condition {
+                kind: "fixedValue",
+                entries: &[("value", "uniform (2 0 0)")],
+                defaults: &[("value", "uniform (1 0 0)")],
+            },
+        )
+        .unwrap();
+    assert!(report3.unfilled.is_empty());
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("inletValue") && !text.contains("uniform (9 9 9)"), "{text}");
     assert!(text.contains("$inletCommon") && text.contains("inletOutlet"), "{text}");

@@ -15,7 +15,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     label: "Set boundary condition",
     menu: "Boundary conditions/Set condition…",
     shortcut: None,
-    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. defaults: keys only a new entry gets ({\"value\": \"uniform 300\"}): a kept entry keeps its own. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; so does an entry without a type of its own that brings text in from an #include or a $macro (no defaults then: bc.unfilled); otherwise its entry is replaced. Nothing else in the file changes.",
+    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. defaults: keys only a new entry gets ({\"value\": \"uniform 300\"}): a kept entry keeps its own. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; so does an entry without a type of its own that brings text in from an #include or a $macro; an entry kept that brings text in gets no defaults (bc.unfilled warns); otherwise its entry is replaced. Nothing else in the file changes.",
     enabled: needs_case,
     run: set,
     journal: true,
@@ -35,6 +35,11 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let kind = p.required_str("type")?;
     if key(id, kind).is_err() || kind.contains(['(', ')']) {
         return Err(Error::Params(format!("{id}: `{kind}` is not a boundary condition type")));
+    }
+    // Counted before anything is converted.
+    let count = |k: &str| p.required(k).ok().and_then(Value::as_object).map_or(0, |o| o.len());
+    if count("entries") + count("defaults") + usize::from(p.required("value").is_ok()) > MAX_KEYS {
+        return Err(Error::Params(format!("{id}: more than {MAX_KEYS} entries and defaults")));
     }
     let mut entries: Vec<(String, String)> = Vec::new();
     if let Ok(v) = p.required("entries") {
@@ -67,9 +72,6 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let mut by_region: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (r, patch) in &patches {
         by_region.entry(r.as_str()).or_default().push(patch.as_str());
-    }
-    if entries.len() + defaults.len() > MAX_KEYS {
-        return Err(Error::Params(format!("{id}: more than {MAX_KEYS} entries and defaults")));
     }
     let pairs: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let fills: Vec<(&str, &str)> = defaults.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

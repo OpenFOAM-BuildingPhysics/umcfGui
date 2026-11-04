@@ -839,9 +839,14 @@ impl Case {
                         matches!(i, umcf_foam_dict::Item::Directive { .. } | umcf_foam_dict::Item::Macro { .. })
                     })
                 });
+                let missing_defaults = defaults.iter().any(|(k, _)| !entries.iter().any(|(e, _)| e == k));
                 if visible.as_deref() == Some(kind) {
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
+                    }
+                    // Its own keys are kept as they are; what it brings in isn't read here.
+                    if from_elsewhere && missing_defaults {
+                        unfilled.push(p.to_string());
                     }
                 } else if visible.is_none() && from_elsewhere {
                     // Kept, with the type and entries set after what it brings in (the last
@@ -851,7 +856,7 @@ impl Case {
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
                     }
-                    if defaults.iter().any(|(k, _)| !entries.iter().any(|(e, _)| e == k)) {
+                    if missing_defaults {
                         unfilled.push(p.to_string());
                     }
                 } else {
