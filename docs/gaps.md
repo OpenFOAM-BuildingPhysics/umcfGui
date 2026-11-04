@@ -7,7 +7,7 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Reading `checkMesh -writeSets` (the face and cell sets, and its log), `checkMesh -allGeometry`'s extra checks, and layer coverage | `checkMesh` is the authority on mesh quality; the native check covers its default checks only | `validate`, `foam-mesh` |
+| 1 | `checkMesh -allGeometry`'s extra checks natively (face weights, volume ratios, concave cells and faces, warped faces, determinants, short edges, near points), and layer coverage from `snappyHexMesh`'s log | The native check covers `checkMesh`'s default checks only; layers that failed to grow are a common reason for poor wall results | `validate` |
 | 2 | STL import and diagnostics: open and non-manifold edges, normals, degenerate triangles, units, extent; repair commands (weld, drop degenerate, orient, scale) | Urban geometry is rarely clean, and snappyHexMesh fails late on it | `geom`, `engine` |
 | 3 | 3D scene of meshes and surfaces, CPU rasteriser, BVH picking (triangle → patch / face) | Seeing the case, and picking what a command acts on | `render`, `geom` |
 | 4 | GUI shell: outliner (regions, patches, surfaces), inspector, toolbar and palette from the command registry, wgpu viewport, theme tokens | The application people use | `ui-egui`, `umcf-gui` |

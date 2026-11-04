@@ -46,6 +46,11 @@ nobody checked, and it says which faces and cells are involved, so they can be s
 | `mesh.aspect-ratio` | Warning | Cells with an aspect ratio above 1000 (only the directions the mesh solves in count: the normal of `empty` patches doesn't) |
 | `mesh.open-boundary` | Warning | The boundary's face area vectors don't add up to zero (above 1e-6, OpenFOAM-8's threshold; OpenFOAM-12's `checkMesh` passes 1 here, so it never fails this check) |
 
+In a vegetation region every problem is a warning, except a mesh that can't be read or has
+coordinates that are not numbers. The solver solves no flow equations on that mesh (it
+carries the leaf temperature and the radiation exchange), and cases with a few wrongly oriented
+faces there run: the large 3×3 cases have 6 to 12, which `checkMesh` reports too.
+
 `checkMesh` counts high aspect ratios and skewness as failed checks. They are warnings here
 because a case usually runs with them, if more slowly or less accurately.
 
@@ -53,12 +58,52 @@ Faces of `cyclic` and `processor` patches are treated as boundary faces: the cel
 side is not followed. So their non-orthogonality is not computed, and their skewness uses the
 boundary formula. Wedge directions are not left out of the aspect ratio.
 
+### checkMesh's own results
+
+`checkMesh` is the authority, so what it wrote is read too, for each region:
+
+- **Its log:** `log.checkMesh*` in the case directory, matched to the region by its `-region`
+  argument.
+  - A run over several times (`-time 3,8`) checked one mesh per time; each gives its own result,
+    labelled with its time.
+  - A result is used only for a mesh with as many cells, faces and points as it checked: a log of the meshes in
+    time directories, or of an older mesh, gets a note saying why it was left out. A log for no
+    region of the case, or too large to read (over 16 MB), gets a note too.
+  - Each failed check (`***`) becomes `mesh.checkmesh`. It is an error, as `checkMesh` means it
+    (wrong orientation, zero or negative volumes or areas, open cells, non-orthogonality
+    errors, invalid labels, boundary, zone and wedge errors). The quality findings are
+    warnings: aspect ratio, skewness, small weights and volume ratios, small determinants,
+    concave cells, non-aligned edges, boundary openness.
+  - Each remark (`*`) becomes a note.
+  - A log that ends in a fatal error is an error; one that stops before its verdict is a
+    warning.
+  - A finding the native check also makes (its default checks: aspect ratio, skewness,
+    pyramids, volumes, areas, open cells, non-orthogonality, boundary openness) is a note when
+    the mesh was checked natively too, so nothing counts twice. The others (`-allGeometry`'s
+    weights, volume ratios, determinants, concave cells; topology errors) count as `checkMesh`
+    says.
+- **Its sets:** the face, cell and point sets `checkMesh` writes (OpenFOAM-8 on every run,
+  OpenFOAM-12 with `-writeSets`) in `constant/<region>/polyMesh/sets`, such as `skewFaces`,
+  `wrongOrientedFaces` and `nonClosedCells`. Their labels are listed lowest first, for the 3D
+  view. Sets with other names (`topoSet`'s `trees`, …) are left alone. Sets written next to a
+  mesh in a time directory, or in `processor*` by a parallel run, are not read.
+
+A set that names faces, cells or points the mesh doesn't have was written for another mesh, and
+is reported as `mesh.stale-set`.
+
+| Code | Level | What it means |
+|---|---|---|
+| `mesh.checkmesh` | Error / Warning / Info | What a `checkMesh` log in the case reported for the region |
+| `mesh.stale-set` | Warning | A `checkMesh` set names more faces, cells or points than the mesh has: it was written for another mesh |
+| `mesh.unreadable-set` | Warning | A `checkMesh` set could not be read |
+
 Tested against `checkMesh`:
 - The five regions of the 3×3 test case give the same cell counts, volumes (min, max, total),
   face areas (min, max), aspect ratios, non-orthogonality (max and average) and skewness as
   OpenFOAM-12's `checkMesh`, to the six digits it prints (the opt-in test
   `matches_checkmesh_on_the_3x3_case`). The number of high-aspect cells is the same too (2880 in
   `buildings`, 1632 in `street`).
+- On a copy of the `vegetation` mesh of the partly ported 3×3 case (5.4 million cells), OpenFOAM-12's `checkMesh -writeSets` finds 1440 incorrectly oriented faces. Its `wrongOrientedFaces` set holds the same faces as `mesh.face-pyramids`.
 - The Hong Kong project's `air` mesh (16 million cells) gives what OpenFOAM-8's `checkMesh`
   printed for it: non-orthogonality max 80.6° and average 11.5°, 41 faces above 70°, and
   skewness max 5.79 with 8 faces above 4.

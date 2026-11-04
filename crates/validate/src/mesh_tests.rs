@@ -281,3 +281,104 @@ fn aspect_ratios_print_readably() {
     assert!(m.contains("e"), "{m}");
     assert!(m.len() < 200, "{m}");
 }
+
+const OF8_LOG: &str = "Build  : 8\nExec   : checkMesh\nDate   : Nov 13 2025\nCreate polyMesh for time = constant\n\nChecking geometry...\n ***High aspect ratio cells found, Max aspect ratio: 1147.3909, number of cells 4025\n  <<Writing 4025 cells with high aspect ratio to set highAspectRatioCells\n\nFailed 1 mesh checks.\n\nEnd\n";
+const OF12_LOG: &str = "Build  : 12\nExec   : checkMesh -region vegetation -noFunctionObjects -writeSets\n   *Number of regions: 9\n ***Error in face pyramids: 1440 faces are incorrectly oriented.\n  <<Writing 1440 faces with incorrect orientation to set wrongOrientedFaces\nFailed 1 mesh checks.\n";
+
+#[test]
+fn checkmesh_logs() {
+    let l = parse_checkmesh_log("log.checkMesh.ground", OF8_LOG).pop().unwrap();
+    assert_eq!((l.region.as_str(), l.version.as_deref(), l.failed, l.ok), ("", Some("8"), Some(1), false));
+    assert_eq!(l.problems, ["High aspect ratio cells found, Max aspect ratio: 1147.3909, number of cells 4025"]);
+    let d = checkmesh_log_diagnostics(&l, false);
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+        (d[0].level, d[0].code, d[0].path.as_str()),
+        (crate::Level::Warning, "mesh.checkmesh", "log.checkMesh.ground")
+    );
+    assert!(d[0].message.starts_with("checkMesh (log.checkMesh.ground, OpenFOAM-8): High aspect"), "{}", d[0].message);
+
+    let l = parse_checkmesh_log("log.checkMesh.vegetation", OF12_LOG).pop().unwrap();
+    assert_eq!(l.region, "vegetation");
+    assert_eq!(l.notes, ["Number of regions: 9"]);
+    let d = checkmesh_log_diagnostics(&l, false);
+    let levels: Vec<crate::Level> = d.iter().map(|d| d.level).collect();
+    assert_eq!(levels, [crate::Level::Error, crate::Level::Info]);
+    assert_eq!(d[0].region.as_deref(), Some("vegetation"));
+
+    // Mesh OK; a log cut short; another utility's log.
+    let ok = parse_checkmesh_log("log.checkMesh", "Exec   : checkMesh\nMesh OK.\n").pop().unwrap();
+    assert!(ok.ok && checkmesh_log_diagnostics(&ok, false).is_empty());
+    let cut =
+        parse_checkmesh_log("log.checkMesh", "Exec   : checkMesh -allGeometry\nChecking geometry...\n").pop().unwrap();
+    assert!(checkmesh_log_diagnostics(&cut, false)[0].message.contains("stops before"));
+    assert_eq!(parse_checkmesh_log("log.blockMesh", "Exec   : blockMesh\n"), []);
+    assert_eq!(parse_checkmesh_log("log.x", "no header at all"), []);
+    // One result per time checked.
+    let multi = "Build  : 8\nExec   : checkMesh -time 3,8\nCreate polyMesh for time = 3\n\nTime = 3\n ***Max skewness = 5.7, 7 highly skew faces\nFailed 1 mesh checks.\n\nTime = 8\n ***Max skewness = 5.8, 8 highly skew faces\nFailed 1 mesh checks.\n";
+    let logs = parse_checkmesh_log("log.checkMesh", multi);
+    let times: Vec<Option<&str>> = logs.iter().map(|l| l.time.as_deref()).collect();
+    assert_eq!(times, [Some("3"), Some("8")]);
+    assert_eq!(logs[1].problems, ["Max skewness = 5.8, 8 highly skew faces"]);
+    assert_eq!(logs[1].version.as_deref(), Some("8"));
+    assert!(checkmesh_log_diagnostics(&logs[0], false)[0].message.contains("OpenFOAM-8, time 3)"));
+}
+
+#[test]
+fn stale_sets() {
+    let d = stale_set("air", "skewFaces", 99, 10, SetOf::Faces);
+    assert_eq!((d.code, d.path.as_str()), ("mesh.stale-set", "constant/air/polyMesh/sets/skewFaces"));
+    assert!(CHECKMESH_SETS.iter().any(|(n, of, _)| *n == "wrongOrientedFaces" && *of == SetOf::Faces));
+    assert!(!CHECKMESH_SETS.iter().any(|(n, _, _)| *n == "trees" || *n == "wrongFaces"));
+}
+
+#[test]
+fn vegetation_regions_get_warnings() {
+    let q = quality(&block([1, 1, 2], false, &|p| if p[2] == 2.0 { [p[0], p[1], -1.0] } else { p }));
+    let mut d = diagnostics(&q, "vegetation");
+    d.push(unreadable("vegetation", "no points"));
+    assert!(d.iter().any(|d| d.level == crate::Level::Error && d.code == "mesh.face-pyramids"));
+    soften_for_vegetation(&mut d);
+    for x in &d {
+        let expect = if x.code == "mesh.unreadable" { crate::Level::Error } else { crate::Level::Warning };
+        assert_eq!(x.level, expect, "{}", x.code);
+    }
+    assert!(d.iter().find(|x| x.code == "mesh.face-pyramids").unwrap().message.contains("vegetation region"));
+}
+
+#[test]
+fn checkmesh_levels_and_sizes() {
+    let log = "Exec   : checkMesh\n    points:           12\n    faces:            20\n    cells:            4\n ***Duplicate boundary patch walls\n ***Max skewness = 5, 1 highly skew faces\n ***Cells with invalid face labels found, number of cells 2\n ***Boundary openness (1 0 0) possible hole in boundary description.\nFailed 3 mesh checks.\n";
+    let l = parse_checkmesh_log("log.checkMesh", log).pop().unwrap();
+    assert_eq!((l.cells, l.faces, l.points), (Some(4), Some(20), Some(12)));
+    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, false).iter().map(|d| d.level).collect();
+    use crate::Level::{Error, Warning};
+    assert_eq!(levels, [Error, Warning, Error, Warning]);
+    let fatal = "Exec   : checkMesh\n\n--> FOAM FATAL ERROR: \ncannot find file \"points\"\n\nFOAM exiting\n";
+    let l = parse_checkmesh_log("log.checkMesh", fatal).pop().unwrap();
+    assert_eq!(l.fatal.as_deref(), Some("cannot find file \"points\""));
+    let d = checkmesh_log_diagnostics(&l, false);
+    assert_eq!((d.len(), d[0].level), (1, Error));
+    assert!(CHECKMESH_SETS.iter().any(|(n, _, _)| *n == "nonManifoldPoints"));
+}
+
+#[test]
+fn checkmesh_findings_the_native_check_makes_are_notes() {
+    let log = "Exec   : checkMesh\n ***Error in face pyramids: 3 faces are incorrectly oriented.\n ***Faces with small interpolation weight (< 0.05) found, number of faces: 2\nFailed 2 mesh checks.\n";
+    let l = parse_checkmesh_log("log.checkMesh", log).pop().unwrap();
+    use crate::Level::{Error, Info, Warning};
+    let levels =
+        |native| -> Vec<crate::Level> { checkmesh_log_diagnostics(&l, native).iter().map(|d| d.level).collect() };
+    assert_eq!(levels(false), [Error, Warning]);
+    // Natively checked: the pyramids are the native check's; the weights (-allGeometry) stay.
+    assert_eq!(levels(true), [Info, Warning]);
+    // The zip-up check (topology) has no native counterpart: it stays an error.
+    let zip = "Exec   : checkMesh\n ***Open cells found, number of cells: 2. This problem may be fixable using the zipUpMesh utility.\n ***Open cells found, max cell openness: 0.1, number of open cells 1\nFailed 2 mesh checks.\n";
+    let l = parse_checkmesh_log("log.checkMesh", zip).pop().unwrap();
+    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, true).iter().map(|d| d.level).collect();
+    assert_eq!(levels, [Error, Info]);
+    // A parallel log's processor prefix.
+    let par = "[0] Exec   : checkMesh -parallel\n[0] \n[0] --> FOAM FATAL ERROR: \n[0] cannot open file\n";
+    let l = parse_checkmesh_log("log.checkMesh", par).pop().unwrap();
+    assert_eq!(l.fatal.as_deref(), Some("cannot open file"));
+}

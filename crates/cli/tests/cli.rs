@@ -265,3 +265,49 @@ fn mesh_checks_the_mesh() {
         stdout(&o)
     );
 }
+
+/// checkMesh's own results: its log in the case, and the sets `-writeSets` left.
+#[test]
+fn mesh_reads_checkmesh_results() {
+    let dir = cube("mesh-cm", false);
+    std::fs::write(
+        dir.join("log.checkMesh.air"),
+        "Build  : 12\nExec   : checkMesh -region air -writeSets\n ***Max skewness = 5, 1 highly skew faces detected\nFailed 1 mesh checks.\n",
+    )
+    .unwrap();
+    let sets = dir.join("constant/air/polyMesh/sets");
+    std::fs::create_dir_all(&sets).unwrap();
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    std::fs::write(sets.join("skewFaces"), format!("{}1(3)\n", h("faceSet"))).unwrap();
+    std::fs::write(sets.join("nonClosedCells"), format!("{}1(7)\n", h("cellSet"))).unwrap();
+    // Not a checkMesh set: ignored.
+    std::fs::write(sets.join("trees"), format!("{}1(0)\n", h("cellSet"))).unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let cm = &v["regions"][0]["checkmesh"];
+    assert_eq!(cm["logs"][0]["file"], "log.checkMesh.air");
+    assert_eq!(cm["logs"][0]["failed"], 1);
+    let names: Vec<&str> = cm["sets"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["nonClosedCells", "skewFaces"]);
+    assert_eq!(cm["sets"][0]["stale"], true, "cell 7 of a one-cell mesh");
+    assert_eq!(cm["sets"][1]["first"], serde_json::json!([3]));
+    let codes: Vec<&str> =
+        v["regions"][0]["diagnostics"].as_array().unwrap().iter().map(|d| d["code"].as_str().unwrap()).collect();
+    assert!(codes.contains(&"mesh.checkmesh") && codes.contains(&"mesh.stale-set"), "{codes:?}");
+    // The log's skewness finding repeats the native check: a note, not counted.
+    assert_eq!(v["warnings"], 1, "only the stale set: {}", v["regions"][0]["diagnostics"]);
+
+    // A log of another mesh (more cells) is left out, with a note; one for no region too.
+    std::fs::write(
+        dir.join("log.checkMesh.air"),
+        "Build  : 12\nExec   : checkMesh -region air\n    cells:            5\n ***Zero or negative cell volume detected.\nFailed 1 mesh checks.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("log.checkMesh.solid"), "Exec   : checkMesh -region solid\nMesh OK.\n").unwrap();
+    let o = cli(&["mesh", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "the error was about another mesh: {o:?}");
+    let text = stdout(&o);
+    assert!(text.contains("not used: it checked a mesh of 5 cells, ? faces, ? points"), "{text}");
+    assert!(text.contains("checked region `solid`, which this case doesn't have"), "{text}");
+}

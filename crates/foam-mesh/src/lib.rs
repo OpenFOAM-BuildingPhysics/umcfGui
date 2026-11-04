@@ -104,6 +104,41 @@ pub struct PolyMesh {
     n_cells: usize,
 }
 
+/// What a set file holds: the class it says (`faceSet`, `cellSet`, `pointSet`) and its labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Set {
+    pub class: String,
+    pub labels: Vec<u32>,
+}
+
+/// The names of the sets in `<mesh dir>/sets` (`.gz` dropped), sorted.
+pub fn list_sets(fs: &dyn CaseFs, dir: &str) -> Result<Vec<String>> {
+    let mut names: Vec<String> = fs
+        .list(&format!("{dir}/sets"))?
+        .into_iter()
+        .map(|n| n.strip_suffix(".gz").map(str::to_string).unwrap_or(n))
+        .filter(|n| !n.starts_with('.') && !n.ends_with('~'))
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// The set `name` of the mesh in `dir` (`<dir>/sets/<name>`, plain or `.gz`); `None` when it
+/// isn't there. Labels are not checked against a mesh: a set can be older than the mesh.
+///
+/// OpenFOAM writes a set's labels as text even in a `format binary` file (a set is a hash set,
+/// written label by label), so they are always read as text.
+pub fn read_set(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<Option<Set>> {
+    let Some((path, bytes)) = read_file(fs, &format!("{dir}/sets"), name, limits)? else { return Ok(None) };
+    let (mut header, end) = umcf_foam_field::read_header_end(&bytes)?;
+    header.format = umcf_foam_field::Format::Ascii;
+    let mut r = Reader::new(&path, &bytes, end.unwrap_or(0), &header);
+    r.skip_trivia();
+    let class = header.class.clone().unwrap_or_default();
+    Ok(Some(Set { class, labels: r.labels(limits)? }))
+}
+
 /// The mesh directory of a region (`""` for a single-region case).
 pub fn mesh_dir(region: &str) -> String {
     if region.is_empty() { "constant/polyMesh".to_string() } else { format!("constant/{region}/polyMesh") }
