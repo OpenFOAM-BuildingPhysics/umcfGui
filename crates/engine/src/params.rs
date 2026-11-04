@@ -70,6 +70,18 @@ impl<'a> Params<'a> {
         }
     }
 
+    /// A finite number.
+    pub(crate) fn number(&self, key: &str) -> Result<Option<f64>, Error> {
+        match self.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Number(n)) => match n.as_f64() {
+                Some(x) if x.is_finite() => Ok(Some(x)),
+                _ => Err(Error::Params(format!("{}: `{key}` is a finite number", self.id))),
+            },
+            Some(_) => Err(Error::Params(format!("{}: `{key}` is a number", self.id))),
+        }
+    }
+
     pub(crate) fn required(&self, key: &str) -> Result<&'a Value, Error> {
         match self.get(key) {
             None | Some(Value::Null) => Err(self.missing(key)),

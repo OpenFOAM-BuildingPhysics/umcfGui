@@ -1,0 +1,14 @@
+[package]
+name = "umcf-geom"
+description = "Geometry basics: vectors, bounding boxes, STL surfaces read without trusting their header, their defects (open and non-manifold edges, normals, degenerate and duplicate triangles) and the repairs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+
+[lints]
+workspace = true

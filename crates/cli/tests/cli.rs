@@ -399,3 +399,70 @@ fn mesh_reports_layer_coverage() {
     assert!(v["diagnostics"].to_string().contains("with a mesh of 4000 cells"), "{v}");
     assert_eq!(v["warnings"], 1, "{v}");
 }
+
+/// A closed tetrahedron as ASCII STL, wound inward when `inward`.
+fn tet_stl(inward: bool) -> String {
+    let (a, b, c, d) = ("0 0 0", "1 0 0", "0 1 0", "0 0 1");
+    let mut faces = vec![[a, c, b], [a, b, d], [b, c, d], [a, d, c]];
+    if inward {
+        for f in &mut faces {
+            f.swap(1, 2);
+        }
+    }
+    let mut s = String::from("solid tree 1\n");
+    for [x, y, z] in faces {
+        s.push_str(&format!("facet normal 0 0 0\nouter loop\nvertex {x}\nvertex {y}\nvertex {z}\nendloop\nendfacet\n"));
+    }
+    s + "endsolid\n"
+}
+
+#[test]
+fn surface_checks_and_repairs_stl_files() {
+    let dir = case("surface", "3600");
+    let source = dir.join("tree.stl");
+    std::fs::write(&source, tet_stl(true)).unwrap();
+    let source = source.to_str().unwrap();
+
+    // A file outside a case.
+    let o = cli(&["surface", source]);
+    assert_eq!(o.status.code(), Some(0), "warnings only");
+    let out = stdout(&o);
+    assert!(out.contains("surface.inward"), "{out}");
+    assert!(out.contains("surface.renamed"), "{out}");
+    assert!(out.ends_with("1 surface; 0 errors, 1 warning, 2 notes\n"), "{out}");
+
+    // Imported, repaired and saved; then the case is clean.
+    let case = dir.to_str().unwrap();
+    let import = format!("geometry.import={{\"path\": \"{source}\"}}");
+    let o = cli(&[
+        "run",
+        "--case",
+        case,
+        "--cmd",
+        &import,
+        "--cmd",
+        "geometry.repair={\"file\": \"tree.stl\"}",
+        "--cmd",
+        "case.save",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stdout(&o).contains("4 triangles turned over (1 closed part turned outward)"), "{}", stdout(&o));
+    let o = cli(&["surface", case, "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["warnings"], 0, "{v}");
+    assert_eq!(v["surfaces"][0]["regions"], serde_json::json!(["tree1"]));
+    assert_eq!(v["surfaces"][0]["closed_parts"], 1);
+
+    // Errors: OpenFOAM can't read the file; bad arguments.
+    std::fs::write(
+        dir.join("constant/triSurface/bad.stl"),
+        "solid x\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nendloop\nendfacet\nendsolid\n",
+    )
+    .unwrap();
+    let o = cli(&["surface", case, "--file", "bad.stl"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stdout(&o).contains("surface.openfoam"), "{}", stdout(&o));
+    assert_eq!(cli(&["surface"]).status.code(), Some(2));
+    assert_eq!(cli(&["surface", source, "--file", "x.stl"]).status.code(), Some(2));
+    assert_eq!(cli(&["surface", "/nonexistent/x.stl"]).status.code(), Some(2));
+}

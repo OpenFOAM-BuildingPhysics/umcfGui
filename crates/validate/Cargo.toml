@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 umcf-core.workspace = true
+umcf-geom.workspace = true
 umcf-foam-dict.workspace = true
 umcf-foam-mesh.workspace = true
 umcf-schema.workspace = true
