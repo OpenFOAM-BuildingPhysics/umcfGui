@@ -44,11 +44,30 @@ fn log_note(file: &str, message: String) -> Diagnostic {
 /// The `checkMesh` logs in the case directory (`log.checkMesh`, `log.checkMesh.<anything>`),
 /// and notes on those that could not be read.
 fn checkmesh_logs(fs: &dyn CaseFs, notes: &mut Vec<Diagnostic>) -> Vec<CheckMeshLog> {
-    let names = fs.list("").unwrap_or_default();
+    let names = match fs.list("") {
+        Ok(names) => names,
+        Err(e) => {
+            notes.push(log_note(
+                ".",
+                format!("the case directory could not be listed, so no checkMesh log was read: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
     let mut out = Vec::new();
     for n in names.iter().filter(|n| n.starts_with("log.checkMesh") && fs.is_file(n)) {
         match fs.read(n, MAX_LOG_BYTES) {
-            Ok(Some(bytes)) => out.extend(parse_checkmesh_log(n, &String::from_utf8_lossy(&bytes))),
+            Ok(Some(bytes)) => {
+                let logs = parse_checkmesh_log(n, &String::from_utf8_lossy(&bytes));
+                if logs.is_empty() {
+                    notes.push(log_note(
+                        n,
+                        "not used: no `Exec : checkMesh` line (an empty, cut or compressed log, or another program's)"
+                            .to_string(),
+                    ));
+                }
+                out.extend(logs);
+            }
             Ok(None) => {}
             Err(e) => notes.push(log_note(n, format!("not read: {e}"))),
         }
@@ -71,37 +90,68 @@ fn log_json(l: &CheckMeshLog) -> Value {
     })
 }
 
+/// Labels a set may hold beyond the size of its mesh. A valid set holds each label once, below
+/// the mesh's size; a set from another mesh with labels beyond it is still read (and reported
+/// stale), and only one with more labels than size + margin is unreadable (`mesh.unreadable-set`).
+const STALE_SET_MARGIN: usize = 1 << 20;
+
+/// The bound on reading a set of a mesh with `size` faces, cells or points: its labels, and the
+/// bytes they take as text (up to ten digits and a separator each, plus the header).
+fn set_limits(size: usize) -> Limits {
+    let max_elements = size.saturating_add(STALE_SET_MARGIN);
+    let max_bytes = (max_elements as u64).saturating_mul(11).saturating_add(64 << 10);
+    Limits { max_bytes, max_elements, ..Limits::default() }
+}
+
+fn set_warning(region: &str, path: String, message: String) -> Diagnostic {
+    Diagnostic {
+        level: Level::Warning,
+        code: "mesh.unreadable-set",
+        path,
+        region: (!region.is_empty()).then(|| region.to_string()),
+        patch: None,
+        field: None,
+        message,
+    }
+}
+
 /// The sets `checkMesh -writeSets` left in the region's `polyMesh/sets`, with their labels;
 /// one naming more than the mesh has is stale (`mesh.stale-set`).
 fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<Diagnostic>) -> Vec<Value> {
     let dir = mesh_dir(region);
-    let present = umcf_foam_mesh::list_sets(fs, &dir).unwrap_or_default();
+    let present = match umcf_foam_mesh::list_sets(fs, &dir) {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(set_warning(
+                region,
+                format!("{dir}/sets"),
+                format!("the sets could not be listed, so checkMesh's sets were not read: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
     let mut sets = Vec::new();
     for (name, of, holds) in CHECKMESH_SETS.iter().filter(|(n, _, _)| present.iter().any(|p| p == n)) {
-        let mut set = match umcf_foam_mesh::read_set(fs, &dir, name, &Limits::default()) {
+        let size = match of {
+            SetOf::Faces => mesh.n_faces(),
+            SetOf::Cells => mesh.n_cells(),
+            SetOf::Points => mesh.n_points(),
+        };
+        let mut set = match umcf_foam_mesh::read_set(fs, &dir, name, &set_limits(size)) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(e) => {
-                out.push(Diagnostic {
-                    level: Level::Warning,
-                    code: "mesh.unreadable-set",
-                    path: format!("{dir}/sets/{name}"),
-                    region: (!region.is_empty()).then(|| region.to_string()),
-                    patch: None,
-                    field: None,
-                    message: format!("the checkMesh set `{name}` could not be read: {e}"),
-                });
+                out.push(set_warning(
+                    region,
+                    format!("{dir}/sets/{name}"),
+                    format!("the checkMesh set `{name}` could not be read: {e}"),
+                ));
                 sets.push(json!({ "name": name, "holds": holds, "error": e.to_string() }));
                 continue;
             }
         };
         // OpenFOAM writes a set in hash order: the lowest labels first.
         set.labels.sort_unstable();
-        let size = match of {
-            SetOf::Faces => mesh.n_faces(),
-            SetOf::Cells => mesh.n_cells(),
-            SetOf::Points => mesh.n_points(),
-        };
         let largest = set.labels.iter().copied().max();
         let stale = largest.is_some_and(|m| m as usize >= size);
         if let (true, Some(m)) = (stale, largest) {
@@ -228,8 +278,6 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 _ => mine.push(l),
             }
         }
-        let native = mesh.is_ok();
-        let from_logs: Vec<Diagnostic> = mine.iter().flat_map(|l| checkmesh_log_diagnostics(l, native)).collect();
         let (q, sets) = match &mesh {
             Ok(mesh) => {
                 let q = quality(mesh);
@@ -242,7 +290,8 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 (None, Vec::new())
             }
         };
-        let mut from_logs = from_logs;
+        let mut from_logs: Vec<Diagnostic> =
+            mine.iter().flat_map(|l| checkmesh_log_diagnostics(l, q.as_ref())).collect();
         if case.region(r).is_some_and(|x| x.kind == umcf_model::RegionKind::Vegetation) {
             soften_for_vegetation(&mut d);
             soften_for_vegetation(&mut from_logs);

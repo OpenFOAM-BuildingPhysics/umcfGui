@@ -650,7 +650,15 @@ pub struct CheckMeshLog {
     pub points: Option<u64>,
     /// `FOAM FATAL ERROR`: checkMesh stopped; the message's first line.
     pub fatal: Option<String>,
+    /// The log was longer than is read ([`MAX_LOG_RESULTS`] times, [`MAX_LOG_FINDINGS`]
+    /// findings each): the rest of it was skipped.
+    pub truncated: bool,
 }
+
+/// The most results (times) read from one `checkMesh` log.
+pub const MAX_LOG_RESULTS: usize = 1000;
+/// The most failed checks and remarks read for one result (checkMesh makes a few dozen checks).
+pub const MAX_LOG_FINDINGS: usize = 200;
 
 /// Reads a `checkMesh` log: one result per time it checked (`Time = …`), or one for the whole
 /// log. Empty when the text is not a `checkMesh` log (its `Exec` line runs something else).
@@ -679,6 +687,13 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
             continue;
         }
         if let Some(time) = t.strip_prefix("Time = ") {
+            // The banner section before the first `Time =` is not a time.
+            if out.iter().filter(|l| l.time.is_some()).count() >= MAX_LOG_RESULTS {
+                if let Some(last) = out.last_mut() {
+                    last.truncated = true;
+                }
+                break;
+            }
             out.push(CheckMeshLog { time: Some(time.trim().to_string()), ..head.clone() });
             continue;
         }
@@ -700,9 +715,17 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
         } else if let (None, Some(n)) = (cur.points, count("points:")) {
             cur.points = Some(n);
         } else if let Some(p) = t.strip_prefix("***") {
-            cur.problems.push(p.trim().to_string());
+            if cur.problems.len() + cur.notes.len() < MAX_LOG_FINDINGS {
+                cur.problems.push(p.trim().to_string());
+            } else {
+                cur.truncated = true;
+            }
         } else if let Some(n) = t.strip_prefix('*') {
-            cur.notes.push(n.trim().to_string());
+            if cur.problems.len() + cur.notes.len() < MAX_LOG_FINDINGS {
+                cur.notes.push(n.trim().to_string());
+            } else {
+                cur.truncated = true;
+            }
         } else if let Some(n) = t.strip_prefix("Failed ").and_then(|r| r.strip_suffix(" mesh checks.")) {
             cur.failed = n.trim().parse().ok();
         } else if t == "Mesh OK." {
@@ -753,26 +776,30 @@ fn checkmesh_level(line: &str) -> crate::Level {
     if CHECKMESH_WARNINGS.iter().any(|w| line.starts_with(w)) { crate::Level::Warning } else { crate::Level::Error }
 }
 
-/// The findings of a `checkMesh` log, for its region: each failed check (`***`) as an error or
-/// a warning (by what it breaks, as for the native checks), each remark (`*`) as a note. A log that ends without its
-/// verdict says so.
+/// Whether the native result found a problem.
+type FoundNatively = fn(&Quality) -> bool;
+
 /// The failed checks (`***`) of `checkMesh` that the native check also makes (its default
-/// geometric checks): with the native result at hand, they are notes pointing to it.
-const NATIVE_COUNTERPARTS: &[&str] = &[
-    "High aspect ratio cells found",
-    "Max skewness",
-    "Error in face pyramids",
-    "Zero or negative cell volume",
-    "Zero or negative face area",
+/// geometric checks), with whether the native result found the same problem.
+const NATIVE_COUNTERPARTS: &[(&str, FoundNatively)] = &[
+    ("High aspect ratio cells found", |q| q.high_aspect_cells.count > 0),
+    ("Max skewness", |q| q.skew_faces.count > 0),
+    ("Error in face pyramids", |q| q.wrong_pyramids.count > 0),
+    ("Zero or negative cell volume", |q| q.negative_volume_cells.count > 0),
+    ("Zero or negative face area", |q| q.zero_area_faces.count > 0),
     // Not "Open cells found, number of cells", the topological zip-up check.
-    "Open cells found, max cell openness",
-    "Number of non-orthogonality errors",
-    "Boundary openness",
+    ("Open cells found, max cell openness", |q| q.open_cells.count > 0),
+    ("Number of non-orthogonality errors", |q| q.non_orthogonality_errors.count > 0),
+    ("Boundary openness", |q| q.boundary_openness.iter().any(|x| x.abs() > CLOSED_THRESHOLD)),
 ];
 
-/// With `native` (the mesh was also checked natively), a finding the native check makes too is
-/// a note rather than counted twice.
-pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: bool) -> Vec<crate::Diagnostic> {
+/// The findings of a `checkMesh` log, for its region: each failed check (`***`) as an error or
+/// a warning (by what it breaks, as for the native checks), each remark (`*`) as a note. A log
+/// that ends without its verdict, or was cut short, says so.
+///
+/// With `native` (the native check of the same mesh), a failed check the native check also
+/// found is a note rather than counted twice; one it didn't find keeps its level.
+pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: Option<&Quality>) -> Vec<crate::Diagnostic> {
     use crate::{Diagnostic, Level};
     let version = log.version.as_deref().map_or(String::new(), |v| format!(", OpenFOAM-{v}"));
     let time = log.time.as_deref().map_or(String::new(), |t| format!(", time {t}"));
@@ -783,14 +810,19 @@ pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: bool) -> Vec<crate:
         out.push(if log.region.is_empty() { d } else { d.region(&log.region) });
     };
     for p in &log.problems {
-        if native && NATIVE_COUNTERPARTS.iter().any(|n| p.starts_with(n)) {
-            push(
+        let counterpart = NATIVE_COUNTERPARTS.iter().find(|(n, _)| p.starts_with(n)).map(|(_, found)| found);
+        match (native, counterpart) {
+            (Some(q), Some(found)) if found(q) => push(
                 Level::Info,
                 "mesh.checkmesh",
                 format!("{source}: {p} (the native check of this mesh reports it too)"),
-            );
-        } else {
-            push(checkmesh_level(p), "mesh.checkmesh", format!("{source}: {p}"));
+            ),
+            (Some(_), Some(_)) => push(
+                checkmesh_level(p),
+                "mesh.checkmesh",
+                format!("{source}: {p} (the native check of this mesh doesn't find it)"),
+            ),
+            _ => push(checkmesh_level(p), "mesh.checkmesh", format!("{source}: {p}")),
         }
     }
     for n in &log.notes {
@@ -800,6 +832,15 @@ pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: bool) -> Vec<crate:
         && let Some(n) = log.failed
     {
         push(Level::Warning, "mesh.checkmesh", format!("{source}: failed {n} mesh checks"));
+    }
+    if log.truncated {
+        push(
+            Level::Info,
+            "mesh.checkmesh",
+            format!(
+                "{source}: the log is longer than is read (at most {MAX_LOG_RESULTS} times, {MAX_LOG_FINDINGS} findings for each); the rest was skipped"
+            ),
+        );
     }
     if let Some(f) = &log.fatal {
         push(Level::Error, "mesh.checkmesh", format!("{source}: checkMesh stopped with a fatal error: {f}"));
