@@ -14,6 +14,7 @@
 | `model`: typed case (regions, controls, start time, patches, boundary conditions), lossless edits, atomic save with backup and conflict check | ✅ opens all 18 local cases (OF8 and OF12, solver and meshing steps); an edit changes exactly one entry |
 | `validate`: case checks (controls, regions, boundary conditions against the mesh as OpenFOAM matches them, region coupling, solver types per version) | ✅ no false errors on the 18 local cases; one real one found (a restart that would fail) |
 | Case workflow: scripts read into the Allprepare/Allrun/Allclean pattern, checked (utilities per version, `-allRegions`, process counts, files at each step, overwritten dictionaries), and written back per version | ✅ all 10 local 3×3 cases fit the pattern; written scripts mesh, pre-process and run the 3×3 test case; 4 real script errors found |
+| Required keywords of the selected vegetation, grass, solar load and radiation models (`<Type>Coeffs`, from the solver source, per version) | ✅ `keyword.missing`: no false errors on the 18 local cases |
 | Required fields: what the solver reads per kind of region and per selected model (from the solver source, per version), plus OpenFOAM's thermophysics and turbulence fields | ✅ `field.missing` on all 18 local cases: no false errors; each removed field found on a test copy |
 | `engine` (commands, session, undo and redo, journal, panic guard) and `umcf-cli` (`check`, `run`, `commands`) | ✅ 9 commands; `umcf-cli check` matches the expected result on all 18 local cases, in under 0.5 s each without fields |
 | Mesh quality (`checkMesh` metrics and sets) | ⬜ |
@@ -30,3 +31,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-03 — M0.1 workspace and `xtask`; M0.2 `foam-dict`; M0.3 `core` (case file access) and `schema::layout`; M0.4 docs site, CI, protected `main`; M0.5 `foam-field`; M0.6 solver catalog; M0.7 `foam-mesh`; M0.8 `model`; M0.9 `validate`; M0.10 case workflow (scripts read, checked and written). Scope extended: geometry import, meshing set-up, mesh-problem handling and boundary conditions by picking in 3D (`docs/architecture.md`).
 - 2026-11-04 — M0.11 `engine` (command registry, session, undo, journal) and `umcf-cli` (`check`, `run`, `commands`).
 - 2026-11-04 — M0.12 required fields per region and selected model (`xtask catalog` field reads, `field.missing`).
+- 2026-11-04 — M0.13 required keywords of the selected models (`xtask catalog` keywords read at start, `keyword.missing`).

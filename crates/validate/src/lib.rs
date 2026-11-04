@@ -32,6 +32,7 @@
 )]
 
 mod fields;
+mod keywords;
 mod utilities;
 mod workflow;
 
@@ -96,6 +97,7 @@ pub fn check(case: &Case) -> Vec<Diagnostic> {
     coupling(case, &mut out);
     model_types(case, &mut out);
     fields::check(case, &mut out);
+    keywords::check(case, &mut out);
     workflow::check(case, &mut out);
     out.sort_by(|a, b| a.level.cmp(&b.level).then_with(|| a.path.cmp(&b.path)));
     out

@@ -184,6 +184,46 @@ radiation utilities). *Required* files stop the run when they are missing.
 | `solarRayTracingGen` | `kcLAIboundary` | mesh | no | 12 only | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
 | `solarRayTracingGen` | `qr` | start | yes | 8, 12 | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
 
+## Keywords read at start
+
+The required keywords each type reads whenever the solver builds it: in the constructors it
+is built with, or a function each of them calls, outside any condition. `coeffs_` is the
+type's `<Type>Coeffs` dictionary.
+
+| Type | Keyword | Read from | Versions |
+|---|---|---|---|
+| `buildingMaterialModel` `VanGenuchten` | `Ks` | `VanGenuchtenCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchten` | `alpha` | `VanGenuchtenCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchten` | `n` | `VanGenuchtenCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchten` | `wcap` | `VanGenuchtenCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `A` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `Ks` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `alpha` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `muDry` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `n` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `wcap` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `buildingMaterialModel` `VanGenuchtenVapDiff` | `wr` | `VanGenuchtenVapDiffCoeffs_` | 8, 12 |
+| `grassModel` `simpleGrass` | `grassPatches` | `coeffs_` | 8, 12 |
+| `radiationModel` `viewFactorSky` | `constantEmissivity` | `coeffs_` | 8, 12 |
+| `radiationModel` `viewFactorSky` | `smoothing` | `coeffs_` | 8, 12 |
+| `searchableSurface` `distributedTriSurfaceMeshBugFix` | `bounds` | `dict_` | 8, 12 |
+| `searchableSurface` `distributedTriSurfaceMeshBugFix` | `distributionType` | `dict_` | 8, 12 |
+| `searchableSurface` `distributedTriSurfaceMeshBugFix` | `mergeDistance` | `dict_` | 8, 12 |
+| `solarLoadModel` `directAndDiffuse` | `constantAlbedo` | `coeffs_` | 8, 12 |
+| `solarLoadModel` `directAndDiffuse` | `smoothing` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `C` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `D0` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `H` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `Rg0` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `Rl0` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `a1` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `a2` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `a3` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `kc` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `l` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `nEvapSides` | `coeffs_` | 8, 12 |
+| `vegetationModel` `simplifiedVegetation` | `rsMin` | `coeffs_` | 8, 12 |
+
 ## Built per region
 
 The classes the solver constructs (`<class>::New`) for each kind of region.
