@@ -5,6 +5,7 @@
 //! - [`check`] finds what breaks meshing: open and non-manifold edges, inconsistent and inward
 //!   normals, degenerate and duplicate triangles, coordinates that are not finite. Each finding
 //!   lists the triangles involved.
+//! - [`bvh`] finds the triangles a ray hits, for picking.
 //! - [`repair`] holds the safe repairs: welding vertices within a tolerance, dropping degenerate
 //!   and duplicate triangles, making normals consistent and outward, scaling.
 //!
@@ -19,6 +20,7 @@
     clippy::unreachable
 )]
 
+pub mod bvh;
 pub mod check;
 pub mod repair;
 pub mod stl;

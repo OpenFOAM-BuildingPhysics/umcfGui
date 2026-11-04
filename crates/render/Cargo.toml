@@ -1,0 +1,18 @@
+[package]
+name = "umcf-render"
+description = "The 3D scene of meshes and surfaces, independent of the renderer: a CPU rasteriser for headless snapshots, and picking a patch or surface region by ray cast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-geom.workspace = true
+umcf-foam-mesh.workspace = true
+flate2.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+umcf-core.workspace = true

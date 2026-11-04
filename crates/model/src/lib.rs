@@ -628,6 +628,13 @@ impl Case {
         Ok(fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new))
     }
 
+    /// The bytes [`Case::put_file`] last put at `rel` (saved or not), without reading the disk;
+    /// `None` when no command wrote that file, so it is as on disk. Two calls return the same
+    /// `Arc` until the file is put again: a cheap test of whether it changed.
+    pub fn put_bytes(&self, rel: &str) -> Option<&Arc<Vec<u8>>> {
+        self.raw.get(rel).map(|f| &f.bytes)
+    }
+
     /// The files [`Case::put_file`] wrote (saved or not), by path.
     pub fn put_paths(&self) -> impl Iterator<Item = &str> {
         self.raw.keys().map(String::as_str)

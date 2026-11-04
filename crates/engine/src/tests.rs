@@ -639,3 +639,184 @@ fn geometry_names_follow_openfoams_extensions() {
     assert_eq!(codes(&out), ["surface.extension", "surface.summary"]);
     assert_eq!(codes(&s.execute("geometry.check", &json!({ "file": "Old.STL" })).unwrap())[0], "surface.extension");
 }
+
+/// A case whose air region is a unit cube: patches ground (bottom), sky (top), walls; and an
+/// ASCII STL box in constant/triSurface.
+fn scene_session() -> Session {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    let h = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class polyBoundaryMesh;\n}\n";
+    let patch = |n: &str, count: u32, start: u32| {
+        format!("    {n}\n    {{\n        type wall;\n        nFaces {count};\n        startFace {start};\n    }}\n")
+    };
+    fs.insert(
+        "constant/air/polyMesh/boundary",
+        format!("{h}3\n(\n{}{}{})\n", patch("ground", 1, 0), patch("sky", 1, 1), patch("walls", 4, 2)),
+    );
+    fs.insert("constant/triSurface/box.stl", cube_stl(umcf_geom::stl::Format::Ascii, false));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s
+}
+
+fn base64_decode(s: &str) -> Vec<u8> {
+    let abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let v: Vec<u32> = s.bytes().filter(|b| *b != b'=').map(|b| abc.find(b as char).unwrap() as u32).collect();
+    let mut out = Vec::new();
+    for c in v.chunks(4) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, x)| n | (x << (18 - 6 * i)));
+        out.extend_from_slice(&n.to_be_bytes()[1..c.len()]);
+    }
+    out
+}
+
+#[test]
+fn scene_snapshots_draw_the_mesh_or_the_surfaces() {
+    assert_eq!(Session::new().enabled("scene.snapshot"), Err("no case is open".to_string()));
+    let mut s = scene_session();
+    let out = s.execute("scene.snapshot", &json!({ "width": 64, "height": 48, "view": "top" })).unwrap();
+    assert_eq!(out.message, "64 × 48 of mesh air (12 triangles)");
+    let png = base64_decode(out.data["png"].as_str().unwrap());
+    assert_eq!(png.len(), out.data["bytes"].as_u64().unwrap() as usize);
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(
+        out.data["objects"],
+        json!([{ "region": "air", "triangles": 12, "classes": ["ground", "sky", "walls"] }])
+    );
+    assert_eq!(out.data["camera"]["elevation"], json!(90.0));
+    // Only the surfaces, or both.
+    let out = s.execute("scene.snapshot", &json!({ "surfaces": ["box.stl"], "width": 8, "height": 8 })).unwrap();
+    assert_eq!(out.data["objects"][0]["surface"], "constant/triSurface/box.stl");
+    assert_eq!(out.data["objects"][0]["classes"], json!(["box"]));
+    let out = s
+        .execute("scene.snapshot", &json!({ "regions": ["air"], "surfaces": ["box.stl"], "width": 8, "height": 8 }))
+        .unwrap();
+    assert_eq!(out.data["objects"].as_array().unwrap().len(), 2);
+    // Bad parameters.
+    for (p, says) in [
+        (json!({ "view": "Top" }), "no view `Top`"),
+        (json!({ "width": 0 }), "from 1 to 8192"),
+        (json!({ "width": 1.5 }), "whole number"),
+        (json!({ "regions": ["water"] }), "no region `water`"),
+        (json!({ "regions": "air" }), "a list of names"),
+        (json!({ "surfaces": ["../x.stl"] }), "not a surface of the case"),
+        (json!({ "surfaces": ["none.stl"] }), "there is no surface"),
+        (json!({ "elevation": 91 }), "-90 to 90"),
+        (json!({ "zoom": 0 }), "positive"),
+        (json!({ "colour_by": "field" }), "patch or object"),
+        (json!({ "colour": "patch" }), "colour"),
+    ] {
+        let e = s.execute("scene.snapshot", &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{p}: {e}");
+    }
+    // Snapshots are not edits.
+    assert!(s.journal().is_empty());
+}
+
+#[test]
+fn picking_selects_patches_and_lists_what_is_behind() {
+    let mut s = scene_session();
+    let top = json!({ "view": "top", "width": 100, "height": 100, "pixel": [50, 50] });
+    let out = s.execute("select.pick", &top).unwrap();
+    assert_eq!(out.data["picked"], json!({ "region": "air", "patch": "sky" }));
+    let hits: Vec<&str> = out.data["hits"].as_array().unwrap().iter().map(|h| h["patch"].as_str().unwrap()).collect();
+    assert_eq!(hits, ["sky", "ground"]);
+    assert_eq!(out.data["hits"][0]["face"], 1);
+    assert_eq!(out.message, "patch sky of region air (2 under the cursor); 1 selected");
+    assert_eq!(s.selection(), [Sel::Patch { region: "air".into(), patch: "sky".into() }]);
+
+    // "Select other": the one behind, added.
+    let mut behind = top.clone();
+    behind["depth"] = json!(1);
+    behind["mode"] = json!("add");
+    s.execute("select.pick", &behind).unwrap();
+    assert_eq!(s.selection().len(), 2);
+    // Toggling takes it out again; a ray in world coordinates works as a pixel does.
+    let ray = json!({ "ray": { "origin": [0.5, 0.5, -3], "direction": [0, 0, 1] }, "mode": "toggle" });
+    let out = s.execute("select.pick", &ray).unwrap();
+    assert_eq!(out.data["picked"]["patch"], "ground");
+    assert_eq!(s.selection(), [Sel::Patch { region: "air".into(), patch: "sky".into() }]);
+
+    // The snapshot draws the selection.
+    let out = s.execute("scene.snapshot", &json!({ "width": 16, "height": 16 })).unwrap();
+    assert!(out.message.ends_with(", 1 selected"), "{}", out.message);
+
+    // Nothing under the cursor: replace clears, add keeps, none only lists.
+    let mut miss = top.clone();
+    miss["pixel"] = json!([0, 0]);
+    miss["mode"] = json!("add");
+    s.execute("select.pick", &miss).unwrap();
+    assert_eq!(s.selection().len(), 1);
+    let mut look = top.clone();
+    look["mode"] = json!("none");
+    look["depth"] = json!(5);
+    let out = s.execute("select.pick", &look).unwrap();
+    assert_eq!(out.message, "only 2 under the cursor; 1 selected");
+    miss["mode"] = json!("replace");
+    let out = s.execute("select.pick", &miss).unwrap();
+    assert_eq!(out.message, "nothing under the cursor; 0 selected");
+    assert!(s.selection().is_empty());
+
+    for (p, says) in [
+        (json!({}), "give `pixel` or `ray`"),
+        (json!({ "pixel": [1, 2], "ray": { "origin": [0, 0, 0], "direction": [0, 0, 1] } }), "one of them"),
+        (json!({ "pixel": [1] }), "two finite numbers"),
+        (json!({ "ray": { "origin": [0, 0, 0], "direction": [0, 0, 0] } }), "not zero"),
+        (json!({ "ray": { "origin": [0, 0], "direction": [0, 0, 1] } }), "three finite numbers"),
+        (json!({ "ray": { "origin": [0, 0, 0], "direction": [0, 0, 1], "up": 1 } }), "`ray` is"),
+        (json!({ "pixel": [1, 2], "mode": "remove" }), "`mode` is replace, add, toggle, none"),
+        (json!({ "pixel": [1, 2], "depth": -1 }), "`depth`"),
+    ] {
+        let e = s.execute("select.pick", &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{p}: {e}");
+    }
+    // Picks are in the journal: they are what later commands act on.
+    assert_eq!(s.journal().iter().filter(|j| j["command"] == "select.pick").count(), 6);
+}
+
+#[test]
+fn selections_are_checked_and_reset_by_opening_a_case() {
+    let mut s = scene_session();
+    let out = s
+        .execute(
+            "select.set",
+            &json!({ "items": [{ "region": "air", "patch": "walls" }, { "surface": "box.stl", "solid": "box" }] }),
+        )
+        .unwrap();
+    assert_eq!(out.message, "2 items selected");
+    assert_eq!(out.data["selection"][1], json!({ "surface": "constant/triSurface/box.stl", "solid": "box" }));
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "patch": "walls" }], "mode": "remove" })).unwrap();
+    assert_eq!(s.selection(), [Sel::Solid { file: "constant/triSurface/box.stl".into(), solid: "box".into() }]);
+    for (items, says) in [
+        (json!([{ "region": "air", "patch": "roof" }]), "no patch `roof`"),
+        (json!([{ "region": "x", "patch": "walls" }]), "no region `x`"),
+        (json!([{ "surface": "box.stl", "solid": "lid" }]), "no region `lid`"),
+        (json!([{ "surface": "none.stl", "solid": "box" }]), "there is no surface"),
+        (json!([{ "region": "air", "patch": "walls", "extra": 1 }]), "an item is"),
+        (json!(["walls"]), "each item is an object"),
+    ] {
+        let e = s.execute("select.set", &json!({ "items": items })).unwrap_err().to_string();
+        assert!(e.contains(says), "{items}: {e}");
+    }
+    // A failed select.set leaves the selection as it was.
+    assert_eq!(s.selection().len(), 1);
+    s.execute("select.clear", &Value::Null).unwrap();
+    assert!(s.selection().is_empty());
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "patch": "sky" }] })).unwrap();
+    s.open(Box::new(fs()), "mem2", OpenOptions::default(), false).unwrap();
+    assert!(s.selection().is_empty());
+}
+
+/// The scene follows the surfaces commands change, without reading the disk again.
+#[test]
+fn the_scene_follows_surface_edits() {
+    let mut s = scene_session();
+    let p = json!({ "surfaces": ["box.stl"], "width": 8, "height": 8 });
+    let d0 = s.execute("scene.snapshot", &p).unwrap().data["camera"]["distance"].as_f64().unwrap();
+    s.execute("geometry.scale", &json!({ "file": "box.stl", "factor": 3 })).unwrap();
+    let d1 = s.execute("scene.snapshot", &p).unwrap().data["camera"]["distance"].as_f64().unwrap();
+    assert!((d1 / d0 - 3.0).abs() < 1e-9, "{d0} {d1}");
+    s.execute("edit.undo", &Value::Null).unwrap();
+    let d2 = s.execute("scene.snapshot", &p).unwrap().data["camera"]["distance"].as_f64().unwrap();
+    assert!((d2 - d0).abs() < 1e-9);
+}

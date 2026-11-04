@@ -13,6 +13,7 @@ umcf-foam-dict.workspace = true
 umcf-schema.workspace = true
 umcf-model.workspace = true
 umcf-validate.workspace = true
+umcf-render.workspace = true
 umcf-foam-mesh.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

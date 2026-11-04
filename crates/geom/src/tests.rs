@@ -544,3 +544,85 @@ fn empty_solids_keep_their_place() {
     assert_eq!(back.solids, vec!["empty", "box", "solid"]);
     assert_eq!(back.triangles.iter().filter(|t| t.solid == 1).count(), 11);
 }
+
+/// A pseudo-random number in [0, 1), from a 64-bit state (xorshift).
+fn rand(state: &mut u64) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// The BVH finds what testing every triangle finds, nearest first, and skips triangles it
+/// can't hit.
+#[test]
+fn bvh_casts_match_testing_every_triangle() {
+    use crate::bvh::{Bvh, Ray};
+    let mut s = 0x9e37_79b9_7f4a_7c15u64;
+    let mut points = Vec::new();
+    let mut tris = Vec::new();
+    for i in 0..3000u32 {
+        let c = [rand(&mut s) * 10.0, rand(&mut s) * 10.0, rand(&mut s) * 10.0];
+        for _ in 0..3 {
+            points.push([c[0] + rand(&mut s) - 0.5, c[1] + rand(&mut s) - 0.5, c[2] + rand(&mut s) - 0.5]);
+        }
+        tris.push([3 * i, 3 * i + 1, 3 * i + 2]);
+    }
+    // One triangle not finite, one with an index out of range: never hit, never a panic.
+    points.push([f32::NAN, 0.0, 0.0]);
+    let n = points.len() as u32;
+    tris.push([n - 1, 0, 1]);
+    tris.push([0, 1, n + 5]);
+    let bvh = Bvh::new(&points, &tris);
+    assert_eq!(bvh.len(), 3000);
+    for _ in 0..200 {
+        let o = [rand(&mut s) as f64 * 14.0 - 2.0, rand(&mut s) as f64 * 14.0 - 2.0, -5.0];
+        let d = [rand(&mut s) as f64 - 0.5, rand(&mut s) as f64 - 0.5, 1.0];
+        let ray = Ray { origin: o, direction: d };
+        let mut brute: Vec<(f64, u32)> = Vec::new();
+        for (k, _) in tris.iter().enumerate() {
+            let one = Bvh::new(&points, &tris[k..=k]);
+            if let Some(h) = one.cast(&points, &tris[k..=k], &ray) {
+                brute.push((h.t, k as u32));
+            }
+        }
+        brute.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let all = bvh.cast_all(&points, &tris, &ray, usize::MAX);
+        assert_eq!(all.iter().map(|h| h.triangle).collect::<Vec<_>>(), brute.iter().map(|b| b.1).collect::<Vec<_>>());
+        let first = bvh.cast(&points, &tris, &ray);
+        assert_eq!(first.map(|h| h.triangle), brute.first().map(|b| b.1));
+        let two = bvh.cast_all(&points, &tris, &ray, 2);
+        assert_eq!(two.len(), brute.len().min(2));
+    }
+    // Rays along an axis, and from inside the boxes.
+    let flat = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let one = Bvh::new(&flat, &[[0, 1, 2]]);
+    let down = Ray { origin: [0.25, 0.25, 3.0], direction: [0.0, 0.0, -1.0] };
+    assert_eq!(one.cast(&flat, &[[0, 1, 2]], &down).map(|h| h.t), Some(3.0));
+    let away = Ray { origin: [0.25, 0.25, 3.0], direction: [0.0, 0.0, 1.0] };
+    assert!(one.cast(&flat, &[[0, 1, 2]], &away).is_none());
+    let edge_on = Ray { origin: [-1.0, 0.25, 0.0], direction: [1.0, 0.0, 0.0] };
+    assert!(one.cast(&flat, &[[0, 1, 2]], &edge_on).is_none());
+    assert!(Bvh::new(&[], &[]).cast(&[], &[], &down).is_none());
+    // Many triangles with the same centroid still build (and halve by position).
+    let same: Vec<[u32; 3]> = (0..100).map(|_| [0, 1, 2]).collect();
+    let b = Bvh::new(&flat, &same);
+    assert_eq!(b.cast_all(&flat, &same, &down, 1000).len(), 100);
+}
+
+/// Regions as OpenFOAM names them: solids joined by name, binary attribute values present.
+#[test]
+fn regions_follow_openfoams_names() {
+    let mut s = cube();
+    s.solids = vec!["a b".to_string(), "ab".to_string(), "c".to_string()];
+    for (k, t) in s.triangles.iter_mut().enumerate() {
+        t.solid = [0, 1, 2, 7][k % 4];
+    }
+    let (names, of) = s.regions();
+    assert_eq!(names, ["ab", "c", "solid"]);
+    assert_eq!(&of[..4], &[0, 0, 1, 2]);
+    s.format = Format::Binary;
+    let (names, of) = s.regions();
+    assert_eq!(names, ["patch0", "patch1", "patch2", "patch7"]);
+    assert_eq!(&of[..4], &[0, 1, 2, 3]);
+}

@@ -11,6 +11,8 @@ How umcfGui sees urbanMicroclimateFoam cases, and what it does with them.
 - [Surfaces](surfaces.md): the STL geometry in `constant/triSurface`: what would break meshing,
   importing and repairing it.
 - [Meshes](meshes.md): the mesh of each region, and the checks it passes before use.
+- [3D scene and selection](scene.md): drawing the meshes and surfaces, and picking patches and
+  surface regions in them.
 - [Fields and results](fields.md): reading the solver's field files, ASCII or binary,
   compressed or not.
-- [Command line](command-line.md): `umcf-cli check` and `umcf-cli run`, without the GUI.
+- [Command line](command-line.md): `umcf-cli check`, `render` and `run`, without the GUI.
