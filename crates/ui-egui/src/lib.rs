@@ -1455,7 +1455,7 @@ impl App {
         };
         // As many chips as fit beside the status text, around the marker: the newest done
         // edits, then the next ones to redo; "+k" says how many are left out on each side.
-        let room = ((ui.available_width() - 440.0) / 30.0).floor().max(4.0) as usize;
+        let room = ((ui.available_width() - 640.0) / 30.0).floor().max(4.0) as usize;
         let show_undone = nu.min(room / 3);
         let show_done = nd.min(room.saturating_sub(show_undone));
         let show_undone = nu.min(room.saturating_sub(show_done));
@@ -1487,11 +1487,21 @@ impl App {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let Some(e) = self.log.last() {
                 let colour = if e.ok { t.text_muted } else { t.error };
-                ui.label(RichText::new(format!("{}: {}", e.command, e.message)).size(12.0).color(colour));
+                // Short, so the chips keep their room; the whole message is in the tooltip and
+                // the results card.
+                let full = format!("{}: {}", e.command, e.message);
+                let short = if full.chars().count() > 56 {
+                    full.chars().take(55).collect::<String>() + "…"
+                } else {
+                    full.clone()
+                };
+                ui.label(RichText::new(short).size(12.0).color(colour)).on_hover_text(full);
             }
             if let Some(h) = &self.viewport.hover {
                 ui.separator();
-                ui.label(RichText::new(h).size(12.0));
+                let short =
+                    if h.chars().count() > 28 { h.chars().take(27).collect::<String>() + "…" } else { h.clone() };
+                ui.label(RichText::new(short).size(12.0));
             }
             if let Some(case) = self.session.case() {
                 let n = case.changed().len();
