@@ -163,6 +163,7 @@ radiation utilities). *Required* files stop the run when they are missing.
 | `solarLoadModel` `directAndDiffuse` | `Qs` | start | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
 | `solarLoadModel` `directAndDiffuse` | `constructMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
 | `solarLoadModel` `directAndDiffuse` | `constructMapDim` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `finalAgglom` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
 | `solarLoadModel` `directAndDiffuse` | `finalAgglom` | mesh | yes | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
 | `solarLoadModel` `directAndDiffuse` | `globalFaceFaces` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
 | `solarLoadModel` `directAndDiffuse` | `qs` | start | yes | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |

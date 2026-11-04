@@ -345,7 +345,10 @@ fn field_reads_at(pat: &Patterns, text: &str) -> Vec<(usize, (String, Instance, 
         } else {
             continue;
         };
+        // The declaration this `IOobject` is in: back to the previous `;`, `{`, `}` or `,` (the
+        // member before it in an initialiser list).
         let before = text.get(m.start().saturating_sub(120)..m.start()).unwrap_or("");
+        let before = before.rfind([';', '{', '}', ',']).map_or(before, |k| before.get(k + 1..).unwrap_or(""));
         if before.contains("IOdictionary") || before.contains("typeIOobject") {
             continue;
         }
@@ -418,10 +421,14 @@ fn model_reads(pat: &Patterns, text: &str, class: &str, arity: Option<usize>) ->
     let in_ctor = |at: usize, c: &Ctor| c.span.contains(&at);
     reads
         .iter()
-        .map(|(_, (name, instance, required))| {
-            let every =
-                used.iter().all(|c| reads.iter().any(|(at, (n, i, _))| n == name && i == instance && in_ctor(*at, c)));
-            (name.clone(), *instance, *required && every)
+        .map(|(at, (name, instance, required))| {
+            // Required: this read must be in a used constructor, and every used constructor
+            // must read the file with MUST_READ.
+            let here = used.iter().any(|c| in_ctor(*at, c));
+            let every = used
+                .iter()
+                .all(|c| reads.iter().any(|(at2, (n, i, r))| *r && n == name && i == instance && in_ctor(*at2, c)));
+            (name.clone(), *instance, *required && here && every)
         })
         .collect()
 }
@@ -948,6 +955,8 @@ mod tests {
             IOdictionary d(IOobject("anyDict", runTime.constant(), mesh, IOobject::MUST_READ));
             typeIOobject<IOdictionary> r(IOobject("radiationProperties", runTime.constant(), mesh, IOobject::MUST_READ));
             IOobject(fluidNames[i], runTime.name(), runTime, IOobject::MUST_READ)
+            typeIOobject<IOdictionary> t(IOobject("tDict", runTime.constant(), mesh, IOobject::MUST_READ)); n(IOobject("n", runTime.name(), mesh, IOobject::MUST_READ)),
+            d_(IOdictionary(IOobject("aDict", runTime.constant(), mesh, IOobject::MUST_READ))), m(IOobject("m", runTime.name(), mesh, IOobject::MUST_READ)),
             s(IOobject("s", runTime.name(), "uniform", mesh, IOobject::MUST_READ)),
             IOobject io("h", runTime.name(), mesh, IOobject::MUST_READ); if (io.headerOk()) {}
         "#;
@@ -961,6 +970,8 @@ mod tests {
                 ("g".to_string(), Instance::Constant, true),
                 ("F".to_string(), Instance::Other, true),
                 ("phi".to_string(), Instance::Time, false),
+                ("n".to_string(), Instance::Time, true),
+                ("m".to_string(), Instance::Time, true),
                 ("s".to_string(), Instance::Other, true),
             ]
         );
@@ -998,6 +1009,13 @@ Foam::m::m(const dictionary& dict, const volScalarField& T)
         let t = "Foam::P<B>::P(const B& b)\n:\n    k_(IOobject(\"k\", t.name(), m, IOobject::MUST_READ))\n{\n}\n\nvoid Foam::P<B>::correct()\n{\n    volScalarField x(IOobject(\"x\", t.name(), m, IOobject::MUST_READ), m);\n}\n";
         let got: Vec<(String, bool)> = model_reads(&pat, t, "P", None).into_iter().map(|r| (r.0, r.2)).collect();
         assert_eq!(got, [("k".to_string(), true), ("x".to_string(), false)]);
+        // Read only if present in one used constructor: not required in the other either.
+        let mixed = src.replacen(
+            "b_(IOobject(\"qr\", T.mesh().time().name(), T.mesh(), IOobject::MUST_READ))",
+            "b_(IOobject(\"qr\", T.mesh().time().name(), T.mesh(), IOobject::READ_IF_PRESENT))",
+            1,
+        );
+        assert!(model_reads(&pat, &mixed, "m", None).iter().filter(|r| r.0 == "qr").all(|r| !r.2));
     }
 
     #[test]
