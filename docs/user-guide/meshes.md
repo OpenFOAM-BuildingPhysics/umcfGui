@@ -166,7 +166,9 @@ directory or its `log/`, for each region:
 |---|---|---|
 | `mesh.layers` | Warning | A patch got less than 90% of the layers it wanted (on average over its faces), or none; `addLayers` is on but no patch asked for layers (`No layers to generate`: the names under `layers` match no patch); or the log stops before the layer summary |
 | `mesh.layers` | Info | The patches that got 90% of their layers or more (one note) |
-| `mesh.snappyhexmesh` | Warning | `snappyHexMesh` stopped with a fatal error, so the mesh it wrote may be unfinished |
+| `mesh.snappyhexmesh` | Warning | `snappyHexMesh` stopped with a fatal error (in the layer phase or before), so the mesh it wrote may be unfinished |
+| `mesh.snappyhexmesh` | Info | A `snappyHexMesh` log that could not be read, or is not used (another region's, another mesh's, or a copy in `log/` of one in the case directory) |
+| `mesh.layers` | Info | Patches that grew layers when the log doesn't say how many they wanted (one note) |
 
 OpenFOAM-8 and 12 print the same tables; the `iglooWithFridges` tutorial meshed by either gives
 `igloo` its 1 layer, and the fridges 1.96 and 2.09 of their 3 (65% and 70%: warnings).

@@ -785,6 +785,30 @@ fn snappy_layer_coverage() {
     let l = parse_snappy_log("log", &two).unwrap();
     assert!(!l.layer_phase && l.patches.is_empty() && l.cells == Some(7197));
     assert_eq!(l.version.as_deref(), Some("12"));
+    // A patch the wanted table doesn't list: with no layers, a warning; with some, apart
+    // from the patches that got their layers.
+    let unlisted = SNAPPY_LOG.replace("igloo                       1276     1      0.125     0.125   \n", "");
+    let d = layer_diagnostics(&parse_snappy_log("log", &unlisted).unwrap(), "");
+    assert!(d.iter().any(|x| x.message.contains("doesn't say how many they wanted: `igloo` 1")), "{d:?}");
+    assert!(!d.iter().any(|x| x.message.contains("got at least 90%")), "{d:?}");
+    let zero = unlisted.replace(
+        "igloo                       1276     1        0.125",
+        "igloo                       1276     0        0.125",
+    );
+    let d = layer_diagnostics(&parse_snappy_log("log", &zero).unwrap(), "");
+    assert!(
+        d.iter().any(|x| x.level == Warning
+            && x.message.contains("no layers grew on `igloo` (the number wanted isn't in the log)")),
+        "{d:?}"
+    );
+    // Text from the log is cut: a fatal message megabytes long.
+    let long = format!("Exec   : snappyHexMesh\n--> FOAM FATAL ERROR:\n{}\n", "é".repeat(1 << 20));
+    let l = parse_snappy_log("log", &long).unwrap();
+    assert_eq!(l.fatal.as_ref().map(|f| f.chars().count()), Some(MAX_LOG_TEXT + 1));
+    // `nan` (which OpenFOAM doesn't print) ends the table rather than passing as a number.
+    let nan =
+        SNAPPY_LOG.replace("twoFridgeFreezers_herring_1 592      2.09", "twoFridgeFreezers_herring_1 592      nan ");
+    assert_eq!(parse_snappy_log("log", &nan).unwrap().patches.len(), 2);
     // A row that doesn't parse ends the table, keeping the rows before it.
     let odd =
         SNAPPY_LOG.replace("twoFridgeFreezers_herring_1 592      2.09", "twoFridgeFreezers_herring_1 592      n/a ");

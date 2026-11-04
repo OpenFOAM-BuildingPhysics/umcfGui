@@ -34,7 +34,9 @@ pub use all::{
     AllGeometry, MAX_CONCAVE_DEG, MAX_PAIRWISE, MIN_TET_QUALITY, MIN_VOLUME_RATIO, MIN_WEIGHT, NEAR_FRACTION,
     PLANAR_COS_ANGLE, WARN_DETERMINANT, WARN_FLATNESS, WORK_PER_LABEL, geometric_directions,
 };
-pub use layers::{LAYER_COVERAGE_WARN, LayerPatch, MAX_LAYER_PATCHES, SnappyLog, layer_diagnostics, parse_snappy_log};
+pub use layers::{
+    LAYER_COVERAGE_WARN, LayerPatch, MAX_LAYER_PATCHES, MAX_LOG_TEXT, SnappyLog, layer_diagnostics, parse_snappy_log,
+};
 
 type V = [f64; 3];
 

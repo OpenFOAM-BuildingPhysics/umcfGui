@@ -367,4 +367,15 @@ fn mesh_reports_layer_coverage() {
     assert_eq!(v["regions"][0]["snappyhexmesh"]["logs"][0]["file"], "log.snappyHexMesh", "{v}");
     assert_eq!(v["warnings"], 1);
     assert!(v["diagnostics"].to_string().contains("the case directory has a `log.snappyHexMesh` too"), "{v}");
+    assert!(v["diagnostics"].as_array().unwrap().iter().all(|d| d["code"] == "mesh.snappyhexmesh"), "{v}");
+
+    // A run that stopped before its layer phase is reported too.
+    std::fs::remove_file(dir.join("log/log.snappyHexMesh")).unwrap();
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\nRefined mesh : cells:1  faces:6  points:8\n--> FOAM FATAL ERROR:\ncannot find surface\n",
+    )
+    .unwrap();
+    let text = stdout(&cli(&["mesh", dir.to_str().unwrap()]));
+    assert!(text.contains("mesh.snappyhexmesh") && text.contains("cannot find surface"), "{text}");
 }

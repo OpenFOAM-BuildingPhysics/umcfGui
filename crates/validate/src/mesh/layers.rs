@@ -24,6 +24,18 @@ pub const LAYER_COVERAGE_WARN: f64 = 0.9;
 /// The most patches read from one table.
 pub const MAX_LAYER_PATCHES: usize = 10_000;
 
+/// The most characters kept of a text taken from a log (a patch name, the command line, a
+/// fatal error's message): a log is hostile input, and a line can be megabytes long.
+pub const MAX_LOG_TEXT: usize = 256;
+
+/// `s`, cut to [`MAX_LOG_TEXT`] characters (on a character boundary), with `…` when cut.
+fn clip(s: &str) -> String {
+    match s.char_indices().nth(MAX_LOG_TEXT) {
+        Some((at, _)) => format!("{}…", s.get(..at).unwrap_or_default()),
+        None => s.to_string(),
+    }
+}
+
 /// One patch of the layer summary.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LayerPatch {
@@ -116,7 +128,7 @@ pub fn parse_snappy_log(file: &str, text: &str) -> Option<SnappyLog> {
             _ => t,
         };
         if fatal_next && !t.is_empty() {
-            log.fatal = Some(t.to_string());
+            log.fatal = Some(clip(t));
             fatal_next = false;
             continue;
         }
@@ -129,14 +141,13 @@ pub fn parse_snappy_log(file: &str, text: &str) -> Option<SnappyLog> {
             result.clear();
             let words: Vec<&str> = cmd.split_whitespace().collect();
             is_snappy = words.first().is_some_and(|w| w.rsplit('/').next() == Some("snappyHexMesh"));
-            log.region =
-                words.iter().position(|w| *w == "-region").and_then(|k| words.get(k + 1)).map(|s| s.to_string());
-            log.command = words.join(" ");
+            log.region = words.iter().position(|w| *w == "-region").and_then(|k| words.get(k + 1)).map(|s| clip(s));
+            log.command = clip(&words.join(" "));
             continue;
         }
         if let Some(v) = t.strip_prefix("Build").map(str::trim_start).and_then(|r| r.strip_prefix(':')) {
             // The banner, before `Exec`.
-            log.version = Some(v.trim().to_string());
+            log.version = Some(clip(v.trim()));
             continue;
         }
         if t.starts_with("--> FOAM FATAL") {
@@ -154,26 +165,26 @@ pub fn parse_snappy_log(file: &str, text: &str) -> Option<SnappyLog> {
             (log.cells, log.faces, log.points) = (Some(c), Some(f), Some(p));
         }
         let words: Vec<&str> = t.split_whitespace().collect();
+        // A number of a row: finite (Rust reads `nan` and `inf`, which OpenFOAM doesn't print).
+        let num = |w: &str| w.parse::<f64>().ok().filter(|x| x.is_finite());
         // A row of the table being read, if it parses; anything else ends the table.
         let row = match (&table, words.as_slice()) {
-            (Table::Wanted, [name, _faces, layers, _near, overall]) => {
-                match (layers.parse::<f64>(), overall.parse::<f64>()) {
-                    (Ok(l), Ok(o)) if wanted.len() < MAX_LAYER_PATCHES => {
-                        wanted.push((name.to_string(), l, o));
-                        true
-                    }
-                    (Ok(_), Ok(_)) => {
-                        log.truncated = true;
-                        true
-                    }
-                    _ => false,
+            (Table::Wanted, [name, _faces, layers, _near, overall]) => match (num(layers), num(overall)) {
+                (Some(l), Some(o)) if wanted.len() < MAX_LAYER_PATCHES => {
+                    wanted.push((clip(name), l, o));
+                    true
                 }
-            }
+                (Some(_), Some(_)) => {
+                    log.truncated = true;
+                    true
+                }
+                _ => false,
+            },
             (Table::Result, [name, faces, layers, thickness, percent]) => {
-                match (faces.parse::<u64>(), layers.parse::<f64>(), thickness.parse::<f64>(), percent.parse::<f64>()) {
-                    (Ok(f), Ok(l), Ok(th), Ok(pc)) if result.len() < MAX_LAYER_PATCHES => {
+                match (faces.parse::<u64>().ok(), num(layers), num(thickness), num(percent)) {
+                    (Some(f), Some(l), Some(th), Some(pc)) if result.len() < MAX_LAYER_PATCHES => {
                         result.push(LayerPatch {
-                            name: name.to_string(),
+                            name: clip(name),
                             faces: f,
                             layers: l,
                             thickness: th,
@@ -182,7 +193,7 @@ pub fn parse_snappy_log(file: &str, text: &str) -> Option<SnappyLog> {
                         });
                         true
                     }
-                    (Ok(_), Ok(_), Ok(_), Ok(_)) => {
+                    (Some(_), Some(_), Some(_), Some(_)) => {
                         log.truncated = true;
                         true
                     }
@@ -248,24 +259,24 @@ pub fn layer_diagnostics(log: &SnappyLog, region: &str) -> Vec<Diagnostic> {
         }
         out.push(d);
     };
-    let mut good: Vec<String> = Vec::new();
+    let (mut good, mut unknown): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     for p in &log.patches {
         let wanted = p.wanted.map_or(String::new(), |w| format!(" of {w}"));
         let detail = format!(
             "{} layers{wanted} on average over {} faces, {:.3} m thick ({}% of the thickness wanted)",
             p.layers, p.faces, p.thickness, p.percent
         );
+        // The result table lists only patches that asked for layers.
+        let asked = p.wanted.map_or("the number wanted isn't in the log".to_string(), |w| format!("{w} wanted"));
         match p.coverage() {
-            Some(_) if p.layers <= 0.0 => push(
+            _ if p.layers <= 0.0 && p.wanted != Some(0.0) => push(
                 Level::Warning,
                 "mesh.layers",
                 Some(&p.name),
-                format!(
-                    "{source}: no layers grew on `{}` ({} wanted): its wall cells are not layer cells",
-                    p.name,
-                    p.wanted.unwrap_or(0.0)
-                ),
+                format!("{source}: no layers grew on `{}` ({asked}): its wall cells are not layer cells", p.name),
             ),
+            // Not known to be enough: listed apart, not among the patches that got their layers.
+            None => unknown.push(format!("`{}` {}", p.name, p.layers)),
             Some(c) if c < LAYER_COVERAGE_WARN => push(
                 Level::Warning,
                 "mesh.layers",
@@ -291,6 +302,19 @@ pub fn layer_diagnostics(log: &SnappyLog, region: &str) -> Vec<Diagnostic> {
                 100.0 * LAYER_COVERAGE_WARN,
                 good.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
                     + if good.len() > 20 { ", …" } else { "" }
+            ),
+        );
+    }
+    if !unknown.is_empty() {
+        push(
+            Level::Info,
+            "mesh.layers",
+            None,
+            format!(
+                "{source}: {} patches grew layers, but the log doesn't say how many they wanted: {}",
+                unknown.len(),
+                unknown.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+                    + if unknown.len() > 20 { ", …" } else { "" }
             ),
         );
     }
