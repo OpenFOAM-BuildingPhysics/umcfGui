@@ -693,3 +693,124 @@ fn all_geometry_log_findings_are_notes_only_when_checked_natively() {
     q.all.as_mut().unwrap().concave_cells.count = 2;
     assert_eq!(level(&q), crate::Level::Info);
 }
+
+/// The layer tables of OpenFOAM-12's `snappyHexMesh` on the `iglooWithFridges` tutorial
+/// (OpenFOAM-8 prints the same).
+const SNAPPY_LOG: &str = "Build  : 12
+Exec   : snappyHexMesh -overwrite
+Snapped mesh : cells:7197  faces:24958  points:11102
+Shrinking and layer addition phase
+
+patch                       faces    layers avg thickness[m]
+                                            near-wall overall
+-----                       -----    ------ --------- -------
+igloo                       1276     1      0.125     0.125   
+twoFridgeFreezers_seal_0    800      3      0.0497    0.149   
+twoFridgeFreezers_herring_1 592      3      0.0625    0.187   
+
+Layer addition iteration 0
+
+patch                       faces    layers   overall thickness
+                                              [m]       [%]
+-----                       -----    ------   ---       ---
+igloo                       1276     1        0.125     100     
+twoFridgeFreezers_seal_0    800      1.96     0.0766    49      
+twoFridgeFreezers_herring_1 592      2.09     0.0988    52.7    
+
+Layer mesh : cells:11274  faces:37893  points:15906
+Writing mesh to time constant
+Finished meshing without any errors
+";
+
+#[test]
+fn snappy_layer_coverage() {
+    let l = parse_snappy_log("log.snappyHexMesh", SNAPPY_LOG).unwrap();
+    assert!(l.layer_phase && l.finished && l.region.is_none());
+    assert_eq!((l.cells, l.faces, l.points), (Some(11274), Some(37893), Some(15906)));
+    let names: Vec<&str> = l.patches.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["igloo", "twoFridgeFreezers_seal_0", "twoFridgeFreezers_herring_1"]);
+    let seal = &l.patches[1];
+    assert_eq!((seal.faces, seal.wanted, seal.layers, seal.percent), (800, Some(3.0), 1.96, 49.0));
+    assert!((seal.coverage().unwrap() - 1.96 / 3.0).abs() < 1e-12);
+    let d = layer_diagnostics(&l, "air");
+    let got: Vec<(crate::Level, Option<&str>)> = d.iter().map(|x| (x.level, x.patch.as_deref())).collect();
+    use crate::Level::{Info, Warning};
+    // A warning per patch short of layers, one note for the others.
+    assert_eq!(
+        got,
+        [(Warning, Some("twoFridgeFreezers_seal_0")), (Warning, Some("twoFridgeFreezers_herring_1")), (Info, None)]
+    );
+    assert!(d[0].message.contains("65% of its layers") && d[0].region.as_deref() == Some("air"), "{}", d[0].message);
+    assert!(
+        d[2].message.contains("1 patches got at least 90%") && d[2].message.contains("`igloo` 1 of 1"),
+        "{}",
+        d[2].message
+    );
+
+    // No layers at all on a patch.
+    let none =
+        SNAPPY_LOG.replace("twoFridgeFreezers_seal_0    800      1.96", "twoFridgeFreezers_seal_0    800      0   ");
+    let d = layer_diagnostics(&parse_snappy_log("log", &none).unwrap(), "");
+    assert!(d[0].message.contains("no layers grew"), "{}", d[0].message);
+    // A run with -region, in parallel (processor prefixes).
+    let par: String = SNAPPY_LOG
+        .replace("snappyHexMesh -overwrite", "snappyHexMesh -overwrite -region air -parallel")
+        .lines()
+        .map(|l| format!("[0] {l}\n"))
+        .collect();
+    let l = parse_snappy_log("log", &par).unwrap();
+    assert_eq!((l.region.as_deref(), l.patches.len()), (Some("air"), 3));
+    // Without a layer phase: nothing to say.
+    let l =
+        parse_snappy_log("log", "Exec   : snappyHexMesh -overwrite\nFinished meshing without any errors\n").unwrap();
+    assert!(layer_diagnostics(&l, "").is_empty());
+    // Stopped in the layer phase.
+    let cut = SNAPPY_LOG.split("Layer addition iteration").next().unwrap().to_string()
+        + "\n--> FOAM FATAL ERROR:\nbad mesh\n";
+    let d = layer_diagnostics(&parse_snappy_log("log", &cut).unwrap(), "");
+    let codes: Vec<&str> = d.iter().map(|x| x.code).collect();
+    assert_eq!(codes, ["mesh.layers", "mesh.snappyhexmesh"]);
+    assert!(d[0].message.contains("stops before the layer summary") && d[1].message.contains("bad mesh"));
+    // Not snappyHexMesh.
+    assert!(parse_snappy_log("log", "Exec   : checkMesh\n").is_none());
+    // addLayers on, but no patch asked for layers (or the names match none).
+    let none = "Exec   : snappyHexMesh -overwrite\nShrinking and layer addition phase\nNo layers to generate ...\nFinished meshing without any errors\n";
+    let d = layer_diagnostics(&parse_snappy_log("log", none).unwrap(), "");
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("no patch asked for layers"), "{}", d[0].message);
+    // Two runs appended: the last one (without layers) made the mesh.
+    let two = format!(
+        "{SNAPPY_LOG}Exec   : snappyHexMesh -overwrite\nSnapped mesh : cells:7197  faces:24958  points:11102\nFinished meshing without any errors\n"
+    );
+    let l = parse_snappy_log("log", &two).unwrap();
+    assert!(!l.layer_phase && l.patches.is_empty() && l.cells == Some(7197));
+    assert_eq!(l.version.as_deref(), Some("12"));
+    // A patch the wanted table doesn't list: with no layers, a warning; with some, apart
+    // from the patches that got their layers.
+    let unlisted = SNAPPY_LOG.replace("igloo                       1276     1      0.125     0.125   \n", "");
+    let d = layer_diagnostics(&parse_snappy_log("log", &unlisted).unwrap(), "");
+    assert!(d.iter().any(|x| x.message.contains("doesn't say how many they wanted: `igloo` 1")), "{d:?}");
+    assert!(!d.iter().any(|x| x.message.contains("got at least 90%")), "{d:?}");
+    let zero = unlisted.replace(
+        "igloo                       1276     1        0.125",
+        "igloo                       1276     0        0.125",
+    );
+    let d = layer_diagnostics(&parse_snappy_log("log", &zero).unwrap(), "");
+    assert!(
+        d.iter().any(|x| x.level == Warning
+            && x.message.contains("no layers grew on `igloo` (the number wanted isn't in the log)")),
+        "{d:?}"
+    );
+    // Text from the log is cut: a fatal message megabytes long.
+    let long = format!("Exec   : snappyHexMesh\n--> FOAM FATAL ERROR:\n{}\n", "é".repeat(1 << 20));
+    let l = parse_snappy_log("log", &long).unwrap();
+    assert_eq!(l.fatal.as_ref().map(|f| f.chars().count()), Some(MAX_LOG_TEXT + 1));
+    // `nan` (which OpenFOAM doesn't print) ends the table rather than passing as a number.
+    let nan =
+        SNAPPY_LOG.replace("twoFridgeFreezers_herring_1 592      2.09", "twoFridgeFreezers_herring_1 592      nan ");
+    assert_eq!(parse_snappy_log("log", &nan).unwrap().patches.len(), 2);
+    // A row that doesn't parse ends the table, keeping the rows before it.
+    let odd =
+        SNAPPY_LOG.replace("twoFridgeFreezers_herring_1 592      2.09", "twoFridgeFreezers_herring_1 592      n/a ");
+    assert_eq!(parse_snappy_log("log", &odd).unwrap().patches.len(), 2);
+}

@@ -4,9 +4,9 @@ use serde_json::{Value, json};
 use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_validate::mesh::{
-    AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf,
-    checkmesh_log_diagnostics, diagnostics, parse_checkmesh_log, quality, quality_all, soften_for_vegetation,
-    stale_set, unreadable,
+    AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf, SnappyLog,
+    checkmesh_log_diagnostics, diagnostics, layer_diagnostics, parse_checkmesh_log, parse_snappy_log, quality,
+    quality_all, soften_for_vegetation, stale_set, unreadable,
 };
 use umcf_validate::{Diagnostic, Level};
 
@@ -29,51 +29,128 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
 /// The largest `checkMesh` log read.
 const MAX_LOG_BYTES: u64 = 16 << 20;
 
-/// A note about the case's `checkMesh` logs as a whole (one not read, or not for any region).
-fn log_note(file: &str, message: String) -> Diagnostic {
-    Diagnostic {
-        level: Level::Info,
-        code: "mesh.checkmesh",
-        path: file.to_string(),
-        region: None,
-        patch: None,
-        field: None,
-        message,
+/// A note about the case's `checkMesh` (`code` `mesh.checkmesh`) or `snappyHexMesh`
+/// (`mesh.snappyhexmesh`) logs: one not read, or not used.
+fn log_note(code: &'static str, file: &str, message: String) -> Diagnostic {
+    Diagnostic { level: Level::Info, code, path: file.to_string(), region: None, patch: None, field: None, message }
+}
+
+/// The directories logs are looked for in: the case directory and its `log/` (where the
+/// tutorials' `RunFunctions` and many case scripts put them).
+const LOG_DIRS: [&str; 2] = ["", "log"];
+
+/// The logs named `<prefix>` or `<prefix>.<anything>` in [`LOG_DIRS`], each handed to `parse`
+/// with its case-relative path and text as it is read (one in memory at a time); notes on those
+/// that could not be read. A log in `log/` with the name of one in the case directory is left
+/// out, with a note: the case scripts move older logs there.
+fn read_logs(
+    fs: &dyn CaseFs,
+    prefix: &str,
+    code: &'static str,
+    notes: &mut Vec<Diagnostic>,
+    mut parse: impl FnMut(&str, &str),
+) {
+    let mut seen: Vec<String> = Vec::new();
+    for dir in LOG_DIRS {
+        let names = match fs.list(dir) {
+            Ok(names) => names,
+            Err(e) => {
+                let at = if dir.is_empty() { "." } else { dir };
+                notes.push(log_note(code, at, format!("could not be listed, so no {prefix} log in it was read: {e}")));
+                continue;
+            }
+        };
+        let matches = |n: &&String| n.as_str() == prefix || n.strip_prefix(prefix).is_some_and(|r| r.starts_with('.'));
+        for n in names.iter().filter(matches) {
+            let path = if dir.is_empty() { n.clone() } else { format!("{dir}/{n}") };
+            if !fs.is_file(&path) {
+                continue;
+            }
+            if seen.contains(n) {
+                notes.push(log_note(code, &path, format!("not used: the case directory has a `{n}` too, which is used (the case scripts move older logs into log/)")));
+                continue;
+            }
+            seen.push(n.clone());
+            match fs.read(&path, MAX_LOG_BYTES) {
+                Ok(Some(bytes)) => parse(&path, &String::from_utf8_lossy(&bytes)),
+                Ok(None) => {}
+                Err(e) => notes.push(log_note(code, &path, format!("not read: {e}"))),
+            }
+        }
     }
 }
 
-/// The `checkMesh` logs in the case directory (`log.checkMesh`, `log.checkMesh.<anything>`),
-/// and notes on those that could not be read.
+/// The `checkMesh` logs (`log.checkMesh`, `log.checkMesh.<anything>`, in [`LOG_DIRS`]), and
+/// notes on those that could not be read.
 fn checkmesh_logs(fs: &dyn CaseFs, notes: &mut Vec<Diagnostic>) -> Vec<CheckMeshLog> {
-    let names = match fs.list("") {
-        Ok(names) => names,
-        Err(e) => {
-            notes.push(log_note(
-                ".",
-                format!("the case directory could not be listed, so no checkMesh log was read: {e}"),
-            ));
-            return Vec::new();
-        }
-    };
     let mut out = Vec::new();
-    for n in names.iter().filter(|n| n.starts_with("log.checkMesh") && fs.is_file(n)) {
-        match fs.read(n, MAX_LOG_BYTES) {
-            Ok(Some(bytes)) => {
-                let logs = parse_checkmesh_log(n, &String::from_utf8_lossy(&bytes));
-                if logs.is_empty() {
-                    notes.push(log_note(
-                        n,
-                        "not used: no `Exec : checkMesh` line (an empty, cut or compressed log, or another program's)"
-                            .to_string(),
-                    ));
-                }
-                out.extend(logs);
-            }
-            Ok(None) => {}
-            Err(e) => notes.push(log_note(n, format!("not read: {e}"))),
+    let mut unparsed = Vec::new();
+    read_logs(fs, "log.checkMesh", "mesh.checkmesh", notes, |n, text| {
+        let logs = parse_checkmesh_log(n, text);
+        if logs.is_empty() {
+            unparsed.push(n.to_string());
         }
+        out.extend(logs);
+    });
+    for n in unparsed {
+        notes.push(log_note(
+            "mesh.checkmesh",
+            &n,
+            "not used: no `Exec : checkMesh` line (an empty, cut or compressed log, or another program's)".to_string(),
+        ));
     }
     out
+}
+
+/// The `snappyHexMesh` logs (`log.snappyHexMesh[.<anything>]`, in [`LOG_DIRS`]) with their
+/// region: `-region`'s, else the name's suffix when it is a region of the case
+/// (`log.snappyHexMesh.air`, as cases that swap `snappyHexMeshDict`s name them), else `None`:
+/// the default mesh, or one moved into a region afterwards (matched by size).
+fn snappy_logs(fs: &dyn CaseFs, regions: &[&str], notes: &mut Vec<Diagnostic>) -> Vec<(Option<String>, SnappyLog)> {
+    let mut out = Vec::new();
+    read_logs(fs, "log.snappyHexMesh", "mesh.snappyhexmesh", notes, |n, text| {
+        let Some(log) = parse_snappy_log(n, text) else { return };
+        let suffix =
+            n.rsplit('/').next().and_then(|b| b.strip_prefix("log.snappyHexMesh.")).filter(|s| regions.contains(s));
+        let region = log.region.clone().or_else(|| suffix.map(str::to_string));
+        out.push((region, log));
+    });
+    out
+}
+
+/// `11274 cells, 37893 faces, 15906 points` (`?` for what a log doesn't say).
+fn mesh_size(c: Option<u64>, f: Option<u64>, p: Option<u64>) -> String {
+    let s = |x: Option<u64>| x.map_or("?".to_string(), |x| x.to_string());
+    format!("{} cells, {} faces, {} points", s(c), s(f), s(p))
+}
+
+fn snappy_json(l: &SnappyLog) -> Value {
+    let layers: Vec<Value> = l
+        .patches
+        .iter()
+        .map(|p| {
+            json!({
+                "patch": p.name,
+                "faces": p.faces,
+                "wanted": p.wanted,
+                "layers": p.layers,
+                "coverage": p.coverage(),
+                "thickness": p.thickness,
+                "wanted_thickness": p.wanted_thickness,
+                "percent": p.percent,
+            })
+        })
+        .collect();
+    json!({
+        "file": l.file,
+        "version": l.version,
+        "command": l.command,
+        "layer_phase": l.layer_phase,
+        "finished": l.finished,
+        "fatal": l.fatal,
+        "cells": l.cells,
+        "layers": layers,
+    })
 }
 
 fn log_json(l: &CheckMeshLog) -> Value {
@@ -254,6 +331,10 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     };
     let mut notes = Vec::new();
     let logs = checkmesh_logs(fs, &mut notes);
+    let region_names: Vec<&str> = case.regions.iter().map(|x| x.name.as_str()).collect();
+    let snappy = snappy_logs(fs, &region_names, &mut notes);
+    let has_default = region_names.contains(&"");
+    let mut snappy_used = vec![false; snappy.len()];
     // Logs for no region of the case (only when every region is checked).
     if region.is_none() {
         let all: Vec<&str> = case.regions.iter().map(|x| x.name.as_str()).collect();
@@ -272,7 +353,17 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             } else {
                 format!("checked region `{}`, which this case doesn't have", l.region)
             };
-            notes.push(log_note(&l.file, format!("not used: it {what}")));
+            notes.push(log_note("mesh.checkmesh", &l.file, format!("not used: it {what}")));
+        }
+        for (lr, l) in snappy.iter().filter(|(lr, l)| {
+            (l.layer_phase || l.fatal.is_some()) && lr.as_ref().is_some_and(|r| !all.contains(&r.as_str()))
+        }) {
+            let what = lr.as_deref().unwrap_or_default();
+            notes.push(log_note(
+                "mesh.snappyhexmesh",
+                &l.file,
+                format!("not used: it meshed region `{what}`, which this case doesn't have"),
+            ));
         }
     }
     let mut regions = Vec::new();
@@ -301,16 +392,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                         (None, Some(_)) => format!(" (times past the first {MAX_LOG_RESULTS})"),
                         (None, None) => String::new(),
                     };
-                    let size = |c: Option<u64>, f: Option<u64>, p: Option<u64>| {
-                        let s = |x: Option<u64>| x.map_or("?".to_string(), |x| x.to_string());
-                        format!("{} cells, {} faces, {} points", s(c), s(f), s(p))
-                    };
                     let mut note = log_note(
+                        "mesh.checkmesh",
                         &l.file,
                         format!(
                             "not used{at}: it checked a mesh of {}, constant/ has {}",
-                            size(l.cells, l.faces, l.points),
-                            size(Some(m.n_cells() as u64), Some(m.n_faces() as u64), Some(m.n_points() as u64))
+                            mesh_size(l.cells, l.faces, l.points),
+                            mesh_size(Some(m.n_cells() as u64), Some(m.n_faces() as u64), Some(m.n_points() as u64))
                         ),
                     );
                     if !r.is_empty() {
@@ -335,6 +423,62 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         };
         let mut from_logs: Vec<Diagnostic> =
             mine.iter().flat_map(|l| checkmesh_log_diagnostics(l, q.as_ref())).collect();
+        // snappyHexMesh's layers, for the mesh it wrote (one with layers only: a log without a
+        // layer phase says nothing about them).
+        let mut layer_logs: Vec<&SnappyLog> = Vec::new();
+        // A run that stopped with a fatal error says so, layer phase or not.
+        for (k, (lr, l)) in snappy.iter().enumerate().filter(|(_, (_, l))| l.layer_phase || l.fatal.is_some()) {
+            let size = [l.cells, l.faces, l.points];
+            let same = |m: &PolyMesh| {
+                size.iter().zip([m.n_cells(), m.n_faces(), m.n_points()]).all(|(s, n)| *s == Some(n as u64))
+            };
+            match lr {
+                Some(lr) if lr == r => {}
+                Some(_) => continue,
+                // The default mesh: this region's when the case has one.
+                None if has_default => {
+                    if !r.is_empty() {
+                        continue;
+                    }
+                }
+                // Meshed as the default mesh and moved into a region (`mv constant/polyMesh
+                // constant/air`): the region whose mesh it is, by size.
+                None => match &mesh {
+                    Ok(m) if same(m) => {}
+                    _ => continue,
+                },
+            }
+            if let Some(u) = snappy_used.get_mut(k) {
+                *u = true;
+            }
+            match &mesh {
+                // A count it gives that differs (one it doesn't give can't tell).
+                Ok(m)
+                    if size
+                        .iter()
+                        .zip([m.n_cells(), m.n_faces(), m.n_points()])
+                        .any(|(s, n)| s.is_some_and(|s| s != n as u64)) =>
+                {
+                    let mut note = log_note(
+                        "mesh.snappyhexmesh",
+                        &l.file,
+                        format!(
+                            "not used: it wrote a mesh of {}, constant/ has {} (meshed again, or changed since)",
+                            mesh_size(l.cells, l.faces, l.points),
+                            mesh_size(Some(m.n_cells() as u64), Some(m.n_faces() as u64), Some(m.n_points() as u64))
+                        ),
+                    );
+                    if !r.is_empty() {
+                        note.region = Some(r.clone());
+                    }
+                    d.push(note);
+                }
+                _ => {
+                    from_logs.extend(layer_diagnostics(l, r));
+                    layer_logs.push(l);
+                }
+            }
+        }
         if case.region(r).is_some_and(|x| x.kind == umcf_model::RegionKind::Vegetation) {
             soften_for_vegetation(&mut d);
             soften_for_vegetation(&mut from_logs);
@@ -363,8 +507,46 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 "logs": mine.iter().map(|l| log_json(l)).collect::<Vec<_>>(),
                 "sets": sets,
             },
+            "snappyhexmesh": {
+                "logs": layer_logs.iter().map(|l| snappy_json(l)).collect::<Vec<_>>(),
+            },
             "diagnostics": from_logs.iter().chain(&d).map(diagnostic).collect::<Vec<_>>(),
         }));
+    }
+    // Logs of the default mesh in a case without one that no region's mesh matches.
+    if region.is_none() && !has_default {
+        for ((lr, l), used) in snappy.iter().zip(&snappy_used) {
+            if !(lr.is_none() && (l.layer_phase || l.fatal.is_some()) && !used) {
+                continue;
+            }
+            // A run that failed and fits no region (it wrote no mesh, or not one that was
+            // moved into a region): still say it failed, for the case (counted as a warning).
+            if let Some(f) = &l.fatal {
+                let place = match [l.cells, l.faces, l.points] {
+                    [None, None, None] => "before it wrote a mesh".to_string(),
+                    _ => format!("with a mesh of {} that no region has", mesh_size(l.cells, l.faces, l.points)),
+                };
+                let mut d = log_note(
+                    "mesh.snappyhexmesh",
+                    &l.file,
+                    format!(
+                        "snappyHexMesh stopped with a fatal error {place} (no -region, so for which region isn't known): {f}"
+                    ),
+                );
+                d.level = Level::Warning;
+                notes.push(d);
+                warnings += 1;
+            } else {
+                notes.push(log_note(
+                    "mesh.snappyhexmesh",
+                    &l.file,
+                    format!(
+                        "not used: it meshed the default mesh (no -region), and no region's mesh has its size ({})",
+                        mesh_size(l.cells, l.faces, l.points)
+                    ),
+                ));
+            }
+        }
     }
     if names.is_empty() {
         lines.push("no region has a mesh".to_string());

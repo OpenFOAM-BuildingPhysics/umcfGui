@@ -321,3 +321,81 @@ fn mesh_reads_checkmesh_results() {
     assert!(text.contains("checked region `solid`, which this case doesn't have"), "{text}");
     assert!(text.contains("log.checkMesh.gz") && text.contains("no `Exec : checkMesh` line"), "{text}");
 }
+
+/// snappyHexMesh's layer summary, from a log in `log/` named for the region.
+#[test]
+fn mesh_reports_layer_coverage() {
+    let dir = cube("mesh-layers", false);
+    std::fs::create_dir_all(dir.join("log")).unwrap();
+    let log = |cells: u32| {
+        format!(
+            "Build  : 12\nExec   : snappyHexMesh -overwrite\nShrinking and layer addition phase\n\npatch faces    layers avg thickness[m]\n                 near-wall overall\n----- -----    ------ --------- -------\nwalls 6 3 0.01 0.03\n\npatch faces    layers   overall thickness\n                   [m]       [%]\n----- -----    ------   ---       ---\nwalls 6 1.5 0.012 40\n\nLayer mesh : cells:{cells}  faces:6  points:8\nFinished meshing without any errors\n"
+        )
+    };
+    std::fs::write(dir.join("log/log.snappyHexMesh.air"), log(1)).unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let logs = &v["regions"][0]["snappyhexmesh"]["logs"];
+    assert_eq!(logs[0]["file"], "log/log.snappyHexMesh.air");
+    assert_eq!(logs[0]["layers"][0]["coverage"], 0.5);
+    assert_eq!(v["warnings"], 1, "{}", v["regions"][0]["diagnostics"]);
+    // A log of another mesh (meshed again since) is left out, with a note.
+    std::fs::write(dir.join("log/log.snappyHexMesh.air"), log(500)).unwrap();
+    let o = cli(&["mesh", dir.to_str().unwrap()]);
+    let text = stdout(&o);
+    assert!(
+        text.contains("not used: it wrote a mesh of 500 cells, 6 faces, 8 points, constant/ has 1 cells"),
+        "{text}"
+    );
+    assert!(!text.contains("mesh.layers"), "{text}");
+    std::fs::remove_file(dir.join("log/log.snappyHexMesh.air")).unwrap();
+
+    // Meshed as the default mesh and moved into `air` (no -region, no suffix): matched by size.
+    std::fs::write(dir.join("log/log.snappyHexMesh"), log(1)).unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["regions"][0]["snappyhexmesh"]["logs"][0]["file"], "log/log.snappyHexMesh", "{v}");
+    std::fs::write(dir.join("log/log.snappyHexMesh"), log(500)).unwrap();
+    let text = stdout(&cli(&["mesh", dir.to_str().unwrap()]));
+    assert!(text.contains("no region's mesh has its size"), "{text}");
+
+    // The same log in the case directory and in log/: the case directory's is used.
+    std::fs::write(dir.join("log.snappyHexMesh"), log(1)).unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["regions"][0]["snappyhexmesh"]["logs"][0]["file"], "log.snappyHexMesh", "{v}");
+    assert_eq!(v["warnings"], 1);
+    assert!(v["diagnostics"].to_string().contains("the case directory has a `log.snappyHexMesh` too"), "{v}");
+    assert!(v["diagnostics"].as_array().unwrap().iter().all(|d| d["code"] == "mesh.snappyhexmesh"), "{v}");
+
+    // A run that stopped before its layer phase is reported too.
+    std::fs::remove_file(dir.join("log/log.snappyHexMesh")).unwrap();
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\nRefined mesh : cells:1  faces:6  points:8\n--> FOAM FATAL ERROR:\ncannot find surface\n",
+    )
+    .unwrap();
+    let text = stdout(&cli(&["mesh", dir.to_str().unwrap()]));
+    assert!(text.contains("mesh.snappyhexmesh") && text.contains("cannot find surface"), "{text}");
+    // One that failed before writing any mesh can't be placed by size: a warning for the case.
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\n--> FOAM FATAL ERROR:\ncannot open snappyHexMeshDict\n",
+    )
+    .unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let d = v["diagnostics"].to_string();
+    assert!(d.contains("before it wrote a mesh") && d.contains("cannot open snappyHexMeshDict"), "{v}");
+    assert_eq!(v["warnings"], 1, "{v}");
+    // Or after printing the size of a mesh no region has (blockMesh's, before refining).
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\nInitial mesh : cells:4000  faces:12800  points:4851\n--> FOAM FATAL ERROR:\nout of memory\n",
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&cli(&["mesh", "--json", dir.to_str().unwrap()]))).unwrap();
+    assert!(v["diagnostics"].to_string().contains("with a mesh of 4000 cells"), "{v}");
+    assert_eq!(v["warnings"], 1, "{v}");
+}

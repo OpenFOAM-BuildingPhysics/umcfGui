@@ -88,7 +88,7 @@ boundary formula. Wedge directions are not left out of the aspect ratio.
 
 `checkMesh` is the authority, so what it wrote is read too, for each region:
 
-- **Its log:** `log.checkMesh*` in the case directory, matched to the region by its `-region`
+- **Its log:** `log.checkMesh*` in the case directory or its `log/`, matched to the region by its `-region`
   argument.
   - A run over several times (`-time 3,8`) checked one mesh per time; each gives its own result,
     labelled with its time.
@@ -142,6 +142,36 @@ Tested against `checkMesh`:
 
 Checking that mesh takes about 40 seconds and 4 GB on one core: 13 seconds to read it, the rest
 to check it. It can't be cancelled once it has started.
+
+### Layers
+
+When `snappyHexMesh` added layers, its log says how many each patch got: at the end of the
+layer phase it prints, for each patch that asked for layers, the layers grown (on average over
+the patch's faces) and the thickness reached as a percentage of the one wanted, after a table
+of the layers wanted. `mesh.check` reads that summary from `log.snappyHexMesh*` in the case
+directory or its `log/`, for each region:
+
+- The region is the log's `-region`, or the end of its name when that is a region of the case
+  (`log.snappyHexMesh.air`, as cases that swap `snappyHexMeshDict`s name their logs). A log
+  of the default mesh in a case of regions (meshed, then moved: `mv constant/polyMesh
+  constant/air`) is the region whose mesh has its size.
+- A log is used only for a mesh with as many cells, faces and points as the one it wrote: a
+  region meshed again, or changed since (extruded, subset), gets a note saying why it was left
+  out. A log whose run added no layers is not reported. In a log of several runs appended, the
+  last one counts.
+- A log in `log/` with the name of one in the case directory is left out (the case scripts move
+  older logs into `log/`). A log over 16 MB is not read.
+
+| Code | Level | What it means |
+|---|---|---|
+| `mesh.layers` | Warning | A patch got less than 90% of the layers it wanted (on average over its faces), or none; `addLayers` is on but no patch asked for layers (`No layers to generate`: the names under `layers` match no patch); or the log stops before the layer summary |
+| `mesh.layers` | Info | The patches that got 90% of their layers or more (one note) |
+| `mesh.snappyhexmesh` | Warning | `snappyHexMesh` stopped with a fatal error (in the layer phase or before), so the mesh it wrote may be unfinished |
+| `mesh.snappyhexmesh` | Info | A `snappyHexMesh` log that could not be read, or is not used (another region's, another mesh's, or a copy in `log/` of one in the case directory) |
+| `mesh.layers` | Info | Patches that grew layers when the log doesn't say how many they wanted (one note) |
+
+OpenFOAM-8 and 12 print the same tables; the `iglooWithFridges` tutorial meshed by either gives
+`igloo` its 1 layer, and the fridges 1.96 and 2.09 of their 3 (65% and 70%: warnings).
 
 ## Tested on
 
