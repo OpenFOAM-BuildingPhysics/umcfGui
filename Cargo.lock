@@ -181,6 +181,7 @@ dependencies = [
  "thiserror",
  "umcf-core",
  "umcf-foam-dict",
+ "umcf-foam-mesh",
  "umcf-model",
  "umcf-schema",
  "umcf-validate",

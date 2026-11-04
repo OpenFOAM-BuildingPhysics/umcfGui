@@ -33,6 +33,7 @@
 
 mod fields;
 mod keywords;
+pub mod mesh;
 mod utilities;
 mod workflow;
 
@@ -65,11 +66,11 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    fn new(level: Level, code: &'static str, path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn new(level: Level, code: &'static str, path: impl Into<String>, message: impl Into<String>) -> Self {
         Diagnostic { level, code, path: path.into(), region: None, patch: None, field: None, message: message.into() }
     }
 
-    fn region(mut self, r: &str) -> Self {
+    pub(crate) fn region(mut self, r: &str) -> Self {
         self.region = Some(r.to_string());
         self
     }
@@ -856,5 +857,7 @@ fn top_level(d: &Dict, selectors: &[(&str, &'static str)], found: &mut Vec<(&'st
     found.extend(here);
 }
 
+#[cfg(test)]
+mod mesh_tests;
 #[cfg(test)]
 mod tests;

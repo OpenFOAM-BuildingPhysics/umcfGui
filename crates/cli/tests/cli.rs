@@ -199,3 +199,69 @@ fn commands_lists_the_registry() {
         .collect();
     assert!(ids.contains(&"case.check".to_string()) && ids.contains(&"edit.undo".to_string()), "{ids:?}");
 }
+
+/// A one-cell case: a unit cube (or, with `flip`, one whose top face is pushed below the
+/// bottom: a negative volume).
+fn cube(name: &str, flip: bool) -> PathBuf {
+    let dir = case(name, "3600");
+    let top = if flip { -1.0 } else { 1.0 };
+    let pts = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, top],
+        [1.0, 0.0, top],
+        [1.0, 1.0, top],
+        [0.0, 1.0, top],
+    ];
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let points: Vec<String> = pts.iter().map(|p| format!("({} {} {})", p[0], p[1], p[2])).collect();
+    // Outward normals for the unit cube.
+    let faces = ["4(0 3 2 1)", "4(4 5 6 7)", "4(0 1 5 4)", "4(3 7 6 2)", "4(0 4 7 3)", "4(1 2 6 5)"];
+    let files = [
+        ("points", format!("{}8\n(\n{}\n)\n", h("vectorField"), points.join("\n"))),
+        ("faces", format!("{}6\n(\n{}\n)\n", h("faceList"), faces.join("\n"))),
+        ("owner", format!("{}6\n(\n0 0 0 0 0 0\n)\n", h("labelList"))),
+        ("neighbour", format!("{}0\n(\n)\n", h("labelList"))),
+        (
+            "boundary",
+            format!(
+                "{}1\n(\n    inlet\n    {{\n        type patch;\n        nFaces 6;\n        startFace 0;\n    }}\n)\n",
+                h("polyBoundaryMesh")
+            ),
+        ),
+    ];
+    for (f, text) in files {
+        std::fs::write(dir.join("constant/air/polyMesh").join(f), text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn mesh_checks_the_mesh() {
+    let dir = cube("mesh-ok", false);
+    let o = cli(&["mesh", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stdout(&o).starts_with("air: 1 cells"), "{}", stdout(&o));
+    let o = cli(&["mesh", "--json", "--region", "air", dir.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["regions"][0]["quality"]["cells"], 1);
+    assert!((v["regions"][0]["quality"]["total_volume"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+
+    let bad = cube("mesh-bad", true);
+    let o = cli(&["mesh", bad.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1), "{o:?}");
+    assert!(stdout(&o).contains("mesh.negative-volume"), "{}", stdout(&o));
+
+    assert_eq!(cli(&["mesh", "--region", "nope", dir.to_str().unwrap()]).status.code(), Some(2));
+    // A case whose mesh is only a boundary file: that region's error, 1.
+    let only = case("mesh-none", "3600");
+    let o = cli(&["mesh", only.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1), "{o:?}");
+    assert!(
+        stdout(&o).contains("mesh.unreadable") && stdout(&o).contains("air: the mesh could not be read"),
+        "{}",
+        stdout(&o)
+    );
+}

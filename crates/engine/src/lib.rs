@@ -100,7 +100,7 @@ pub enum Error {
 /// The opened case and where it is.
 struct Opened {
     case: Case,
-    fs: Box<dyn CaseWrite>,
+    fs: Box<dyn CaseWrite + Send + Sync>,
     location: String,
 }
 
@@ -173,8 +173,8 @@ impl Session {
         self.opened.as_ref().map(|o| o.location.as_str())
     }
 
-    /// The open case's files.
-    pub fn fs(&self) -> Option<&dyn CaseWrite> {
+    /// The open case's files (`Sync`: the mesh reader reads its files in parallel).
+    pub fn fs(&self) -> Option<&(dyn CaseWrite + Send + Sync)> {
         self.opened.as_ref().map(|o| o.fs.as_ref())
     }
 
@@ -217,7 +217,7 @@ impl Session {
     /// sample) opens it here. Unsaved changes in the open case are an error unless `discard`.
     pub fn open(
         &mut self,
-        fs: Box<dyn CaseWrite>,
+        fs: Box<dyn CaseWrite + Send + Sync>,
         location: impl Into<String>,
         options: OpenOptions,
         discard: bool,

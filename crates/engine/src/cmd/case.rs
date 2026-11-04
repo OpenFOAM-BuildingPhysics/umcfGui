@@ -140,7 +140,7 @@ pub(crate) fn level(l: Level) -> &'static str {
     }
 }
 
-fn diagnostic(d: &Diagnostic) -> Value {
+pub(crate) fn diagnostic(d: &Diagnostic) -> Value {
     json!({
         "level": level(d.level),
         "code": d.code,
@@ -152,7 +152,7 @@ fn diagnostic(d: &Diagnostic) -> Value {
     })
 }
 
-fn count(n: usize, one: &str) -> String {
+pub(crate) fn count(n: usize, one: &str) -> String {
     if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") }
 }
 

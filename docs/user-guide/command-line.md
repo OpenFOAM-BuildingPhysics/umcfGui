@@ -33,6 +33,29 @@ The exit status is 0 when there are no errors (warnings are allowed), 1 when the
 when the case could not be checked (it isn't a directory, or doesn't open). In a script:
 `umcf-cli check case || exit 1`.
 
+## Checking a mesh
+
+```sh
+umcf-cli mesh path/to/case [--region air] [--json]
+```
+
+This reads each region's mesh (or only `--region`'s) and runs the
+[mesh quality checks](meshes.md#mesh-quality). It prints the problems found, then one line per
+region:
+
+```text
+warning  mesh.aspect-ratio            constant/buildings/polyMesh [buildings]: 2880 cells have an aspect ratio above 1000 (max 2046): cells 0, 1, 2, …
+air: 25588 cells, non-orthogonality max 69.2°, skewness max 0.82, 0 errors, 0 warnings
+```
+
+`--json` prints each region's numbers (`quality`: cells, faces, volumes, face areas, aspect
+ratio, non-orthogonality, skewness, openness), with the first 1000 face or cell labels of each
+problem and their count. Its `diagnostics` are the problems as above.
+
+The exit status is 0 when there are no errors, 1 when there are, and 2 when the case can't be
+opened. A mesh that can't be read is an error of its region (`mesh.unreadable`); the other
+regions are still checked.
+
 ## Running commands
 
 ```sh
@@ -84,6 +107,7 @@ bad arguments.
 | `case.save` | Writes the changed dictionaries, after a backup of each |
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |
+| `mesh.check` | The [mesh quality checks](meshes.md#mesh-quality): `region` (default: every region with a mesh) |
 | `control.set` | Sets `system/controlDict` entries, by name: `{"endTime": 7200, "writeInterval": 600}` |
 | `dict.set` | Sets one entry of any dictionary the case loaded: `file`, `path` (`"PIMPLE/nOuterCorrectors"`), `value`. Parent dictionaries that are missing are added |
 | `dict.remove` | Removes one entry: `file`, `path` |
