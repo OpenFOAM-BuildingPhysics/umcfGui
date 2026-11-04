@@ -603,13 +603,16 @@ impl Session {
     }
 
     /// The STL surfaces of the open case (case-relative paths, sorted), including those a
-    /// command put there and the case has not saved yet. Empty when listing them panics (a
-    /// bug).
-    pub fn surfaces(&self) -> Vec<String> {
+    /// command put there and the case has not saved yet. A panic while listing them (a bug)
+    /// comes back as [`Error::Panicked`].
+    pub fn surfaces(&self) -> Result<Vec<String>, Error> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self.case().zip(self.fs()) {
             Some((case, fs)) => surface_files(case, fs, false).0,
             None => Vec::new(),
         }))
-        .unwrap_or_default()
+        .map_err(|payload| Error::Panicked {
+            id: "surfaces".to_string(),
+            message: crate::panic_message(payload.as_ref()),
+        })
     }
 }

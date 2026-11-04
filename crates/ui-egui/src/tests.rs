@@ -429,8 +429,20 @@ fn a_bug_while_building_the_scene_is_an_error_not_a_crash() {
     panics.store(true, Ordering::SeqCst);
     let err = s.scene(&json!({ "surfaces": ["constant/triSurface/bad.stl"] })).err();
     assert!(matches!(err, Some(umcf_engine::Error::Panicked { .. })), "{err:?}");
-    assert!(s.surfaces().is_empty());
+    assert!(matches!(s.surfaces(), Err(umcf_engine::Error::Panicked { .. })));
     panics.store(false, Ordering::SeqCst);
-    assert_eq!(s.surfaces(), ["constant/triSurface/bad.stl"]);
+    assert_eq!(s.surfaces().unwrap(), ["constant/triSurface/bad.stl"]);
     assert!(s.scene(&json!({ "regions": [""] })).is_ok());
+}
+
+#[test]
+fn a_bug_while_listing_surfaces_keeps_what_is_shown() {
+    let (mut app, _, panics) = watched();
+    assert!(app.show_only(&["bad.stl".to_string()]).is_empty());
+    panics.store(true, Ordering::SeqCst);
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    assert_eq!(app.surfaces, ["constant/triSurface/bad.stl"]);
+    assert_eq!(app.shown_surfaces, ["constant/triSurface/bad.stl"]);
+    assert!(app.log.last().is_some_and(|e| !e.ok && e.command == "surfaces"));
+    assert!(app.results_open);
 }

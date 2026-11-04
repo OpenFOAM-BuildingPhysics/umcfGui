@@ -221,7 +221,7 @@ impl App {
     /// when there is none (as `scene.snapshot` does).
     fn reset_shown(&mut self) {
         self.shown_for = self.session.location().map(String::from);
-        self.surfaces = self.session.surfaces();
+        self.surfaces = self.list_surfaces().unwrap_or_default();
         self.viewport.camera = None;
         self.expanded.clear();
         let Some(case) = self.session.case() else {
@@ -240,10 +240,28 @@ impl App {
         }
     }
 
+    /// The case's surfaces; a failure to list them goes in the log and the results card.
+    fn list_surfaces(&mut self) -> Option<Vec<String>> {
+        match self.session.surfaces() {
+            Ok(s) => Some(s),
+            Err(e) => {
+                self.log_entry(Entry {
+                    command: "surfaces".to_string(),
+                    ok: false,
+                    message: e.to_string(),
+                    data: Value::Null,
+                });
+                None
+            }
+        }
+    }
+
     /// Drops from what the 3D view shows the regions and surfaces the case no longer has (a
     /// surface an undo took away): the scene would not build without them.
     fn prune_shown(&mut self) {
-        self.surfaces = self.session.surfaces();
+        // A listing that failed keeps the last one, and what is shown with it.
+        let Some(surfaces) = self.list_surfaces() else { return };
+        self.surfaces = surfaces;
         let surfaces = &self.surfaces;
         let regions: Vec<String> = self
             .session
@@ -300,6 +318,17 @@ impl App {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
             Err(e) => Entry { command: id.to_string(), ok: false, message: e.to_string(), data: Value::Null },
         };
+        self.log_entry(entry);
+        if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
+            self.reset_shown();
+        } else {
+            self.prune_shown();
+        }
+        result.map_err(|e| e.to_string())
+    }
+
+    /// Logs an entry, opening the results card when it failed or has diagnostics.
+    fn log_entry(&mut self, entry: Entry) {
         if entry.data.get("diagnostics").and_then(Value::as_array).is_some_and(|d| !d.is_empty()) || !entry.ok {
             self.results_open = true;
         }
@@ -307,12 +336,6 @@ impl App {
         if self.log.len() > LOG {
             self.log.remove(0);
         }
-        if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
-            self.reset_shown();
-        } else {
-            self.prune_shown();
-        }
-        result.map_err(|e| e.to_string())
     }
 
     /// What the ribbon and the search do with a command: run one without parameters, open the
