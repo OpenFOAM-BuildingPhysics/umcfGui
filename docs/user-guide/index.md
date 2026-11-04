@@ -8,6 +8,8 @@ How umcfGui sees urbanMicroclimateFoam cases, and what it does with them.
   apart, and what it reports about partly ported cases.
 - [Dictionaries](dictionaries.md): how umcfGui reads and edits OpenFOAM dictionaries without
   losing your formatting.
+- [Surfaces](surfaces.md): the STL geometry in `constant/triSurface`: what would break meshing,
+  importing and repairing it.
 - [Meshes](meshes.md): the mesh of each region, and the checks it passes before use.
 - [Fields and results](fields.md): reading the solver's field files, ASCII or binary,
   compressed or not.

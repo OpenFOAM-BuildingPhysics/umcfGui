@@ -465,3 +465,137 @@ fn mesh_check_goes_on_after_an_unreadable_region() {
     assert_eq!(one.data["errors"], json!(0));
     assert!(matches!(s.execute("mesh.check", &json!({"region": "nope"})), Err(Error::Params(_))));
 }
+
+/// A unit cube as STL: outward normals, or inside out.
+fn cube_stl(format: umcf_geom::stl::Format, inward: bool) -> Vec<u8> {
+    use umcf_geom::stl::{Stl, Triangle};
+    let p = |i: usize| [(i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32];
+    let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    let mut triangles = Vec::new();
+    for q in quads {
+        for t in [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] {
+            let mut t = Triangle { vertices: t.map(p), normal: [0.0; 3], solid: 0 };
+            if inward {
+                t.flip();
+            }
+            triangles.push(t);
+        }
+    }
+    let solids = if format == umcf_geom::stl::Format::Ascii { vec!["box".to_string()] } else { Vec::new() };
+    Stl { format, solids, triangles, notes: Vec::new(), openfoam: None }.to_bytes()
+}
+
+fn codes(out: &Outcome) -> Vec<String> {
+    out.data["diagnostics"].as_array().unwrap().iter().map(|d| d["code"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn geometry_import_check_repair_and_save() {
+    use umcf_geom::stl::Format;
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-stl", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Binary, inside out, and with a header OpenFOAM takes for ASCII.
+    let mut bytes = cube_stl(Format::Binary, true);
+    bytes[..6].copy_from_slice(b"solid ");
+    let source = dir.join("Box.stl");
+    std::fs::write(&source, &bytes).unwrap();
+    let source = source.to_str().unwrap();
+
+    // Checked where it is, without a case.
+    let out = Session::new().execute("geometry.check", &json!({ "path": source })).unwrap();
+    assert_eq!(codes(&out), ["surface.openfoam", "surface.summary", "surface.inward"]);
+    assert_eq!(out.data["errors"], 1);
+
+    let mut s = session();
+    let out = s.execute("geometry.import", &json!({ "path": source, "name": "box.stl" })).unwrap();
+    assert!(out.message.starts_with("constant/triSurface/box.stl: imported from"), "{}", out.message);
+    assert!(out.message.contains("written again"), "{}", out.message);
+    assert_eq!(codes(&out), ["surface.summary", "surface.inward"], "written again, OpenFOAM reads it");
+    assert_eq!(out.data["surface"]["inward"]["count"], 12);
+    assert_eq!(s.case().unwrap().changed(), ["constant/triSurface/box.stl"]);
+    let e = s.execute("geometry.import", &json!({ "path": source, "name": "box.stl" })).unwrap_err();
+    assert!(e.to_string().contains("already there"), "{e}");
+
+    // geometry.check sees the surface before it is saved.
+    let out = s.execute("geometry.check", &Value::Null).unwrap();
+    assert_eq!(out.data["surfaces"].as_array().unwrap().len(), 1);
+    assert_eq!(out.message, "1 surface; 0 errors, 1 warning, 1 note");
+
+    let out = s.execute("geometry.repair", &json!({ "file": "box.stl" })).unwrap();
+    assert_eq!(
+        out.message,
+        "constant/triSurface/box.stl: 0 triangles removed (0 without area, 0 copies, 0 not finite); 12 triangles turned over (1 closed part turned outward); 0 errors, 0 warnings, 1 note"
+    );
+    let out = s.execute("geometry.repair", &json!({ "file": "box.stl" })).unwrap();
+    assert!(out.message.contains("nothing to change"), "{}", out.message);
+
+    // Undo goes back through the repairs to the import, and before it.
+    s.execute("edit.undo", &Value::Null).unwrap();
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert_eq!(
+        codes(&s.execute("geometry.check", &json!({ "file": "box.stl" })).unwrap()),
+        ["surface.summary", "surface.inward"]
+    );
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert!(s.case().unwrap().changed().is_empty());
+    assert_eq!(s.execute("geometry.check", &Value::Null).unwrap().message, "no STL surface in constant/triSurface");
+    s.execute("edit.redo", &Value::Null).unwrap();
+    s.execute("edit.redo", &Value::Null).unwrap();
+
+    let out = s.execute("geometry.scale", &json!({ "file": "box.stl", "factor": 1000 })).unwrap();
+    assert_eq!(out.data["surface"]["bbox"]["max"], json!([1000.0, 1000.0, 1000.0]));
+    assert!(s.execute("geometry.scale", &json!({ "file": "box.stl", "factor": -1 })).is_err());
+    assert!(s.execute("geometry.scale", &json!({ "file": "box.stl" })).is_err());
+
+    let saved = s.execute("case.save", &Value::Null).unwrap();
+    assert_eq!(saved.data["saved"], json!(["constant/triSurface/box.stl"]));
+    let on_disk = s.fs().unwrap().read("constant/triSurface/box.stl", 1 << 20).unwrap().unwrap();
+    assert_eq!(on_disk.len(), 84 + 50 * 12, "still binary");
+    assert!(s.case().unwrap().changed().is_empty());
+
+    // Replacing a saved surface keeps a backup of it at the next save.
+    let ascii = dir.join("box.stl.gz");
+    std::fs::write(&ascii, cube_stl(Format::Ascii, false)).unwrap();
+    let out = s
+        .execute("geometry.import", &json!({ "path": ascii.to_str().unwrap(), "name": "box.stl", "replace": true }))
+        .unwrap();
+    assert_eq!(out.data["rewritten"], json!([]), "copied as it is");
+    s.execute("case.save", &Value::Null).unwrap();
+    assert_eq!(
+        s.fs().unwrap().read(".umcfgui/backup/test/constant/triSurface/box.stl", 1 << 20).unwrap().unwrap(),
+        on_disk
+    );
+
+    // A compressed name gets compressed bytes.
+    let out = s.execute("geometry.import", &json!({ "path": ascii.to_str().unwrap() })).unwrap();
+    assert_eq!(out.data["rewritten"], json!(["compressed"]));
+    let gz = s.case().unwrap().file(s.fs().unwrap(), "constant/triSurface/box.stl.gz").unwrap().unwrap();
+    assert!(gz.starts_with(&[0x1f, 0x8b]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn geometry_parameters_are_checked() {
+    let mut s = session();
+    for (id, p) in [
+        ("geometry.check", json!({ "file": "../x.stl" })),
+        ("geometry.check", json!({ "file": "x.obj" })),
+        ("geometry.check", json!({ "file": ".x.stl" })),
+        ("geometry.check", json!({ "file": "a.stl", "path": "/tmp/a.stl" })),
+        ("geometry.repair", json!({ "file": "a.stl", "weld": 0 })),
+        ("geometry.repair", json!({ "file": "a.stl", "weld": "1" })),
+        ("geometry.import", json!({ "path": "/tmp/a.stl", "scale": -2 })),
+        ("geometry.import", json!({ "path": "/" })),
+    ] {
+        assert!(matches!(s.execute(id, &p), Err(Error::Params(_))), "{id} {p}");
+    }
+    for (id, p) in [
+        ("geometry.check", json!({ "file": "none.stl" })),
+        ("geometry.repair", json!({ "file": "none.stl" })),
+        ("geometry.import", json!({ "path": "/nonexistent/a.stl" })),
+    ] {
+        assert!(matches!(s.execute(id, &p), Err(Error::Failed(_))), "{id} {p}");
+    }
+    assert!(Session::new().execute("geometry.check", &Value::Null).is_err(), "no case and no path");
+}

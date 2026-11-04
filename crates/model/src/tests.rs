@@ -566,3 +566,52 @@ fn boundary_fields_with_includes_are_marked_indirect() {
     assert!(air.field("U").unwrap().indirect);
     assert!(!air.field("T").unwrap().indirect);
 }
+
+#[test]
+fn files_put_by_commands_are_saved_with_checks_and_backups() {
+    let mut fs = case().with("constant/triSurface/old.stl", "solid old\nendsolid old\n");
+    let mut c = Case::open(&fs).unwrap();
+    let before = c.clone();
+    c.put_file(&fs, "constant/triSurface/new.stl", b"solid new\nendsolid new\n".to_vec()).unwrap();
+    c.put_file(&fs, "constant/triSurface/old.stl", b"solid fixed\nendsolid fixed\n".to_vec()).unwrap();
+    assert_eq!(c.changed(), ["constant/triSurface/new.stl", "constant/triSurface/old.stl"]);
+    assert!(before.changed().is_empty(), "a clone from before is a snapshot");
+    assert_eq!(
+        c.file(&fs, "constant/triSurface/old.stl").unwrap().unwrap().as_slice(),
+        b"solid fixed\nendsolid fixed\n"
+    );
+    assert_eq!(
+        before.file(&fs, "constant/triSurface/old.stl").unwrap().unwrap().as_slice(),
+        b"solid old\nendsolid old\n"
+    );
+    assert!(c.file(&fs, "constant/triSurface/none.stl").unwrap().is_none());
+
+    let saved = c.save(&mut fs, Some(".umcfgui/backup/s1")).unwrap();
+    assert_eq!(saved, ["constant/triSurface/new.stl", "constant/triSurface/old.stl"]);
+    assert_eq!(fs.read("constant/triSurface/new.stl", 100).unwrap().unwrap(), b"solid new\nendsolid new\n");
+    assert_eq!(
+        fs.read(".umcfgui/backup/s1/constant/triSurface/old.stl", 100).unwrap().unwrap(),
+        b"solid old\nendsolid old\n"
+    );
+    assert!(!fs.is_file(".umcfgui/backup/s1/constant/triSurface/new.stl"), "nothing to back up for a new file");
+    assert!(c.changed().is_empty());
+
+    // Changed on disk since: a conflict, nothing written.
+    c.put_file(&fs, "constant/triSurface/new.stl", b"solid again\nendsolid\n".to_vec()).unwrap();
+    fs.insert("constant/triSurface/new.stl", "edited elsewhere");
+    assert!(matches!(c.save(&mut fs, None), Err(Error::Conflict { .. })));
+    assert_eq!(fs.read("constant/triSurface/new.stl", 100).unwrap().unwrap(), b"edited elsewhere");
+
+    // A new file that appeared on disk in the meantime is a conflict too.
+    let mut fs = case();
+    let mut c = Case::open(&fs).unwrap();
+    c.put_file(&fs, "constant/triSurface/a.stl", b"x".to_vec()).unwrap();
+    fs.insert("constant/triSurface/a.stl", "someone else's");
+    assert!(matches!(c.save(&mut fs, None), Err(Error::Conflict { .. })));
+
+    // Not a place for a file, or a dictionary.
+    for bad in ["", "/etc/passwd", "../x.stl", "constant//x", "constant/./x", ".umcfgui/x", "a\\b"] {
+        assert!(matches!(c.put_file(&fs, bad, Vec::new()), Err(Error::BadFile(_))), "{bad}");
+    }
+    assert!(matches!(c.put_file(&fs, "system/controlDict", Vec::new()), Err(Error::IsDict(_))));
+}

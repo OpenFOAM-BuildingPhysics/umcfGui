@@ -12,6 +12,7 @@ repository = "https://github.com/OpenFOAM-BuildingPhysics/umcfGui"
 [workspace.dependencies]
 # internal
 umcf-core = { path = "crates/core" }
+umcf-geom = { path = "crates/geom" }
 umcf-schema = { path = "crates/schema" }
 umcf-foam-dict = { path = "crates/foam-dict" }
 umcf-foam-field = { path = "crates/foam-field" }

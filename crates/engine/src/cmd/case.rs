@@ -47,7 +47,7 @@ pub(super) const SAVE: CommandSpec = CommandSpec {
     label: "Save",
     menu: "Case/Save",
     shortcut: Some("Ctrl+S"),
-    params: "none. Writes the changed dictionaries, after a backup of each under the session's backup directory.",
+    params: "none. Writes the changed dictionaries and surfaces, after a backup of each under the session's backup directory.",
     enabled: needs_case,
     run: save,
     journal: true,

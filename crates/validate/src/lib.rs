@@ -34,6 +34,7 @@
 mod fields;
 mod keywords;
 pub mod mesh;
+pub mod surface;
 mod utilities;
 mod workflow;
 
@@ -859,5 +860,7 @@ fn top_level(d: &Dict, selectors: &[(&str, &'static str)], found: &mut Vec<(&'st
 
 #[cfg(test)]
 mod mesh_tests;
+#[cfg(test)]
+mod surface_tests;
 #[cfg(test)]
 mod tests;

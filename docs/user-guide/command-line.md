@@ -63,6 +63,19 @@ The exit status is 0 when there are no errors, 1 when there are, and 2 when the 
 opened. A mesh that can't be read is an error of its region (`mesh.unreadable`); the other
 regions are still checked.
 
+## Checking surfaces
+
+```sh
+umcf-cli surface path/to/case [--file walls.stl] [--json]
+umcf-cli surface path/to/file.stl [--json]
+```
+
+This checks the STL surfaces in the case's `constant/triSurface` (or the one `--file` names),
+or one file anywhere, for [what breaks meshing](surfaces.md#checks), and prints the problems
+found, then a line with the counts. `--json` prints each surface's numbers with the triangles
+of each finding. The exit status is 0 when there are no errors, 1 when there are, and 2 when
+the case or file can't be opened.
+
 ## Running commands
 
 ```sh
@@ -111,9 +124,13 @@ bad arguments.
 | Command | Does |
 |---|---|
 | `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files), `discard` (`true` opens even if the open case has unsaved changes) |
-| `case.save` | Writes the changed dictionaries, after a backup of each |
+| `case.save` | Writes the changed dictionaries and surfaces, after a backup of each |
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |
+| `geometry.import` | Copies an STL file into `constant/triSurface` ([Surfaces](surfaces.md#importing)): `path` (required), `name`, `replace`, `scale` |
+| `geometry.check` | The [surface checks](surfaces.md#checks): `file` (one surface of the case), `path` (a file anywhere, no case needed), or neither (every STL surface in `constant/triSurface`) |
+| `geometry.repair` | The [repairs](surfaces.md#repairs) of one surface: `file` (required), `weld` (a distance in metres), `degenerate`, `orient` (`true`/`false`; without any of the three: `degenerate` and `orient`) |
+| `geometry.scale` | Multiplies a surface's coordinates: `file`, `factor` (both required) |
 | `mesh.check` | The [mesh quality checks](meshes.md#mesh-quality): `region` (default: every region with a mesh), `all_geometry` (`true`: also the checks of `checkMesh -allGeometry`) |
 | `control.set` | Sets `system/controlDict` entries, by name: `{"endTime": 7200, "writeInterval": 600}` |
 | `dict.set` | Sets one entry of any dictionary the case loaded: `file`, `path` (`"PIMPLE/nOuterCorrectors"`), `value`. Parent dictionaries that are missing are added |

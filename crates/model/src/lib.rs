@@ -14,6 +14,10 @@
 //!
 //! Fields are read, not edited, here: their boundary conditions are listed per patch.
 //!
+//! Files that are not dictionaries (the surfaces in `constant/triSurface`) are held as bytes
+//! once a command writes them ([`Case::put_file`]); [`Case::save`] writes them with the same
+//! checks and backups.
+//!
 //! A `Case` is cheap to clone (documents are shared until edited), so an editor can keep
 //! snapshots for undo. What is on disk is shared by all clones of an opened case: restoring a
 //! snapshot taken before a save shows the snapshot's text as a change, to be saved again.
@@ -58,6 +62,10 @@ pub enum Error {
     Conflict { path: String },
     #[error("backups go under `.umcfgui/`, not to `{0}`")]
     BadBackup(String),
+    #[error("`{0}` is not a file path inside the case")]
+    BadFile(String),
+    #[error("{0} is one of the case's dictionaries: it is edited entry by entry, not replaced")]
+    IsDict(String),
     #[error("{0} already has 1000 backups")]
     BackupsFull(String),
     #[error("saving stopped after {saved:?}: {source}")]
@@ -158,9 +166,31 @@ struct OnDisk {
     doc: Arc<Document>,
 }
 
+/// A file's length and hash: enough to tell whether a file on disk is still the one read,
+/// without keeping a copy of a surface of hundreds of megabytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fingerprint {
+    len: usize,
+    hash: u64,
+}
+
+fn fingerprint(bytes: &[u8]) -> Fingerprint {
+    use std::hash::Hasher;
+    // `DefaultHasher::new` has fixed keys: the same bytes hash the same within a session.
+    let mut h = std::hash::DefaultHasher::new();
+    h.write(bytes);
+    Fingerprint { len: bytes.len(), hash: h.finish() }
+}
+
+/// The largest file that is not a dictionary [`Case::file`] and [`Case::put_file`] handle.
+pub const MAX_FILE_BYTES: u64 = 1 << 30;
+
 #[derive(Debug, Default)]
 struct DiskState {
     files: BTreeMap<String, OnDisk>,
+    /// Files that are not dictionaries, written through [`Case::put_file`]: as read when first
+    /// put (`None`: there was none) or last saved.
+    raw: BTreeMap<String, Option<Fingerprint>>,
     /// `(backup dir, file)` pairs already backed up: a file is backed up once per session.
     backed_up: std::collections::BTreeSet<(String, String)>,
 }
@@ -170,6 +200,12 @@ type Disk = Arc<std::sync::Mutex<DiskState>>;
 fn lock(disk: &Disk) -> std::sync::MutexGuard<'_, DiskState> {
     // A panic elsewhere while holding the lock leaves the state itself intact.
     disk.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What [`Case::save`] writes for one file.
+enum Pending {
+    Dict(Arc<Document>),
+    Raw(Arc<Vec<u8>>, Fingerprint),
 }
 
 /// An opened case. See the crate documentation.
@@ -190,6 +226,8 @@ pub struct Case {
     /// The paths in the case when it was opened (see [`Case::exists`]).
     paths: std::collections::BTreeSet<String>,
     files: BTreeMap<String, Arc<Document>>,
+    /// Files that are not dictionaries, as commands wrote them.
+    raw: BTreeMap<String, (Arc<Vec<u8>>, Fingerprint)>,
     /// Paths that are the same file as a loaded one (a symlinked dictionary): path → that one.
     aliases: BTreeMap<String, String>,
     disk: Disk,
@@ -413,7 +451,11 @@ impl Case {
 
         let scripts = read_scripts(fs, options, &mut notes)?;
         let paths = snapshot(fs)?;
-        let disk = Arc::new(std::sync::Mutex::new(DiskState { files: disk, backed_up: Default::default() }));
+        let disk = Arc::new(std::sync::Mutex::new(DiskState {
+            files: disk,
+            raw: BTreeMap::new(),
+            backed_up: Default::default(),
+        }));
         Ok(Case {
             layout,
             controls,
@@ -424,6 +466,7 @@ impl Case {
             scripts,
             paths,
             files,
+            raw: BTreeMap::new(),
             aliases,
             disk,
             options,
@@ -537,7 +580,8 @@ impl Case {
     /// never edited are skipped without serialising them.
     pub fn changed(&self) -> Vec<&str> {
         let disk = lock(&self.disk);
-        self.files
+        let mut out: Vec<&str> = self
+            .files
             .iter()
             .filter(|(rel, doc)| match disk.files.get(rel.as_str()) {
                 Some(d) if Arc::ptr_eq(doc, &d.doc) => false,
@@ -545,7 +589,59 @@ impl Case {
                 None => true,
             })
             .map(|(rel, _)| rel.as_str())
-            .collect()
+            .collect();
+        out.extend(
+            self.raw
+                .iter()
+                .filter(|(rel, (_, fp))| disk.raw.get(rel.as_str()).copied().flatten() != Some(*fp))
+                .map(|(rel, _)| rel.as_str()),
+        );
+        out.sort_unstable();
+        out
+    }
+
+    /// A file that is not a dictionary (a surface in `constant/triSurface`): its bytes as the
+    /// case has them, written by a command and not saved yet, or else read from `fs`. `None`
+    /// when there is no such file.
+    pub fn file(&self, fs: &dyn CaseFs, rel: &str) -> Result<Option<Arc<Vec<u8>>>> {
+        if let Some((bytes, _)) = self.raw.get(rel) {
+            return Ok(Some(Arc::clone(bytes)));
+        }
+        Ok(fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new))
+    }
+
+    /// The files [`Case::put_file`] wrote (saved or not), by path.
+    pub fn put_paths(&self) -> impl Iterator<Item = &str> {
+        self.raw.keys().map(String::as_str)
+    }
+
+    /// Sets the bytes of a file that is not a dictionary; [`Case::save`] writes it. What is on
+    /// disk at `rel` is noted the first time (the file must still be that at the save). At
+    /// most [`MAX_FILE_BYTES`].
+    pub fn put_file(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
+        let bad = rel.is_empty()
+            || rel.starts_with('/')
+            || rel.contains('\\')
+            || rel.split('/').any(|c| c.is_empty() || c == "." || c == "..")
+            || rel.starts_with(".umcfgui/");
+        if bad {
+            return Err(Error::BadFile(rel.to_string()));
+        }
+        if self.files.contains_key(self.resolve(rel)) {
+            return Err(Error::IsDict(rel.to_string()));
+        }
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(
+                FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
+            );
+        }
+        if !lock(&self.disk).raw.contains_key(rel) {
+            let on_disk = fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b));
+            lock(&self.disk).raw.insert(rel.to_string(), on_disk);
+        }
+        let fp = fingerprint(&bytes);
+        self.raw.insert(rel.to_string(), (Arc::new(bytes), fp));
+        Ok(())
     }
 
     /// Writes the changed dictionaries and returns their paths.
@@ -571,23 +667,34 @@ impl Case {
         // 1. Check them all before writing anything.
         let mut plan = Vec::new();
         for rel in changed {
-            let Some(doc) = self.files.get(&rel) else { continue };
-            let original = lock(&self.disk).files.get(&rel).map(|d| Arc::clone(&d.bytes));
-            let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
-            // Grown past the limit: changed (it was read within it). Other errors are themselves.
-            let on_disk = match fs.read(&rel, limit) {
-                Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
-                r => r?,
-            };
-            if on_disk.as_deref() != original.as_deref().map(Vec::as_slice) {
-                return Err(Error::Conflict { path: rel });
+            if let Some(doc) = self.files.get(&rel) {
+                let original = lock(&self.disk).files.get(&rel).map(|d| Arc::clone(&d.bytes));
+                let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
+                // Grown past the limit: changed (it was read within it). Other errors are themselves.
+                let on_disk = match fs.read(&rel, limit) {
+                    Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
+                    r => r?,
+                };
+                if on_disk.as_deref() != original.as_deref().map(Vec::as_slice) {
+                    return Err(Error::Conflict { path: rel });
+                }
+                plan.push((rel, Pending::Dict(Arc::clone(doc)), original, limit));
+            } else if let Some((bytes, fp)) = self.raw.get(&rel) {
+                let recorded = lock(&self.disk).raw.get(&rel).copied().flatten();
+                let on_disk = match fs.read(&rel, MAX_FILE_BYTES) {
+                    Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
+                    r => r?,
+                };
+                if on_disk.as_deref().map(fingerprint) != recorded {
+                    return Err(Error::Conflict { path: rel });
+                }
+                plan.push((rel, Pending::Raw(Arc::clone(bytes), *fp), on_disk.map(Arc::new), MAX_FILE_BYTES));
             }
-            plan.push((rel, Arc::clone(doc), original));
         }
         // 2. Backups: once per file and session (backup directory).
         if let Some(dir) = backup {
             let dir = dir.trim_end_matches('/');
-            for (rel, _, original) in &plan {
+            for (rel, _, original, _) in &plan {
                 let Some(original) = original else { continue };
                 let key = (dir.to_string(), rel.clone());
                 if lock(&self.disk).backed_up.contains(&key) {
@@ -622,9 +729,11 @@ impl Case {
         }
         // 3. Write.
         let mut saved = Vec::new();
-        for (rel, doc, original) in plan {
-            let text = doc.to_string().into_bytes();
-            let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));
+        for (rel, pending, original, limit) in plan {
+            let text = match &pending {
+                Pending::Dict(doc) => Arc::new(doc.to_string().into_bytes()),
+                Pending::Raw(bytes, _) => Arc::clone(bytes),
+            };
             // A read error is reported as itself (it doesn't mean the file changed), except a
             // file grown past the limit, which did change.
             let result = match fs.read(&rel, limit) {
@@ -637,7 +746,14 @@ impl Case {
             if let Err(e) = result {
                 return Err(if saved.is_empty() { e } else { Error::Partial { saved, source: Box::new(e) } });
             }
-            lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: Arc::new(text), doc });
+            match pending {
+                Pending::Dict(doc) => {
+                    lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: text, doc });
+                }
+                Pending::Raw(_, fp) => {
+                    lock(&self.disk).raw.insert(rel.clone(), Some(fp));
+                }
+            }
             saved.push(rel);
         }
         Ok(saved)

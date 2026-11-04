@@ -34,6 +34,15 @@ usage:
       Exit status: 0 no errors, 1 errors found (a mesh that can't be read is one), 2 the case
       could not be opened.
 
+  umcf-cli surface <case | file.stl> [--file <name>] [--json]
+      Check STL surfaces as snappyHexMesh will read them: a file OpenFOAM can't read, open and
+      non-manifold edges, inconsistent and inward normals, degenerate and duplicate triangles,
+      coordinates that look like millimetres or are far from the origin. Given a case, every
+      STL surface in its constant/triSurface (or the one --file names); given a file, that file.
+      --json  one JSON object, with each surface's numbers and the triangles involved
+      Exit status: 0 no errors, 1 errors found (a file that can't be read is one), 2 the case
+      or file could not be opened.
+
   umcf-cli run [--case <case>] [--cmd '<id>=<json>']... [--cmds <file>] [--journal <file>] [--json]
       Run commands in order, stopping at the first that fails. --case opens the case first
       (case.open). --cmd gives one command, with its parameters as a JSON object
@@ -66,6 +75,7 @@ fn main() -> ExitCode {
         Some("check") => check(args.get(1..).unwrap_or_default()),
         Some("run") => run(args.get(1..).unwrap_or_default()),
         Some("mesh") => mesh(args.get(1..).unwrap_or_default()),
+        Some("surface") => surface(args.get(1..).unwrap_or_default()),
         Some("commands") => commands(args.get(1..).unwrap_or_default()),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
@@ -155,6 +165,41 @@ fn mesh(args: &[String]) -> Result<u8, String> {
         for line in report.message.split("; ") {
             out(line)?;
         }
+    }
+    let errors = report.data.get("errors").and_then(Value::as_u64).unwrap_or(0);
+    Ok(if errors > 0 { 1 } else { 0 })
+}
+
+fn surface(args: &[String]) -> Result<u8, String> {
+    let (mut target, mut file, mut as_json) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => as_json = true,
+            "--file" => file = Some(it.next().ok_or("surface: --file needs a value")?.clone()),
+            s if s.starts_with('-') => return Err(format!("surface: unknown option `{s}`")),
+            s if target.is_none() => target = Some(s.to_string()),
+            s => return Err(format!("surface: one case or file at a time (`{s}`)")),
+        }
+    }
+    let target = target.ok_or("surface: which case or file? (umcf-cli surface <case | file.stl>)")?;
+    let mut s = Session::new();
+    let params = if std::path::Path::new(&target).is_dir() {
+        s.execute("case.open", &json!({ "path": target, "fields": false })).map_err(|e| e.to_string())?;
+        json!({ "file": file })
+    } else if file.is_some() {
+        return Err("surface: --file names a surface of a case; give the case directory".to_string());
+    } else {
+        json!({ "path": target })
+    };
+    let report = s.execute("geometry.check", &params).map_err(|e| e.to_string())?;
+    if as_json {
+        out(&report.data.to_string())?;
+    } else {
+        for d in report.data.get("diagnostics").and_then(Value::as_array).into_iter().flatten() {
+            out(&diagnostic_line(d))?;
+        }
+        out(&report.message)?;
     }
     let errors = report.data.get("errors").and_then(Value::as_u64).unwrap_or(0);
     Ok(if errors > 0 { 1 } else { 0 })
