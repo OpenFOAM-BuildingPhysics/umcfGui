@@ -491,3 +491,28 @@ fn surfaces_that_could_not_be_listed_at_opening_show_once_they_can() {
     assert!(!app.unlisted);
     assert_eq!(app.shown_surfaces, ["constant/triSurface/a.stl"]);
 }
+
+#[test]
+fn an_empty_view_chosen_before_the_surfaces_list_stays_empty() {
+    let mut fs = MemFs::new();
+    fs.insert("system/controlDict", format!("{HEADER}application urbanMicroclimateFoam;\nendTime 3600;\n"));
+    fs.insert("constant/triSurface/a.stl", vec![0u8; 84]);
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let fs = Watched { fs, reads: Default::default(), panics: Default::default(), unreadable: unreadable.clone() };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    unreadable.store(true, Ordering::SeqCst);
+    let mut app = App::new(s);
+    assert!(app.unlisted && app.listing_error.is_some());
+    assert!(app.show_only(&[]).is_empty());
+    unreadable.store(false, Ordering::SeqCst);
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    assert!(app.listing_error.is_none());
+    assert_eq!(app.surfaces, ["constant/triSurface/a.stl"]);
+    assert!(app.shown_surfaces.is_empty());
+    // A listing that fails after one that worked is the last word too.
+    unreadable.store(true, Ordering::SeqCst);
+    app.run("control.set", json!({ "endTime": 3600 })).unwrap();
+    assert!(!app.unlisted && app.listing_error.is_some());
+    assert_eq!(app.surfaces, ["constant/triSurface/a.stl"]);
+}

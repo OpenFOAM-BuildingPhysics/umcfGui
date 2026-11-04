@@ -101,6 +101,8 @@ pub struct App {
     /// They couldn't be listed when the case opened: the first listing that works shows them
     /// as opening would have.
     unlisted: bool,
+    /// Why the last listing of the surfaces failed; `None` when it worked.
+    listing_error: Option<String>,
     /// The scene of this revision failed to build, with why: it isn't tried again until the
     /// revision changes.
     scene_error: Option<(u64, String)>,
@@ -206,6 +208,7 @@ impl App {
             shown_for: None,
             surfaces: Vec::new(),
             unlisted: false,
+            listing_error: None,
             scene_error: None,
             styled: false,
         };
@@ -248,7 +251,9 @@ impl App {
 
     /// The case's surfaces; a failure to list them goes in the log and the results card.
     fn list_surfaces(&mut self) -> Option<Vec<String>> {
-        match self.session.surfaces() {
+        let listed = self.session.surfaces();
+        self.listing_error = listed.as_ref().err().map(ToString::to_string);
+        match listed {
             Ok(s) => Some(s),
             Err(e) => {
                 self.log_entry(Entry {
@@ -291,6 +296,8 @@ impl App {
     /// Shows only these mesh regions and surfaces (by region name or surface file name) in the
     /// 3D view.
     pub fn show_only(&mut self, names: &[String]) -> Vec<String> {
+        // What is shown is chosen now: a listing that works later doesn't change it.
+        self.unlisted = false;
         let regions: Vec<String> = self.session.case().map_or(Vec::new(), |c| {
             c.regions
                 .iter()
@@ -1200,6 +1207,7 @@ impl App {
         }
         for (name, regions) in [(show_region, true), (show_surface, false)] {
             let Some(name) = name else { continue };
+            self.unlisted = false;
             let v = if regions { &mut self.shown_regions } else { &mut self.shown_surfaces };
             match v.iter().position(|x| *x == name) {
                 Some(k) => {
@@ -1661,12 +1669,11 @@ pub fn run(options: Options) -> Result<(), String> {
             eprintln!("umcf-gui: {id}: {e}");
         }
     }
-    // A case whose surfaces couldn't be listed would show nothing.
+    // Surfaces that couldn't be listed would be missing from the picture.
     if options.screenshot.is_some()
-        && app.unlisted
-        && let Some(e) = app.log.iter().rev().find(|e| !e.ok && e.command == "surfaces")
+        && let Some(e) = &app.listing_error
     {
-        return Err(e.message.clone());
+        return Err(e.clone());
     }
     if !options.show.is_empty() {
         let unknown = app.show_only(&options.show);
