@@ -16,7 +16,7 @@ marked *unconfirmed*.
 
 | Kind | Name | Notes |
 |---|---|---|
-| fluid | **`air`** when radiation is used | The sky temperature is read from `0/air/Tambient` and `viewFactorSky` looks up the mesh `air` (`viewFactorSky.C:1149`, `:1195`). Exactly one fluid region. *Unconfirmed*: whether another name works without radiation. |
+| fluid | **`air`** when radiation is used | `viewFactorSky` looks up the mesh `air` (`viewFactorSky.C:1195`), and without `constant/LW` reads the sky temperature from `0/air/Tambient` (`:1149`). Exactly one fluid region. *Unconfirmed*: whether another name works without radiation. |
 | solid | any (`buildings`, `street`, `ground`, …) | Heat and moisture in porous materials; one `buildingMaterialModel` per material. |
 | vegetation | **`vegetation`** | The radiation region when there are trees: a second mesh of the air domain with the tree volume cut out. The name is fixed in the solid temperature condition, `simplifiedVegetation`, `calcLAI` and `simpleGrass`. Only one is supported. |
 
@@ -28,8 +28,9 @@ Radiation runs in one region:
 
 - **without trees**, in `air` itself: `constant/air/radiationProperties`,
   `constant/air/solarLoadProperties`, the view factor dictionary, and `0/air/qr`, `0/air/qs`;
-- **with trees**, in `vegetation`, whose patch **`air_to_vegetation`** (type `mappedInternal`) is
-  the canopy surface (`simplifiedVegetation.C:323`). Radiation is not solved in `air` then.
+- **with trees**, in `vegetation`, whose patch **`air_to_vegetation`** is the canopy surface
+  (`simplifiedVegetation.C:323`): `mappedInternal` *12*, `mappedWall` with `sampleMode
+  nearestCell; sampleRegion air;` *8*. Radiation is not solved in `air` then.
 
 ## Dictionaries per region
 
@@ -38,7 +39,7 @@ Radiation runs in one region:
 | `constant/<r>/polyMesh` | R | R | R |
 | `constant/<r>/g` | R | R | not read |
 | `constant/air/thermophysicalProperties` | R: `heRhoThermo`, `pureMixture`, `const`, `hConst`, `Boussinesq`, `sensibleInternalEnergy` (*12* also reads `physicalProperties`) | – | – |
-| `constant/air/momentumTransport` | R: `simulationType RAS;` with `RAS { model realizableKE; }` (*8* `RASModel`) | – | – |
+| `constant/air/momentumTransport` | R: `simulationType RAS;` with `RAS { model realizableKE; }` (*8* `RASModel realizableKE;`, which *12* still accepts) | – | – |
 | `constant/air/vegetationProperties` | with trees: `vegetationModel simplifiedVegetation;` and its `simplifiedVegetationCoeffs`; without, the model is `none`. `calcLAI` needs the file and the coefficients. | – | – |
 | `constant/air/grassProperties` | optional (`simpleGrass` with `grassPatches`) | – | – |
 | `constant/<r>/radiationProperties` | without trees: `radiationModel viewFactorSky;` with `viewFactorSkyCoeffs { smoothing; constantEmissivity; }` (both R) | – | with trees: the same |
@@ -89,14 +90,19 @@ humidity ratio), `0/air/cloudCover`, `0/<solid>/T_room.dat` (indoor temperature)
 
 | Role | `U` | `p_rgh` | `T` | `w` | `k` | `epsilon` | `nut` | `alphat` |
 |---|---|---|---|---|---|---|---|---|
-| inlet | `atmBoundaryLayerInletVelocity` | `fixedFluxPressure` | `uniformFixedValue` from `Tambient` | `uniformFixedValue` from `wambient` | from \|U\|² | `atmBoundaryLayerInletEpsilon` | `calculated` | `calculated` |
+| inlet | `atmBoundaryLayerInletVelocity` | `fixedFluxPressure` | `uniformFixedValue` from `Tambient` | `uniformFixedValue` from `wambient` | `atmBoundaryLayerInletK` | `atmBoundaryLayerInletEpsilon` | `calculated` | `calculated` |
 | outlet | `inletOutlet` | `fixedValue` | `inletOutlet` | `inletOutlet` | `zeroGradient` | `zeroGradient` | `calculated` | `calculated` |
-| sides, top | `slip` | `slip` | `slip` (top: from `Tambient`) | `slip` | `slip` | `slip` | `calculated` | `calculated` |
+| sides | `slip` | `slip` | `slip` | `slip` | `slip` | `slip` | `slip` | `slip` |
+| top | `slip` | `slip` (or `fixedValue`) | `uniformFixedValue` from `Tambient`, or `slip` | `slip` | `slip` | `slip` | `slip` | `slip` |
 | ground, not coupled | `fixedValue` 0 | `fixedFluxPressure` | `zeroGradient` | `zeroGradient` | `kqRWallFunction` | `epsilonWallFunction` | `nutkAtmRoughWallFunction` | `compressible::alphatWallFunction` |
-| wall coupled to a solid | `fixedValue` 0 | `fixedFluxPressure` | `compressible::CFDHAMfluidTemperatureCoupledMixed` | `compressible::CFDHAMfluidMoistureCoupledImpermeable` (or `…CoupledMixed`) | `kqRWallFunction` | `epsilonWallFunction` | `nutkWallFunction` | `compressible::alphatWallFunction` |
+| building wall coupled to a solid | `fixedValue` 0 | `fixedFluxPressure` | `compressible::CFDHAMfluidTemperatureCoupledMixed` | `compressible::CFDHAMfluidMoistureCoupledImpermeable` (or `…CoupledMixed`) | `kqRWallFunction` | `epsilonWallFunction` | `nutkWallFunction` | `compressible::alphatWallFunction` |
+| ground coupled to a solid | as a building wall | | | | | | `nutkAtmRoughWallFunction` | |
 
-`p` is `calculated` and `gcr` `fixedValue` everywhere. The inlet profile parameters (`Uref`,
-`Zref`, `zDir`, `flowDir`, `z0`, `zGround`) usually come from an included `ABLConditions`.
+`p` is `calculated`, and `slip` on the sides and top; `gcr` is `fixedValue`, and `slip` on the
+sides and top. The inlet's `U`, `k` and `epsilon` take the profile (`Uref`, `Zref`, `zDir`,
+`flowDir`, `z0`, `zGround`), usually from an included `ABLConditions`. Other inlets the tutorials
+use: `turbulentIntensityKineticEnergyInlet` with `turbulentMixingLengthDissipationRateInlet`, and
+`readVectorField` for a meso-scale wind with `blending`.
 
 Solid:
 
@@ -104,35 +110,42 @@ Solid:
 |---|---|---|---|
 | coupled to `air` | `compressible::CFDHAMsolidTemperatureCoupledMixed` with `qrNbr qr; qsNbr qs;` (`none` without radiation) | `compressible::CFDHAMsolidMoistureCoupledImpermeable` (or `…CoupledMixed`) | `zeroGradient` |
 | building interior | `compressible::CFDHAMsolidTemperatureTransferCoeffInterior` with `hcoeff` and `Tamb` (the `T_room.dat` table) | `zeroGradient` | `zeroGradient` |
-| ground bottom | `fixedValue` | `zeroGradient` or `fixedValue` | `zeroGradient` |
+| ground bottom | `fixedValue` or `zeroGradient` | `zeroGradient` or `fixedValue` | `zeroGradient` |
 | cut sides | `zeroGradient` | `zeroGradient` | `zeroGradient` |
 
 The radiation region (`vegetation`, or `air` without trees):
 
 | Role | `T` (vegetation only) | `qr` | `qs` |
 |---|---|---|---|
-| every patch of `air`, by the same name | `mappedValue` *12* (`mapped` with `field`, `setAverage`, `average` *8*) | `greyDiffusiveRadiationViewFactor` with `emissivity` | `solarLoadRadiationViewFactor` with `albedo` |
-| `air_to_vegetation` | `mappedLeafTemperature` | the same | the same |
+| every patch of `air`, by the same name | `mappedValue` *12* (`mapped` with `field`, `setAverage`, `average` *8*) | `greyDiffusiveRadiationViewFactor` with `emissivityMode lookup; emissivity …; qro uniform 0;` | `solarLoadRadiationViewFactor` with `albedoMode lookup; albedo …; qso uniform 0;` |
+| `air_to_vegetation` | `mappedLeafTemperature` (`field Tl; setAverage 0; average 0; interpolationScheme cell;`) | the same | the same |
+
+The solid temperature conditions take `qr` and `qs` at the first iteration and then every 600 s
+of simulated time.
 
 ### Coupling rules
 
 1. **Patch types.** The CFDHAM conditions and `mappedValue` need a mapped patch;
-   `mappedLeafTemperature` needs `mappedInternal`.
+   `mappedLeafTemperature` needs `mappedInternal` *12*.
 2. **Pairs.** An air wall coupled to a solid is `mappedWall` with `neighbourRegion <solid>;
    neighbourPatch <solid patch>;` and the solid patch is `mappedWall` back to `air` (*8*:
    `sampleMode nearestPatchFace; sampleRegion; samplePatch;`). Faces are matched by nearest, so
    the two sides need not match face for face.
 3. **Radiation reaches the solids by name.** With a `vegetation` region, the solid temperature
    condition reads `qr` and `qs` from the **vegetation patch named like the air patch** it is
-   coupled to (`CFDHAMsolidTemperatureCoupledMixed…C:351`). So every air patch coupled to a solid
-   needs a patch of the same name in `vegetation`. Without trees, it reads them from the air patch.
-4. **Sky or surface.** In the radiation region, every patch that is neither `wall` nor
-   `mappedInternal` is **sky** (`viewFactorSky.C:1290-1296`): the domain sides and top are `patch`
-   or `mapped`, the ground and buildings `wall` or `mappedWall`. Every patch whose `qr` is
-   `greyDiffusiveRadiationViewFactor` needs an entry in the view factor dictionary.
-5. **The vegetation region's patches** are `mapped` (sides and top) or `mappedWall` (ground and
-   buildings) to the same-named air patch, and `air_to_vegetation` is `mappedInternal`
-   (`offsetMode normal; distance 0;`).
+   coupled to (`CFDHAMsolidTemperatureCoupledMixed…C:351`, and the same in
+   `CFDHAMsolidTemperatureTransferCoeff`). So every air patch coupled to a solid needs a patch of
+   the same name in `vegetation`. Without trees, it reads them from the air patch.
+4. **Sky or surface.** In the radiation region, every patch that is not a wall is **sky**: neither
+   `wall` nor `mappedInternal` *12* (`viewFactorSky.C:1294-1298`), not `wall` *8*. So the domain
+   sides and top are `patch` or `mapped` (`mappedPatch` *8*), the ground and buildings `wall` or
+   `mappedWall`. Patches with a fixed-value-derived `qr` take part in the view factors; the view
+   factor dictionary sets how coarse each is (`nFacesInCoarsestLevel`). A patch without an entry
+   isn't agglomerated: it keeps every face, which costs time and memory but doesn't stop the run.
+5. **The vegetation region's patches** are `mapped` (`mappedPatch` *8*, sides and top) or
+   `mappedWall` (ground and buildings) to the same-named air patch, and `air_to_vegetation` is
+   `mappedInternal` with `offsetMode normal; distance 0;` *12*, `mappedWall` with `sampleMode
+   nearestCell; sampleRegion air;` *8*.
 
 ## Meshing from STL surfaces
 
@@ -166,8 +179,8 @@ The chain from STL surfaces, *12*:
 | 15 | the ground region | | The same from a ground surface: patches `ground_to_air`, `bottom`, `sides`. |
 | 16 | leaf area density | `topoSet -region air`, then `setFields` | The cells inside the tree surface become a zone (`trees`), which gets `LAD`; `setFieldsDict` names the zone with `zone` *12*, `name` *8*. |
 
-*8* (the tutorial's `of-org_v8.0` tag): one extrusion layer, `setSet -batch`, `sampleMode
-nearestPatchFace`.
+*8* (the tutorial's `of-org_v8.0` tag): buildings only (no ground region), one extrusion layer,
+`setSet -batch`, `sampleMode nearestPatchFace`.
 
 **Names that must agree across the steps:**
 
@@ -214,8 +227,10 @@ Run per processor once the case is decomposed, in this order:
 | `solarRayTracingGen -region <rad>` | `sunViewCoeff`, `skyViewCoeff`, `sunskyMap`, `solarLoadFineFaces` | any of the above |
 
 `solarRayTracingGen` needs `kcLAIboundary` whenever the region list has a vegetation region, with
-one entry per sun position. *Unconfirmed*: whether a vegetation region without trees then needs
-`calcLAI` with `vegetationModel none` and a zero `LAD`.
+one entry per sun position. `calcLAI` reads the `<model>Coeffs` dictionary of the vegetation
+model (`calcLAI.C:566`), so `vegetationModel none` needs an empty `noneCoeffs`. *Unconfirmed*:
+whether a vegetation region without trees then runs with `calcLAI`, `vegetationModel none` and a
+zero `LAD`.
 
 ## Time and weather
 
@@ -244,10 +259,13 @@ time base.
 | region list | `constant/regionProperties` | `controlDict` `regions` and `regionSolvers` |
 | mapped patches | `sampleMode`, `sampleRegion`, `samplePatch` | `neighbourRegion`, `neighbourPatch`, `method` |
 | mapped value condition | `mapped` | `mappedValue` |
+| mapped patch type (sky sides of the radiation region) | `mappedPatch` | `mapped` |
+| canopy patch `air_to_vegetation` | `mappedWall`, `sampleMode nearestCell` | `mappedInternal` |
+| sky in the radiation region | any patch but `wall` | any patch but `wall` and `mappedInternal` |
 | sets and zones | `setSet -batch` | `topoSet` |
 | `setFieldsDict` zone | `name` | `zone` |
 | fv options | `system/<r>/fvOptions` | `system/<r>/fvConstraints`, `constant/<r>/fvModels` |
-| turbulence model keyword | `RASModel` | `model` |
+| turbulence model keyword | `RASModel` | `model` (`RASModel` still accepted) |
 | view factor dictionary | `constant/<r>/` | `system/<r>/` |
 | `blockMeshDict` variables | `$:dict.key` | `$!dict/key` |
 | snappyHexMesh point | `locationInMesh` | `insidePoint` (or `locationInMesh`) |
