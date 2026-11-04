@@ -189,9 +189,17 @@ umcf-cli run --case my-case \
 - Only those entries change, byte for byte: the other patches, the comments, the layout. A
   gzipped `boundary.gz` is compressed again.
 - **A new name follows the patch**: into its own `boundaryField` entry in each field file of the
-  region at the start time (an entry by group or pattern stays as it is), and into the mapped
-  patches of other regions that name it (`neighbourPatch`, `samplePatch`). A field file too big
-  to be read here keeps the old name, and the command says which (`patch.unread`).
+  region at the start time, and into the patches that name it as their partner
+  (`neighbourPatch`, `samplePatch`, `originalPatch`): a mapped patch of another region, the other
+  half of a `cyclic` in the same region. The command says what it couldn't follow: a field file
+  too big to be read here (`patch.unread`), one whose pattern entry or included text may name the
+  old name (`patch.pattern`), and `0.orig`, which preparing the case copies to `0`
+  (`patch.orig`). Other time directories, function objects, the view factor dictionary and the
+  meshing dictionaries aren't searched (`patch.elsewhere`).
+- **A name already used is refused**: another patch's, a patch group's, or an entry of a field
+  file (a group or pattern entry would take the renamed patch's entry over). So is a number.
+- Entries are written as given: `"entries": {"offset": [0, 0, 1], "distance": 0.5}` is
+  `offset (0 0 1); distance 0.5;`. A type umcfGui doesn't know is set, with a note (`patch.type`).
 - The type is set as given: the [case check](checks.md) then says what the fields' conditions
   need (a constraint type such as `empty` or `symmetry` wants the same condition type).
 - A decomposed case keeps the old patches in its `processor*` directories until it is

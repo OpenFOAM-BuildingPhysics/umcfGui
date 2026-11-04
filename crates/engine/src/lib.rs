@@ -368,10 +368,10 @@ impl Session {
     fn prune_selection(&mut self) {
         let Some(case) = self.opened.as_ref().map(|o| &o.case) else { return };
         self.selection.retain(|sel| match sel {
+            // A region whose patch list the model couldn't read keeps its selection.
             Sel::Patch { region, patch } => case
                 .region(region)
-                .and_then(|r| r.patches.as_ref())
-                .is_some_and(|ps| ps.iter().any(|p| p.name == *patch)),
+                .is_some_and(|r| r.patches.as_ref().is_none_or(|ps| ps.iter().any(|p| p.name == *patch))),
             Sel::Solid { .. } => true,
         });
     }

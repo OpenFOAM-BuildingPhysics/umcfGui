@@ -266,6 +266,9 @@ pub struct PatchReport {
     pub partners: Vec<String>,
     /// Field files too large to be read here: not renamed.
     pub unread: Vec<String>,
+    /// Field files with a pattern entry or text from elsewhere, which may name the patch by its
+    /// old name: not changed there.
+    pub indirect: Vec<String>,
 }
 
 /// What [`Case::set_bc`] couldn't do as asked, by patch.
@@ -967,9 +970,36 @@ impl Case {
         }
         if let Some(to) = change.name
             && to != patch
-            && patches.iter().any(|p| p.name == to)
         {
-            return Err(Error::Bc(format!("region `{region}` has a patch `{to}` already")));
+            if patches.iter().any(|p| p.name == to) {
+                return Err(Error::Bc(format!("region `{region}` has a patch `{to}` already")));
+            }
+            if patches.iter().any(|p| p.groups.iter().any(|g| g == to)) {
+                return Err(Error::Bc(format!("`{to}` is a patch group of region `{region}`")));
+            }
+            if to.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Error::Bc(format!("`{to}` is a number, not a patch name")));
+            }
+            // A field entry by that name (a group, a pattern, a leftover) would take the
+            // renamed patch's entry over, or merge with it.
+            let taken = self
+                .regions
+                .get(r)
+                .into_iter()
+                .flat_map(|reg| &reg.fields)
+                .find(|f| f.bcs.iter().flatten().any(|b| b.patch == to));
+            if let Some(f) = taken {
+                return Err(Error::Bc(format!("{} has an entry `{to}` already", f.path)));
+            }
+            let twice = self
+                .regions
+                .get(r)
+                .into_iter()
+                .flat_map(|reg| &reg.fields)
+                .find(|f| f.bcs.iter().flatten().filter(|b| b.patch == patch).count() > 1);
+            if let Some(f) = twice {
+                return Err(Error::Bc(format!("{} has two entries `{patch}`: keep one first", f.path)));
+            }
         }
         let mut report = PatchReport::default();
         let dir = umcf_foam_mesh::mesh_dir(region);
@@ -1002,6 +1032,11 @@ impl Case {
                 .iter()
                 .map(|f| {
                     let own = f.bcs.as_ref().is_some_and(|b| b.iter().any(|b| b.patch == patch));
+                    // A pattern or text from elsewhere may name it too: not renamed there.
+                    let maybe = f.indirect || f.bcs.iter().flatten().any(|b| b.pattern);
+                    if maybe && f.bcs.is_some() {
+                        report.indirect.push(f.path.clone());
+                    }
                     (f.name.clone(), f.path.clone(), f.bcs.is_some() && own)
                 })
                 .collect()
@@ -1035,18 +1070,21 @@ impl Case {
             .regions
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != r)
             .flat_map(|(i, reg)| {
+                let own = reg.name.clone();
                 reg.patches.iter().flatten().filter_map(move |p| {
                     let get =
                         |k: &str| p.params.iter().find(|(x, _)| x == k).map(|(_, v)| v.trim_matches('"').to_string());
-                    let nbr_region = get("neighbourRegion").or_else(|| get("sampleRegion"));
-                    let keys: Vec<(String, String)> = ["neighbourPatch", "samplePatch"]
+                    // Without a region the partner is in the patch's own region (cyclic,
+                    // nonConformal, a mapped patch within one region).
+                    let nbr_region = get("neighbourRegion").or_else(|| get("sampleRegion")).unwrap_or(own.clone());
+                    let keys: Vec<(String, String)> = ["neighbourPatch", "samplePatch", "originalPatch"]
                         .iter()
                         .filter(|k| get(k).as_deref() == Some(patch))
                         .map(|k| (k.to_string(), to.to_string()))
                         .collect();
-                    (nbr_region.as_deref() == Some(region) && !keys.is_empty()).then(|| (i, p.name.clone(), keys))
+                    let itself = i == r && p.name == patch;
+                    (nbr_region == region && !keys.is_empty() && !itself).then(|| (i, p.name.clone(), keys))
                 })
             })
             .collect();

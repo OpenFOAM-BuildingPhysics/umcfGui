@@ -383,6 +383,9 @@ pub fn boundary_patch_mut<'a>(
 
 /// The patches of a `boundary` file's bytes, as [`read_boundary`] reads them.
 pub fn parse_boundary_bytes(bytes: &[u8]) -> Result<Vec<Patch>> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return parse_boundary(&umcf_foam_field::gunzip(bytes, Limits::default().max_bytes)?);
+    }
     parse_boundary(bytes)
 }
 

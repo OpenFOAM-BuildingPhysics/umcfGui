@@ -210,6 +210,17 @@ pub(super) fn value_text(id: &str, v: &Value) -> Result<String, Error> {
     if v.is_number() || numbers {
         return Ok(format!("uniform {text}"));
     }
+    one_value(id, text)
+}
+
+/// OpenFOAM text for one entry value, as given (a number as is, a list as `(a b c)`): for
+/// entries that are not field values.
+pub(super) fn entry_text(id: &str, v: &Value) -> Result<String, Error> {
+    one_value(id, foam_text(id, v)?)
+}
+
+/// `text` checked to stay one value in the entry written around it.
+fn one_value(id: &str, text: String) -> Result<String, Error> {
     // The text goes into a dictionary entry: it must stay one value.
     let mut doc = umcf_foam_dict::Document::parse("").map_err(|e| Error::Failed(e.to_string()))?;
     let bad = || Error::Params(format!("{id}: `{text}` is not one OpenFOAM value"));

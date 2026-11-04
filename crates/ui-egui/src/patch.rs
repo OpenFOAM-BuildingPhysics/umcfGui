@@ -199,8 +199,8 @@ impl App {
         (ok, close)
     }
 
-    /// Runs `patch.set` with the card's parameters; the card stays open with the error if it
-    /// fails, and is filled again from the patches if it works.
+    /// Runs `patch.set` with the card's parameters; the card closes when it works, and stays open
+    /// with the error when it doesn't.
     pub(crate) fn set_patch(&mut self) {
         let single = selected(&self.session).len() == 1;
         let Some(form) = self.patch_form.clone() else { return };

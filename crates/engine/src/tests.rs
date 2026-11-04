@@ -1036,3 +1036,16 @@ fn patches_are_set_renamed_and_undone() {
         assert!(s.execute("patch.set", &bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn patch_entries_are_written_as_given() {
+    let mut s = session();
+    s.execute(
+        "patch.set",
+        &json!({"type": "mappedWall", "entries": {"neighbourRegion": "air", "offset": [0, 0, 1], "distance": 0.5}, "patches": [{"region": "air", "patch": "inlet"}]}),
+    )
+    .unwrap();
+    let p = s.case().unwrap().region("air").unwrap().patches.as_ref().unwrap().first().cloned().unwrap();
+    assert!(p.params.contains(&("offset".into(), "(0 0 1)".into())), "{:?}", p.params);
+    assert!(p.params.contains(&("distance".into(), "0.5".into())), "{:?}", p.params);
+}

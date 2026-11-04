@@ -999,3 +999,43 @@ fn a_patch_is_retyped_regrouped_and_renamed_everywhere_it_is_named() {
         .contains("can't be written")
     );
 }
+
+#[test]
+fn renames_keep_cyclic_partners_gzip_and_refuse_taken_names() {
+    use std::io::Write;
+    let b = "3\n(\n    left\n    {\n        type            cyclic;\n        inGroups        List<word> 1(periodic);\n        nFaces          1;\n        startFace       10;\n        neighbourPatch  right;\n    }\n    right\n    {\n        type            cyclic;\n        nFaces          1;\n        startFace       11;\n        neighbourPatch  left;\n    }\n    top\n    {\n        type            patch;\n        nFaces          2;\n        startFace       12;\n    }\n)\n";
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(format!("{}{b}", header("polyBoundaryMesh", "boundary")).as_bytes()).unwrap();
+    let fs = MemFs::new()
+        .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
+        .with("constant/air/polyMesh/boundary.gz", gz.finish().unwrap())
+        .with(
+            "0/air/T",
+            format!(
+                "{}internalField uniform 300;\nboundaryField\n{{\n    left {{ type cyclic; }}\n    right {{ type cyclic; }}\n    top {{ type zeroGradient; }}\n    leftover {{ type zeroGradient; }}\n}}\n",
+                header("volScalarField", "T")
+            ),
+        );
+    let mut c = Case::open(&fs).unwrap();
+    assert_eq!(c.region("air").unwrap().patches.as_ref().unwrap().len(), 3);
+    // The partner in the same region follows; the gzip file stays gzip.
+    let report = c.set_patch(&fs, "air", "left", &PatchChange { name: Some("west"), ..Default::default() }).unwrap();
+    assert_eq!(report.partners, ["air/right"]);
+    let bytes = c.file(&fs, "constant/air/polyMesh/boundary.gz").unwrap().unwrap();
+    assert!(bytes.starts_with(&[0x1f, 0x8b]));
+    let right = c.region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "right").cloned().unwrap();
+    assert!(right.params.iter().any(|(k, v)| k == "neighbourPatch" && v == "west"), "{:?}", right.params);
+    // Names already used by a group or a field entry are refused.
+    let e = |r: Result<PatchReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("periodic"), ..Default::default() }))
+            .contains("group")
+    );
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("leftover"), ..Default::default() }))
+            .contains("entry `leftover`")
+    );
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("42"), ..Default::default() })).contains("number")
+    );
+}

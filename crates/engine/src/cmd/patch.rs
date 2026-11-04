@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 use umcf_model::PatchChange;
 
-use super::bc::value_text;
+use super::bc::entry_text;
 use super::case::diagnostic;
 use super::scene::Sel;
 use crate::params::{Params, key};
@@ -20,6 +20,33 @@ pub(super) const SET: CommandSpec = CommandSpec {
     journal: true,
     undoable: true,
 };
+
+/// OpenFOAM's patch types (OpenFOAM-8 and -12), for a note on a type that is none of them.
+const KNOWN: &[&str] = &[
+    "patch",
+    "wall",
+    "empty",
+    "wedge",
+    "symmetry",
+    "symmetryPlane",
+    "cyclic",
+    "cyclicAMI",
+    "cyclicSlip",
+    "cyclicRepeatAMI",
+    "processor",
+    "processorCyclic",
+    "mapped",
+    "mappedPatch",
+    "mappedWall",
+    "mappedInternal",
+    "mappedExtrudedWall",
+    "nonConformalCyclic",
+    "nonConformalError",
+    "nonConformalProcessorCyclic",
+    "nonConformalMappedWall",
+    "mergedCyclic",
+    "internal",
+];
 
 /// The most entries one change takes.
 const MAX_ENTRIES: usize = 64;
@@ -63,7 +90,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             if matches!(k, "type" | "inGroups" | "nFaces" | "startFace") {
                 return Err(Error::Params(format!("{id}: `{k}` is not set as an entry")));
             }
-            entries.push((k.to_string(), value_text(id, v)?));
+            entries.push((k.to_string(), entry_text(id, v)?));
         }
     }
     if name.is_none() && kind.is_none() && groups.is_none() && entries.is_empty() {
@@ -78,20 +105,51 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let o = s.opened_mut()?;
     let mut found: Vec<Value> = Vec::new();
     let mut renamed = Vec::new();
+    let warn = |code: &str, path: &str, region: &str, patch: &str, message: &str| json!({ "level": "warning", "code": code, "path": path, "region": region, "patch": patch, "field": null, "message": message });
     for (region, patch) in &patches {
         let report = o.case.set_patch(o.fs.as_ref(), region, patch, &change)?;
-        for f in &report.unread {
-            found.push(json!({
-                "level": "warning",
-                "code": "patch.unread",
-                "path": f,
-                "region": region,
-                "patch": patch,
-                "field": null,
-                "message": "too large to be read here, so the patch's entry in it keeps the old name: rename it there",
-            }));
+        if name.is_some() {
+            for f in &report.unread {
+                found.push(warn(
+                    "patch.unread",
+                    f,
+                    region,
+                    patch,
+                    "too large to be read here: an entry for the patch in it keeps the old name",
+                ));
+            }
+            for f in &report.indirect {
+                found.push(warn("patch.pattern", f, region, patch, "has a pattern entry or text from elsewhere, which may name the patch by its old name: not changed there"));
+            }
         }
         renamed.extend(report.fields.iter().chain(&report.partners).cloned());
+    }
+    if let Some(to) = name {
+        if o.case.exists("0.orig") == Some(true) {
+            found.push(warn("patch.orig", "0.orig", "", to, "0.orig still names the patch by its old name, and preparing the case copies it to 0: rename it there too"));
+        }
+        found.push(json!({
+            "level": "info",
+            "code": "patch.elsewhere",
+            "path": "",
+            "region": null,
+            "patch": to,
+            "field": null,
+            "message": "other files may name the patch by its old name: time directories other than the start, function objects in controlDict, viewFactorsDict, the meshing dictionaries",
+        }));
+    }
+    if let Some(k) = kind
+        && !KNOWN.contains(&k)
+    {
+        found.push(json!({
+            "level": "info",
+            "code": "patch.type",
+            "path": "",
+            "region": null,
+            "patch": null,
+            "field": null,
+            "message": format!("`{k}` is not a patch type umcfGui knows: check its spelling"),
+        }));
     }
     if o.case.processors > 0 {
         found.push(json!({
