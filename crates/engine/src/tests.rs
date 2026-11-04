@@ -410,3 +410,58 @@ fn opening_from_disk_protects_unsaved_changes() {
     let _ = std::fs::remove_dir_all(a);
     let _ = std::fs::remove_dir_all(b);
 }
+
+/// A unit-cube mesh: 8 points, 6 boundary faces of one cell, all in one patch `inlet`.
+fn cube_mesh(fs: &mut MemFs, dir: &str) {
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    fs.insert(
+        &format!("{dir}/points"),
+        format!(
+            "{}8\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n)\n",
+            h("vectorField")
+        ),
+    );
+    fs.insert(
+        &format!("{dir}/faces"),
+        format!("{}6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(3 7 6 2)\n4(0 4 7 3)\n4(1 2 6 5)\n)\n", h("faceList")),
+    );
+    fs.insert(&format!("{dir}/owner"), format!("{}6\n(\n0 0 0 0 0 0\n)\n", h("labelList")));
+    fs.insert(&format!("{dir}/neighbour"), format!("{}0\n(\n)\n", h("labelList")));
+    fs.insert(
+        &format!("{dir}/boundary"),
+        format!(
+            "{}1\n(\n    inlet\n    {{\n        type patch;\n        nFaces 6;\n        startFace 0;\n    }}\n)\n",
+            h("polyBoundaryMesh")
+        ),
+    );
+}
+
+/// A region whose mesh doesn't read is that region's error; the next region is still checked.
+#[test]
+fn mesh_check_goes_on_after_an_unreadable_region() {
+    assert_eq!(Session::new().enabled("mesh.check"), Err("no case is open".to_string()));
+    let mut fs = fs();
+    fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));
+    // air: only its boundary file (unreadable); wall: a whole cube.
+    cube_mesh(&mut fs, "constant/wall/polyMesh");
+    fs.insert(
+        "0/wall/Ts",
+        "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\ninternalField uniform 300;\nboundaryField\n{\n    inlet { type zeroGradient; }\n}\n",
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let out = s.execute("mesh.check", &Value::Null).unwrap();
+    assert_eq!(out.data["errors"], json!(1), "{}", out.data);
+    let regions = out.data["regions"].as_array().unwrap();
+    assert_eq!(regions.len(), 2);
+    assert_eq!(regions[0]["region"], "air");
+    assert!(regions[0]["quality"].is_null());
+    assert_eq!(regions[0]["diagnostics"][0]["code"], "mesh.unreadable");
+    assert_eq!(regions[1]["region"], "wall");
+    assert_eq!(regions[1]["quality"]["cells"], json!(1));
+    assert!(regions[1]["diagnostics"].as_array().unwrap().is_empty());
+    // One region by name; an unknown one is a parameter error.
+    let one = s.execute("mesh.check", &json!({"region": "wall"})).unwrap();
+    assert_eq!(one.data["errors"], json!(0));
+    assert!(matches!(s.execute("mesh.check", &json!({"region": "nope"})), Err(Error::Params(_))));
+}
