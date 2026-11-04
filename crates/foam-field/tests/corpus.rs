@@ -17,8 +17,15 @@ use umcf_foam_field::{Field, Format, Limits, Value, read_header, times};
 
 const LIMIT: u64 = 8 << 30;
 
-/// The same file content, gzip decompressed.
+/// The largest file (also decompressed) the rewrite check takes.
+const REWRITE_LIMIT: u64 = 256 << 20;
+
+/// The same compression, and the same content once decompressed (compressors may differ).
 fn same(a: &[u8], b: &[u8]) -> bool {
+    let gz = |x: &[u8]| x.starts_with(&[0x1f, 0x8b]);
+    if gz(a) != gz(b) {
+        return false;
+    }
     let plain =
         |x: &[u8]| if x.starts_with(&[0x1f, 0x8b]) { umcf_foam_field::gunzip(x, LIMIT).ok() } else { Some(x.to_vec()) };
     a == b || matches!((plain(a), plain(b)), (Some(x), Some(y)) if x == y)
@@ -156,39 +163,34 @@ fn reference_case_fields() {
                     };
                     files += 1;
                     values += f.lists().iter().map(|l| l.len()).sum::<usize>();
-                    // Unedited, a rewrite gives the file back byte for byte (`T` or `T.gz`; files
-                    // over 256 MB are left out).
-                    let mut read = None;
+                    // Unedited, a rewrite gives each file back byte for byte, `T` and `T.gz` when both
+                    // are there (files over 256 MB, also decompressed, are left out).
+                    let small = Limits { max_bytes: REWRITE_LIMIT, ..limits };
+                    let mut found = false;
                     for path in [rel.clone(), format!("{rel}.gz")] {
-                        match fs.read(&path, 256 << 20) {
-                            Ok(Some(bytes)) => {
-                                read = Some(Ok((path, bytes)));
-                                break;
-                            }
-                            Ok(None) => {}
+                        let bytes = match fs.read(&path, REWRITE_LIMIT) {
+                            Ok(Some(b)) => b,
+                            Ok(None) => continue,
                             Err(umcf_core::FsError::TooLarge { .. }) => {
-                                read = Some(Err(None));
-                                break;
+                                found = true;
+                                continue;
                             }
                             Err(e) => {
-                                read = Some(Err(Some(format!("{case}/{path}: can't be read: {e}"))));
-                                break;
+                                failures.push(format!("{case}/{path}: can't be read: {e}"));
+                                found = true;
+                                continue;
                             }
+                        };
+                        found = true;
+                        match umcf_foam_field::rewrite(&bytes, &small, |_| Ok(())) {
+                            Ok(out) if same(&out, &bytes) => rewritten += 1,
+                            Ok(_) => failures.push(format!("{case}/{path}: rewritten with changes")),
+                            Err(umcf_foam_field::Error::TooLarge { .. }) => {}
+                            Err(e) => failures.push(format!("{case}/{path}: can't be rewritten: {e}")),
                         }
                     }
-                    match read {
-                        Some(Ok((path, bytes))) => {
-                            rewritten += 1;
-                            match umcf_foam_field::rewrite(&bytes, &limits, |_| Ok(())) {
-                                // A gzip file is compared decompressed: compressors may differ.
-                                Ok(out) if same(&out, &bytes) => {}
-                                Ok(_) => failures.push(format!("{case}/{path}: rewritten with changes")),
-                                Err(e) => failures.push(format!("{case}/{path}: can't be rewritten: {e}")),
-                            }
-                        }
-                        Some(Err(None)) => {}
-                        Some(Err(Some(e))) => failures.push(e),
-                        None => failures.push(format!("{case}/{rel}: read as a field, but not found to rewrite")),
+                    if !found {
+                        failures.push(format!("{case}/{rel}: read as a field, but not found to rewrite"));
                     }
                     let Some((cells, patches)) = &sizes else { continue };
                     if !f.class().unwrap_or("").starts_with("vol") {
