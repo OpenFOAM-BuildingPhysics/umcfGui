@@ -320,7 +320,15 @@ pub fn parse_value(src: &str, limits: &Limits) -> Result<Vec<Node>, Error> {
         if t.kind == Kind::Punct(b';') {
             return Err(Error::Unexpected { found: ";".into(), expected: "a value (without `;`)", at: p.at(t) });
         }
-        out.push(p.node(t)?);
+        let node = p.node(t)?;
+        let is_dict = matches!(node, Node::Dict { .. });
+        out.push(node);
+        // An entry whose value is a dictionary ends at its `}`: anything after it would be read
+        // back as another entry.
+        if is_dict && let (_, Some(next)) = p.peek() {
+            let found = src.get(next.start..next.end).unwrap_or("").to_string();
+            return Err(Error::Unexpected { found, expected: "nothing after a dictionary's `}`", at: p.at(next) });
+        }
     }
     Ok(out)
 }

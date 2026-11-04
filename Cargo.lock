@@ -159,10 +159,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "umcf-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "umcf-engine",
+]
+
+[[package]]
 name = "umcf-core"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "umcf-engine"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "umcf-core",
+ "umcf-foam-dict",
+ "umcf-model",
+ "umcf-schema",
+ "umcf-validate",
 ]
 
 [[package]]

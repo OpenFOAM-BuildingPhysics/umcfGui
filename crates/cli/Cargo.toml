@@ -1,0 +1,18 @@
+[package]
+name = "umcf-cli"
+description = "The headless urbanMicroclimateFoam case tool: check a case, run commands on it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "umcf-cli"
+path = "src/main.rs"
+
+[dependencies]
+umcf-engine.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
