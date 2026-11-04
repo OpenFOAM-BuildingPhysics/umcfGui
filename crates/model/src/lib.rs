@@ -68,6 +68,10 @@ pub enum Error {
     IsDict(String),
     #[error("{0} already has 1000 backups")]
     BackupsFull(String),
+    #[error("{path}: {source}")]
+    Field { path: String, source: umcf_foam_field::Error },
+    #[error("{0}")]
+    Bc(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
 }
@@ -191,6 +195,10 @@ struct DiskState {
     /// Files that are not dictionaries, written through [`Case::put_file`]: as this session
     /// last saved them.
     raw: BTreeMap<String, Option<Fingerprint>>,
+    /// Files that are not dictionaries, as they were on disk when this session first saved a
+    /// command's version of them. A case from before that command (an undo snapshot) has them
+    /// so, even after the save.
+    originals: BTreeMap<String, Original>,
     /// `(backup dir, file)` pairs already backed up: a file is backed up once per session.
     backed_up: std::collections::BTreeSet<(String, String)>,
 }
@@ -210,6 +218,14 @@ struct RawFile {
     /// The file on disk this one was made from (`None`: there was none). Saving over that file,
     /// or over what this session last saved there, is not a conflict.
     base: Option<Fingerprint>,
+}
+
+/// A file as it was before this session's first save over it.
+#[derive(Debug, Clone)]
+struct Original {
+    /// `None`: there was no file.
+    bytes: Option<Arc<Vec<u8>>>,
+    fingerprint: Option<Fingerprint>,
 }
 
 /// What [`Case::save`] writes for one file.
@@ -464,6 +480,7 @@ impl Case {
         let disk = Arc::new(std::sync::Mutex::new(DiskState {
             files: disk,
             raw: BTreeMap::new(),
+            originals: BTreeMap::new(),
             backed_up: Default::default(),
         }));
         Ok(Case {
@@ -588,7 +605,7 @@ impl Case {
 
     /// Dictionaries whose text differs from what is on disk (as read or last saved). Files
     /// never edited are skipped without serialising them.
-    pub fn changed(&self) -> Vec<&str> {
+    pub fn changed(&self) -> Vec<String> {
         let disk = lock(&self.disk);
         let mut out: Vec<&str> = self
             .files
@@ -614,8 +631,16 @@ impl Case {
                 })
                 .map(|(rel, _)| rel.as_str()),
         );
+        // Files a command put that this case doesn't have (it is from before that command):
+        // changed when a save wrote the command's version over the original.
+        out.extend(disk.originals.iter().filter(|(rel, _)| !self.raw.contains_key(rel.as_str())).filter_map(
+            |(rel, o)| match (&o.bytes, disk.raw.get(rel.as_str()).copied().flatten()) {
+                (Some(_), Some(saved)) if o.fingerprint != Some(saved) => Some(rel.as_str()),
+                _ => None,
+            },
+        ));
         out.sort_unstable();
-        out
+        out.into_iter().map(str::to_string).collect()
     }
 
     /// A file that is not a dictionary (a surface in `constant/triSurface`): its bytes as the
@@ -625,6 +650,10 @@ impl Case {
         if let Some(f) = self.raw.get(rel) {
             return Ok(Some(Arc::clone(&f.bytes)));
         }
+        // From before a command whose version was saved: as it was then.
+        if let Some((original, _)) = self.saved_over(rel) {
+            return Ok(Some(original));
+        }
         Ok(fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new))
     }
 
@@ -633,6 +662,22 @@ impl Case {
     /// `Arc` until the file is put again: a cheap test of whether it changed.
     pub fn put_bytes(&self, rel: &str) -> Option<&Arc<Vec<u8>>> {
         self.raw.get(rel).map(|f| &f.bytes)
+    }
+
+    /// The file as it was before this session saved a command's version over it, when this
+    /// case doesn't hold a version (it is from before that command), there was a file, and the
+    /// disk still has the command's version.
+    fn saved_over(&self, rel: &str) -> Option<(Arc<Vec<u8>>, Fingerprint)> {
+        if self.raw.contains_key(rel) {
+            return None;
+        }
+        let disk = lock(&self.disk);
+        let saved = disk.raw.get(rel).copied().flatten()?;
+        let o = disk.originals.get(rel)?;
+        match (&o.bytes, o.fingerprint) {
+            (Some(b), Some(f)) if f != saved => Some((Arc::clone(b), f)),
+            _ => None,
+        }
     }
 
     /// The files [`Case::put_file`] wrote (saved or not), by path.
@@ -645,6 +690,32 @@ impl Case {
     /// [`Case::file`] returned); the save refuses if that changed in the meantime. At most
     /// [`MAX_FILE_BYTES`].
     pub fn put_file(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
+        self.puttable(rel)?;
+        let base = match self.raw.get(rel) {
+            Some(f) => f.base,
+            None => match self.saved_over(rel) {
+                Some((_, f)) => Some(f),
+                None => fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b)),
+            },
+        };
+        self.put_based(rel, bytes, base)
+    }
+
+    /// [`Case::put_file`] with the fingerprint of the file the new bytes were made from.
+    fn put_based(&mut self, rel: &str, bytes: Vec<u8>, base: Option<Fingerprint>) -> Result<()> {
+        self.puttable(rel)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(
+                FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
+            );
+        }
+        let fingerprint = fingerprint(&bytes);
+        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
+        Ok(())
+    }
+
+    /// Whether a command may put a file at `rel`: a path inside the case, not a dictionary.
+    fn puttable(&self, rel: &str) -> Result<()> {
         let bad = rel.is_empty()
             || rel.starts_with('/')
             || rel.contains('\\')
@@ -656,18 +727,117 @@ impl Case {
         if self.files.contains_key(self.resolve(rel)) {
             return Err(Error::IsDict(rel.to_string()));
         }
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(
-                FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
-            );
-        }
-        let base = match self.raw.get(rel) {
-            Some(f) => f.base,
-            None => fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b)),
-        };
-        let fingerprint = fingerprint(&bytes);
-        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
         Ok(())
+    }
+
+    /// Sets the boundary condition of `patches` in a field of the start time. A patch whose own
+    /// entry already has type `kind` keeps it, with `entries` set in it (its other keys,
+    /// comments and `#include`s stay). Otherwise its entry becomes `{ type <kind>; <key>
+    /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
+    /// or pattern entry stays for the other patches it covers. Nothing else in the file
+    /// changes, byte for byte: not the other entries, the comments, nor the data lists.
+    /// [`Case::save`] writes it. Returns the patches whose replaced entry brought in text from
+    /// elsewhere (an `#include`, a `$macro`): that is gone from them now.
+    pub fn set_bc(
+        &mut self,
+        fs: &dyn CaseFs,
+        region: &str,
+        field: &str,
+        patches: &[&str],
+        kind: &str,
+        entries: &[(&str, &str)],
+    ) -> Result<Vec<String>> {
+        let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
+        let r = self
+            .regions
+            .iter()
+            .position(|r| r.name == region)
+            .ok_or_else(|| Error::Bc(format!("the case has no region `{region}`")))?;
+        let info = self
+            .regions
+            .get(r)
+            .and_then(|r| r.field(field))
+            .ok_or_else(|| Error::Bc(format!("there is no field {which} at the start time")))?;
+        if info.bcs.is_none() {
+            return Err(Error::Bc(format!("{}: too large to be read here, so it isn't edited", info.path)));
+        }
+        if !info.boundary_field {
+            return Err(Error::Bc(format!(
+                "{}: its boundaryField comes from elsewhere (a macro or an #include): edit that file",
+                info.path
+            )));
+        }
+        // The placeholder of a field's data lists can't be written by an edit: the list would be
+        // spliced in there.
+        let words =
+            std::iter::once(kind).chain(patches.iter().copied()).chain(entries.iter().flat_map(|(k, v)| [*k, *v]));
+        if let Some(w) = words.into_iter().find(|w| w.contains(umcf_foam_field::PLACEHOLDER)) {
+            return Err(Error::Bc(format!("`{w}` can't be written into a field file")));
+        }
+        let path = info.path.clone();
+        let name = info.name.clone();
+        let mut body = format!("{{ type {kind};");
+        for (k, v) in entries {
+            body.push_str(&format!(" {k} {v};"));
+        }
+        body.push_str(" }");
+        let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
+        // Read once: the bytes edited are the ones the save will check the disk against.
+        let (bytes, base) = match (self.raw.get(&path), self.saved_over(&path)) {
+            (Some(f), _) => (Some(Arc::clone(&f.bytes)), f.base),
+            (None, Some((b, f))) => (Some(b), Some(f)),
+            (None, None) => {
+                let b = fs.read(&path, MAX_FILE_BYTES)?.map(Arc::new);
+                let f = b.as_deref().map(|b| fingerprint(b));
+                (b, f)
+            }
+        };
+        let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
+        // Patches whose replaced entry brought in text from elsewhere (`#include`, `$macro`).
+        let mut dropped = Vec::new();
+        let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
+            for p in patches {
+                let indirect_value = doc
+                    .get(&["boundaryField", p])
+                    .filter(|e| e.dict().is_none())
+                    .and_then(umcf_foam_dict::Entry::value_text)
+                    .is_some_and(|v| v.trim_start().starts_with(['$', '#']));
+                let own = doc.get(&["boundaryField", p]).and_then(umcf_foam_dict::Entry::dict);
+                let visible = own.and_then(|d| word(d, "type"));
+                // An entry whose type comes from an `#include` or a `$macro` in it.
+                let from_elsewhere = own.is_some_and(|d| {
+                    d.items.iter().any(|i| {
+                        matches!(i, umcf_foam_dict::Item::Directive { .. } | umcf_foam_dict::Item::Macro { .. })
+                    })
+                });
+                if visible.as_deref() == Some(kind) {
+                    for (k, v) in entries {
+                        doc.set(&["boundaryField", p, k], v)?;
+                    }
+                } else if visible.is_none() && from_elsewhere {
+                    // Kept, with the type and entries set after what it brings in (the last
+                    // one read wins).
+                    doc.set(&["boundaryField", p, "type"], kind)?;
+                    for (k, v) in entries {
+                        doc.set(&["boundaryField", p, k], v)?;
+                    }
+                } else {
+                    if from_elsewhere || indirect_value {
+                        dropped.push(p.to_string());
+                    }
+                    doc.set(&["boundaryField", p], &body)?;
+                }
+            }
+            Ok(())
+        })
+        .map_err(|source| Error::Field { path: path.clone(), source })?;
+        let parsed = Field::parse_with(&out, &limits).map_err(|source| Error::Field { path: path.clone(), source })?;
+        let summary = summarise(name, path.clone(), &parsed);
+        self.put_based(&path, out, base)?;
+        if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
+            *f = summary;
+        }
+        Ok(dropped)
     }
 
     /// Writes the changed dictionaries and returns their paths.
@@ -689,7 +859,7 @@ impl Case {
                 return Err(Error::BadBackup(dir.to_string()));
             }
         }
-        let changed: Vec<String> = self.changed().into_iter().map(str::to_string).collect();
+        let changed = self.changed();
         // 1. Check them all before writing anything.
         let mut plan = Vec::new();
         for rel in changed {
@@ -721,6 +891,17 @@ impl Case {
                     on_disk.map(Arc::new),
                     MAX_FILE_BYTES,
                 ));
+            } else if let Some((original, fp)) = self.saved_over(&rel) {
+                // An undo past a saved command: the original goes back.
+                let saved = lock(&self.disk).raw.get(&rel).copied().flatten();
+                let on_disk = match fs.read(&rel, MAX_FILE_BYTES) {
+                    Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
+                    r => r?,
+                };
+                if on_disk.as_deref().map(fingerprint) != saved {
+                    return Err(Error::Conflict { path: rel });
+                }
+                plan.push((rel, Pending::Raw(original, fp), on_disk.map(Arc::new), MAX_FILE_BYTES));
             }
         }
         // 2. Backups: once per file and session (backup directory).
@@ -783,7 +964,15 @@ impl Case {
                     lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: text, doc });
                 }
                 Pending::Raw(_, fp) => {
-                    lock(&self.disk).raw.insert(rel.clone(), Some(fp));
+                    let mut disk = lock(&self.disk);
+                    // What the save replaced, for a case from before the command: kept unless it
+                    // is what this session last saved there (then the original is older).
+                    let replaced = original.as_deref().map(|b| fingerprint(b));
+                    let ours = disk.raw.get(&rel).copied().flatten();
+                    if ours.is_none() || ours != replaced {
+                        disk.originals.insert(rel.clone(), Original { bytes: original.clone(), fingerprint: replaced });
+                    }
+                    disk.raw.insert(rel.clone(), Some(fp));
                 }
             }
             saved.push(rel);

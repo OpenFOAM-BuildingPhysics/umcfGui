@@ -19,6 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
+| `--open <id>` | Opens a command's card at the start, as its ribbon button does (`--open bc.set`) |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
@@ -56,15 +57,36 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   nearest the marker are shown, with the number left out on each side.
 
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
-check. Escape closes the parameter card, the results and the search.
+check. Escape closes the parameter card, the condition card, the results and the search.
+
+## Boundary conditions
+
+Select the patches in the view or the browser (Ctrl+click adds one), then *Set condition* on the
+*Boundary conditions* tab. The card shows:
+
+- the **field**: the fields every selected patch's region has at the start time, `U`, `T`,
+  `p_rgh`, `p` and the turbulence fields first;
+- the **type**, typed or picked from the suggestions under it: OpenFOAM's common types and the
+  solver's own for the field (scalar or vector) and the case's OpenFOAM version, from the
+  [catalog](../solver-coverage.md). Any other type can be typed; the case check judges it;
+- the **value** (`uniform 300`, `uniform (2 0 0)`), and other entries, one `key value` per line
+  (`inletValue uniform 0`);
+- what each patch has **now**, and whether the entries already there stay (the same type) or the
+  patch gets a new entry.
+
+*Set* runs [`bc.set`](fields.md#setting-boundary-conditions) for the selected patches. It is one
+edit in the history, undone with Ctrl+Z, and the results card lists what the case check finds
+about the new conditions.
+
+![The condition card for two patches of the 3×3 case's air region](../images/bc-card.png)
 
 ## Limits
 
 - The 3D view is drawn by the CPU renderer, at the window's resolution (at half of it while the
   view turns). It keeps up with surfaces and meshes of a few hundred thousand boundary faces;
   a GPU view comes later.
-- A command's parameters are typed as JSON; forms for them come with the commands that need
-  them most (boundary conditions, meshing).
+- A command's parameters are typed as JSON, apart from boundary conditions, which have a card
+  of their own; forms for the others come with meshing.
 - Opening a large case, reading a mesh and running a check happen while the window waits.
 - The window reads the case's files when it needs them, not when they change. An STL copied
   into `constant/triSurface` shows in the browser after the next command; a file changed outside

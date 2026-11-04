@@ -19,7 +19,7 @@
 mod scan;
 pub mod times;
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use umcf_foam_dict::{Document, Entry, Node};
 
@@ -396,6 +396,74 @@ impl Field {
     pub fn lists(&self) -> &[ListData] {
         &self.lists
     }
+}
+
+/// The text every placeholder of a list starts with while a file is edited: an edit must not
+/// write it (see [`rewrite`]).
+pub const PLACEHOLDER: &str = "__umcfList";
+
+/// Rewrites a field file with `edit` applied to its dictionary (a boundary condition changed,
+/// say), keeping every byte the edit doesn't touch: the lists go back exactly as they were
+/// (ASCII or binary). A file whose text wouldn't come back byte for byte unedited is refused,
+/// so an edit can never change it anywhere else. A gzip file is compared and edited
+/// decompressed and compressed again: its text is kept byte for byte, its compressed bytes
+/// generally not.
+pub fn rewrite(bytes: &[u8], limits: &Limits, edit: impl FnOnce(&mut Document) -> Result<()>) -> Result<Vec<u8>> {
+    if bytes.starts_with(&GZIP_MAGIC) {
+        let raw = gunzip(bytes, limits.max_bytes)?;
+        let out = rewrite_plain(&raw, limits, edit)?;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&out).map_err(|e| Error::Gzip(e.to_string()))?;
+        return gz.finish().map_err(|e| Error::Gzip(e.to_string()));
+    }
+    rewrite_plain(bytes, limits, edit)
+}
+
+fn rewrite_plain(bytes: &[u8], limits: &Limits, edit: impl FnOnce(&mut Document) -> Result<()>) -> Result<Vec<u8>> {
+    let header = read_header(bytes)?;
+    let scanned = scan::scan(bytes, header.format == Format::Binary, header.arch, limits)?;
+    let mut doc = Document::parse_bytes(&scanned.text)?;
+    scanned.tag.check(&doc, scanned.lists.len())?;
+    if splice(bytes, &doc.to_string(), &scanned)? != bytes {
+        return Err(Error::Unsupported("a file that can't be written back unchanged, so it isn't edited".to_string()));
+    }
+    edit(&mut doc)?;
+    splice(bytes, &doc.to_string(), &scanned)
+}
+
+/// The dictionary text with each placeholder replaced by its list's bytes from `input`.
+fn splice(input: &[u8], text: &str, scanned: &scan::Scanned) -> Result<Vec<u8>> {
+    let text = text.as_bytes();
+    let prefix = scanned.tag.prefix().as_bytes();
+    let mut out = Vec::with_capacity(input.len());
+    let mut used = vec![false; scanned.spans.len()];
+    let mut i = 0;
+    while let Some(at) = scan::find(text, i, prefix) {
+        let digits = text.get(at + prefix.len()..).map_or(0, |r| r.iter().take_while(|b| b.is_ascii_digit()).count());
+        let word = text.get(at..at + prefix.len() + digits).and_then(|w| std::str::from_utf8(w).ok()).unwrap_or("");
+        let bad = || Error::Unsupported(format!("`{word}` in a value: the placeholder of a list"));
+        let k = scanned.tag.index(word).ok_or_else(bad)?;
+        let span = scanned.spans.get(k).copied().ok_or_else(bad)?;
+        match used.get_mut(k) {
+            Some(u) if !*u => *u = true,
+            _ => return Err(bad()),
+        }
+        let before = text.get(i..at).unwrap_or(&[]);
+        // After `nonuniform` the scanner wrote one space for the whitespace that was there.
+        let (before, from) = match before.strip_suffix(b" ") {
+            Some(b) if span.lead < span.start => (b, span.lead),
+            _ => (before, span.start),
+        };
+        out.extend_from_slice(before);
+        out.extend_from_slice(input.get(from..span.end).ok_or_else(bad)?);
+        // And a space after the list.
+        i = at + word.len();
+        if text.get(i) == Some(&b' ') {
+            i += 1;
+        }
+    }
+    out.extend_from_slice(text.get(i..).unwrap_or(&[]));
+    Ok(out)
 }
 
 fn numbers(n: &Node) -> Option<Vec<f64>> {

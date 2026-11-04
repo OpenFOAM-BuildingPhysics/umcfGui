@@ -450,3 +450,83 @@ fn long_bad_words_are_errors() {
     let long = format!("{h}internalField nonuniform List<scalar> 1(1.{});\n", "0".repeat(200));
     assert!(Field::parse(long.as_bytes()).is_ok(), "a long valid number still reads (fast path)");
 }
+
+#[test]
+fn rewriting_keeps_every_byte_it_does_not_edit() {
+    let none = |_: &mut Document| Ok(());
+    let h = header("ascii", "volScalarField", "");
+    let mut inputs: Vec<Vec<u8>> = vec![
+        format!(
+            "{h}dimensions      [0 0 0 1 0 0 0];\n\ninternalField   nonuniform List<scalar> \n4\n(\n290\n290.5\n-1e-3\n3e+02\n)\n;\n\n{BOUNDARY}"
+        )
+        .into_bytes(),
+        format!("{h}internalField nonuniform\tList<scalar>   2(1 2)  ;\nboundaryField {{ a {{ type fixedValue; value nonuniform 1(3); }} }}\n").into_bytes(),
+        format!("{h}2\n(\nheating\n{{\n    type cellZone;\n    cellLabels      List<label> 3(4 7 9);\n}}\n)\n").into_bytes(),
+    ];
+    for big_endian in [false, true] {
+        let arch = Arch { big_endian, label_bytes: 4, scalar_bytes: 8 };
+        let mut b = binary_field(arch, Kind::Vector, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        b.extend_from_slice(b"boundaryField\n{\n    ground { type fixedValue; value uniform 300; }\n}\n");
+        inputs.push(b);
+    }
+    for input in &inputs {
+        assert_eq!(rewrite(input, &Limits::default(), none).unwrap(), *input, "{}", String::from_utf8_lossy(input));
+    }
+    // An edit changes its entry only.
+    let input = inputs.first().unwrap();
+    let out = rewrite(input, &Limits::default(), |d| {
+        d.set(&["boundaryField", "top"], "{ type fixedValue; value uniform 290; }").map_err(Error::from)
+    })
+    .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let before = String::from_utf8_lossy(input);
+    assert!(text.starts_with(before.split("    top").next().unwrap()), "{text}");
+    assert!(text.contains("nonuniform List<scalar> \n4\n(\n290\n290.5\n-1e-3\n3e+02\n)\n;"), "{text}");
+    assert!(
+        text.contains("value nonuniform List<scalar> 2(300 301);")
+            || text.contains("value           nonuniform List<scalar> 2(300 301);"),
+        "{text}"
+    );
+    let f = Field::parse(text.as_bytes()).unwrap();
+    assert_eq!(f.patch_type("top").as_deref(), Some("fixedValue"));
+    assert_eq!(f.patch_value("top", "value"), Some(Value::Uniform(vec![290.0])));
+    assert_eq!(f.lists().len(), 2);
+    // A binary file keeps its data byte for byte.
+    let binary = inputs.last().unwrap();
+    let out = rewrite(binary, &Limits::default(), |d| {
+        d.set(&["boundaryField", "ground"], "{ type zeroGradient; }").map_err(Error::from)
+    })
+    .unwrap();
+    let f = Field::parse(&out).unwrap();
+    assert_eq!(f.lists().len(), 1);
+    let Some(Value::List(l)) = f.internal() else { panic!() };
+    assert_eq!(l.as_flat().unwrap(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(out.get(..binary.len() - 60), binary.get(..binary.len() - 60));
+    assert_eq!(f.patch_type("ground").as_deref(), Some("zeroGradient"));
+}
+
+#[test]
+fn rewriting_gzip_and_refusing_placeholders() {
+    let src = format!(
+        "{}internalField nonuniform List<scalar> 3(1 2 3);\nboundaryField {{ }}\n",
+        header("ascii", "volScalarField", "")
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(src.as_bytes()).unwrap();
+    let gz = gz.finish().unwrap();
+    let out = rewrite(&gz, &Limits::default(), |d| {
+        d.set(&["boundaryField", "a"], "{ type zeroGradient; }").map_err(Error::from)
+    })
+    .unwrap();
+    assert!(out.starts_with(&[0x1f, 0x8b]));
+    let f = Field::parse(&out).unwrap();
+    assert_eq!(f.patch_type("a").as_deref(), Some("zeroGradient"));
+    assert_eq!(f.lists().len(), 1);
+    // A value naming a list's placeholder would copy the list into it: refused.
+    let tag = scan::Tag::for_input(src.as_bytes());
+    let word = tag.word(0);
+    let e = rewrite(src.as_bytes(), &Limits::default(), |d| {
+        d.set(&["boundaryField", "a"], &format!("{{ type fixedValue; value {word}; }}")).map_err(Error::from)
+    });
+    assert!(matches!(e, Err(Error::Unsupported(_))), "{e:?}");
+}

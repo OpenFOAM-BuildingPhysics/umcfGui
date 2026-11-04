@@ -146,6 +146,7 @@ bad arguments.
 | `scene.snapshot` | Draws the case in 3D into a PNG image (`png`, base64): `regions`, `surfaces`, `view`, `azimuth`, `elevation`, `zoom`, `width`, `height`, `edges`, `colour_by`, `reload` ([3D scene](scene.md#snapshots)) |
 | `select.pick` | Selects the patch or surface region under a `pixel` of that image, or along a `ray`, and lists everything under it: `mode` (`replace`, `add`, `toggle`, `none`), `depth`, and the snapshot's parameters ([Picking](scene.md#picking)) |
 | `select.set`, `select.clear` | Sets the selection from `items` (`{"region", "patch"}`, `{"surface", "solid"}`) with `mode` (`replace`, `add`, `remove`), or empties it |
+| `bc.set` | Sets the [boundary condition](fields.md#setting-boundary-conditions) of patches in a field of the start time: `field`, `type` (both required), `value` (`300` is `uniform 300`, `[2, 0, 0]` is `uniform (2 0 0)`, or OpenFOAM text), `entries` (other keys: `{"inletValue": "uniform 0"}`), `patches` (`[{"region", "patch"}]`; default: the selected patches). Returns the case check's findings for those patches |
 | `mesh.check` | The [mesh quality checks](meshes.md#mesh-quality): `region` (default: every region with a mesh), `all_geometry` (`true`: also the checks of `checkMesh -allGeometry`) |
 | `control.set` | Sets `system/controlDict` entries, by name: `{"endTime": 7200, "writeInterval": 600}` |
 | `dict.set` | Sets one entry of any dictionary the case loaded: `file`, `path` (`"PIMPLE/nOuterCorrectors"`), `value`. Parent dictionaries that are missing are added |

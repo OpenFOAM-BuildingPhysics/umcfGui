@@ -10,12 +10,12 @@ rust-version.workspace = true
 umcf-engine.workspace = true
 umcf-render.workspace = true
 umcf-geom.workspace = true
+umcf-model.workspace = true
 serde_json.workspace = true
 eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "accesskit", "clipboard"] }
 
 [dev-dependencies]
 umcf-core.workspace = true
-umcf-model.workspace = true
 egui_kittest = "0.37"
 
 [lints]

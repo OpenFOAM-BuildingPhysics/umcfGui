@@ -138,11 +138,11 @@ const SETUP: &[Tab] = &[
     Tab {
         name: "Boundary conditions",
         menu: "Boundary conditions",
-        groups: &[Group {
-            name: "Selection",
-            items: &[Item::Command("select.clear", "Select none", Icon::SelectNone)],
-        }],
-        note: Some("Pick patches in the view; assigning conditions to them (bc.set) comes here"),
+        groups: &[
+            Group { name: "Conditions", items: &[Item::Command("bc.set", "Set condition", Icon::Condition)] },
+            Group { name: "Selection", items: &[Item::Command("select.clear", "Select none", Icon::SelectNone)] },
+        ],
+        note: Some("Pick patches in the view (Ctrl+click for more), then set their condition"),
     },
     Tab {
         name: "View",
@@ -184,6 +184,14 @@ pub fn groups(tab: &Tab) -> Vec<(&'static str, Vec<Item>)> {
         out.push(("More", more));
     }
     out
+}
+
+/// The tab of a workspace whose groups place a command.
+pub fn tab_of(workspace: Workspace, id: &str) -> Option<usize> {
+    workspace
+        .tabs()
+        .iter()
+        .position(|t| t.groups.iter().flat_map(|g| g.items).any(|i| matches!(i, Item::Command(c, _, _) if *c == id)))
 }
 
 /// The icon of a command wherever it is shown (history chips, search results).

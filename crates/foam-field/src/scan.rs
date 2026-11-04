@@ -12,7 +12,7 @@ use crate::{Arch, Error, Kind, Limits, ListData};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Tag(String);
 
-const STEM: &[u8] = b"__umcfList";
+const STEM: &[u8] = crate::PLACEHOLDER.as_bytes();
 
 impl Tag {
     /// The suffix is as short as can be unused: `L` letters with 26^L above the number of
@@ -50,6 +50,11 @@ impl Tag {
     /// The placeholder for list `k`.
     pub fn word(&self, k: usize) -> String {
         format!("{}{k}", self.0)
+    }
+
+    /// The placeholder text before a list's index: the stem and the suffix.
+    pub fn prefix(&self) -> &str {
+        &self.0
     }
 
     /// The list a placeholder word stands for: only the exact word written (no leading zeros,
@@ -113,6 +118,17 @@ pub(crate) struct Scanned {
     pub text: Vec<u8>,
     pub lists: Vec<ListData>,
     pub tag: Tag,
+    /// Where each list was in the input, in list order.
+    pub spans: Vec<Span>,
+}
+
+/// Where a spliced list was in the input: `lead..start` is the whitespace after `nonuniform`
+/// (empty for a bare `List<T>`), `start..end` the list itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Span {
+    pub lead: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 fn is_ws(b: u8) -> bool {
@@ -128,7 +144,7 @@ pub(crate) fn line_of(bytes: &[u8], at: usize) -> usize {
     bytes.get(..at).unwrap_or(bytes).iter().filter(|b| **b == b'\n').count() + 1
 }
 
-fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     bytes.get(from..)?.windows(needle.len()).position(|w| w == needle).map(|p| from + p)
 }
 
@@ -145,6 +161,7 @@ fn scan_offsets(bytes: &[u8], binary: bool, arch: Arch, limits: &Limits) -> Resu
     let tag = Tag::for_input(bytes);
     let mut text = Vec::with_capacity(bytes.len().min(1 << 20));
     let mut lists = Vec::new();
+    let mut spans = Vec::new();
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
         let next = bytes.get(i + 1).copied();
@@ -159,6 +176,7 @@ fn scan_offsets(bytes: &[u8], binary: bool, arch: Arch, limits: &Limits) -> Resu
             _ if starts_typed_list(bytes, i) => match read_list(bytes, i, binary, arch, limits) {
                 Ok((list, end)) => {
                     tag.push(&mut text, &mut lists, list);
+                    spans.push(Span { lead: i, start: i, end });
                     i = end;
                     continue;
                 }
@@ -167,8 +185,10 @@ fn scan_offsets(bytes: &[u8], binary: bool, arch: Arch, limits: &Limits) -> Resu
             },
             _ if starts_keyword(bytes, i, b"nonuniform") => {
                 text.extend_from_slice(b"nonuniform ");
-                let (list, end) = read_list(bytes, i + b"nonuniform".len(), binary, arch, limits)?;
+                let lead = i + b"nonuniform".len();
+                let (list, end) = read_list(bytes, lead, binary, arch, limits)?;
                 tag.push(&mut text, &mut lists, list);
+                spans.push(Span { lead, start: skip_ws(bytes, lead), end });
                 i = end;
                 continue;
             }
@@ -177,7 +197,7 @@ fn scan_offsets(bytes: &[u8], binary: bool, arch: Arch, limits: &Limits) -> Resu
         text.extend_from_slice(bytes.get(i..end).unwrap_or(&[]));
         i = end.max(i + 1);
     }
-    Ok(Scanned { text, lists, tag })
+    Ok(Scanned { text, lists, tag, spans })
 }
 
 fn string_end(bytes: &[u8], start: usize) -> usize {
