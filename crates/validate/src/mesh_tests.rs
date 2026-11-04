@@ -452,7 +452,7 @@ fn a_long_checkmesh_log_is_cut_with_a_note() {
     // A failure of an unknown size isn't pinned on this mesh: unmatched, a warning; and a
     // skipped time the log stops in is not a pass.
     log.push_str("Time = 3\n    cells:            999\n ***Error in face pyramids: 1 faces\nFailed 1 mesh checks.\n");
-    log.push_str("Time = 4\n    cells:            998\nChecking geometry...\n");
+    log.push_str("Time = 4\n    cells:            998\nChecking geometry...\nFailed invalid mesh checks.\n");
     let logs = parse_checkmesh_log("log.checkMesh", &log);
     let unknown = logs.iter().find(|l| l.skipped.is_some() && l.cells.is_none()).unwrap();
     assert_eq!(unknown.skipped, Some(Skipped { times: 7, failed: 1, unfinished: 1 }));

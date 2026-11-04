@@ -881,7 +881,9 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
                 cur.failed = true;
                 cur.verdict |= !t.starts_with("***");
             } else if t == "Mesh OK."
-                || t.strip_prefix("Failed ").and_then(|r| r.strip_suffix(" mesh checks.")).is_some()
+                || t.strip_prefix("Failed ")
+                    .and_then(|r| r.strip_suffix(" mesh checks."))
+                    .is_some_and(|n| n.trim().parse::<u64>().is_ok())
             {
                 cur.verdict = true;
             } else {
