@@ -48,9 +48,15 @@ warning  mesh.aspect-ratio            constant/buildings/polyMesh [buildings]: 2
 air: 25588 cells, non-orthogonality max 69.2°, skewness max 0.82, 0 errors, 0 warnings
 ```
 
-`--json` prints each region's numbers (`quality`: cells, faces, volumes, face areas, aspect
-ratio, non-orthogonality, skewness, openness), with the first 1000 face or cell labels of each
-problem and their count. Its `diagnostics` are the problems as above.
+`--json` prints, for each region:
+- `quality`: the numbers (cells, faces, volumes, face areas, aspect ratio, non-orthogonality,
+  skewness, openness), with the first 1000 face or cell labels of each problem and their count;
+- `checkmesh`: what `checkMesh` left in the case, its `logs` (verdict, failed checks, remarks)
+  and `sets` (each `-writeSets` set with its count, first 1000 labels and whether it is stale);
+- `diagnostics`: the problems as above, the native checks' and `checkMesh`'s.
+
+The top-level `diagnostics` holds notes about the case's `checkMesh` logs as a whole, such as a
+log for no region of the case.
 
 The exit status is 0 when there are no errors, 1 when there are, and 2 when the case can't be
 opened. A mesh that can't be read is an error of its region (`mesh.unreadable`); the other

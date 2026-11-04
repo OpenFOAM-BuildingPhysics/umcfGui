@@ -409,3 +409,25 @@ fn boundary_alone() {
     assert_eq!(patches, read(&fs).unwrap().boundary);
     assert!(crate::read_boundary(&fs, "constant/none/polyMesh", &Limits::default()).unwrap().is_none());
 }
+
+#[test]
+fn sets() {
+    let mut fs = ascii_mesh();
+    let d = "constant/air/polyMesh";
+    fs.insert(&format!("{d}/sets/skewFaces"), format!("{}3\n(\n1\n4\n9\n)\n", header("ascii", "faceSet", None, "")));
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(format!("{}1(0)\n", header("ascii", "cellSet", None, "")).as_bytes()).unwrap();
+    fs.insert(&format!("{d}/sets/nonClosedCells.gz"), gz.finish().unwrap());
+    assert_eq!(list_sets(&fs, d).unwrap(), ["nonClosedCells", "skewFaces"]);
+    let s = read_set(&fs, d, "skewFaces", &Limits::default()).unwrap().unwrap();
+    assert_eq!((s.class.as_str(), s.labels), ("faceSet", vec![1, 4, 9]));
+    let s = read_set(&fs, d, "nonClosedCells", &Limits::default()).unwrap().unwrap();
+    assert_eq!((s.class.as_str(), s.labels), ("cellSet", vec![0]));
+    assert_eq!(read_set(&fs, d, "nope", &Limits::default()).unwrap(), None);
+    assert!(list_sets(&fs, "constant/other/polyMesh").unwrap().is_empty());
+    // `format binary` in the header, labels as text: how OpenFOAM writes a set.
+    fs.insert(&format!("{d}/sets/bin"), format!("{}2\n(\n5 7\n)\n", header("binary", "faceSet", None, "")));
+    assert_eq!(read_set(&fs, d, "bin", &Limits::default()).unwrap().unwrap().labels, vec![5, 7]);
+    fs.insert(&format!("{d}/sets/bad"), format!("{}2\n(\n1 -4\n)\n", header("ascii", "faceSet", None, "")));
+    assert!(read_set(&fs, d, "bad", &Limits::default()).is_err());
+}

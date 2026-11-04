@@ -17,7 +17,7 @@
 | Required keywords of the selected vegetation, grass, solar load and radiation models (`<Type>Coeffs`, from the solver source, per version) | ✅ `keyword.missing`: no false errors on the 18 local cases |
 | Required fields: what the solver reads per kind of region and per selected model (from the solver source, per version), plus OpenFOAM's thermophysics and turbulence fields | ✅ `field.missing` on all 18 local cases: no false errors; each removed field found on a test copy |
 | `engine` (commands, session, undo and redo, journal, panic guard) and `umcf-cli` (`check`, `run`, `commands`) | ✅ 9 commands; `umcf-cli check` matches the expected result on all 18 local cases, in under 0.5 s each without fields |
-| Mesh quality: `checkMesh`'s default geometric checks, ported from OpenFOAM-12, with its thresholds (`umcf-cli mesh`, `mesh.check`) | ✅ same numbers as `checkMesh` on the 3×3 case (OpenFOAM-12) and the 16 M-cell Hong Kong mesh (OpenFOAM-8); `-writeSets` not read yet |
+| Mesh quality: `checkMesh`'s default geometric checks, ported from OpenFOAM-12, with its thresholds (`umcf-cli mesh`, `mesh.check`) | ✅ same numbers as `checkMesh` on the 3×3 case (OpenFOAM-12) and the 16 M-cell Hong Kong mesh (OpenFOAM-8); `checkMesh`'s logs and `-writeSets` sets read |
 | STL import, diagnostics and repair | ⬜ |
 | 3D scene, picking, boundary conditions by picking | ⬜ |
 | `ui-egui` (SolidCraft-style shell and viewport), control channel, MCP | ⬜ |
@@ -33,3 +33,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-04 — M0.12 required fields per region and selected model (`xtask catalog` field reads, `field.missing`).
 - 2026-11-04 — M0.13 required keywords of the selected models (`xtask catalog` keywords read at start, `keyword.missing`).
 - 2026-11-04 — M0.14 mesh quality (`checkMesh`'s default checks, `umcf-cli mesh`).
+- 2026-11-04 — M0.15 `checkMesh`'s own results: its logs and `-writeSets` sets, per region.

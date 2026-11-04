@@ -409,9 +409,15 @@ fn skewness(ps: &[V], a: V, fc: V, cpf: V, d: V, factor: f64) -> f64 {
     mag(sv) / fd
 }
 
-/// `2046`, or `5.9256e102` for a degenerate cell.
+/// `1000.4`, `2046`, or `5.9256e102` for a degenerate cell.
 fn number(x: f64) -> String {
-    if x.abs() < 1e6 { format!("{x:.0}") } else { format!("{x:.4e}") }
+    if x.abs() < 1e4 {
+        format!("{x:.1}")
+    } else if x.abs() < 1e6 {
+        format!("{x:.0}")
+    } else {
+        format!("{x:.4e}")
+    }
 }
 
 fn listed(f: &Found) -> String {
@@ -572,4 +578,265 @@ pub fn unreadable(region: &str, why: &str) -> crate::Diagnostic {
         format!("the mesh could not be read: {why}"),
     );
     if region.is_empty() { d } else { d.region(region) }
+}
+
+/// What a set holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOf {
+    Faces,
+    Cells,
+    Points,
+}
+
+/// The sets `checkMesh` writes (OpenFOAM-8 and 12, `checkGeometry.C` and `checkTopology.C`;
+/// OpenFOAM-8 on every run, OpenFOAM-12 with `-writeSets`), with what each holds. Other sets in `polyMesh/sets` (from `topoSet`,
+/// `snappyHexMesh`) are not mesh problems.
+pub const CHECKMESH_SETS: &[(&str, SetOf, &str)] = &[
+    ("nonClosedCells", SetOf::Cells, "cells that are not closed"),
+    ("highAspectRatioCells", SetOf::Cells, "cells with an aspect ratio above 1000"),
+    ("zeroVolumeCells", SetOf::Cells, "cells with zero or negative volume"),
+    ("underdeterminedCells", SetOf::Cells, "cells whose faces leave a direction undetermined"),
+    ("concaveCells", SetOf::Cells, "concave cells"),
+    ("illegalCells", SetOf::Cells, "cells with too few faces"),
+    ("zipUpCells", SetOf::Cells, "cells whose edges don't close"),
+    ("oneInternalFaceCells", SetOf::Cells, "cells with one internal face"),
+    ("twoInternalFacesCells", SetOf::Cells, "cells with two internal faces"),
+    ("zeroAreaFaces", SetOf::Faces, "faces with zero area"),
+    ("nonOrthoFaces", SetOf::Faces, "faces more than 70° non-orthogonal"),
+    ("wrongOrientedFaces", SetOf::Faces, "wrongly oriented faces (negative pyramids)"),
+    ("skewFaces", SetOf::Faces, "faces with skewness above 4"),
+    ("concaveFaces", SetOf::Faces, "concave faces"),
+    ("warpedFaces", SetOf::Faces, "warped (non-flat) faces"),
+    ("lowWeightFaces", SetOf::Faces, "faces with a low interpolation weight"),
+    ("lowVolRatioFaces", SetOf::Faces, "faces between cells of very different volume"),
+    ("lowQualityTetFaces", SetOf::Faces, "faces whose tetrahedral decomposition is poor"),
+    ("upperTriangularFace", SetOf::Faces, "faces out of upper-triangular order"),
+    ("outOfRangeFaces", SetOf::Faces, "faces with point labels out of range"),
+    ("edgeFaces", SetOf::Faces, "faces with duplicate or illegal edges"),
+    ("coupledFaces", SetOf::Faces, "coupled faces whose points don't match"),
+    ("meshQualityFaces", SetOf::Faces, "faces failing the meshQualityDict criteria"),
+    ("shortEdges", SetOf::Points, "points of very short edges"),
+    ("nearPoints", SetOf::Points, "points very close to each other"),
+    ("unusedPoints", SetOf::Points, "points no face uses"),
+    ("nonAlignedEdges", SetOf::Points, "points of edges not aligned with the empty direction"),
+    ("nonManifoldPoints", SetOf::Points, "points where the boundary is not manifold"),
+    ("multiRegionPoints", SetOf::Points, "points shared by unconnected parts of the boundary"),
+];
+
+/// What a `checkMesh` log says.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckMeshLog {
+    /// The log file (case-relative).
+    pub file: String,
+    /// `-region`'s value; `""` for the default region.
+    pub region: String,
+    /// `Build : 12`.
+    pub version: Option<String>,
+    /// The command line (`Exec`).
+    pub command: String,
+    /// `Time = 3`: a run over several times (`-time 3,8`, `-allTime`) checks one mesh per
+    /// time; each gets its own result. `None` when the log doesn't say.
+    pub time: Option<String>,
+    /// `Failed N mesh checks.`; `None` with `Mesh OK.` or when the log stops early.
+    pub failed: Option<usize>,
+    pub ok: bool,
+    /// The failed checks (`***` lines).
+    pub problems: Vec<String>,
+    /// The remarks (`*` lines).
+    pub notes: Vec<String>,
+    /// The size of the mesh it checked (`Mesh stats`): `cells:`, `faces:`, `points:`.
+    pub cells: Option<u64>,
+    pub faces: Option<u64>,
+    pub points: Option<u64>,
+    /// `FOAM FATAL ERROR`: checkMesh stopped; the message's first line.
+    pub fatal: Option<String>,
+}
+
+/// Reads a `checkMesh` log: one result per time it checked (`Time = …`), or one for the whole
+/// log. Empty when the text is not a `checkMesh` log (its `Exec` line runs something else).
+pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
+    let mut head = CheckMeshLog { file: file.to_string(), ..CheckMeshLog::default() };
+    let mut is_checkmesh = false;
+    let mut out: Vec<CheckMeshLog> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        // A parallel run prefixes each line with its processor: `[0] `.
+        let t = match t.strip_prefix('[').and_then(|r| r.split_once(']')) {
+            Some((n, rest)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest.trim(),
+            _ => t,
+        };
+        if let Some(cmd) = t.strip_prefix("Exec").map(str::trim_start).and_then(|r| r.strip_prefix(':')) {
+            let words: Vec<&str> = cmd.split_whitespace().collect();
+            is_checkmesh = words.first().is_some_and(|w| w.rsplit('/').next() == Some("checkMesh"));
+            if let Some(k) = words.iter().position(|w| *w == "-region") {
+                head.region = words.get(k + 1).map(|s| s.to_string()).unwrap_or_default();
+            }
+            head.command = words.join(" ");
+            continue;
+        }
+        if let Some(v) = t.strip_prefix("Build").map(str::trim_start).and_then(|r| r.strip_prefix(':')) {
+            head.version = Some(v.trim().to_string());
+            continue;
+        }
+        if let Some(time) = t.strip_prefix("Time = ") {
+            out.push(CheckMeshLog { time: Some(time.trim().to_string()), ..head.clone() });
+            continue;
+        }
+        if out.is_empty() {
+            out.push(head.clone());
+        }
+        let Some(cur) = out.last_mut() else { continue };
+        if cur.fatal.as_deref() == Some("") && !t.is_empty() {
+            cur.fatal = Some(t.to_string());
+            continue;
+        }
+        let count = |key: &str| t.strip_prefix(key).and_then(|r| r.trim().parse::<u64>().ok());
+        if t.starts_with("--> FOAM FATAL") {
+            cur.fatal = Some(String::new());
+        } else if let (None, Some(n)) = (cur.cells, count("cells:")) {
+            cur.cells = Some(n);
+        } else if let (None, Some(n)) = (cur.faces, count("faces:")) {
+            cur.faces = Some(n);
+        } else if let (None, Some(n)) = (cur.points, count("points:")) {
+            cur.points = Some(n);
+        } else if let Some(p) = t.strip_prefix("***") {
+            cur.problems.push(p.trim().to_string());
+        } else if let Some(n) = t.strip_prefix('*') {
+            cur.notes.push(n.trim().to_string());
+        } else if let Some(n) = t.strip_prefix("Failed ").and_then(|r| r.strip_suffix(" mesh checks.")) {
+            cur.failed = n.trim().parse().ok();
+        } else if t == "Mesh OK." {
+            cur.ok = true;
+        }
+    }
+    if !is_checkmesh {
+        return Vec::new();
+    }
+    // Sections before the header lines were read: give them the header.
+    for l in &mut out {
+        (l.region, l.version, l.command) = (head.region.clone(), head.version.clone(), head.command.clone());
+    }
+    // A section with nothing in it before the first `Time =` (the banner) is not a result.
+    if out.len() > 1 {
+        out.retain(|l| {
+            l.time.is_some()
+                || l.ok
+                || l.failed.is_some()
+                || l.fatal.is_some()
+                || !l.problems.is_empty()
+                || !l.notes.is_empty()
+        });
+    }
+    if out.is_empty() {
+        out.push(head);
+    }
+    out
+}
+
+/// The failed checks (`***`) of `checkMesh` that are about quality, not correctness (the
+/// messages of OpenFOAM-8 and 12): warnings, like the native checks. Every other `***`
+/// message (wrong orientation, zero or negative volumes and areas, open cells,
+/// non-orthogonality errors, invalid labels, boundary and zone errors, wedge errors) is an
+/// error.
+const CHECKMESH_WARNINGS: &[&str] = &[
+    "High aspect ratio cells found",
+    "Max skewness",
+    "Faces with small interpolation weight",
+    "Faces with small volume ratio",
+    "Cells with small determinant",
+    "Concave cells",
+    "Number of edges not aligned",
+    "Boundary openness",
+];
+
+fn checkmesh_level(line: &str) -> crate::Level {
+    if CHECKMESH_WARNINGS.iter().any(|w| line.starts_with(w)) { crate::Level::Warning } else { crate::Level::Error }
+}
+
+/// The findings of a `checkMesh` log, for its region: each failed check (`***`) as an error or
+/// a warning (by what it breaks, as for the native checks), each remark (`*`) as a note. A log that ends without its
+/// verdict says so.
+/// The failed checks (`***`) of `checkMesh` that the native check also makes (its default
+/// geometric checks): with the native result at hand, they are notes pointing to it.
+const NATIVE_COUNTERPARTS: &[&str] = &[
+    "High aspect ratio cells found",
+    "Max skewness",
+    "Error in face pyramids",
+    "Zero or negative cell volume",
+    "Zero or negative face area",
+    // Not "Open cells found, number of cells", the topological zip-up check.
+    "Open cells found, max cell openness",
+    "Number of non-orthogonality errors",
+    "Boundary openness",
+];
+
+/// With `native` (the mesh was also checked natively), a finding the native check makes too is
+/// a note rather than counted twice.
+pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: bool) -> Vec<crate::Diagnostic> {
+    use crate::{Diagnostic, Level};
+    let version = log.version.as_deref().map_or(String::new(), |v| format!(", OpenFOAM-{v}"));
+    let time = log.time.as_deref().map_or(String::new(), |t| format!(", time {t}"));
+    let source = format!("checkMesh ({}{version}{time})", log.file);
+    let mut out = Vec::new();
+    let mut push = |level, code, message: String| {
+        let d = Diagnostic::new(level, code, &log.file, message);
+        out.push(if log.region.is_empty() { d } else { d.region(&log.region) });
+    };
+    for p in &log.problems {
+        if native && NATIVE_COUNTERPARTS.iter().any(|n| p.starts_with(n)) {
+            push(
+                Level::Info,
+                "mesh.checkmesh",
+                format!("{source}: {p} (the native check of this mesh reports it too)"),
+            );
+        } else {
+            push(checkmesh_level(p), "mesh.checkmesh", format!("{source}: {p}"));
+        }
+    }
+    for n in &log.notes {
+        push(Level::Info, "mesh.checkmesh", format!("{source}: {n}"));
+    }
+    if log.problems.is_empty()
+        && let Some(n) = log.failed
+    {
+        push(Level::Warning, "mesh.checkmesh", format!("{source}: failed {n} mesh checks"));
+    }
+    if let Some(f) = &log.fatal {
+        push(Level::Error, "mesh.checkmesh", format!("{source}: checkMesh stopped with a fatal error: {f}"));
+    } else if !log.ok && log.failed.is_none() {
+        push(Level::Warning, "mesh.checkmesh", format!("{source}: the log stops before checkMesh's verdict"));
+    }
+    out
+}
+
+/// `mesh.stale-set`: a `checkMesh` set names faces, cells or points the mesh doesn't have, so
+/// it was written for another mesh.
+pub fn stale_set(region: &str, name: &str, largest: u32, size: usize, of: SetOf) -> crate::Diagnostic {
+    let what = match of {
+        SetOf::Faces => "faces",
+        SetOf::Cells => "cells",
+        SetOf::Points => "points",
+    };
+    let d = crate::Diagnostic::new(
+        crate::Level::Warning,
+        "mesh.stale-set",
+        format!("{}/sets/{name}", umcf_foam_mesh::mesh_dir(region)),
+        format!(
+            "the set `{name}` names {what} up to {largest}, the mesh has {size}: it is from another mesh (run checkMesh -writeSets again)"
+        ),
+    );
+    if region.is_empty() { d } else { d.region(region) }
+}
+
+/// Mesh problems in a vegetation region are warnings: the solver solves no flow or transport
+/// equations on that mesh (it carries the leaf temperature and the radiation exchange), and
+/// cases with a few wrongly oriented faces there run. A mesh that can't be read, or whose
+/// coordinates are not numbers, stays an error: the solver still reads it.
+pub fn soften_for_vegetation(diagnostics: &mut [crate::Diagnostic]) {
+    for d in diagnostics.iter_mut() {
+        if d.level == crate::Level::Error && d.code != "mesh.unreadable" && d.code != "mesh.non-finite" {
+            d.level = crate::Level::Warning;
+            d.message.push_str(" (a warning in a vegetation region: the solver solves no flow equations on its mesh)");
+        }
+    }
 }

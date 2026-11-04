@@ -143,6 +143,9 @@ fn mesh(args: &[String]) -> Result<u8, String> {
     if as_json {
         out(&report.data.to_string())?;
     } else {
+        for d in report.data.get("diagnostics").and_then(Value::as_array).into_iter().flatten() {
+            out(&diagnostic_line(d))?;
+        }
         for r in report.data.get("regions").and_then(Value::as_array).into_iter().flatten() {
             for d in r.get("diagnostics").and_then(Value::as_array).into_iter().flatten() {
                 out(&diagnostic_line(d))?;
