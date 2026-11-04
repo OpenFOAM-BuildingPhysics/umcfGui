@@ -258,6 +258,8 @@ fn inconsistent_meshes_are_errors() {
         ("cellZones", ZONES.replace("2(0 1)", "2(0 5)"), "cell 5"),
         // A face with two points.
         ("faces", format!("{}11\n(\n2(1 4)\n{})\n", h("faceList"), "4(0 6 9 3)\n".repeat(10)), "fewer than 3"),
+        // A sparse cell label: billions of cells without faces.
+        ("owner", format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 4294967294\n)\n", h("labelList")), "cells without faces"),
     ];
     for (file, contents, expect) in cases {
         let e = read(&with(ascii_mesh(), file, contents)).unwrap_err().to_string();

@@ -271,6 +271,15 @@ impl PolyMesh {
                 None => return bad(format!("cell label {m} is out of range")),
             },
         };
+        // Every cell has a face: more cells than face sides means unused labels (a hostile
+        // `4294967294` would ask callers for billions of cells).
+        if max_cell > self.owner.len() + self.neighbour.len() {
+            return bad(format!(
+                "the faces reference cell {} but have only {} sides: cells without faces",
+                max_cell - 1,
+                self.owner.len() + self.neighbour.len()
+            ));
+        }
         if let Some(n) = n_cells_note
             && n != max_cell as u64
         {
