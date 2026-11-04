@@ -133,6 +133,53 @@ fn run_stops_at_the_first_failure() {
     assert_eq!(cli(&["run", "--cmd", "control.set={bad"]).status.code(), Some(2));
 }
 
+/// The cap on a commands file holds for files with no length (pipes, devices).
+#[cfg(unix)]
+#[test]
+fn a_commands_file_without_a_length_is_capped() {
+    let o = cli(&["run", "--cmds", "/dev/zero"]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8(o.stderr).unwrap().contains("larger than"));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let o = Command::new(env!("CARGO_BIN_EXE_umcf-cli"))
+        .arg("check")
+        .arg(std::ffi::OsStr::from_bytes(b"case\xff"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+}
+
+#[test]
+fn a_second_case_starts_a_new_journal() {
+    let a = case("journal-a", "3600");
+    let b = case("journal-b", "3600");
+    let journal = a.with_extension("second.jsonl");
+    let o = cli(&[
+        "run",
+        "--case",
+        a.to_str().unwrap(),
+        "--cmd",
+        r#"control.set={"endTime": 1}"#,
+        "--cmd",
+        "case.save",
+        "--case",
+        b.to_str().unwrap(),
+        "--cmd",
+        r#"control.set={"deltaT": 2}"#,
+        "--journal",
+        journal.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = std::fs::read_to_string(&journal).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("deltaT"), "{text}");
+}
+
 #[test]
 fn commands_lists_the_registry() {
     let o = cli(&["commands", "--json"]);

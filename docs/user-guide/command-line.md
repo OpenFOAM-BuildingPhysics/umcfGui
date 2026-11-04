@@ -5,8 +5,11 @@ with `cargo build --release -p umcf-cli`; the program is `target/release/umcf-cl
 
 ## Checking a case
 
+The examples below write `umcf-cli` for short: put `target/release` on your `PATH`, or give
+the full path.
+
 ```sh
-umcf-cli check path/to/case
+target/release/umcf-cli check path/to/case
 ```
 
 This opens the case and prints every problem the [case check](checks.md) finds, errors first,
@@ -24,7 +27,7 @@ field.
 | Option | Does |
 |---|---|
 | `--json` | Prints one JSON object: `errors`, `warnings`, `infos` (the counts) and `diagnostics`, a list of `{level, code, path, region, patch, field, message}` |
-| `--no-fields` | Doesn't read the field files. Opening is faster, but boundary conditions are not checked, and each region without fields gets a note |
+| `--no-fields` | Doesn't read the field files. Opening is faster, but boundary conditions are not checked: each field file gets a note saying so. A region with no field files at all is still an error (`region.no-fields`), so the status can still be 1 |
 
 The exit status is 0 when there are no errors (warnings are allowed), 1 when there are, and 2
 when the case could not be checked (it isn't a directory, or doesn't open). In a script:
@@ -52,20 +55,24 @@ Edits change the case in memory. Only `case.save` writes them to disk:
 
 A run that ends with unsaved edits says so.
 
-When a command fails, the case is left as it was before that command: `control.set` with
-several entries sets all of them or none.
+When a command fails, the case in memory is left as it was before that command: `control.set`
+with several entries sets all of them or none. Files already written are not: a `case.save`
+that stops part way leaves the files it wrote saved (the error names them).
 
 | Option | Does |
 |---|---|
 | `--cmd '<id>=<json>'` | One command; repeat it for more |
 | `--cmds <file>` | Commands from a file, one JSON object per line: `{"command": "control.set", "params": {"endTime": 7200}}`. Blank lines and lines starting with `#` are skipped |
-| `--journal <file>` | When the run ends, writes the commands that changed the case, in the same format. Opening the case is not one of them |
-| `--json` | One JSON line per command: `{command, ok, message, data}` |
+| `--journal <file>` | When the run ends, writes the edits made to the case open at that point, in the same format. Opening a case is not recorded, and starts a new journal |
+| `--json` | One JSON line per command: `{command, ok: true, message, data}`, or `{command, ok: false, message}` for the one that failed |
 
-A journal from `--journal` runs again with `--cmds` on whichever case is open:
-`umcf-cli run --case copy --cmds journal.jsonl` makes the same edits to `copy`.
+A journal from `--journal` holds the edits of one case, and runs again with `--cmds` on
+whichever case is open: `umcf-cli run --case copy --cmds journal.jsonl` makes the same edits
+to `copy`. A run that opens a second case journals only the edits made after that.
 
-The exit status is 0 when every command ran, 1 when one failed, and 2 for bad arguments.
+The exit status is 0 when every command ran, 1 when one failed or the journal could not be
+written (the commands before may have run, and `case.save` may have written files), and 2 for
+bad arguments.
 
 ## The commands
 

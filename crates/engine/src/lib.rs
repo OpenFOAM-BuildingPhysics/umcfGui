@@ -15,8 +15,8 @@
 //!   [`UNDO_DEPTH`] steps are kept. Opening a case starts a new history.
 //! - **Journal**: every command that changes the case is recorded as a JSON line
 //!   `{"command": "...", "params": {...}}`, in the order it ran ([`Session::journal`]). Opening
-//!   a case is not recorded, so the lines can be run again on whichever case is open: another
-//!   copy of the same case gets the same edits.
+//!   a case is not recorded and starts a new journal, so the journal holds the edits of one
+//!   case and runs again on whichever case is open: another copy gets the same edits.
 //!
 //! Saving writes only the files that changed (see `umcf_model::Case::save`) and keeps a backup
 //! of each under `.umcfgui/backup/<session>/` the first time it is saved in the session.
@@ -111,6 +111,9 @@ pub struct Session {
     redo: Vec<Case>,
     journal: Vec<Value>,
     backup: String,
+    /// How many times a case was opened: a failed command that opened one is told apart from
+    /// one that didn't, even when it opened the same location again.
+    opens: u64,
 }
 
 impl std::fmt::Debug for Session {
@@ -133,9 +136,11 @@ impl Default for Session {
 /// Everything a failed or panicking command could have changed.
 struct Saved {
     case: Option<Case>,
-    location: Option<String>,
+    opens: u64,
     undo: Vec<Case>,
     redo: Vec<Case>,
+    /// The journal only grows during a command (or is cleared by an open): its length is enough.
+    journal: usize,
 }
 
 impl Session {
@@ -149,7 +154,14 @@ impl Session {
 
     /// A session with its own backup directory (under `.umcfgui/`).
     pub fn with_backup(backup: impl Into<String>) -> Self {
-        Session { opened: None, undo: Vec::new(), redo: Vec::new(), journal: Vec::new(), backup: backup.into() }
+        Session {
+            opened: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            journal: Vec::new(),
+            backup: backup.into(),
+            opens: 0,
+        }
     }
 
     pub fn case(&self) -> Option<&Case> {
@@ -178,7 +190,7 @@ impl Session {
         !self.redo.is_empty()
     }
 
-    /// The commands that changed something, in order, as `{"command", "params"}` objects.
+    /// The edits made to the open case, in order, as `{"command", "params"}` objects.
     pub fn journal(&self) -> &[Value] {
         &self.journal
     }
@@ -223,35 +235,41 @@ impl Session {
         self.opened = Some(Opened { case, fs, location: location.into() });
         self.undo.clear();
         self.redo.clear();
+        self.journal.clear();
+        self.opens += 1;
         Ok(())
     }
 
     fn saved(&self) -> Saved {
         Saved {
             case: self.case().cloned(),
-            location: self.location().map(str::to_string),
+            opens: self.opens,
             undo: self.undo.clone(),
             redo: self.redo.clone(),
+            journal: self.journal.len(),
         }
     }
 
-    /// Puts back what [`Session::saved`] kept. A case opened by the failed command (another
-    /// location) is closed again only if there was none before; otherwise the old model stays
-    /// with the files it was read from.
+    /// Puts back what [`Session::saved`] kept. A case opened by the failed command is closed
+    /// again if there was none before; if there was one, the newly opened case stays, with an
+    /// empty history and journal.
     fn restore(&mut self, saved: Saved) {
         match (saved.case, &mut self.opened) {
-            (Some(case), Some(o)) if Some(o.location.as_str()) == saved.location.as_deref() => o.case = case,
-            // The command replaced the case (and lost the old files) or closed it: keep what is
-            // there now rather than pair a model, or its history, with the wrong files.
+            (Some(case), Some(o)) if self.opens == saved.opens => o.case = case,
+            // The command opened a case (the same one again, or another) and then failed: keep
+            // the case it opened, with a new history and journal, rather than pair a model, its
+            // history or its journal with the wrong files.
             (Some(_), _) => {
                 self.undo.clear();
                 self.redo.clear();
+                self.journal.clear();
                 return;
             }
             (None, _) => self.opened = None,
         }
         self.undo = saved.undo;
         self.redo = saved.redo;
+        self.journal.truncate(saved.journal);
     }
 
     fn run_spec(&mut self, spec: &CommandSpec, params: &Value) -> Result<Outcome, Error> {

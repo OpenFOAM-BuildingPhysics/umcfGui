@@ -654,7 +654,12 @@ fn read_fields(fs: &dyn CaseFs, dir: &str, options: OpenOptions, notes: &mut Vec
             Ok(Some(f)) => out.push(summarise(name, path, &f)),
             Ok(None) => {}
             Err(umcf_foam_field::Error::Fs(FsError::TooLarge { .. }) | umcf_foam_field::Error::TooLarge { .. }) => {
-                notes.push(note(Severity::Info, &path, "too large to read its boundary conditions here"));
+                let why = if options.field_bytes == 0 {
+                    "not read (field files skipped): its boundary conditions are not checked"
+                } else {
+                    "too large to read its boundary conditions here"
+                };
+                notes.push(note(Severity::Info, &path, why));
                 out.push(FieldInfo {
                     name,
                     path,

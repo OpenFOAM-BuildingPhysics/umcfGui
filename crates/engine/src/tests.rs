@@ -211,6 +211,7 @@ fn opening_in_memory_protects_unsaved_changes() {
     assert_eq!(s.location(), Some("mem"));
     s.open(Box::new(fs()), "other", OpenOptions::default(), true).unwrap();
     assert_eq!(s.location(), Some("other"));
+    assert!(s.journal().is_empty(), "a new case starts a new journal");
 }
 
 /// A command that replaced the case and then failed keeps the new case, without the old
@@ -239,6 +240,33 @@ fn a_failure_after_replacing_the_case_drops_the_history() {
     assert_eq!(s.location(), Some("other"));
     assert!(!s.can_undo() && !s.can_redo());
     assert!(s.journal().iter().all(|e| e["command"] != "test.reopen"));
+}
+
+/// Opening the same location again and then failing: the history and the journal still
+/// belong to the model that is open.
+#[test]
+fn a_failure_after_reopening_the_same_case() {
+    fn reopen(s: &mut Session, _: &Value) -> Result<Outcome, Error> {
+        s.open(Box::new(fs()), "mem", OpenOptions::default(), true)?;
+        Err(Error::Failed("after the open".to_string()))
+    }
+    let spec = CommandSpec {
+        id: "test.reopen",
+        label: "",
+        menu: "",
+        shortcut: None,
+        params: "",
+        enabled: needs_case,
+        run: reopen,
+        journal: true,
+        undoable: false,
+    };
+    let mut s = session();
+    s.execute("control.set", &json!({"endTime": 7200})).unwrap();
+    assert!(s.run_spec(&spec, &Value::Null).is_err());
+    assert_eq!(end_time(&s).as_deref(), Some("3600"), "the reopened case from disk");
+    assert!(!s.can_undo() && s.journal().is_empty());
+    assert!(s.case().unwrap().changed().is_empty(), "no unsaved edit missing from the journal");
 }
 
 #[test]

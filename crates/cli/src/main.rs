@@ -28,10 +28,11 @@ usage:
       (case.open). --cmd gives one command, with its parameters as a JSON object
       (--cmd 'control.set={\"endTime\": 3600}'); --cmds reads JSON lines
       {\"command\": \"...\", \"params\": {...}} (a journal; blank lines and lines starting with #
-      are skipped). Edits are only written by case.save. --journal writes the commands that
-      changed the case, as JSON lines, when the run ends; case.open is not one of them, so
+      are skipped). Edits are only written by case.save. --journal writes the edits made to the
+      case open at the end (opening a case starts a new journal), as JSON lines, so
       `run --case <copy> --cmds <journal>` makes the same edits to another copy. --json prints one JSON line per command.
-      Exit status: 0 all ran, 1 a command failed, 2 bad arguments.
+      Exit status: 0 all ran, 1 a command failed or the journal could not be written,
+      2 bad arguments.
 
   umcf-cli commands [--json]
       List the commands, with their parameters.
@@ -41,7 +42,15 @@ usage:
 const MAX_CMDS_BYTES: u64 = 64 << 20;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args` panics on an argument that isn't UTF-8 (a case path on Linux can be).
+    let args: Result<Vec<String>, _> = std::env::args_os().skip(1).map(std::ffi::OsString::into_string).collect();
+    let args = match args {
+        Ok(a) => a,
+        Err(bad) => {
+            eprintln!("umcf-cli: an argument is not UTF-8 text: {}", bad.to_string_lossy());
+            return ExitCode::from(2);
+        }
+    };
     let code = match args.first().map(String::as_str) {
         Some("check") => check(args.get(1..).unwrap_or_default()),
         Some("run") => run(args.get(1..).unwrap_or_default()),
@@ -137,11 +146,15 @@ fn parse_cmd(arg: &str) -> Result<Call, String> {
 }
 
 fn read_cmds(path: &str) -> Result<Vec<Call>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("--cmds {path}: {e}"))?;
-    if meta.len() > MAX_CMDS_BYTES {
+    use std::io::Read;
+    // The read itself is capped: a pipe or a device has no length to check first.
+    let file = std::fs::File::open(path).map_err(|e| format!("--cmds {path}: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CMDS_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("--cmds {path}: {e}"))?;
+    if bytes.len() as u64 > MAX_CMDS_BYTES {
         return Err(format!("--cmds {path}: larger than {MAX_CMDS_BYTES} bytes"));
     }
-    let text = std::fs::read_to_string(path).map_err(|e| format!("--cmds {path}: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("--cmds {path}: not UTF-8 text"))?;
     let mut calls = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
