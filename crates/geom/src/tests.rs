@@ -506,3 +506,17 @@ fn weld_moves_every_copy_of_a_vertex_together() {
     assert_eq!(s.triangles[1].vertices[0], s.triangles[3].vertices[0]);
     assert!(analyse(&s).open_edges <= open);
 }
+
+#[test]
+fn a_truncated_binary_with_a_solid_header_is_an_error() {
+    let mut c = cube();
+    c.format = Format::Binary;
+    let mut bytes = c.to_bytes();
+    bytes[..6].copy_from_slice(b"solid ");
+    bytes.truncate(bytes.len() - 10);
+    assert_eq!(read(&bytes, &Limits::default()), Err(StlError::Truncated { announced: 12, held: 11 }));
+    // An ASCII file with a byte that isn't text is still ASCII.
+    let text = String::from_utf8(cube().to_bytes()).unwrap().replacen("solid box", "solid caf\u{e9}", 1);
+    let s = read(text.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!((s.format, s.triangles.len()), (Format::Ascii, 12));
+}

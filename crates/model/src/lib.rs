@@ -188,8 +188,8 @@ pub const MAX_FILE_BYTES: u64 = 1 << 30;
 #[derive(Debug, Default)]
 struct DiskState {
     files: BTreeMap<String, OnDisk>,
-    /// Files that are not dictionaries, written through [`Case::put_file`]: as read when first
-    /// put (`None`: there was none) or last saved.
+    /// Files that are not dictionaries, written through [`Case::put_file`]: as this session
+    /// last saved them.
     raw: BTreeMap<String, Option<Fingerprint>>,
     /// `(backup dir, file)` pairs already backed up: a file is backed up once per session.
     backed_up: std::collections::BTreeSet<(String, String)>,
@@ -603,7 +603,11 @@ impl Case {
         out.extend(
             self.raw
                 .iter()
-                .filter(|(rel, f)| disk.raw.get(rel.as_str()).copied().flatten() != Some(f.fingerprint))
+                .filter(|(rel, f)| {
+                    // Unchanged when it is the file it was made from, or what was last saved.
+                    Some(f.fingerprint) != f.base
+                        && Some(f.fingerprint) != disk.raw.get(rel.as_str()).copied().flatten()
+                })
                 .map(|(rel, _)| rel.as_str()),
         );
         out.sort_unstable();
@@ -648,11 +652,7 @@ impl Case {
         }
         let base = match self.raw.get(rel) {
             Some(f) => f.base,
-            None => {
-                let on_disk = fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b));
-                lock(&self.disk).raw.entry(rel.to_string()).or_insert(on_disk);
-                on_disk
-            }
+            None => fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b)),
         };
         let fingerprint = fingerprint(&bytes);
         self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });

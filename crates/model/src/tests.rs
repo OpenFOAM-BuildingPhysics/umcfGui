@@ -638,3 +638,24 @@ fn a_file_changed_on_disk_after_undo_is_the_new_base() {
     fs.insert("constant/triSurface/box.stl", "v3");
     assert!(matches!(stale.save(&mut fs, None), Err(Error::Conflict { .. })));
 }
+
+#[test]
+fn putting_back_the_first_bytes_over_a_newer_file_is_a_change() {
+    let mut fs = case().with("constant/triSurface/box.stl", "O");
+    let opened = Case::open(&fs).unwrap();
+    let mut c = opened.clone();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"repaired".to_vec()).unwrap();
+    // Undo; the file is rewritten outside; the original comes back in.
+    let mut c2 = opened.clone();
+    fs.insert("constant/triSurface/box.stl", "O2");
+    c2.put_file(&fs, "constant/triSurface/box.stl", b"O".to_vec()).unwrap();
+    assert_eq!(c2.changed(), ["constant/triSurface/box.stl"]);
+    c2.save(&mut fs, None).unwrap();
+    assert_eq!(fs.read("constant/triSurface/box.stl", 10).unwrap().unwrap(), b"O");
+    assert!(c2.changed().is_empty());
+    // Putting the same bytes as on disk is no change.
+    let mut c3 = Case::open(&fs).unwrap();
+    c3.put_file(&fs, "constant/triSurface/box.stl", b"O".to_vec()).unwrap();
+    assert!(c3.changed().is_empty());
+    drop(c);
+}
