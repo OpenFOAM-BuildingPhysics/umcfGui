@@ -954,10 +954,12 @@ impl Case {
                 }
                 Pending::Raw(_, fp) => {
                     let mut disk = lock(&self.disk);
-                    // What this first save replaced, for a case from before the command.
-                    if !disk.originals.contains_key(&rel) {
-                        let fingerprint = original.as_deref().map(|b| fingerprint(b));
-                        disk.originals.insert(rel.clone(), Original { bytes: original.clone(), fingerprint });
+                    // What the save replaced, for a case from before the command: kept unless it
+                    // is what this session last saved there (then the original is older).
+                    let replaced = original.as_deref().map(|b| fingerprint(b));
+                    let ours = disk.raw.get(&rel).copied().flatten();
+                    if ours.is_none() || ours != replaced {
+                        disk.originals.insert(rel.clone(), Original { bytes: original.clone(), fingerprint: replaced });
                     }
                     disk.raw.insert(rel.clone(), Some(fp));
                 }

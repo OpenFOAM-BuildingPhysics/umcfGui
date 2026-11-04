@@ -800,3 +800,26 @@ fn an_outside_change_after_the_undone_original_is_saved_back_is_seen() {
     assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
     assert!(String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().contains("uniform 299"));
 }
+
+#[test]
+fn an_undo_never_writes_an_original_older_than_an_outside_change() {
+    let mut fs = case();
+    let s0 = Case::open(&fs).unwrap();
+    let mut a = s0.clone();
+    a.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    a.save(&mut fs, None).unwrap();
+    let mut undone = s0.clone();
+    undone.save(&mut fs, None).unwrap();
+    // Changed outside, then edited and saved on top of that.
+    let outside =
+        String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().replace("uniform 300", "uniform 299");
+    fs.insert("0/air/T", outside.clone());
+    let before_b = undone.clone();
+    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    undone.save(&mut fs, None).unwrap();
+    // Undoing B gives back the outside version, not the first original.
+    let mut back = before_b;
+    assert_eq!(back.file(&fs, "0/air/T").unwrap().unwrap().as_slice(), outside.as_bytes());
+    back.save(&mut fs, None).unwrap();
+    assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), outside.as_bytes());
+}
