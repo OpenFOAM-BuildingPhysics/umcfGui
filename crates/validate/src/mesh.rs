@@ -650,9 +650,58 @@ pub struct CheckMeshLog {
     pub points: Option<u64>,
     /// `FOAM FATAL ERROR`: checkMesh stopped; the message's first line.
     pub fatal: Option<String>,
-    /// The log was longer than is read ([`MAX_LOG_RESULTS`] times, [`MAX_LOG_FINDINGS`]
-    /// findings each): the rest of it was skipped.
+    /// This time had more than [`MAX_LOG_FINDINGS`] findings: the rest are not listed.
     pub truncated: bool,
+    /// Failed checks (`***`) among the findings not listed.
+    pub unlisted_problems: usize,
+    /// A summary of times past [`MAX_LOG_RESULTS`], which are scanned without being kept: one
+    /// per size of mesh they checked (`cells`, `faces`, `points`; unknown past
+    /// [`MAX_SKIPPED_SIZES`] sizes).
+    pub skipped: Option<Skipped>,
+}
+
+/// Times of a `checkMesh` log past [`MAX_LOG_RESULTS`], for one size of mesh.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Skipped {
+    pub times: usize,
+    /// Times with a failed check or a fatal error.
+    pub failed: usize,
+}
+
+/// The most mesh sizes the skipped times of a log are summarized by.
+pub const MAX_SKIPPED_SIZES: usize = 16;
+
+/// One skipped time being scanned.
+#[derive(Default)]
+struct SkippedTime {
+    sizes: [Option<u64>; 3],
+    failed: bool,
+}
+
+/// Adds a skipped time to the summaries in `out` (after the kept results, from `first`).
+fn summarize(out: &mut Vec<CheckMeshLog>, first: usize, head: &CheckMeshLog, t: SkippedTime) {
+    let [cells, faces, points] = t.sizes;
+    let summaries = out.get(first..).map_or(0, <[CheckMeshLog]>::len);
+    let same = |l: &CheckMeshLog| (l.cells, l.faces, l.points) == (cells, faces, points);
+    let known = |l: &CheckMeshLog| l.cells.is_some() || l.faces.is_some() || l.points.is_some();
+    let at = match out.iter().skip(first).position(same) {
+        Some(k) => Some(first + k),
+        // Past the sizes kept: an unknown size.
+        None if summaries >= MAX_SKIPPED_SIZES => {
+            out.iter().skip(first).position(|l| !known(l)).map(|k| first + k).or_else(|| {
+                out.push(CheckMeshLog { skipped: Some(Skipped::default()), ..head.clone() });
+                Some(out.len() - 1)
+            })
+        }
+        None => {
+            out.push(CheckMeshLog { cells, faces, points, skipped: Some(Skipped::default()), ..head.clone() });
+            Some(out.len() - 1)
+        }
+    };
+    if let Some(s) = at.and_then(|k| out.get_mut(k)).and_then(|l| l.skipped.as_mut()) {
+        s.times += 1;
+        s.failed += usize::from(t.failed);
+    }
 }
 
 /// The most results (times) read from one `checkMesh` log.
@@ -666,6 +715,17 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
     let mut head = CheckMeshLog { file: file.to_string(), ..CheckMeshLog::default() };
     let mut is_checkmesh = false;
     let mut out: Vec<CheckMeshLog> = Vec::new();
+    // Past MAX_LOG_RESULTS: each time's mesh size and whether it failed, summarized from
+    // index `first_skipped` of `out` on.
+    let mut skipping: Option<SkippedTime> = None;
+    let mut first_skipped = 0;
+    let failure = |t: &str| {
+        t.starts_with("***")
+            || t.starts_with("--> FOAM FATAL")
+            || t.strip_prefix("Failed ")
+                .and_then(|r| r.strip_suffix(" mesh checks."))
+                .is_some_and(|n| n.trim().parse::<u64>().is_ok_and(|n| n > 0))
+    };
     for line in text.lines() {
         let t = line.trim();
         // A parallel run prefixes each line with its processor: `[0] `.
@@ -673,6 +733,23 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
             Some((n, rest)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => rest.trim(),
             _ => t,
         };
+        if let Some(cur) = skipping.as_mut() {
+            if t.starts_with("Time = ") {
+                let done = std::mem::take(cur);
+                summarize(&mut out, first_skipped, &head, done);
+            } else if failure(t) {
+                cur.failed = true;
+            } else {
+                for (k, key) in ["cells:", "faces:", "points:"].iter().enumerate() {
+                    if let Some(n) = t.strip_prefix(key).and_then(|r| r.trim().parse::<u64>().ok())
+                        && let Some(slot @ None) = cur.sizes.get_mut(k)
+                    {
+                        *slot = Some(n);
+                    }
+                }
+            }
+            continue;
+        }
         if let Some(cmd) = t.strip_prefix("Exec").map(str::trim_start).and_then(|r| r.strip_prefix(':')) {
             let words: Vec<&str> = cmd.split_whitespace().collect();
             is_checkmesh = words.first().is_some_and(|w| w.rsplit('/').next() == Some("checkMesh"));
@@ -689,10 +766,9 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
         if let Some(time) = t.strip_prefix("Time = ") {
             // The banner section before the first `Time =` is not a time.
             if out.iter().filter(|l| l.time.is_some()).count() >= MAX_LOG_RESULTS {
-                if let Some(last) = out.last_mut() {
-                    last.truncated = true;
-                }
-                break;
+                first_skipped = out.len();
+                skipping = Some(SkippedTime::default());
+                continue;
             }
             out.push(CheckMeshLog { time: Some(time.trim().to_string()), ..head.clone() });
             continue;
@@ -719,6 +795,7 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
                 cur.problems.push(p.trim().to_string());
             } else {
                 cur.truncated = true;
+                cur.unlisted_problems += 1;
             }
         } else if let Some(n) = t.strip_prefix('*') {
             if cur.problems.len() + cur.notes.len() < MAX_LOG_FINDINGS {
@@ -731,6 +808,9 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
         } else if t == "Mesh OK." {
             cur.ok = true;
         }
+    }
+    if let Some(last) = skipping {
+        summarize(&mut out, first_skipped, &head, last);
     }
     if !is_checkmesh {
         return Vec::new();
@@ -748,6 +828,7 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
                 || l.fatal.is_some()
                 || !l.problems.is_empty()
                 || !l.notes.is_empty()
+                || l.skipped.is_some()
         });
     }
     if out.is_empty() {
@@ -833,14 +914,44 @@ pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: Option<&Quality>) -
     {
         push(Level::Warning, "mesh.checkmesh", format!("{source}: failed {n} mesh checks"));
     }
+    if let Some(s) = log.skipped {
+        // Times past MAX_LOG_RESULTS: only whether they failed is known.
+        let source = format!("checkMesh ({}{version}, times past the first {MAX_LOG_RESULTS})", log.file);
+        if s.failed > 0 {
+            push(
+                Level::Error,
+                "mesh.checkmesh-incomplete",
+                format!(
+                    "{source}: {} of these {} times failed a check or stopped with a fatal error (not listed): run checkMesh on fewer times (-time) to see them",
+                    s.failed, s.times
+                ),
+            );
+        } else {
+            push(
+                Level::Info,
+                "mesh.checkmesh",
+                format!("{source}: none of these {} times failed (not listed)", s.times),
+            );
+        }
+        return out;
+    }
     if log.truncated {
-        push(
-            Level::Info,
-            "mesh.checkmesh",
-            format!(
-                "{source}: the log is longer than is read (at most {MAX_LOG_RESULTS} times, {MAX_LOG_FINDINGS} findings for each); the rest was skipped"
-            ),
-        );
+        if log.unlisted_problems > 0 {
+            push(
+                Level::Error,
+                "mesh.checkmesh-incomplete",
+                format!(
+                    "{source}: more than {MAX_LOG_FINDINGS} findings; {} more failed checks are not listed",
+                    log.unlisted_problems
+                ),
+            );
+        } else {
+            push(
+                Level::Info,
+                "mesh.checkmesh",
+                format!("{source}: more than {MAX_LOG_FINDINGS} findings; the remarks past them are not listed"),
+            );
+        }
     }
     if let Some(f) = &log.fatal {
         push(Level::Error, "mesh.checkmesh", format!("{source}: checkMesh stopped with a fatal error: {f}"));
@@ -875,7 +986,8 @@ pub fn stale_set(region: &str, name: &str, largest: u32, size: usize, of: SetOf)
 /// coordinates are not numbers, stays an error: the solver still reads it.
 pub fn soften_for_vegetation(diagnostics: &mut [crate::Diagnostic]) {
     for d in diagnostics.iter_mut() {
-        if d.level == crate::Level::Error && d.code != "mesh.unreadable" && d.code != "mesh.non-finite" {
+        let kept = ["mesh.unreadable", "mesh.non-finite"];
+        if d.level == crate::Level::Error && !kept.contains(&d.code) {
             d.level = crate::Level::Warning;
             d.message.push_str(" (a warning in a vegetation region: the solver solves no flow equations on its mesh)");
         }

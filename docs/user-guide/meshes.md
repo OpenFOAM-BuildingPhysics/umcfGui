@@ -96,6 +96,7 @@ is reported as `mesh.stale-set`.
 | `mesh.checkmesh` | Error / Warning / Info | What a `checkMesh` log in the case reported for the region |
 | `mesh.stale-set` | Warning | A `checkMesh` set names more faces, cells or points than the mesh has: it was written for another mesh |
 | `mesh.unreadable-set` | Warning | A `checkMesh` set could not be read |
+| `mesh.checkmesh-incomplete` | Error | A `checkMesh` log longer than is read has failures that are not listed: times past the first 1000 that failed a check or stopped (summarized by the size of mesh they checked, and matched to the mesh as other results are), or failed checks past 200 findings of one time. A warning in a vegetation region, as the findings themselves would be |
 
 Tested against `checkMesh`:
 - The five regions of the 3×3 test case give the same cell counts, volumes (min, max, total),

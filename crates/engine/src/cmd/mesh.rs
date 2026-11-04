@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_validate::mesh::{
-    CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, Quality, SetOf, checkmesh_log_diagnostics, diagnostics,
-    parse_checkmesh_log, quality, soften_for_vegetation, stale_set, unreadable,
+    CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf, checkmesh_log_diagnostics,
+    diagnostics, parse_checkmesh_log, quality, soften_for_vegetation, stale_set, unreadable,
 };
 use umcf_validate::{Diagnostic, Level};
 
@@ -87,6 +87,9 @@ fn log_json(l: &CheckMeshLog) -> Value {
         "notes": l.notes,
         "cells": l.cells,
         "fatal": l.fatal,
+        "skipped": l.skipped.map(|s| json!({ "times": s.times, "failed": s.failed })),
+        "truncated": l.truncated,
+        "unlisted_problems": l.unlisted_problems,
     })
 }
 
@@ -224,7 +227,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     // Logs for no region of the case (only when every region is checked).
     if region.is_none() {
         let all: Vec<&str> = case.regions.iter().map(|x| x.name.as_str()).collect();
+        let mut noted: Vec<&str> = Vec::new();
         for l in logs.iter().filter(|l| !all.contains(&l.region.as_str())) {
+            // One note per file (a long log has a result per time).
+            if noted.contains(&l.file.as_str()) {
+                continue;
+            }
+            noted.push(&l.file);
             let what = if l.region.is_empty() {
                 format!(
                     "checked the default mesh (no -region), which this case doesn't have; its regions are {}",
@@ -257,7 +266,11 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             };
             match &mesh {
                 Ok(m) if differs(m) => {
-                    let at = l.time.as_deref().map_or(String::new(), |t| format!(" (time {t})"));
+                    let at = match (&l.time, l.skipped) {
+                        (Some(t), _) => format!(" (time {t})"),
+                        (None, Some(_)) => format!(" (times past the first {MAX_LOG_RESULTS})"),
+                        (None, None) => String::new(),
+                    };
                     let size = |c: Option<u64>, f: Option<u64>, p: Option<u64>| {
                         let s = |x: Option<u64>| x.map_or("?".to_string(), |x| x.to_string());
                         format!("{} cells, {} faces, {} points", s(c), s(f), s(p))

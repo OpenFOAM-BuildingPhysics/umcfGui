@@ -394,22 +394,64 @@ fn checkmesh_findings_the_native_check_makes_are_notes() {
 
 #[test]
 fn a_long_checkmesh_log_is_cut_with_a_note() {
+    use crate::Level::{Error, Info, Warning};
     // With the banner before the first time, as in every real log.
     let mut log = String::from("Exec   : checkMesh -allTime\nCreate time\n\n");
     for _ in 0..(MAX_LOG_RESULTS + 50) {
-        log.push_str("Time = 1\n");
+        log.push_str("Time = 1\n    cells:            8\nMesh OK.\n");
     }
     let logs = parse_checkmesh_log("log.checkMesh", &log);
-    assert_eq!(logs.len(), MAX_LOG_RESULTS);
-    assert!(logs.last().unwrap().truncated);
-    let d = checkmesh_log_diagnostics(logs.last().unwrap(), None);
-    assert!(d.iter().any(|x| x.message.contains("longer than is read")));
+    assert_eq!(logs.len(), MAX_LOG_RESULTS + 1, "the times read, and one summary of the rest");
+    let summary = logs.last().unwrap();
+    assert_eq!((summary.skipped, summary.cells), (Some(Skipped { times: 50, failed: 0 }), Some(8)));
+    let d = checkmesh_log_diagnostics(summary, None);
+    assert_eq!((d.len(), d[0].level), (1, Info), "{d:?}");
 
+    // Failures past the times read are counted per size of mesh: a time of the mesh with 8
+    // cells failed; the 9-cell times passed.
+    let mut log = String::from("Exec   : checkMesh -allTime\n");
+    for _ in 0..MAX_LOG_RESULTS {
+        log.push_str("Time = 1\n    cells:            8\nMesh OK.\n");
+    }
+    log.push_str("Time = 2\n    cells:            8\n ***Error in face pyramids: 3 faces are incorrectly oriented.\nFailed 1 mesh checks.\n");
+    log.push_str(
+        "Time = 3\n    cells:            9\nMesh OK.\nTime = 4\n    cells:            9\nFailed 0 mesh checks.\n",
+    );
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let summaries: Vec<(Option<u64>, Option<Skipped>)> =
+        logs.iter().filter(|l| l.skipped.is_some()).map(|l| (l.cells, l.skipped)).collect();
+    assert_eq!(
+        summaries,
+        [(Some(8), Some(Skipped { times: 1, failed: 1 })), (Some(9), Some(Skipped { times: 2, failed: 0 }))]
+    );
+    let failed = logs.iter().find(|l| l.cells == Some(8) && l.skipped.is_some()).unwrap();
+    let mut d = checkmesh_log_diagnostics(failed, None);
+    assert_eq!((d[0].code, d[0].level), ("mesh.checkmesh-incomplete", Error), "{d:?}");
+    // In a vegetation region it is a warning, as the finding itself would be.
+    soften_for_vegetation(&mut d);
+    assert_eq!(d[0].level, Warning);
+
+    // Past MAX_SKIPPED_SIZES sizes: one summary of unknown size.
+    let mut log = String::from("Exec   : checkMesh -allTime\n");
+    for _ in 0..MAX_LOG_RESULTS {
+        log.push_str("Time = 1\nMesh OK.\n");
+    }
+    for n in 0..(MAX_SKIPPED_SIZES + 5) {
+        log.push_str(&format!("Time = 2\n    cells:            {}\nMesh OK.\n", 100 + n));
+    }
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let summaries: Vec<&CheckMeshLog> = logs.iter().filter(|l| l.skipped.is_some()).collect();
+    assert_eq!(summaries.len(), MAX_SKIPPED_SIZES + 1);
+    assert_eq!(summaries.last().map(|l| (l.cells, l.skipped)), Some((None, Some(Skipped { times: 5, failed: 0 }))));
+
+    // More findings in one time than are kept: the failed checks not listed are an error.
     let mut log = String::from("Exec   : checkMesh\n");
     for _ in 0..(MAX_LOG_FINDINGS + 50) {
         log.push_str(" ***x\n *y\n");
     }
     let l = parse_checkmesh_log("log.checkMesh", &log).pop().unwrap();
     assert_eq!(l.problems.len() + l.notes.len(), MAX_LOG_FINDINGS);
-    assert!(l.truncated);
+    assert!(l.truncated && l.unlisted_problems == 150);
+    let d = checkmesh_log_diagnostics(&l, None);
+    assert!(d.iter().any(|x| x.code == "mesh.checkmesh-incomplete" && x.message.contains("150 more failed")), "{d:?}");
 }
