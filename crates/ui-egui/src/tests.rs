@@ -534,3 +534,80 @@ fn a_surface_asked_for_before_the_surfaces_list_shows_once_they_do() {
     assert_eq!(app.shown_surfaces, ["constant/triSurface/a.stl"]);
     assert_eq!(app.shown_regions, [""]);
 }
+
+fn type_into(h: &mut Harness<'_, App>, role: egui::Role, label: &str, text: &str) {
+    h.get_by_role_and_label(role, label).click();
+    h.run();
+    h.get_by_role_and_label(role, label).type_text(text);
+    h.run();
+}
+
+#[test]
+fn a_condition_is_set_on_the_picked_patches() {
+    let mut app = app();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "ground" }, { "region": "", "patch": "sky" }] }))
+        .unwrap();
+    let mut h = harness(app);
+    h.get_by_role_and_label(egui::Role::Tab, "Boundary conditions").click();
+    h.run();
+    h.get_by_label("Set condition").click();
+    h.run();
+    // The card starts from the first patch's condition: ground's comes from a pattern.
+    assert_eq!(h.state().bc.as_ref().map(|f| (f.field.as_str(), f.kind.as_str())), Some(("T", "")));
+    h.get_by_label("2 patches: ground, sky");
+    type_into(&mut h, egui::Role::TextInput, "Type", "inletOut");
+    h.run();
+    // The suggestions follow what is typed.
+    h.get_by_label("inletOutlet").click();
+    h.run();
+    type_into(&mut h, egui::Role::TextInput, "Value", "uniform 280");
+    type_into(
+        &mut h,
+        egui::Role::MultilineTextInput,
+        "Other entries, one per line: key value",
+        "inletValue uniform 281",
+    );
+    h.run();
+    h.get_by_label("Set").click();
+    h.run();
+    assert!(h.state().bc.is_none(), "{:?}", h.state().bc);
+    let case = h.state().session().case().unwrap();
+    let t = case.region("").unwrap().field("T").unwrap();
+    let bcs: Vec<_> =
+        t.bcs.as_ref().unwrap().iter().map(|b| (b.patch.as_str(), b.kind.as_deref(), b.value.as_deref())).collect();
+    assert!(bcs.contains(&("ground", Some("inletOutlet"), Some("uniform 280"))), "{bcs:?}");
+    assert!(bcs.contains(&("sky", Some("inletOutlet"), Some("uniform 280"))), "{bcs:?}");
+    assert_eq!(h.state().log.last().unwrap().command, "bc.set");
+    // An error keeps the card open and says why.
+    h.get_by_label("Set condition").click();
+    h.run();
+    h.state_mut().bc.as_mut().unwrap().kind = "bad type".to_string();
+    h.run();
+    h.get_by_label("Set").click();
+    h.run();
+    assert!(
+        h.state()
+            .bc
+            .as_ref()
+            .and_then(|f| f.error.as_ref())
+            .is_some_and(|e| e.contains("not a boundary condition type"))
+    );
+}
+
+#[test]
+fn the_condition_card_reads_its_entries() {
+    let form = crate::bc::BcForm {
+        field: "U".into(),
+        kind: " fixedValue ".into(),
+        value: "uniform (1 0 0)".into(),
+        more: "inletValue uniform (0 0 0);\n\n  refValue   uniform (1 1 1)\n".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        form.params().unwrap(),
+        json!({ "field": "U", "type": "fixedValue", "value": "uniform (1 0 0)", "entries": { "inletValue": "uniform (0 0 0)", "refValue": "uniform (1 1 1)" } })
+    );
+    let bad = crate::bc::BcForm { more: "lonely".into(), ..form.clone() };
+    assert!(bad.params().unwrap_err().contains("key value"));
+    assert!(crate::bc::BcForm { kind: " ".into(), ..form }.params().is_err());
+}

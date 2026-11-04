@@ -7,16 +7,18 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Boundary conditions by picking: `bc.set` on the selected patches, with the types the catalog offers for the field and version | Assigning BCs patch by patch in text files is slow and error-prone | `engine`, `ui-egui` |
-| 2 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces where they must be, inconsistent normals where the inside matters, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
-| 3 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
+| 1 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces where they must be, inconsistent normals where the inside matters, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
+| 2 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
 
 ## Known limits
 
 | Limit | Effect | Possible fix |
 |---|---|---|
 | `Case::open` reads each start-time field file whole to list its boundary conditions | Opening a case at a late time with gzipped multi-GB fields takes 20 s (Hong Kong project: 30 fields, 4 GB); files over 256 MB are listed without their BCs | Read fields in the background after the case opens, and only when they are needed |
-| Fields are read, not edited | Boundary conditions can't be changed yet | `bc.set` edits the field file losslessly, splicing list data back unchanged |
+| `bc.set` sets the patch's own entry only | A condition given by a group or a pattern (`"(wall\|roof).*"`) isn't changed: the patch gets an entry of its own, which takes precedence; setting the group's entry needs `dict.set`-style editing of field files | A `bc.set` target for a group or pattern entry |
+| A same-type `bc.set` can add or change keys, not remove them | Removing a key from a condition means giving the patch another type and back, or editing the file | A `remove` list in `bc.set` |
+| Field files over the open limit (256 MB) are not edited | Their conditions can't be set here (they are listed without them already) | Rewrite the `boundaryField` part of a big file without reading its lists into numbers |
+| An edited field file is kept whole per change, for undo | Ten condition changes on a 500 MB field file hold ten copies until the undo history drops them | Store the edits as steps to replay, or cap undo by memory |
 | The workflow covers the 3×3 pattern: snappyHexMesh and blockMesh regions in one case | Meshing chains spread over several cases (the Hong Kong project's extrusions, `sourceCase`) are checked step by step but not read into a workflow | Workflow steps for extrusion and for meshes taken from another case |
 | A script's effect is followed only for commands the check knows | After a Python helper or an unknown utility, the rest of that script is not checked for missing files | Declare a helper's outputs in the workflow |
 | `dict.set` quotes a new key only when it starts with `(` | A new pattern key that doesn't (`"U.*"`) is written as a plain word, which OpenFOAM doesn't match as a pattern; existing quoted keys are found and kept | A parameter that marks a key as a pattern |
@@ -30,4 +32,4 @@ in the same pull request that closes it.
 | No control channel yet | `umcf-gui --control` (AGENTS.md §7) and `ui.screenshot` are not there; screenshots come from `--screenshot` | A JSON-lines server in `ui-egui` over the engine |
 | Only STL surfaces are checked | OBJ, VTK and the other surface formats OpenFOAM reads in `constant/triSurface` are skipped by `geometry.check` | Readers for OBJ and VTK in `geom` |
 | A surface command keeps a copy of the file per change, for undo | Repairing a 500 MB surface ten times holds ten copies until the undo history (100 steps) drops them | Keep one copy per surface and store the repairs as steps to replay, or cap undo by memory |
-| Standard OpenFOAM boundary-condition and model types are not in the catalog | A misspelt `zeroGradient` is not caught before the run | Extend `xtask catalog` to the OpenFOAM sources the solver builds against |
+| Standard OpenFOAM boundary-condition and model types are not in the catalog | A misspelt `zeroGradient` is not caught before the run; the condition card offers a short hand-written list of OpenFOAM's common types | Extend `xtask catalog` to the OpenFOAM sources the solver builds against |

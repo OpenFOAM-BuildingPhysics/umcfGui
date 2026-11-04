@@ -36,3 +36,30 @@ or a value, never a crash or a runaway allocation.
 Reading runs at about 370 MB/s of field text and decompression at about 235 MB/s, on one core.
 The largest file of a real project time step (597 MB of `U`, 16 million vectors) takes about
 four seconds.
+
+## Setting boundary conditions
+
+`bc.set` sets the condition of one or more patches in a field of the start time (`0/air/U`),
+in the desktop app's [condition card](desktop.md#boundary-conditions) or as a command:
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'bc.set={"field": "T", "type": "fixedValue", "value": 290, "patches": [{"region": "air", "patch": "north"}]}' \
+  --cmd 'case.save={}'
+```
+
+- A patch whose own entry has that type already **keeps its entry**: the value and entries given
+  are set in it, and its other keys, comments and `#include`s stay. Otherwise the patch gets a new
+  entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
+  had none (a condition from a group or a pattern then still applies to the other patches).
+- **Nothing else in the file changes, byte for byte**: not the other entries, the comments, the
+  layout nor the data lists, ASCII or binary; a `.gz` file is compressed again. A file that
+  wouldn't come back unchanged without an edit is refused rather than rewritten. Every field
+  file of the test projects comes back byte for byte.
+- A field whose `boundaryField` comes from elsewhere (`boundaryField $common;`, an `#include`)
+  is not edited: the condition is in that other file.
+- The edit is one step in the undo history, and is written by `case.save` after a backup.
+- The command returns the [case check](checks.md)'s findings for those patches and that field: a
+  type the solver doesn't have for the case's OpenFOAM version, or a constraint patch (`empty`,
+  `cyclic`) given another type.
+

@@ -861,3 +861,75 @@ fn the_history_names_the_edits() {
     s.execute("edit.redo", &Value::Null).unwrap();
     assert_eq!(s.history().0.len(), 1);
 }
+
+fn bc_of(s: &Session, field: &str, patch: &str) -> Option<(Option<String>, Option<String>)> {
+    let f = s.case()?.region("air")?.field(field)?;
+    f.bcs.as_ref()?.iter().find(|b| b.patch == patch).map(|b| (b.kind.clone(), b.value.clone()))
+}
+
+#[test]
+fn boundary_conditions_on_the_selected_patches() {
+    let mut s = session();
+    // Nothing selected: nothing to set.
+    let e = s.execute("bc.set", &json!({"field": "T", "type": "zeroGradient"})).unwrap_err().to_string();
+    assert!(e.contains("no patches"), "{e}");
+    s.execute("select.set", &json!({"items": [{"region": "air", "patch": "inlet"}]})).unwrap();
+    let o = s
+        .execute(
+            "bc.set",
+            &json!({"field": "T", "type": "inletOutlet", "value": 290, "entries": {"inletValue": "uniform 290"}}),
+        )
+        .unwrap();
+    assert_eq!(o.message, "T: inletOutlet on inlet");
+    assert_eq!(o.data["files"], json!(["0/air/T"]));
+    assert_eq!(bc_of(&s, "T", "inlet"), Some((Some("inletOutlet".into()), Some("uniform 290".into()))));
+    assert_eq!(s.case().unwrap().changed(), ["0/air/T"]);
+    // A vector as a list of numbers; patches given explicitly.
+    s.execute("bc.set", &json!({"field": "U", "type": "fixedValue", "value": [2, 0, 0], "patches": [{"region": "air", "patch": "inlet"}]}))
+        .unwrap();
+    assert_eq!(bc_of(&s, "U", "inlet"), Some((Some("fixedValue".into()), Some("uniform (2 0 0)".into()))));
+    // Undo puts the file back as it was.
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(bc_of(&s, "T", "inlet"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
+    assert!(s.case().unwrap().changed().is_empty());
+    // Saved, only the entry changed.
+    s.execute("edit.redo", &json!({})).unwrap();
+    s.execute("case.save", &json!({})).unwrap();
+    let t = text(&s, "0/air/T");
+    assert!(t.starts_with("FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\ndimensions [0 0 0 1 0 0 0];\ninternalField uniform 300;\nboundaryField\n{\n    inlet"), "{t}");
+    assert!(
+        t.ends_with("    inlet\n    {\n        type            inletOutlet;\n        inletValue      uniform 290;\n        value           uniform 290;\n    }\n}\n"),
+        "{t}"
+    );
+}
+
+#[test]
+fn boundary_conditions_refuse_what_would_break_the_file() {
+    let mut s = session();
+    let p = json!([{"region": "air", "patch": "inlet"}]);
+    for bad in [
+        json!({"field": "T", "type": "fixed Value", "patches": p}),
+        json!({"field": "T", "type": "a;b", "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "value": "uniform 1; type zeroGradient", "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "value": "{ x 1; }; y", "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "entries": {"type": "x"}, "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "patches": [{"region": "air", "patch": "nowhere"}]}),
+        json!({"field": "T", "type": "fixedValue", "patches": [{"region": "street", "patch": "inlet"}]}),
+        json!({"field": "nothere", "type": "fixedValue", "patches": p}),
+    ] {
+        assert!(s.execute("bc.set", &bad).is_err(), "{bad}");
+    }
+    assert!(s.case().unwrap().changed().is_empty());
+    assert!(!s.can_undo());
+}
+
+#[test]
+fn boundary_condition_types_offered() {
+    let s = session();
+    let scalar = s.bc_types("volScalarField");
+    assert!(scalar.contains(&"fixedValue") && scalar.contains(&"fixedFluxPressure") && !scalar.contains(&"noSlip"));
+    assert!(scalar.contains(&"compressible::CFDHAMfluidTemperatureCoupledMixed"), "{scalar:?}");
+    let vector = s.bc_types("volVectorField");
+    assert!(vector.contains(&"noSlip") && !vector.contains(&"compressible::CFDHAMfluidTemperatureCoupledMixed"));
+}

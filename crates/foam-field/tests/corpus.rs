@@ -149,6 +149,14 @@ fn reference_case_fields() {
                     };
                     files += 1;
                     values += f.lists().iter().map(|l| l.len()).sum::<usize>();
+                    // Unedited, a rewrite gives the file back byte for byte (files up to 256 MB).
+                    if let Ok(Some(bytes)) = fs.read(&rel, 256 << 20) {
+                        match umcf_foam_field::rewrite(&bytes, &limits, |_| Ok(())) {
+                            Ok(out) if out == bytes => {}
+                            Ok(_) => failures.push(format!("{case}/{rel}: rewritten with changes")),
+                            Err(e) => failures.push(format!("{case}/{rel}: can't be rewritten: {e}")),
+                        }
+                    }
                     let Some((cells, patches)) = &sizes else { continue };
                     if !f.class().unwrap_or("").starts_with("vol") {
                         continue;

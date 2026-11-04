@@ -43,3 +43,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-04 — M0.20 desktop app: `ui-egui` and `umcf-gui` with a SolidCraft-style layout; the engine names the edits in its undo history.
 - 2026-11-04 — M0.21 the Claude review workflow, run on a pull request by `/claude-review`.
 - 2026-11-04 — M0.22 the desktop app's review fixes: the scene and the surface list are not read again on every frame, and a panic while building the scene is caught; `--screenshot` fails when the case or a `--cmd` does.
+- 2026-11-04 — M0.23 boundary conditions by picking: `bc.set` (a patch's entry set, every other byte of the field file kept, binary and gzip too), the condition card in the desktop app, `umcf-gui --open`.

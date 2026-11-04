@@ -674,3 +674,67 @@ fn undo_after_saving_a_surface_is_a_change_to_save_again() {
     c.save(&mut fs, None).unwrap();
     assert_eq!(fs.read("constant/triSurface/box.stl", 10).unwrap().unwrap(), b"O");
 }
+
+#[test]
+fn a_boundary_condition_changes_its_entry_only() {
+    let mut fs = case();
+    let mut c = Case::open(&fs).unwrap();
+    let before = fs.read("0/air/T", 1 << 20).unwrap().unwrap();
+    c.set_bc(&fs, "air", "T", &["top", "inlet"], "fixedValue", &[("value", "uniform 290")]).unwrap();
+    let bcs = c.region("air").unwrap().field("T").unwrap().bcs.clone().unwrap();
+    let summary: Vec<_> = bcs.iter().map(|b| (b.patch.as_str(), b.kind.as_deref(), b.value.as_deref())).collect();
+    assert_eq!(
+        summary,
+        [
+            ("ground", Some("fixedValue"), Some("nonuniform List<scalar> 4")),
+            ("top", Some("fixedValue"), Some("uniform 290")),
+            ("(wall|roof).*", Some("calculated"), Some("$internalField")),
+            ("inlet", Some("fixedValue"), Some("uniform 290")),
+        ]
+    );
+    assert_eq!(c.changed(), ["0/air/T"]);
+    let after = c.file(&fs, "0/air/T").unwrap().unwrap();
+    let (before, after) = (String::from_utf8(before).unwrap(), String::from_utf8(after.to_vec()).unwrap());
+    let head = before.split("    top").next().unwrap();
+    assert!(after.starts_with(head), "{after}");
+    assert!(after.contains("\"(wall|roof).*\" { type calculated; value $internalField; }"), "{after}");
+    // Saved like any file a command wrote.
+    assert_eq!(c.save(&mut fs, None).unwrap(), ["0/air/T"]);
+    assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), after.as_bytes());
+    // What can't be edited says why.
+    let e = |r: Result<()>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e(c.set_bc(&fs, "air", "U", &["top"], "fixedValue", &[])).contains("no field U of region air"));
+    assert!(e(c.set_bc(&fs, "nowhere", "T", &["top"], "fixedValue", &[])).contains("no region"));
+}
+
+#[test]
+fn a_boundary_field_from_elsewhere_is_not_edited() {
+    let fs = case()
+        .with("0/street/T", format!("{}internalField uniform 290;\n#include \"bcs\"\n", header("volScalarField", "T")));
+    let mut c = Case::open(&fs).unwrap();
+    let e = c.set_bc(&fs, "street", "T", &["top"], "zeroGradient", &[]).unwrap_err().to_string();
+    assert!(e.contains("comes from elsewhere"), "{e}");
+    assert!(c.changed().is_empty());
+}
+
+#[test]
+fn the_same_type_keeps_its_entry() {
+    let fs = case().with(
+        "0/air/U",
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    ground\n    {{\n        type            atmBoundaryLayerInletVelocity;\n        #include        \"include/ABLConditions\"\n        value           uniform (1 0 0); // from the profile\n    }}\n}}\n",
+            header("volVectorField", "U")
+        ),
+    );
+    let mut c = Case::open(&fs).unwrap();
+    c.set_bc(&fs, "air", "U", &["ground"], "atmBoundaryLayerInletVelocity", &[("value", "uniform (2 0 0)")]).unwrap();
+    let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
+    assert!(
+        text.contains("        type            atmBoundaryLayerInletVelocity;\n        #include        \"include/ABLConditions\"\n        value           uniform (2 0 0); // from the profile\n"),
+        "{text}"
+    );
+    // Another type starts afresh.
+    c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (0 0 0)")]).unwrap();
+    let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
+    assert!(!text.contains("#include") && text.contains("type            fixedValue;"), "{text}");
+}

@@ -2,6 +2,7 @@
 
 use crate::CommandSpec;
 
+mod bc;
 mod case;
 mod edit;
 mod geometry;
@@ -23,6 +24,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     scene::PICK,
     scene::SELECT,
     scene::CLEAR,
+    bc::SET,
     edit::CONTROL_SET,
     edit::DICT_SET,
     edit::DICT_REMOVE,

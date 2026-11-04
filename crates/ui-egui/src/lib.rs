@@ -36,6 +36,7 @@ use umcf_engine::{COMMANDS, CommandSpec, Outcome, Sel, Session};
 use umcf_render::Source;
 use umcf_render::camera::{Camera, View};
 
+pub mod bc;
 pub mod icons;
 pub mod ribbon;
 pub mod theme;
@@ -86,6 +87,8 @@ pub struct App {
     /// chosen, Escape, or a click elsewhere.
     pub search_open: bool,
     pub dialog: Option<Dialog>,
+    /// The boundary-condition card, while it is open.
+    pub bc: Option<bc::BcForm>,
     /// Commands that ran, newest last (at most [`LOG`]).
     pub log: Vec<Entry>,
     /// The results card is open (it opens when a command reports diagnostics).
@@ -204,6 +207,7 @@ impl App {
             focus_search: false,
             search_open: false,
             dialog: None,
+            bc: None,
             log: Vec::new(),
             results_open: false,
             expanded: BTreeSet::new(),
@@ -378,6 +382,12 @@ impl App {
     /// card for one with.
     pub fn invoke(&mut self, id: &'static str) {
         let Some(spec) = Session::command(id) else { return };
+        // Setting a condition has a form of its own.
+        if id == "bc.set" {
+            self.dialog = None;
+            self.bc = Some(bc::BcForm::default());
+            return;
+        }
         if takes_none(spec) {
             let _ = self.run(id, json!({}));
         } else {
@@ -473,6 +483,7 @@ impl App {
         let typing = ctx.memory(|m| m.focused().is_some());
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.dialog = None;
+            self.bc = None;
             self.results_open = false;
             self.workspace_menu = false;
             self.search.clear();
@@ -1255,13 +1266,20 @@ impl App {
         let mut clear = false;
         let mut close_results = false;
         let muted = Ink { line: t.text_muted, fill: t.accent };
+        // The height a card has below the triad, down to the bottom of the view.
+        let room = canvas.bottom() - (canvas.top() + t.gap + 112.0) - t.gap;
         let area = egui::Area::new(Id::unique("right-cards"))
             .order(egui::Order::Middle)
             .pivot(Align2::RIGHT_TOP)
             .fixed_pos(pos2(canvas.right() - t.gap, canvas.top() + t.gap + 112.0));
+        let mut set_bc = false;
+        let mut close_bc = false;
         area.show(ctx, |ui| {
             ui.set_width(width + 16.0);
-            if let Some(d) = &mut self.dialog
+            if self.bc.is_some() {
+                (set_bc, close_bc) = self.bc_card(ui, width, room);
+                ui.add_space(t.gap);
+            } else if let Some(d) = &mut self.dialog
                 && let Some(spec) = Session::command(d.id)
             {
                 t.card_frame().show(ui, |ui| {
@@ -1367,6 +1385,11 @@ impl App {
         });
         if close_dialog {
             self.dialog = None;
+        }
+        if close_bc {
+            self.bc = None;
+        } else if set_bc {
+            self.set_bc();
         }
         if close_results {
             self.results_open = false;
@@ -1619,6 +1642,8 @@ pub struct Options {
     /// What the 3D view shows first: mesh regions and surface files (`walls.stl`) by name;
     /// empty for the default.
     pub show: Vec<String>,
+    /// A command whose card opens at the start, as its ribbon button opens it (`bc.set`).
+    pub open: Option<String>,
 }
 
 /// The desktop window around an [`App`].
@@ -1702,6 +1727,13 @@ pub fn run(options: Options) -> Result<(), String> {
         for n in unknown {
             eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
         }
+    }
+    if let Some(id) = &options.open {
+        let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
+        if let Some(tab) = ribbon::tab_of(app.workspace, spec.id) {
+            app.tab = tab;
+        }
+        app.invoke(spec.id);
     }
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     let native = eframe::NativeOptions {

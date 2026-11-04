@@ -68,6 +68,10 @@ pub enum Error {
     IsDict(String),
     #[error("{0} already has 1000 backups")]
     BackupsFull(String),
+    #[error("{path}: {source}")]
+    Field { path: String, source: umcf_foam_field::Error },
+    #[error("{0}")]
+    Bc(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
 }
@@ -667,6 +671,78 @@ impl Case {
         };
         let fingerprint = fingerprint(&bytes);
         self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
+        Ok(())
+    }
+
+    /// Sets the boundary condition of `patches` in a field of the start time. A patch whose own
+    /// entry already has type `kind` keeps it, with `entries` set in it (its other keys,
+    /// comments and `#include`s stay). Otherwise its entry becomes `{ type <kind>; <key>
+    /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
+    /// or pattern entry stays for the other patches it covers. Nothing else in the file
+    /// changes, byte for byte: not the other entries, the comments, nor the data lists.
+    /// [`Case::save`] writes it.
+    pub fn set_bc(
+        &mut self,
+        fs: &dyn CaseFs,
+        region: &str,
+        field: &str,
+        patches: &[&str],
+        kind: &str,
+        entries: &[(&str, &str)],
+    ) -> Result<()> {
+        let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
+        let r = self
+            .regions
+            .iter()
+            .position(|r| r.name == region)
+            .ok_or_else(|| Error::Bc(format!("the case has no region `{region}`")))?;
+        let info = self
+            .regions
+            .get(r)
+            .and_then(|r| r.field(field))
+            .ok_or_else(|| Error::Bc(format!("there is no field {which} at the start time")))?;
+        if info.bcs.is_none() {
+            return Err(Error::Bc(format!("{}: too large to be read here, so it isn't edited", info.path)));
+        }
+        if !info.boundary_field {
+            return Err(Error::Bc(format!(
+                "{}: its boundaryField comes from elsewhere (a macro or an #include): edit that file",
+                info.path
+            )));
+        }
+        let path = info.path.clone();
+        let name = info.name.clone();
+        let mut body = format!("{{ type {kind};");
+        for (k, v) in entries {
+            body.push_str(&format!(" {k} {v};"));
+        }
+        body.push_str(" }");
+        let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
+        let bytes = self.file(fs, &path)?.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
+        let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
+            for p in patches {
+                let same = doc
+                    .get(&["boundaryField", p])
+                    .and_then(umcf_foam_dict::Entry::dict)
+                    .and_then(|d| word(d, "type"))
+                    .is_some_and(|t| t == kind);
+                if same {
+                    for (k, v) in entries {
+                        doc.set(&["boundaryField", p, k], v)?;
+                    }
+                } else {
+                    doc.set(&["boundaryField", p], &body)?;
+                }
+            }
+            Ok(())
+        })
+        .map_err(|source| Error::Field { path: path.clone(), source })?;
+        let parsed = Field::parse_with(&out, &limits).map_err(|source| Error::Field { path: path.clone(), source })?;
+        let summary = summarise(name, path.clone(), &parsed);
+        self.put_file(fs, &path, out)?;
+        if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
+            *f = summary;
+        }
         Ok(())
     }
 
