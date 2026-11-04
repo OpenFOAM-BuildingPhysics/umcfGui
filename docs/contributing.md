@@ -49,6 +49,17 @@ Moving the pin is a commit of its own; check it with `cargo xtask ci` and the
 | `docs` | the API reference builds without warnings, and the site builds in strict mode |
 | `deny` | every dependency's licence is GPL-3-compatible (needs `cargo install cargo-deny`) |
 
+## Reviews
+
+Every pull request gets a CodeRabbit review; `main` requires its check and `cargo xtask ci` to
+pass, and every review thread to be resolved. A Claude Code review runs only when asked for,
+never on its own: comment `/claude-review` on an open pull request. Only a comment from an
+account with write access to the repository counts. It reviews the PR's head as it stands,
+posts its findings as inline comments (each a thread to resolve before merging) and a summary
+comment, and never runs the PR's code. The comment trigger runs the workflow as it is on
+`main`. It needs the repository secret `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`, then
+`gh secret set CLAUDE_CODE_OAUTH_TOKEN`).
+
 ## This site
 
 The site is built with [Zensical](https://zensical.org) from `docs/` and `zensical.toml`:
