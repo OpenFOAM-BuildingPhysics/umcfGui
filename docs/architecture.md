@@ -5,7 +5,7 @@ Rust crates.
 
 !!! info "Status"
     The crates that exist today are `core`, `geom`, `foam-dict`, `foam-field`, `foam-mesh`, `schema` (case layout
-    and the generated [solver catalog](solver-coverage.md)), `model`, `validate`, `render`, `engine` and the `umcf-cli` app, plus the `xtask` tooling.
+    and the generated [solver catalog](solver-coverage.md)), `model`, `validate`, `render`, `engine`, `ui-egui` and the `umcf-cli` and `umcf-gui` apps, plus the `xtask` tooling.
     The others in the table below are planned.
 
 ## Core patterns
@@ -20,7 +20,7 @@ Rust crates.
 | Headless parity | `execute_headless` rejects commands that would only open a dialog. The CLI and MCP use it |
 | Control channel | JSON lines over TCP: `engine.execute`, `ui.screenshot`, `ui.inspect`, plus `run.events` (a stream of job progress) |
 | Agent control | `mcp` crate: tools = commands; `--connect` drives the running app |
-| Offscreen snapshot | `cargo run -p umcf-ui-egui --example snapshot`. This is how agents check UI work |
+| Window snapshot | `umcf-gui <case> --screenshot shot.png` (under `xvfb-run` without a display) writes a PNG of the window once it has drawn; the UI tests drive the interface without a window (egui_kittest). This is how agents check UI work |
 | Fuzzing invariants | Every command survives empty params. Random command sequences are checked against undo/redo and "save → reload → identical model" |
 | `xtask` as the only tooling | `ci`, `layers`, `assets`, `catalog`, `wasm` |
 

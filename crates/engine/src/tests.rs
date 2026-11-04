@@ -831,3 +831,33 @@ fn the_scene_follows_surface_edits() {
     let d2 = s.execute("scene.snapshot", &p).unwrap().data["camera"]["distance"].as_f64().unwrap();
     assert!((d2 - d0).abs() < 1e-9);
 }
+
+/// The undo history names each edit; undo and redo move it between the two lists.
+#[test]
+fn the_history_names_the_edits() {
+    let mut s = session();
+    assert_eq!(s.history(), (Vec::new(), Vec::new()));
+    s.execute("control.set", &json!({ "endTime": 7200 })).unwrap();
+    s.execute("dict.set", &json!({ "file": "system/air/fvSolution", "path": "PIMPLE/nOuterCorrectors", "value": 2 }))
+        .unwrap();
+    // Commands that don't change the case are not in it.
+    s.execute("case.check", &Value::Null).unwrap();
+    let names = |l: Vec<&Edit>| l.iter().map(|e| (e.command, e.detail.clone())).collect::<Vec<_>>();
+    let (done, undone) = s.history();
+    assert_eq!(
+        names(done),
+        [
+            ("control.set", "endTime 7200".to_string()),
+            ("dict.set", "fvSolution, nOuterCorrectors, value 2".to_string())
+        ]
+    );
+    assert!(undone.is_empty());
+    s.execute("edit.undo", &Value::Null).unwrap();
+    s.execute("edit.undo", &Value::Null).unwrap();
+    let (done, undone) = s.history();
+    assert!(done.is_empty());
+    // Next to redo first.
+    assert_eq!(undone.iter().map(|e| e.label).collect::<Vec<_>>(), ["Set run controls", "Set dictionary entry"]);
+    s.execute("edit.redo", &Value::Null).unwrap();
+    assert_eq!(s.history().0.len(), 1);
+}

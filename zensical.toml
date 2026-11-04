@@ -19,6 +19,7 @@ nav = [
     "user-guide/surfaces.md",
     "user-guide/meshes.md",
     "user-guide/scene.md",
+    "user-guide/desktop.md",
     "user-guide/checks.md",
     "user-guide/workflow.md",
     "user-guide/command-line.md",

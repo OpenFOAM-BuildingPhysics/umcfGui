@@ -105,11 +105,49 @@ struct Opened {
     location: String,
 }
 
+/// One edit in the undo history: the case as it was on one side of it, and what it was.
+#[derive(Clone)]
+pub(crate) struct Step {
+    pub(crate) case: Case,
+    pub(crate) edit: Edit,
+}
+
+/// An edit in the undo history, for people: the command and what it acted on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub command: &'static str,
+    pub label: &'static str,
+    /// The parameters, short (`endTime 7200`, `walls.stl`).
+    pub detail: String,
+}
+
+fn detail(params: &Value) -> String {
+    let Some(map) = params.as_object() else { return String::new() };
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in map {
+        let text = match v {
+            Value::String(s) => s.rsplit('/').next().unwrap_or(s).to_string(),
+            Value::Number(_) | Value::Bool(_) => format!("{k} {v}"),
+            _ => continue,
+        };
+        parts.push(if matches!(v, Value::String(_)) && !["file", "path", "name"].contains(&k.as_str()) {
+            format!("{k} {text}")
+        } else {
+            text
+        });
+    }
+    let mut d = parts.join(", ");
+    if d.chars().count() > 48 {
+        d = d.chars().take(47).collect::<String>() + "…";
+    }
+    d
+}
+
 /// One editing session: at most one open case, its undo history and the journal.
 pub struct Session {
     opened: Option<Opened>,
-    undo: Vec<Case>,
-    redo: Vec<Case>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     journal: Vec<Value>,
     backup: String,
     /// How many times a case was opened: a failed command that opened one is told apart from
@@ -143,8 +181,8 @@ impl Default for Session {
 struct Saved {
     case: Option<Case>,
     opens: u64,
-    undo: Vec<Case>,
-    redo: Vec<Case>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// The journal only grows during a command (or is cleared by an open): its length is enough.
     journal: usize,
 }
@@ -196,6 +234,12 @@ impl Session {
 
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// The undo history: the edits that can be undone, oldest first, and those that can be
+    /// redone, next first.
+    pub fn history(&self) -> (Vec<&Edit>, Vec<&Edit>) {
+        (self.undo.iter().map(|s| &s.edit).collect(), self.redo.iter().rev().map(|s| &s.edit).collect())
     }
 
     /// What is selected, in the order it was selected.
@@ -295,7 +339,8 @@ impl Session {
         match result {
             Ok(Ok(outcome)) => {
                 if let Some(case) = before {
-                    self.undo.push(case);
+                    let edit = Edit { command: spec.id, label: spec.label, detail: detail(params) };
+                    self.undo.push(Step { case, edit });
                     if self.undo.len() > UNDO_DEPTH {
                         self.undo.remove(0);
                     }

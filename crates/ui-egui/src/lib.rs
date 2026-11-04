@@ -1,0 +1,1623 @@
+//! The umcfGui desktop interface (egui). It is thin: panels read the engine's state and change
+//! it only by running commands ([`App::run`]), the same ones the CLI and scripts run.
+//!
+//! The layout follows SolidCraft's (MIT OR Apache-2.0, Copyright (c) 2026 SolidCraft
+//! contributors): a dark application bar; a workspace card beside a ribbon of commands in
+//! groups, with the command search; the 3D view filling the window with floating cards over it
+//! (the browser on the left, properties and results on the right, the navigation bar); the edit
+//! history along the bottom. The code is umcfGui's own.
+//!
+//! - The ribbon ([`ribbon`]) and the search are built from the command registry
+//!   (`umcf_engine::COMMANDS`): a command that can't run is shown disabled, with the reason. A
+//!   command with parameters opens its card (its parameter text and a JSON editor); one without
+//!   runs at once. Shortcuts come from the registry too.
+//! - The browser lists the case's regions with their patches and its STL surfaces with their
+//!   regions; a click selects (`select.set`), the eye says what the 3D view shows.
+//! - The 3D view ([`viewport`]) draws the scene with the CPU renderer; a click picks
+//!   (`select.pick`).
+//! - Colours and sizes come from [`theme::Tokens`]; icons are drawn in code ([`icons`]).
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unimplemented,
+    clippy::todo,
+    clippy::unreachable
+)]
+
+use std::collections::BTreeSet;
+
+use eframe::egui::{
+    self, Align, Align2, Color32, CornerRadius, Id, Key, KeyboardShortcut, Layout, Modifiers, Rect, Response, RichText,
+    Sense, Stroke, StrokeKind, Ui, pos2, vec2,
+};
+use serde_json::json;
+use umcf_engine::{COMMANDS, CommandSpec, Outcome, Sel, Session};
+use umcf_render::Source;
+use umcf_render::camera::{Camera, View};
+
+pub mod icons;
+pub mod ribbon;
+pub mod theme;
+pub mod viewport;
+
+#[cfg(test)]
+mod tests;
+
+use icons::{Icon, Ink};
+use ribbon::{Item, Workspace};
+use theme::Tokens;
+use viewport::{Action, Viewport};
+
+pub use serde_json::Value;
+
+/// One command that ran, for the results card and the status line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub command: String,
+    pub ok: bool,
+    pub message: String,
+    pub data: Value,
+}
+
+/// A command waiting for its parameters, in the properties card.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dialog {
+    pub id: &'static str,
+    pub params: String,
+    pub error: Option<String>,
+}
+
+/// The interface's state around a [`Session`].
+pub struct App {
+    session: Session,
+    pub tokens: Tokens,
+    pub viewport: Viewport,
+    /// Mesh regions and surfaces the 3D view shows.
+    pub shown_regions: Vec<String>,
+    pub shown_surfaces: Vec<String>,
+    pub workspace: Workspace,
+    pub tab: usize,
+    pub workspace_menu: bool,
+    /// The command search's text; the results show while it has the focus.
+    pub search: String,
+    focus_search: bool,
+    /// The search's results are shown: from when the field gets the focus until a command is
+    /// chosen, Escape, or a click elsewhere.
+    pub search_open: bool,
+    pub dialog: Option<Dialog>,
+    /// Commands that ran, newest last (at most [`LOG`]).
+    pub log: Vec<Entry>,
+    /// The results card is open (it opens when a command reports diagnostics).
+    pub results_open: bool,
+    /// Browser rows that are open.
+    pub expanded: BTreeSet<String>,
+    /// Goes up whenever a command ran: the 3D view draws again.
+    revision: u64,
+    /// The case the shown lists were made for.
+    shown_for: Option<String>,
+    styled: bool,
+}
+
+/// The most log entries kept.
+pub const LOG: usize = 200;
+
+const SEARCH_ID: &str = "command-search";
+
+/// A registry shortcut (`Ctrl+Shift+Z`, `F7`) as egui's.
+pub fn shortcut(text: &str) -> Option<KeyboardShortcut> {
+    let mut mods = Modifiers::NONE;
+    let mut key = None;
+    for part in text.split('+') {
+        match part {
+            "Ctrl" | "Cmd" => mods |= Modifiers::COMMAND,
+            "Shift" => mods |= Modifiers::SHIFT,
+            "Alt" => mods |= Modifiers::ALT,
+            k => key = Key::from_name(k),
+        }
+    }
+    key.map(|k| KeyboardShortcut::new(mods, k))
+}
+
+/// Commands whose parameters are all optional and whose defaults are what a button means:
+/// they run at once (their card is still there through the search, with Shift+click).
+const DIRECT: [&str; 4] = ["case.check", "case.info", "geometry.check", "mesh.check"];
+
+/// Whether a command runs without asking for parameters.
+fn takes_none(spec: &CommandSpec) -> bool {
+    if DIRECT.contains(&spec.id) {
+        return true;
+    }
+    let p = spec.params.trim().trim_end_matches('.');
+    p == "none" || p.is_empty()
+}
+
+/// Command parameters from JSON text.
+pub fn parse_params(text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|e| e.to_string())
+}
+
+/// No parameters.
+pub fn empty_params() -> Value {
+    json!({})
+}
+
+/// A square icon button; `label` names it for tooltips and accessibility. `on` draws it
+/// pressed (a mode that is active).
+#[allow(clippy::too_many_arguments)]
+fn icon_button(
+    ui: &mut Ui,
+    icon: Icon,
+    size: f32,
+    enabled: bool,
+    on: bool,
+    label: &str,
+    ink: Ink,
+    t: &Tokens,
+) -> Response {
+    let (rect, r) = ui.allocate_exact_size(vec2(size, size), if enabled { Sense::click() } else { Sense::hover() });
+    if on {
+        ui.painter().rect_filled(rect, 5.0, t.accent_soft);
+    } else if r.hovered() && enabled {
+        ui.painter().rect_filled(rect, 5.0, t.hover);
+    }
+    let ink =
+        if enabled { ink } else { Ink { line: ink.line.gamma_multiply(0.4), fill: ink.fill.gamma_multiply(0.4) } };
+    icons::paint(ui.painter(), rect.shrink(size * 0.2), icon, ink);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, label));
+    r
+}
+
+fn tip(spec: &CommandSpec, enabled: &Result<(), String>) -> String {
+    match (enabled, spec.shortcut) {
+        (Err(reason), _) => format!("{}: {reason}", spec.label),
+        (Ok(()), Some(s)) => format!("{} ({s})\n{}", spec.label, spec.id),
+        (Ok(()), None) => format!("{}\n{}", spec.label, spec.id),
+    }
+}
+
+impl App {
+    pub fn new(session: Session) -> App {
+        let mut app = App {
+            session,
+            tokens: Tokens::light(),
+            viewport: Viewport::default(),
+            shown_regions: Vec::new(),
+            shown_surfaces: Vec::new(),
+            workspace: Workspace::Setup,
+            tab: 0,
+            workspace_menu: false,
+            search: String::new(),
+            focus_search: false,
+            search_open: false,
+            dialog: None,
+            log: Vec::new(),
+            results_open: false,
+            expanded: BTreeSet::new(),
+            revision: 0,
+            shown_for: None,
+            styled: false,
+        };
+        app.reset_shown();
+        app
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    fn ink(&self) -> Ink {
+        Ink { line: self.tokens.text, fill: self.tokens.accent }
+    }
+
+    /// What the 3D view shows when a case opens: every region with a mesh, or every surface
+    /// when there is none (as `scene.snapshot` does).
+    fn reset_shown(&mut self) {
+        self.shown_for = self.session.location().map(String::from);
+        self.viewport.camera = None;
+        self.expanded.clear();
+        let Some(case) = self.session.case() else {
+            self.shown_regions.clear();
+            self.shown_surfaces.clear();
+            return;
+        };
+        self.shown_regions = case.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect();
+        self.expanded.insert("regions".into());
+        if case.regions.len() == 1 {
+            self.expanded.extend(case.regions.iter().map(|r| format!("region:{}", r.name)));
+        }
+        self.shown_surfaces = if self.shown_regions.is_empty() { self.session.surfaces() } else { Vec::new() };
+        if !self.shown_surfaces.is_empty() {
+            self.expanded.insert("surfaces".into());
+        }
+    }
+
+    /// Drops from what the 3D view shows the regions and surfaces the case no longer has (a
+    /// surface an undo took away): the scene would not build without them.
+    fn prune_shown(&mut self) {
+        let surfaces = self.session.surfaces();
+        let regions: Vec<String> = self
+            .session
+            .case()
+            .map_or(Vec::new(), |c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect());
+        let before = (self.shown_regions.len(), self.shown_surfaces.len());
+        self.shown_regions.retain(|r| regions.contains(r));
+        self.shown_surfaces.retain(|f| surfaces.contains(f));
+        if before != (self.shown_regions.len(), self.shown_surfaces.len()) {
+            self.revision += 1;
+        }
+    }
+
+    /// Shows only these mesh regions and surfaces (by region name or surface file name) in the
+    /// 3D view.
+    pub fn show_only(&mut self, names: &[String]) -> Vec<String> {
+        let regions: Vec<String> = self.session.case().map_or(Vec::new(), |c| {
+            c.regions
+                .iter()
+                .filter(|r| r.patches.is_some() && names.contains(&r.name))
+                .map(|r| r.name.clone())
+                .collect()
+        });
+        let surfaces: Vec<String> = self
+            .session
+            .surfaces()
+            .into_iter()
+            .filter(|f| names.iter().any(|n| f == n || f.rsplit('/').next() == Some(n.as_str())))
+            .collect();
+        if !surfaces.is_empty() {
+            self.expanded.insert("surfaces".into());
+            self.expanded.extend(surfaces.iter().map(|f| format!("surface:{f}")));
+        }
+        let unknown = names
+            .iter()
+            .filter(|n| {
+                !regions.contains(n) && !surfaces.iter().any(|f| f == *n || f.rsplit('/').next() == Some(n.as_str()))
+            })
+            .cloned()
+            .collect();
+        self.shown_regions = regions;
+        self.shown_surfaces = surfaces;
+        self.viewport.camera = None;
+        self.revision += 1;
+        unknown
+    }
+
+    /// Runs a command, logs it and redraws; returns its outcome.
+    pub fn run(&mut self, id: &str, params: Value) -> Result<Outcome, String> {
+        let opens = id == "case.open";
+        let result = self.session.execute(id, &params);
+        self.revision += 1;
+        let entry = match &result {
+            Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
+            Err(e) => Entry { command: id.to_string(), ok: false, message: e.to_string(), data: Value::Null },
+        };
+        if entry.data.get("diagnostics").and_then(Value::as_array).is_some_and(|d| !d.is_empty()) || !entry.ok {
+            self.results_open = true;
+        }
+        self.log.push(entry);
+        if self.log.len() > LOG {
+            self.log.remove(0);
+        }
+        if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
+            self.reset_shown();
+        } else {
+            self.prune_shown();
+        }
+        result.map_err(|e| e.to_string())
+    }
+
+    /// What the ribbon and the search do with a command: run one without parameters, open the
+    /// card for one with.
+    pub fn invoke(&mut self, id: &'static str) {
+        let Some(spec) = Session::command(id) else { return };
+        if takes_none(spec) {
+            let _ = self.run(id, json!({}));
+        } else {
+            self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+        }
+    }
+
+    /// Frames the scene the 3D view shows from `view`; `None` keeps the direction.
+    pub fn fit_view(&mut self, view: Option<View>) {
+        let params = self.shown();
+        let aspect = self.viewport.aspect();
+        let (az, el) = match view {
+            Some(v) => v.angles(),
+            None => self.viewport.camera.map_or(View::Iso.angles(), |c| (c.azimuth, c.elevation)),
+        };
+        if let Ok(scene) = self.session.scene(&params)
+            && let Some(b) = scene.bbox()
+        {
+            self.viewport.camera = Some(Camera::fit_angles(az, el, &b, aspect));
+        }
+    }
+
+    /// The parameters of the scene the 3D view shows.
+    fn shown(&self) -> Value {
+        json!({ "regions": self.shown_regions, "surfaces": self.shown_surfaces })
+    }
+
+    /// Undo or redo until `done` edits are done.
+    pub fn go_to(&mut self, done: usize) {
+        loop {
+            let (d, u) = self.session.history();
+            let (d, u) = (d.len(), u.len());
+            let step = if d > done {
+                "edit.undo"
+            } else if d < done && u > 0 {
+                "edit.redo"
+            } else {
+                break;
+            };
+            if self.run(step, json!({})).is_err() {
+                break;
+            }
+        }
+    }
+
+    /// The whole interface.
+    pub fn show(&mut self, ui: &mut Ui) {
+        if !self.styled {
+            ui.ctx().set_fonts(theme::fonts());
+            self.tokens.apply(ui.ctx());
+            self.styled = true;
+        }
+        self.shortcuts(ui.ctx());
+        let t = self.tokens.clone();
+        let gap = t.gap as i8;
+        egui::Panel::top("bar")
+            .exact_size(t.bar_height)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(t.bar).inner_margin(egui::Margin::symmetric(8, 0)))
+            .show(ui, |ui| self.app_bar(ui));
+        egui::Panel::top("ribbon")
+            .exact_size(t.ribbon_height + 2.0 * t.gap)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(t.chrome).inner_margin(egui::Margin::same(gap)))
+            .show(ui, |ui| self.ribbon_row(ui));
+        egui::Panel::bottom("history")
+            .exact_size(42.0 + t.gap)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(t.chrome).inner_margin(egui::Margin {
+                left: gap,
+                right: gap,
+                top: 0,
+                bottom: gap,
+            }))
+            .show(ui, |ui| self.history(ui));
+        egui::CentralPanel::no_frame()
+            .frame(egui::Frame::new().fill(t.chrome).inner_margin(egui::Margin {
+                left: gap,
+                right: gap,
+                top: 0,
+                bottom: gap,
+            }))
+            .show(ui, |ui| self.canvas(ui));
+        self.workspace_popup(ui.ctx());
+    }
+
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        let typing = ctx.memory(|m| m.focused().is_some());
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.dialog = None;
+            self.results_open = false;
+            self.workspace_menu = false;
+            self.search.clear();
+            self.search_open = false;
+            ctx.memory_mut(|m| m.surrender_focus(Id::unique(SEARCH_ID)));
+        }
+        if ctx.input_mut(|i| {
+            i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::P))
+                || i.consume_key(Modifiers::NONE, Key::F1)
+        }) {
+            self.focus_search = true;
+        }
+        if typing {
+            return;
+        }
+        // Longer shortcuts first, so Ctrl+Shift+Z is not taken for Ctrl+Z.
+        let mut keyed: Vec<(&'static str, KeyboardShortcut)> =
+            COMMANDS.iter().filter_map(|c| c.shortcut.and_then(shortcut).map(|s| (c.id, s))).collect();
+        keyed.sort_by_key(|(_, s)| std::cmp::Reverse(u8::from(s.modifiers.shift) + u8::from(s.modifiers.alt)));
+        for (id, s) in keyed {
+            if ctx.input_mut(|i| i.consume_shortcut(&s)) && self.session.enabled(id).is_ok() {
+                self.invoke(id);
+            }
+        }
+    }
+
+    /// The dark bar: the name, save, undo and redo, the open case, the theme.
+    fn app_bar(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let ink = Ink { line: t.bar_text, fill: Color32::from_rgb(0x6a, 0xa8, 0xf0) };
+        let bar = Tokens { hover: t.bar_raised, accent_soft: t.bar_raised, ..t.clone() };
+        ui.horizontal_centered(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+            icons::paint(ui.painter(), rect, Icon::Logo, ink);
+            ui.label(RichText::new("umcfGui").font(theme::strong(14.0)).color(t.bar_text));
+            ui.add_space(12.0);
+            for (id, icon) in [
+                ("case.open", Icon::Open),
+                ("case.save", Icon::Save),
+                ("edit.undo", Icon::Undo),
+                ("edit.redo", Icon::Redo),
+            ] {
+                let Some(spec) = Session::command(id) else { continue };
+                let enabled = self.session.enabled(id);
+                let r = icon_button(ui, icon, 26.0, enabled.is_ok(), false, spec.label, ink, &bar);
+                if r.on_hover_text(tip(spec, &enabled)).clicked() {
+                    self.invoke(id);
+                }
+            }
+            ui.add_space(12.0);
+            // The open case, as a tab.
+            let name = match self.session.location() {
+                Some(l) => l.trim_end_matches('/').rsplit('/').next().unwrap_or(l).to_string(),
+                None => "No case open".to_string(),
+            };
+            let unsaved = self.session.case().map_or(0, |c| c.changed().len());
+            let text = if unsaved > 0 { format!("{name} •") } else { name };
+            let galley = ui.painter().layout_no_wrap(text, theme::strong(13.0), t.bar_text);
+            let (rect, r) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, 26.0), Sense::hover());
+            ui.painter().rect_filled(rect, 5.0, t.bar_raised);
+            ui.painter().galley(rect.left_center() + vec2(12.0, -galley.size().y / 2.0), galley, t.bar_text);
+            if let Some(l) = self.session.location() {
+                let text = if unsaved > 0 { format!("{l}\n{unsaved} unsaved") } else { l.to_string() };
+                r.on_hover_text(text);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(t.bar_muted).size(11.5));
+                let label = if t.dark { "Light theme" } else { "Dark theme" };
+                if icon_button(ui, Icon::Theme, 26.0, true, false, label, ink, &bar).on_hover_text(label).clicked() {
+                    self.toggle_theme(ui.ctx());
+                }
+            });
+        });
+    }
+
+    fn toggle_theme(&mut self, ctx: &egui::Context) {
+        self.tokens = if self.tokens.dark { Tokens::light() } else { Tokens::dark() };
+        self.tokens.apply(ctx);
+    }
+
+    /// The workspace card and the ribbon card.
+    fn ribbon_row(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let full = ui.available_rect_before_wrap();
+        let ws = Rect::from_min_size(full.min, vec2(94.0, full.height()));
+        let rib = Rect::from_min_max(pos2(ws.right() + t.gap, full.top()), full.max);
+        for r in [ws, rib] {
+            ui.painter().rect(r, t.radius_card, t.card, Stroke::new(1.0, t.card_border), StrokeKind::Inside);
+        }
+        // The workspace card: a button that opens the switcher.
+        let r = ui.interact(ws, Id::unique("workspace-card"), Sense::click());
+        if r.hovered() || self.workspace_menu {
+            ui.painter().rect_filled(ws.shrink(1.0), t.radius_card, t.accent_soft);
+        }
+        ui.painter().rect_filled(
+            Rect::from_min_size(ws.min + vec2(14.0, 0.0), vec2(ws.width() - 28.0, 3.0)),
+            1.5,
+            t.accent,
+        );
+        let icon_rect = Rect::from_center_size(pos2(ws.center().x, ws.top() + 30.0), vec2(30.0, 30.0));
+        icons::paint(ui.painter(), icon_rect, self.workspace.icon(), self.ink());
+        ui.painter().text(
+            pos2(ws.center().x, ws.top() + 58.0),
+            Align2::CENTER_CENTER,
+            self.workspace.name(),
+            theme::strong(14.0),
+            t.accent,
+        );
+        let label = ui.painter().text(
+            pos2(ws.center().x - 5.0, ws.top() + 78.0),
+            Align2::CENTER_CENTER,
+            "Workspace",
+            egui::FontId::proportional(11.5),
+            t.text_muted,
+        );
+        let c = pos2(label.right() + 7.0, label.center().y);
+        let open = self.workspace_menu;
+        let pts = if open {
+            [c + vec2(-3.0, 1.5), c + vec2(0.0, -1.5), c + vec2(3.0, 1.5)]
+        } else {
+            [c + vec2(-3.0, -1.5), c + vec2(0.0, 1.5), c + vec2(3.0, -1.5)]
+        };
+        ui.painter().add(egui::Shape::line(pts.to_vec(), Stroke::new(1.2, t.text_muted)));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Workspace"));
+        if r.clicked() {
+            self.workspace_menu = !self.workspace_menu;
+        }
+        let mut child = ui.new_child(
+            egui::UiBuilder::new().max_rect(rib.shrink2(vec2(10.0, 5.0))).layout(Layout::top_down(Align::Min)),
+        );
+        self.ribbon(&mut child);
+    }
+
+    fn ribbon(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let tabs = self.workspace.tabs();
+        ui.horizontal(|ui| {
+            ui.set_height(26.0);
+            for (k, tab) in tabs.iter().enumerate() {
+                let on = k == self.tab;
+                let font = if on { theme::strong(13.5) } else { egui::FontId::proportional(13.5) };
+                let galley =
+                    ui.painter().layout_no_wrap(tab.name.to_string(), font, if on { t.accent } else { t.text });
+                let (rect, r) = ui.allocate_exact_size(vec2(galley.size().x + 22.0, 25.0), Sense::click());
+                if on {
+                    ui.painter().rect_filled(rect, t.radius, t.accent_soft);
+                } else if r.hovered() {
+                    ui.painter().rect_filled(rect, t.radius, t.hover);
+                }
+                ui.painter().galley(rect.center() - galley.size() / 2.0, galley, t.text);
+                r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, on, tab.name));
+                if r.clicked() {
+                    self.tab = k;
+                }
+            }
+            if tabs.is_empty() {
+                ui.label(RichText::new(self.workspace.name()).font(theme::strong(13.5)).color(t.accent));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.search_field(ui));
+        });
+        let line = ui.cursor().top() + 2.0;
+        ui.painter().hline(ui.max_rect().x_range(), line, Stroke::new(1.0, t.card_border));
+        ui.add_space(7.0);
+        let Some(tab) = tabs.get(self.tab).or_else(|| tabs.first()) else {
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new(format!("{}: planned. {}.", self.workspace.name(), self.workspace.about()))
+                    .color(t.text_muted),
+            );
+            return;
+        };
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (name, items) in ribbon::groups(tab) {
+                ui.vertical(|ui| {
+                    ui.horizontal_top(|ui| {
+                        for item in &items {
+                            self.ribbon_item(ui, item);
+                        }
+                    });
+                    let w = ui.min_rect().width();
+                    ui.allocate_ui(vec2(w, 14.0), |ui| {
+                        ui.centered_and_justified(|ui| ui.label(RichText::new(name).size(11.5).color(t.text_muted)));
+                    });
+                });
+                ui.add_space(6.0);
+                let x = ui.cursor().left();
+                let top = ui.min_rect().top() + 2.0;
+                ui.painter().vline(x, top..=top + 64.0, Stroke::new(1.0, t.card_border));
+                ui.add_space(8.0);
+            }
+            if let Some(note) = tab.note {
+                ui.vertical(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(RichText::new(note).italics().size(12.5).color(t.text_muted));
+                });
+            }
+        });
+    }
+
+    /// A big ribbon button: the icon over its label.
+    fn ribbon_button(&self, ui: &mut Ui, icon: Icon, label: &str, enabled: bool, on: bool) -> Response {
+        let t = &self.tokens;
+        let font = egui::FontId::proportional(12.5);
+        let width = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text).size().x.max(36.0) + 16.0;
+        let (rect, r) =
+            ui.allocate_exact_size(vec2(width, 52.0), if enabled { Sense::click() } else { Sense::hover() });
+        if on {
+            ui.painter().rect(
+                rect,
+                t.radius,
+                t.accent_soft,
+                Stroke::new(1.0, t.accent.gamma_multiply(0.45)),
+                StrokeKind::Inside,
+            );
+        } else if r.hovered() && enabled {
+            ui.painter().rect_filled(rect, t.radius, t.hover);
+        }
+        let ink = if enabled {
+            self.ink()
+        } else {
+            Ink { line: t.text_muted.gamma_multiply(0.55), fill: t.text_muted.gamma_multiply(0.45) }
+        };
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(pos2(rect.center().x, rect.top() + 17.0), vec2(26.0, 26.0)),
+            icon,
+            ink,
+        );
+        let colour = if enabled { t.text } else { t.text_muted.gamma_multiply(0.8) };
+        ui.painter().text(pos2(rect.center().x, rect.top() + 42.0), Align2::CENTER_CENTER, label, font, colour);
+        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, label));
+        r
+    }
+
+    fn ribbon_item(&mut self, ui: &mut Ui, item: &Item) {
+        match *item {
+            Item::Command(id, label, icon) => {
+                let Some(spec) = Session::command(id) else { return };
+                let enabled = self.session.enabled(id);
+                let on = self.dialog.as_ref().is_some_and(|d| d.id == id);
+                let r = self.ribbon_button(ui, icon, label, enabled.is_ok(), on);
+                if r.on_hover_text(tip(spec, &enabled)).clicked() && enabled.is_ok() {
+                    self.invoke(id);
+                }
+            }
+            Item::View(view, label, icon) => {
+                let has = self.session.case().is_some();
+                if self
+                    .ribbon_button(ui, icon, label, has, false)
+                    .on_hover_text(format!("{label} view of the whole scene"))
+                    .clicked()
+                {
+                    self.fit_view(Some(view));
+                }
+            }
+            Item::Edges => {
+                let on = self.viewport.edges;
+                if self
+                    .ribbon_button(ui, Icon::Edges, "Edges", true, on)
+                    .on_hover_text("Draw the faces' edges")
+                    .clicked()
+                {
+                    self.viewport.edges = !on;
+                }
+            }
+            Item::Theme => {
+                let label = if self.tokens.dark { "Light" } else { "Dark" };
+                if self
+                    .ribbon_button(ui, Icon::Theme, label, true, false)
+                    .on_hover_text("Light or dark theme")
+                    .clicked()
+                {
+                    self.toggle_theme(ui.ctx());
+                }
+            }
+        }
+    }
+
+    /// The command search: every command of the registry, filtered as you type (Ctrl+P).
+    fn search_field(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let edit = egui::TextEdit::singleline(&mut self.search)
+            .id(Id::unique(SEARCH_ID))
+            .hint_text("Search commands      Ctrl+P")
+            .desired_width(240.0)
+            .margin(egui::Margin { left: 26, right: 6, top: 4, bottom: 4 });
+        let r = ui.add(edit);
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Search commands"));
+        let icon = Rect::from_center_size(r.rect.left_center() + vec2(13.0, 0.0), vec2(14.0, 14.0));
+        icons::paint(ui.painter(), icon, Icon::Search, Ink { line: t.text_muted, fill: t.accent });
+        if self.focus_search {
+            r.request_focus();
+            self.focus_search = false;
+        }
+        let entered = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        if r.has_focus() {
+            self.search_open = true;
+        }
+        if !self.search_open {
+            return;
+        }
+        let q = self.search.to_lowercase();
+        let matches: Vec<&'static CommandSpec> = COMMANDS
+            .iter()
+            .filter(|c| {
+                q.is_empty()
+                    || c.id.contains(&q)
+                    || c.label.to_lowercase().contains(&q)
+                    || c.menu.to_lowercase().contains(&q)
+            })
+            .collect();
+        if entered {
+            self.search_open = false;
+            if let Some(c) = matches.iter().find(|c| self.session.enabled(c.id).is_ok()) {
+                self.search.clear();
+                self.invoke(c.id);
+            }
+            return;
+        }
+        let mut chosen = None;
+        let popup = egui::Area::new(Id::unique("search-results"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(r.rect.right_bottom() + vec2(0.0, 6.0))
+            .show(ui.ctx(), |ui| {
+                t.card_frame().show(ui, |ui| {
+                    ui.set_width(420.0);
+                    egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                        for c in matches {
+                            let enabled = self.session.enabled(c.id);
+                            let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                            if row.hovered() && enabled.is_ok() {
+                                ui.painter().rect_filled(rect, t.radius, t.hover);
+                            }
+                            let ink = if enabled.is_ok() {
+                                self.ink()
+                            } else {
+                                Ink { line: t.text_muted, fill: t.text_muted }
+                            };
+                            let ir = Rect::from_center_size(rect.left_center() + vec2(16.0, 0.0), vec2(20.0, 20.0));
+                            icons::paint(ui.painter(), ir, ribbon::icon_of(c.id), ink);
+                            let colour = if enabled.is_ok() { t.text } else { t.text_muted };
+                            let p = ui.painter();
+                            p.text(
+                                rect.left_center() + vec2(36.0, -7.0),
+                                Align2::LEFT_CENTER,
+                                c.label,
+                                egui::FontId::proportional(13.0),
+                                colour,
+                            );
+                            let sub = match &enabled {
+                                Err(reason) => reason.clone(),
+                                Ok(()) => c.id.to_string(),
+                            };
+                            p.text(
+                                rect.left_center() + vec2(36.0, 9.0),
+                                Align2::LEFT_CENTER,
+                                sub,
+                                egui::FontId::proportional(11.0),
+                                t.text_muted,
+                            );
+                            if let Some(s) = c.shortcut {
+                                p.text(
+                                    rect.right_center() - vec2(8.0, 0.0),
+                                    Align2::RIGHT_CENTER,
+                                    s,
+                                    egui::FontId::proportional(11.5),
+                                    t.text_muted,
+                                );
+                            }
+                            row.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled.is_ok(), c.label));
+                            if row.clicked() && enabled.is_ok() {
+                                chosen = Some(c.id);
+                            }
+                        }
+                    });
+                });
+            });
+        let pressed_elsewhere =
+            ui.input(|i| i.pointer.any_pressed()) && !popup.response.contains_pointer() && !r.contains_pointer();
+        if let Some(id) = chosen {
+            self.search.clear();
+            self.search_open = false;
+            ui.ctx().memory_mut(|m| m.surrender_focus(Id::unique(SEARCH_ID)));
+            self.invoke(id);
+        } else if pressed_elsewhere {
+            self.search_open = false;
+        }
+    }
+
+    fn workspace_popup(&mut self, ctx: &egui::Context) {
+        if !self.workspace_menu {
+            return;
+        }
+        let t = self.tokens.clone();
+        let top = t.bar_height + t.gap + t.ribbon_height + 6.0;
+        let mut chosen = None;
+        let area = egui::Area::new(Id::unique("workspaces")).order(egui::Order::Foreground).fixed_pos(pos2(t.gap, top));
+        let r = area.show(ctx, |ui| {
+            t.card_frame().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(440.0);
+                ui.label(RichText::new("WORKSPACE").font(theme::strong(11.5)).color(t.text_muted));
+                for w in Workspace::ALL {
+                    let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::click());
+                    let current = w == self.workspace;
+                    if current {
+                        ui.painter().rect_filled(rect, t.radius, t.accent_soft);
+                    } else if row.hovered() && w.available() {
+                        ui.painter().rect_filled(rect, t.radius, t.hover);
+                    }
+                    let bar = Rect::from_min_size(rect.min + vec2(2.0, 8.0), vec2(3.0, rect.height() - 16.0));
+                    ui.painter().rect_filled(bar, 1.5, if w.available() { t.accent } else { t.card_border });
+                    let ink = if w.available() { self.ink() } else { Ink { line: t.text_muted, fill: t.text_muted } };
+                    let ir = Rect::from_center_size(rect.left_center() + vec2(32.0, 0.0), vec2(30.0, 30.0));
+                    icons::paint(ui.painter(), ir, w.icon(), ink);
+                    let x = rect.left() + 62.0;
+                    let p = ui.painter();
+                    let name =
+                        p.text(pos2(x, rect.top() + 19.0), Align2::LEFT_CENTER, w.name(), theme::strong(14.0), t.text);
+                    let (badge, colour) = if current {
+                        ("Current", t.accent)
+                    } else if w.available() {
+                        ("Available", t.info)
+                    } else {
+                        ("Planned", t.text_muted)
+                    };
+                    let g = p.layout_no_wrap(badge.to_string(), egui::FontId::proportional(11.0), colour);
+                    let b =
+                        Rect::from_min_size(pos2(name.right() + 8.0, rect.top() + 10.0), g.size() + vec2(12.0, 4.0));
+                    p.rect(
+                        b,
+                        8.0,
+                        colour.gamma_multiply(0.12),
+                        Stroke::new(1.0, colour.gamma_multiply(0.5)),
+                        StrokeKind::Inside,
+                    );
+                    p.galley(b.min + vec2(6.0, 2.0), g, colour);
+                    p.text(
+                        pos2(x, rect.top() + 41.0),
+                        Align2::LEFT_CENTER,
+                        w.about(),
+                        egui::FontId::proportional(12.5),
+                        t.text_muted,
+                    );
+                    row.widget_info(|| {
+                        egui::WidgetInfo::selected(egui::Role::Button, w.available(), current, w.name())
+                    });
+                    if row.clicked() && w.available() {
+                        chosen = Some(w);
+                    }
+                }
+                ui.separator();
+                ui.label(
+                    RichText::new("Every workspace works on the same case and selection; only the ribbon changes.")
+                        .size(12.0)
+                        .color(t.text_muted),
+                );
+            });
+        });
+        if let Some(w) = chosen {
+            self.workspace = w;
+            self.tab = 0;
+            self.workspace_menu = false;
+        } else if ctx.input(|i| i.pointer.any_pressed()) && !r.response.contains_pointer() {
+            let over_card = ctx.pointer_interact_pos().is_some_and(|p| p.x < t.gap + 94.0 && p.y < top);
+            if !over_card {
+                self.workspace_menu = false;
+            }
+        }
+    }
+
+    /// The 3D view with the floating cards over it.
+    fn canvas(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let rect = ui.available_rect_before_wrap();
+        let [top, bottom] = t.view_background();
+        let c = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
+        ui.painter().rect_filled(rect, CornerRadius::same(t.radius_card), c(top).lerp_to_gamma(c(bottom), 0.5));
+        let mut action = None;
+        if self.session.case().is_none() {
+            let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(t.text_muted);
+            ui.put(rect, egui::Label::new(text));
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
+            let text =
+                RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(t.text_muted);
+            ui.put(rect, egui::Label::new(text));
+        } else {
+            let params = self.shown();
+            let selection = self.session.selection().to_vec();
+            let revision = self.revision;
+            match self.session.scene(&params) {
+                Ok(scene) => action = self.viewport.show(ui, rect, scene, &selection, revision, &t),
+                Err(e) => {
+                    ui.put(rect, egui::Label::new(RichText::new(e.to_string()).color(t.error)));
+                }
+            }
+        }
+        match action {
+            Some(Action::Pick { ray, mode }) => {
+                let mut p = self.shown();
+                if let Some(o) = p.as_object_mut() {
+                    o.insert("ray".into(), json!({ "origin": ray.origin, "direction": ray.direction }));
+                    o.insert("mode".into(), json!(mode));
+                }
+                let _ = self.run("select.pick", p);
+            }
+            Some(Action::Fit(view)) => self.fit_view(Some(view)),
+            None => {}
+        }
+        self.browser(ui.ctx(), rect);
+        self.right_cards(ui.ctx(), rect);
+        self.navigation_bar(ui.ctx(), rect);
+    }
+
+    /// A row of the browser tree. Returns (row clicked, chevron clicked, eye clicked).
+    #[allow(clippy::too_many_arguments)]
+    fn tree_row(
+        &self,
+        ui: &mut Ui,
+        depth: usize,
+        open: Option<bool>,
+        eye: Option<bool>,
+        icon: Icon,
+        label: &str,
+        detail: &str,
+        selected: bool,
+    ) -> (bool, bool, bool) {
+        let t = &self.tokens;
+        let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 25.0), Sense::click());
+        if selected {
+            ui.painter().rect_filled(rect, t.radius, t.selection.gamma_multiply(0.25));
+        } else if r.hovered() {
+            ui.painter().rect_filled(rect, t.radius, t.hover);
+        }
+        let mut x = rect.left() + 2.0 + 14.0 * depth as f32;
+        let mut chevron = false;
+        if let Some(o) = open {
+            let c = pos2(x + 6.0, rect.center().y);
+            let pts = if o {
+                vec![c + vec2(-3.5, -1.5), c + vec2(0.0, 2.0), c + vec2(3.5, -1.5)]
+            } else {
+                vec![c + vec2(-1.5, -3.5), c + vec2(2.0, 0.0), c + vec2(-1.5, 3.5)]
+            };
+            ui.painter().add(egui::Shape::line(pts, Stroke::new(1.3, t.text_muted)));
+            let hit = Rect::from_center_size(c, vec2(16.0, 22.0));
+            chevron = r.clicked() && r.interact_pointer_pos().is_some_and(|p| hit.contains(p));
+        }
+        x += 14.0;
+        let mut eye_hit = false;
+        if let Some(on) = eye {
+            let er = Rect::from_center_size(pos2(x + 8.0, rect.center().y), vec2(17.0, 17.0));
+            let ink = Ink { line: if on { t.text } else { t.text_muted }, fill: t.accent };
+            icons::paint(ui.painter(), er, if on { Icon::Eye } else { Icon::EyeOff }, ink);
+            eye_hit = r.clicked() && r.interact_pointer_pos().is_some_and(|p| er.expand(3.0).contains(p));
+            x += 20.0;
+        }
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(pos2(x + 8.0, rect.center().y), vec2(16.0, 16.0)),
+            icon,
+            self.ink(),
+        );
+        x += 22.0;
+        let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), t.text);
+        let font = egui::FontId::proportional(11.5);
+        let right =
+            ui.painter().text(rect.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, detail, font, t.text_muted);
+        let clip = Rect::from_min_max(pos2(x, rect.top()), pos2(right.left() - 4.0, rect.bottom()));
+        ui.painter().with_clip_rect(clip).galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, t.text);
+        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::TreeItem, true, selected, label));
+        (r.clicked() && !chevron && !eye_hit, chevron, eye_hit)
+    }
+
+    /// The browser card: the case's regions and patches, its surfaces and their regions.
+    fn browser(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let t = self.tokens.clone();
+        // The regions of the surfaces shown, from the scene the view draws.
+        let params = self.shown();
+        let classes: Vec<(String, Vec<String>)> = if self.shown_surfaces.is_empty() {
+            Vec::new()
+        } else {
+            self.session.scene(&params).map_or(Vec::new(), |scene| {
+                scene
+                    .objects
+                    .iter()
+                    .filter_map(|o| match &o.source {
+                        Source::Surface { file } => Some((file.clone(), o.classes.clone())),
+                        Source::Mesh { .. } => None,
+                    })
+                    .collect()
+            })
+        };
+        let mut select: Option<(Sel, bool)> = None;
+        let mut toggle: Option<String> = None;
+        let mut show_region: Option<String> = None;
+        let mut show_surface: Option<String> = None;
+        let mut open_case = false;
+        let height = (canvas.height() - 2.0 * t.gap - 90.0).max(120.0);
+        let area = egui::Area::new(Id::unique("browser"))
+            .order(egui::Order::Middle)
+            .fixed_pos(canvas.min + vec2(t.gap, t.gap));
+        area.show(ctx, |ui| {
+            t.card_frame().show(ui, |ui| {
+                ui.set_width(272.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Browser").font(theme::strong(13.5)));
+                    if let Some(case) = self.session.case() {
+                        let n = case.regions.len();
+                        let text = if n == 1 { "1 region".to_string() } else { format!("{n} regions") };
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(text).size(11.5).color(t.text_muted));
+                        });
+                    }
+                });
+                ui.separator();
+                let Some(case) = self.session.case() else {
+                    ui.label(RichText::new("No case open.").color(t.text_muted));
+                    open_case = ui.button("Open a case…").clicked();
+                    return;
+                };
+                let selection = self.session.selection();
+                let surfaces = self.session.surfaces();
+                // The rows shown, so the card is as tall as they are (up to the view's height).
+                let mut rows = 3 + if self.expanded.contains("regions") { case.regions.len() } else { 0 };
+                for r in &case.regions {
+                    if self.expanded.contains("regions") && self.expanded.contains(&format!("region:{}", r.name)) {
+                        rows += r.patches.as_ref().map_or(0, Vec::len);
+                    }
+                }
+                if self.expanded.contains("surfaces") {
+                    rows += surfaces.len();
+                    for (f, c) in &classes {
+                        if self.expanded.contains(&format!("surface:{f}")) {
+                            rows += c.len();
+                        }
+                    }
+                }
+                let content = rows as f32 * 26.0 + 4.0;
+                egui::ScrollArea::vertical()
+                    .max_height(height)
+                    .min_scrolled_height(content.min(height))
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        let name = self
+                            .session
+                            .location()
+                            .map_or("case", |l| l.trim_end_matches('/').rsplit('/').next().unwrap_or(l));
+                        let version = case.layout.version.map_or("", |v| v.label());
+                        self.tree_row(ui, 0, None, None, Icon::Case, name, version, false);
+                        let open = self.expanded.contains("regions");
+                        let label = format!("Regions ({})", case.regions.len());
+                        let (row, c, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
+                        if c || row {
+                            toggle = Some("regions".into());
+                        }
+                        if open {
+                            for r in &case.regions {
+                                let key = format!("region:{}", r.name);
+                                let ropen = self.expanded.contains(&key);
+                                let shown = r.patches.as_ref().map(|_| self.shown_regions.contains(&r.name));
+                                let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
+                                let detail = match &r.patches {
+                                    Some(p) => format!("{} patches", p.len()),
+                                    None => "no mesh".to_string(),
+                                };
+                                let chevron = r.patches.as_ref().map(|_| ropen);
+                                let (row, c, e) =
+                                    self.tree_row(ui, 1, chevron, shown, Icon::Region, label, &detail, false);
+                                if c || row {
+                                    toggle = Some(key.clone());
+                                }
+                                if e {
+                                    show_region = Some(r.name.clone());
+                                }
+                                if ropen && let Some(patches) = &r.patches {
+                                    for p in patches {
+                                        let sel = Sel::Patch { region: r.name.clone(), patch: p.name.clone() };
+                                        let on = selection.contains(&sel);
+                                        let detail = format!("{} · {}", p.kind, p.n_faces);
+                                        let (row, _, _) =
+                                            self.tree_row(ui, 2, None, None, Icon::Patch, &p.name, &detail, on);
+                                        if row {
+                                            select = Some((sel, ui.input(|i| i.modifiers.command)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let open = self.expanded.contains("surfaces");
+                        let label = format!("Surfaces ({})", surfaces.len());
+                        let (row, c, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
+                        if c || row {
+                            toggle = Some("surfaces".into());
+                        }
+                        if open {
+                            for f in &surfaces {
+                                let key = format!("surface:{f}");
+                                let sopen = self.expanded.contains(&key);
+                                let shown = self.shown_surfaces.contains(f);
+                                let short = f.rsplit('/').next().unwrap_or(f);
+                                let regions = classes.iter().find(|(g, _)| g == f).map(|(_, c)| c.clone());
+                                let detail = regions.as_ref().map_or(String::new(), |c| format!("{} regions", c.len()));
+                                let chevron = regions.as_ref().map(|_| sopen);
+                                let (row, c, e) =
+                                    self.tree_row(ui, 1, chevron, Some(shown), Icon::Surface, short, &detail, false);
+                                if c || (row && regions.is_some()) {
+                                    toggle = Some(key.clone());
+                                }
+                                if e || (row && regions.is_none()) {
+                                    show_surface = Some(f.clone());
+                                }
+                                if sopen && let Some(regions) = regions {
+                                    for name in regions {
+                                        let sel = Sel::Solid { file: f.clone(), solid: name.clone() };
+                                        let on = selection.contains(&sel);
+                                        let (row, _, _) = self.tree_row(ui, 2, None, None, Icon::Patch, &name, "", on);
+                                        if row {
+                                            select = Some((sel, ui.input(|i| i.modifiers.command)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+            });
+        });
+        if open_case {
+            self.invoke("case.open");
+        }
+        if let Some(k) = toggle
+            && !self.expanded.remove(&k)
+        {
+            self.expanded.insert(k);
+        }
+        for (name, regions) in [(show_region, true), (show_surface, false)] {
+            let Some(name) = name else { continue };
+            let v = if regions { &mut self.shown_regions } else { &mut self.shown_surfaces };
+            match v.iter().position(|x| *x == name) {
+                Some(k) => {
+                    v.remove(k);
+                }
+                None => v.push(name),
+            }
+            self.revision += 1;
+        }
+        if let Some((sel, add)) = select {
+            let selected = self.session.selection().contains(&sel);
+            let mode = match (add, selected) {
+                (true, true) => "remove",
+                (true, false) => "add",
+                (false, _) => "replace",
+            };
+            let _ = self.run("select.set", json!({ "items": [sel.to_json()], "mode": mode }));
+        }
+    }
+
+    /// The cards on the right: a command's parameters or the selection's properties, then the
+    /// results of the last command.
+    fn right_cards(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let t = self.tokens.clone();
+        let width = 330.0;
+        let mut run = false;
+        let mut close_dialog = false;
+        let mut clear = false;
+        let mut close_results = false;
+        let muted = Ink { line: t.text_muted, fill: t.accent };
+        let area = egui::Area::new(Id::unique("right-cards"))
+            .order(egui::Order::Middle)
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(pos2(canvas.right() - t.gap, canvas.top() + t.gap + 112.0));
+        area.show(ctx, |ui| {
+            ui.set_width(width + 16.0);
+            if let Some(d) = &mut self.dialog
+                && let Some(spec) = Session::command(d.id)
+            {
+                t.card_frame().show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+                        icons::paint(ui.painter(), r, ribbon::icon_of(d.id), Ink { line: t.text, fill: t.accent });
+                        ui.label(RichText::new(spec.label.trim_end_matches('…')).font(theme::strong(14.0)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            close_dialog =
+                                icon_button(ui, Icon::Close, 22.0, true, false, "Close", muted, &t).clicked();
+                        });
+                    });
+                    ui.separator();
+                    ui.label(RichText::new(spec.id).monospace().size(11.5).color(t.text_muted));
+                    egui::ScrollArea::vertical().id_salt("params-doc").max_height(170.0).show(ui, |ui| {
+                        ui.label(RichText::new(spec.params).size(12.5));
+                    });
+                    ui.add_space(4.0);
+                    let label = ui.label(RichText::new("Parameters (JSON)").size(12.0).color(t.text_muted));
+                    let edit = egui::TextEdit::multiline(&mut d.params)
+                        .code_editor()
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY);
+                    ui.add(edit).labelled_by(label.id);
+                    if let Some(e) = &d.error {
+                        ui.label(RichText::new(e).color(t.error));
+                    }
+                    ui.add_space(4.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let ok = egui::Button::new(RichText::new("OK").color(Color32::WHITE).strong())
+                            .fill(t.accent)
+                            .min_size(vec2(64.0, 26.0));
+                        run = ui.add(ok).clicked();
+                        close_dialog |= ui.add(egui::Button::new("Cancel").min_size(vec2(64.0, 26.0))).clicked();
+                    });
+                });
+                ui.add_space(t.gap);
+            } else if !self.session.selection().is_empty() {
+                t.card_frame().show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Properties").font(theme::strong(14.0)));
+                        let n = self.session.selection().len();
+                        ui.label(RichText::new(format!("{n} selected")).size(11.5).color(t.text_muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            clear = ui.small_button("Select none").clicked();
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().id_salt("properties").max_height(320.0).show(ui, |ui| {
+                        for sel in self.session.selection() {
+                            match sel {
+                                Sel::Patch { region, patch } => self.patch_details(ui, region, patch),
+                                Sel::Solid { file, solid } => {
+                                    ui.label(RichText::new(solid).font(theme::strong(13.5)));
+                                    ui.label(RichText::new(format!("surface region of {file}")).color(t.text_muted));
+                                }
+                            }
+                            ui.add_space(6.0);
+                        }
+                    });
+                });
+                ui.add_space(t.gap);
+            }
+            if self.results_open
+                && let Some(e) = self.log.last()
+            {
+                t.card_frame().show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Results").font(theme::strong(14.0)));
+                        ui.label(RichText::new(&e.command).monospace().size(11.5).color(t.text_muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            close_results =
+                                icon_button(ui, Icon::Close, 22.0, true, false, "Close results", muted, &t).clicked();
+                        });
+                    });
+                    ui.separator();
+                    ui.label(RichText::new(&e.message).color(if e.ok { t.text } else { t.error }));
+                    let diagnostics = e.data.get("diagnostics").and_then(Value::as_array).cloned().unwrap_or_default();
+                    egui::ScrollArea::vertical().id_salt("results").max_height(260.0).show(ui, |ui| {
+                        for d in diagnostics.iter().take(500) {
+                            let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("");
+                            let colour = match s("level") {
+                                "error" => t.error,
+                                "warning" => t.warning,
+                                _ => t.info,
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(s("code")).monospace().size(11.5).color(colour));
+                                ui.label(RichText::new(format!("{} {}", s("path"), s("message"))).size(12.5));
+                            });
+                        }
+                        if diagnostics.len() > 500 {
+                            ui.label(
+                                RichText::new(format!("… and {} more", diagnostics.len() - 500)).color(t.text_muted),
+                            );
+                        }
+                    });
+                });
+            }
+        });
+        if close_dialog {
+            self.dialog = None;
+        }
+        if close_results {
+            self.results_open = false;
+        }
+        if clear {
+            let _ = self.run("select.clear", json!({}));
+        }
+        if run && let Some(mut d) = self.dialog.take() {
+            match serde_json::from_str::<Value>(&d.params) {
+                Ok(params) => match self.run(d.id, params) {
+                    Ok(_) => return,
+                    Err(e) => d.error = Some(e),
+                },
+                Err(e) => d.error = Some(format!("not JSON: {e}")),
+            }
+            self.dialog = Some(d);
+        }
+    }
+
+    fn patch_details(&self, ui: &mut Ui, region: &str, patch: &str) {
+        let t = &self.tokens;
+        ui.label(RichText::new(patch).font(theme::strong(13.5)));
+        let Some(r) = self.session.case().and_then(|c| c.region(region)) else { return };
+        let where_ = if region.is_empty() { "patch".to_string() } else { format!("patch of {region}") };
+        let Some(p) = r.patches.as_ref().and_then(|ps| ps.iter().find(|p| p.name == patch)) else {
+            ui.label(RichText::new(where_).color(t.text_muted));
+            return;
+        };
+        ui.label(RichText::new(format!("{where_} · {} · {} faces", p.kind, p.n_faces)).color(t.text_muted));
+        if !p.groups.is_empty() {
+            ui.label(RichText::new(format!("groups: {}", p.groups.join(", "))).color(t.text_muted));
+        }
+        egui::Grid::new(("bcs", region, patch)).num_columns(2).striped(true).show(ui, |ui| {
+            for f in &r.fields {
+                let Some(bcs) = &f.bcs else { continue };
+                // The entry for the patch by its name, or else one of its groups (patterns are
+                // matched by the case check, not here).
+                let bc = bcs
+                    .iter()
+                    .find(|b| !b.pattern && b.patch == patch)
+                    .or_else(|| bcs.iter().find(|b| !b.pattern && p.groups.contains(&b.patch)));
+                ui.label(RichText::new(&f.name).monospace());
+                match bc {
+                    Some(b) => {
+                        let mut text = b.kind.clone().unwrap_or_else(|| "(no type)".to_string());
+                        if let Some(v) = &b.value {
+                            text.push_str(&format!("  {v}"));
+                        }
+                        ui.label(text);
+                    }
+                    None => {
+                        ui.label(RichText::new("by pattern or none").color(t.text_muted));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    }
+
+    /// The navigation bar at the bottom of the view.
+    fn navigation_bar(&mut self, ctx: &egui::Context, canvas: Rect) {
+        if self.session.case().is_none() {
+            return;
+        }
+        let t = self.tokens.clone();
+        let mut fit = None;
+        let mut zoom = None;
+        let area = egui::Area::new(Id::unique("navigation"))
+            .order(egui::Order::Middle)
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(pos2(canvas.center().x, canvas.bottom() - t.gap));
+        area.show(ctx, |ui| {
+            t.card_frame().inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let ink = self.ink();
+                    let orbit = self.viewport.orbit;
+                    let b = |ui: &mut Ui, icon, on, label: &str, tip: &str| {
+                        icon_button(ui, icon, 30.0, true, on, label, ink, &t).on_hover_text(tip).clicked()
+                    };
+                    if b(ui, Icon::Orbit, orbit, "Orbit", "Drag turns the view") {
+                        self.viewport.orbit = true;
+                    }
+                    if b(ui, Icon::Pan, !orbit, "Pan", "Drag moves the view (a right or middle drag always does)") {
+                        self.viewport.orbit = false;
+                    }
+                    if b(ui, Icon::ZoomIn, false, "Zoom in", "Zoom in (wheel)") {
+                        zoom = Some(0.8);
+                    }
+                    if b(ui, Icon::ZoomOut, false, "Zoom out", "Zoom out (wheel)") {
+                        zoom = Some(1.25);
+                    }
+                    ui.separator();
+                    if b(ui, Icon::Fit, false, "Fit", "Fit the whole scene") {
+                        fit = Some(None);
+                    }
+                    if b(ui, Icon::Home, false, "Home", "Iso view of the whole scene") {
+                        fit = Some(Some(View::Iso));
+                    }
+                    for (v, icon, name) in [
+                        (View::Top, Icon::ViewTop, "Top"),
+                        (View::Front, Icon::ViewFront, "Front"),
+                        (View::Right, Icon::ViewRight, "Right"),
+                    ] {
+                        if b(ui, icon, false, name, &format!("{name} view")) {
+                            fit = Some(Some(v));
+                        }
+                    }
+                    ui.separator();
+                    let edges = self.viewport.edges;
+                    if b(ui, Icon::Edges, edges, "Edges", "Draw the faces' edges") {
+                        self.viewport.edges = !edges;
+                    }
+                });
+            });
+        });
+        if let Some(z) = zoom
+            && let Some(c) = &mut self.viewport.camera
+        {
+            c.distance *= z;
+        }
+        if let Some(v) = fit {
+            self.fit_view(v);
+        }
+    }
+
+    /// The edit history along the bottom: one chip per edit, the marker between done and
+    /// undone; a click goes there.
+    fn history(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let full = ui.available_rect_before_wrap();
+        ui.painter().rect(full, t.radius_card, t.card, Stroke::new(1.0, t.card_border), StrokeKind::Inside);
+        let mut target = None;
+        let builder =
+            egui::UiBuilder::new().max_rect(full.shrink2(vec2(12.0, 0.0))).layout(Layout::left_to_right(Align::Center));
+        let mut child = ui.new_child(builder);
+        let ui = &mut child;
+        ui.label(RichText::new("History").font(theme::strong(13.5)));
+        ui.add_space(4.0);
+        let ink = self.ink();
+        let (nd, nu) = {
+            let (done, undone) = self.session.history();
+            (done.len(), undone.len())
+        };
+        for (icon, label, to, ok) in [
+            (Icon::First, "Undo all", 0, nd > 0),
+            (Icon::Previous, "Undo one", nd.saturating_sub(1), nd > 0),
+            (Icon::Next, "Redo one", nd + 1, nu > 0),
+            (Icon::Last, "Redo all", nd + nu, nu > 0),
+        ] {
+            if icon_button(ui, icon, 24.0, ok, false, label, ink, &t).on_hover_text(label).clicked() {
+                target = Some(to);
+            }
+        }
+        ui.add_space(8.0);
+        let chip = |ui: &mut Ui, command: &str, tip: String, faded: bool, k: usize| -> bool {
+            let (rect, r) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+            let fill = if faded { t.hover } else { t.accent_soft };
+            let border = if r.hovered() { t.accent } else { t.card_border };
+            ui.painter().rect(rect, 5.0, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+            let ink = if faded { Ink { line: t.text_muted, fill: t.text_muted } } else { ink };
+            icons::paint(ui.painter(), rect.shrink(5.0), ribbon::icon_of(command), ink);
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Edit {}", k + 1)));
+            r.on_hover_text(tip).clicked()
+        };
+        if nd + nu == 0 {
+            let text = "No edits yet: each change shows here, and a click goes back to it.";
+            ui.label(RichText::new(text).size(12.0).color(t.text_muted));
+        }
+        let (done, undone): (Vec<_>, Vec<_>) = {
+            let (d, u) = self.session.history();
+            (d.into_iter().cloned().collect(), u.into_iter().cloned().collect())
+        };
+        // As many chips as fit beside the status text, around the marker: the newest done
+        // edits, then the next ones to redo; "+k" says how many are left out on each side.
+        let room = ((ui.available_width() - 640.0) / 30.0).floor().max(4.0) as usize;
+        let show_undone = nu.min(room / 3);
+        let show_done = nd.min(room.saturating_sub(show_undone));
+        let show_undone = nu.min(room.saturating_sub(show_done));
+        let more = |ui: &mut Ui, n: usize| {
+            if n > 0 {
+                ui.label(RichText::new(format!("+{n}")).size(12.0).color(t.text_muted))
+                    .on_hover_text(format!("{n} more edits"));
+            }
+        };
+        more(ui, nd - show_done);
+        for (k, e) in done.iter().enumerate().skip(nd - show_done) {
+            let tip = if e.detail.is_empty() { e.label.to_string() } else { format!("{}: {}", e.label, e.detail) };
+            if chip(ui, e.command, tip, false, k) {
+                target = Some(k + 1);
+            }
+        }
+        if nd + nu > 0 {
+            let (rect, _) = ui.allocate_exact_size(vec2(10.0, 32.0), Sense::hover());
+            ui.painter().vline(rect.center().x, rect.top()..=rect.bottom() - 6.0, Stroke::new(2.5, t.accent));
+            ui.painter().circle(pos2(rect.center().x, rect.bottom() - 4.0), 4.0, t.card, Stroke::new(2.0, t.accent));
+        }
+        for (k, e) in undone.iter().enumerate().take(show_undone) {
+            let detail = if e.detail.is_empty() { String::new() } else { format!(": {}", e.detail) };
+            if chip(ui, e.command, format!("{} (undone){detail}", e.label), true, nd + k) {
+                target = Some(nd + k + 1);
+            }
+        }
+        more(ui, nu - show_undone);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if let Some(e) = self.log.last() {
+                let colour = if e.ok { t.text_muted } else { t.error };
+                // Short, so the chips keep their room; the whole message is in the tooltip and
+                // the results card.
+                let full = format!("{}: {}", e.command, e.message);
+                let short = if full.chars().count() > 56 {
+                    full.chars().take(55).collect::<String>() + "…"
+                } else {
+                    full.clone()
+                };
+                ui.label(RichText::new(short).size(12.0).color(colour)).on_hover_text(full);
+            }
+            if let Some(h) = &self.viewport.hover {
+                ui.separator();
+                let short =
+                    if h.chars().count() > 28 { h.chars().take(27).collect::<String>() + "…" } else { h.clone() };
+                ui.label(RichText::new(short).size(12.0));
+            }
+            if let Some(case) = self.session.case() {
+                let n = case.changed().len();
+                if n > 0 {
+                    ui.separator();
+                    ui.label(RichText::new(format!("{n} unsaved")).size(12.0).color(t.warning));
+                }
+            }
+        });
+        if let Some(k) = target {
+            self.go_to(k);
+        }
+    }
+}
+
+/// Where the desktop app starts.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// A case directory to open.
+    pub case: Option<String>,
+    /// Commands to run after opening it: `(id, params)`.
+    pub commands: Vec<(String, Value)>,
+    /// Write a PNG of the window to this file once it has drawn, then quit.
+    pub screenshot: Option<String>,
+    /// The window's inner size, points.
+    pub size: Option<(f32, f32)>,
+    pub dark: bool,
+    /// What the 3D view shows first: mesh regions and surface files (`walls.stl`) by name;
+    /// empty for the default.
+    pub show: Vec<String>,
+}
+
+/// The desktop window around an [`App`].
+struct Desktop {
+    app: App,
+    screenshot: Option<String>,
+    frames: u32,
+    /// Set once the screenshot is written (or failed): the window closes.
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Why the screenshot was not written, for [`run`] to return.
+    failed: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl eframe::App for Desktop {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.app.show(ui);
+        if self.done.load(std::sync::atomic::Ordering::SeqCst) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let Some(path) = &self.screenshot else { return };
+        self.frames += 1;
+        ui.ctx().request_repaint();
+        // A few frames for the panels to settle and the view to draw.
+        if self.frames == 5 {
+            let (path, done, failed, ctx) = (path.clone(), self.done.clone(), self.failed.clone(), ui.ctx().clone());
+            let callback = egui::ScreenshotCallback::new(move |image| {
+                let [w, h] = image.size;
+                let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+                let png = umcf_render::png::encode(&umcf_render::raster::Image {
+                    width: u32::try_from(w).unwrap_or(0),
+                    height: u32::try_from(h).unwrap_or(0),
+                    rgba,
+                });
+                if let Err(e) = std::fs::write(&path, png) {
+                    let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *f = Some(format!("writing the screenshot {path}: {e}"));
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                ctx.request_repaint();
+            });
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(callback));
+        }
+    }
+}
+
+/// Opens the window and runs until it is closed.
+pub fn run(options: Options) -> Result<(), String> {
+    let mut startup = Vec::new();
+    if let Some(case) = &options.case {
+        startup.push(("case.open".to_string(), json!({ "path": case })));
+    }
+    startup.extend(options.commands.iter().cloned());
+    let mut app = App::new(Session::new());
+    if options.dark {
+        app.tokens = Tokens::dark();
+    }
+    for (id, params) in startup {
+        if let Err(e) = app.run(&id, params) {
+            eprintln!("umcf-gui: {id}: {e}");
+        }
+    }
+    if !options.show.is_empty() {
+        for n in app.show_only(&options.show) {
+            eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
+        }
+    }
+    let (w, h) = options.size.unwrap_or((1440.0, 900.0));
+    let native = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),
+        ..Default::default()
+    };
+    let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let wanted = options.screenshot.clone();
+    let done: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+    let desktop =
+        Desktop { app, screenshot: options.screenshot, frames: 0, done: done.clone(), failed: failed.clone() };
+    eframe::run_native("umcfGui", native, Box::new(|_cc| Ok(Box::new(desktop)))).map_err(|e| e.to_string())?;
+    if let Some(e) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        return Err(e);
+    }
+    // Closed before the screenshot was taken (the window was closed by hand).
+    match wanted {
+        Some(path) if !done.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err(format!("the window closed before the screenshot was written to {path}"))
+        }
+        _ => Ok(()),
+    }
+}

@@ -33,6 +33,9 @@ pub struct Style {
     /// Classes drawn in the selection colour: (object index, class index).
     pub selected: Vec<(usize, u32)>,
     pub colour_by: ColourBy,
+    /// The background's colours at the top and the bottom (a vertical gradient); `None` for
+    /// the default light grey.
+    pub background: Option<[[f32; 3]; 2]>,
 }
 
 /// An image, rows from the top, 4 bytes (RGBA) per pixel.
@@ -185,7 +188,8 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
         colour: (0..hu)
             .flat_map(|y| {
                 let s = y as f32 / (hu.max(2) - 1) as f32;
-                std::iter::repeat_n(bytes([0, 1, 2].map(|k| TOP[k] * (1.0 - s) + BOTTOM[k] * s)), wu)
+                let [top, bottom] = style.background.unwrap_or([TOP, BOTTOM]);
+                std::iter::repeat_n(bytes([0, 1, 2].map(|k| top[k] * (1.0 - s) + bottom[k] * s)), wu)
             })
             .collect(),
     };

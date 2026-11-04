@@ -1,0 +1,23 @@
+[package]
+name = "umcf-ui-egui"
+description = "The umcfGui desktop interface in egui: menus, toolbar and command palette built from the command registry, the outliner, the inspector and the 3D view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umcf-engine.workspace = true
+umcf-render.workspace = true
+umcf-geom.workspace = true
+umcf-validate.workspace = true
+serde_json.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "accesskit", "clipboard"] }
+
+[dev-dependencies]
+umcf-core.workspace = true
+umcf-model.workspace = true
+egui_kittest = "0.37"
+
+[lints]
+workspace = true
