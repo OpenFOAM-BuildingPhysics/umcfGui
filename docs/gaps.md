@@ -7,13 +7,12 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Layer coverage from `snappyHexMesh`'s log | Layers that failed to grow are a common reason for poor wall results, and nothing reports them yet | `validate` |
-| 2 | STL import and diagnostics: open and non-manifold edges, normals, degenerate triangles, units, extent; repair commands (weld, drop degenerate, orient, scale) | Urban geometry is rarely clean, and snappyHexMesh fails late on it | `geom`, `engine` |
-| 3 | 3D scene of meshes and surfaces, CPU rasteriser, BVH picking (triangle → patch / face) | Seeing the case, and picking what a command acts on | `render`, `geom` |
-| 4 | GUI shell: outliner (regions, patches, surfaces), inspector, toolbar and palette from the command registry, wgpu viewport, theme tokens | The application people use | `ui-egui`, `umcf-gui` |
-| 5 | Boundary conditions by picking: `bc.set` on the selected patches, with the types the catalog offers for the field and version | Assigning BCs patch by patch in text files is slow and error-prone | `engine`, `ui-egui` |
-| 6 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
-| 7 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
+| 1 | STL import and diagnostics: open and non-manifold edges, normals, degenerate triangles, units, extent; repair commands (weld, drop degenerate, orient, scale) | Urban geometry is rarely clean, and snappyHexMesh fails late on it | `geom`, `engine` |
+| 2 | 3D scene of meshes and surfaces, CPU rasteriser, BVH picking (triangle → patch / face) | Seeing the case, and picking what a command acts on | `render`, `geom` |
+| 3 | GUI shell: outliner (regions, patches, surfaces), inspector, toolbar and palette from the command registry, wgpu viewport, theme tokens | The application people use | `ui-egui`, `umcf-gui` |
+| 4 | Boundary conditions by picking: `bc.set` on the selected patches, with the types the catalog offers for the field and version | Assigning BCs patch by patch in text files is slow and error-prone | `engine`, `ui-egui` |
+| 5 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
+| 6 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
 
 ## Known limits
 
