@@ -580,10 +580,10 @@ fn bvh_casts_match_testing_every_triangle() {
         let d = [rand(&mut s) as f64 - 0.5, rand(&mut s) as f64 - 0.5, 1.0];
         let ray = Ray { origin: o, direction: d };
         let mut brute: Vec<(f64, u32)> = Vec::new();
-        for (k, _) in tris.iter().enumerate() {
-            let one = Bvh::new(&points, &tris[k..=k]);
-            if let Some(h) = one.cast(&points, &tris[k..=k], &ray) {
-                brute.push((h.t, k as u32));
+        // The triangle test alone, without any box test.
+        for k in 0..tris.len() as u32 {
+            if let Some(t) = crate::bvh::hit(&points, &tris, &ray, k) {
+                brute.push((t, k));
             }
         }
         brute.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -661,9 +661,8 @@ fn bvh_finds_hits_on_the_edges_of_flat_boxes() {
         ];
         let d = [f64::from(target[0]) - o[0], f64::from(target[1]) - o[1], f64::from(target[2]) - o[2]];
         let ray = Ray { origin: o, direction: d };
-        let mut brute: Vec<(f64, u32)> = (0..tris.len())
-            .filter_map(|k| Bvh::new(&points, &tris[k..=k]).cast(&points, &tris[k..=k], &ray).map(|h| (h.t, k as u32)))
-            .collect();
+        let mut brute: Vec<(f64, u32)> =
+            (0..tris.len() as u32).filter_map(|k| crate::bvh::hit(&points, &tris, &ray, k).map(|t| (t, k))).collect();
         brute.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut all: Vec<(f64, u32)> =
             bvh.cast_all(&points, &tris, &ray, usize::MAX).iter().map(|h| (h.t, h.triangle)).collect();

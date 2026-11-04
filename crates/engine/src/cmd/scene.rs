@@ -115,7 +115,13 @@ fn scene<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<&'s Scene, Erro
             }
             out
         }
-        None if regions.is_empty() && optional(p, "regions")?.is_none() => surface_files(case, fs, false).0,
+        None if regions.is_empty() && optional(p, "regions")?.is_none() => {
+            let (names, listed) = surface_files(case, fs, false);
+            if let (true, Err(e)) = (names.is_empty(), &listed) {
+                return Err(Error::Failed(format!("{id}: {SURFACE_DIR} can't be listed: {e}")));
+            }
+            names
+        }
         None => Vec::new(),
     };
     if regions.is_empty() && surfaces.is_empty() {

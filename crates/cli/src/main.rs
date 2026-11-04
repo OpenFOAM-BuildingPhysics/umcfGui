@@ -266,7 +266,11 @@ fn render(args: &[String]) -> Result<u8, String> {
             }
             o @ ("--azimuth" | "--elevation" | "--zoom") => {
                 let v = value(o)?;
-                let x: f64 = v.parse().map_err(|_| format!("render: {o} is a number, not `{v}`"))?;
+                let x: f64 = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite())
+                    .ok_or_else(|| format!("render: {o} is a finite number, not `{v}`"))?;
                 params.insert(o.trim_start_matches('-').into(), json!(x));
             }
             "--size" => {

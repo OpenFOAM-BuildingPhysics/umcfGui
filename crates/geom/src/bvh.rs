@@ -245,7 +245,7 @@ impl Bvh {
 }
 
 /// Where `ray` hits triangle `i`, if it does.
-fn hit(points: &[[f32; 3]], triangles: &[[u32; 3]], ray: &Ray, i: u32) -> Option<f64> {
+pub(crate) fn hit(points: &[[f32; 3]], triangles: &[[u32; 3]], ray: &Ray, i: u32) -> Option<f64> {
     triangles.get(i as usize).and_then(|tri| corners(points, tri)).and_then(|c| intersect(ray, &c))
 }
 
