@@ -16,8 +16,17 @@ fn boundary() -> String {
 }
 
 fn fs() -> MemFs {
-    MemFs::new()
-        .with("system/controlDict", control())
+    let mut fs = MemFs::new();
+    // The fields the solver reads in a fluid region, besides T.
+    for f in ["U", "w", "gcr", "p_rgh", "p"] {
+        let class = if f == "U" { "volVectorField" } else { "volScalarField" };
+        fs.insert(
+            &format!("0/air/{f}"),
+            format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\ninternalField uniform 0;\nboundaryField\n{{\n    inlet {{ type zeroGradient; }}\n}}\n"),
+        );
+    }
+    fs.insert("constant/air/g", "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class uniformDimensionedVectorField;\n}\nvalue (0 0 -9.81);\n");
+    fs.with("system/controlDict", control())
         .with("system/air/fvSolution", format!("{HEADER}PIMPLE\n{{\n    nOuterCorrectors 1;\n}}\n"))
         .with("constant/air/polyMesh/boundary", boundary())
         .with(

@@ -9,7 +9,7 @@ pinned solver.
     No solver type is editable in the GUI yet. As the case editor lands, each type gets a
     column here saying whether umcfGui exposes it.
 
-**7 families, 41 selectable types (13 boundary conditions), 176 keyword reads.**
+**8 families, 42 selectable types (13 boundary conditions), 176 keyword reads.**
 
 Keywords: `name` is required, `name = default` has a default, *(optional)* is checked
 for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version differences.
@@ -20,6 +20,7 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 |---|---|---|---|---|
 | `buildingMaterialModel` | `buildingMaterialModel` | – | 8, 12 | – |
 | `grassModel` | `grassModel` | `grassProperties` | 8, 12 | `grassModel` |
+| `radiationModel` (OpenFOAM) | – | – | 8, 12 | – |
 | `searchableSurface` (OpenFOAM) | – | – | 8, 12 | – |
 | `solarLoadAbsorptionEmissionModel` | `solarLoadAbsorptionEmissionModel` | – | 8, 12 | `solarLoadAbsorptionEmissionModel` |
 | `solarLoadModel` | `solarLoadModel` | `solarLoadProperties` | 8, 12 | `solarLoadModel` |
@@ -57,6 +58,12 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 |---|---|---|---|
 | `none` | 8, 12 | – | `_LIB/grassModel/noGrass/noGrass.H` |
 | `simpleGrass` | 8, 12 | `Cd` = `0.2`, `LAI` = `2.0`, `SIMPLE` { }, `Tg` = `0.5`, `Tg` = `1e-8`, `albedoSoil` = `0.2366`, `beta` = `0.78`, `betaLW` = `0.83`, `debug` = `0`, `emissivitySoil` = `0.95`, `grassPatches`, `l` = `0.1`, `nEvapSides` = `1`, `ra` = `-1`, `relaxationFactors` { }, `residualControl` { }, `rs` = `200` | `_LIB/grassModel/simpleGrass/simpleGrass.H` |
+
+### `radiationModel`
+
+| Type | Versions | Keywords | Source |
+|---|---|---|---|
+| `viewFactorSky` | 8, 12 | `constantEmissivity`, `grassModel`, `grassPatches`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorReferenceDump` = `false` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)*, `viewFactorWorkflow` = `coeffs_.lookupOrDefault<word>("viewFactorWorkflow", "sparse")` *(12 only)* | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.H` |
 
 ### `searchableSurface`
 
@@ -119,6 +126,84 @@ for, `{ }` is a sub-dictionary; *(8 only)* / *(12 only)* mark version difference
 |---|---|---|---|
 | `porousrealizableKE` | 8, 12 | `Cd` = `0.2`, `vegetationModel` | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.H` |
 
+## Fields read
+
+The files the solver and its models read when they start, from the time the run starts
+from (*start*), `0`, `constant/<region>`, or the mesh's directory (*mesh*: written by the
+radiation utilities). *Required* files stop the run when they are missing.
+
+| Read by | Field | From | Required | Versions | File |
+|---|---|---|---|---|---|
+| every fluid region | `U` | start | yes | 8, 12 | `fluid/createFluidFields.H` |
+| every fluid region | `g` | `constant` | yes | 8, 12 | `fluid/createFluidFields.H` |
+| every fluid region | `gcr` | start | yes | 8, 12 | `fluid/createFluidFields.H` |
+| every fluid region | `p_rgh` | start | yes | 8, 12 | `fluid/createFluidFields.H` |
+| every fluid region | `phi` | start | no | 8, 12 | `fluid/createFluidFields.H` |
+| every fluid region | `w` | start | yes | 8, 12 | `fluid/createFluidFields.H` |
+| every solid region | `Ts` | start | yes | 8, 12 | `solid/createSolidFields.H` |
+| every solid region | `g` | `constant` | yes | 8, 12 | `solid/createSolidFields.H` |
+| every solid region | `pc` | start | yes | 8, 12 | `solid/createSolidFields.H` |
+| every solid region | `ws` | start | yes | 8, 12 | `solid/createSolidFields.H` |
+| every vegetation region | `T` | start | yes | 8, 12 | `veg/createVegFields.H` |
+| `RASModel` `porousrealizableKE` | `LAD` | `0` | yes | 8 only | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.C` |
+| `RASModel` `porousrealizableKE` | `LAD` | `constant` | yes | 12 only | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.C` |
+| `RASModel` `porousrealizableKE` | `epsilon` | start | yes | 8, 12 | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.C` |
+| `RASModel` `porousrealizableKE` | `k` | start | yes | 8, 12 | `_LIB/turbulenceModels/RAS/porousrealizableKE/porousrealizableKE.C` |
+| `fvPatchScalarField` `readScalarField` | `faceProcAddressing` | mesh | no | 8, 12 | `_LIB/blendingLayer/derivedFvPatchFields/readScalarField/readFieldFvPatchScalarField.C` |
+| `fvPatchVectorField` `readVectorField` | `faceProcAddressing` | mesh | no | 8, 12 | `_LIB/blendingLayer/derivedFvPatchFields/readVectorField/readFieldFvPatchVectorField.C` |
+| `grassModel` `simpleGrass` | `Tg` | start | no | 8, 12 | `_LIB/grassModel/simpleGrass/simpleGrass.C` |
+| `radiationModel` `viewFactorSky` | `F` | mesh | no | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `constructMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `constructMapDim` | mesh | no | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `finalAgglom` | mesh | yes | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `globalFaceFaces` | mesh | no | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `qr` | start | yes | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `radiationModel` `viewFactorSky` | `subMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` |
+| `solarLoadModel` `directAndDiffuse` | `F` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `Qs` | start | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `constructMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `constructMapDim` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `finalAgglom` | mesh | yes | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `globalFaceFaces` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `qs` | start | yes | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `skyViewCoeff` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `solarLoadFineFaces` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `subMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `sunViewCoeff` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `solarLoadModel` `directAndDiffuse` | `sunskyMap` | mesh | no | 8, 12 | `_LIB/solarLoadModel/directAndDiffuse/directAndDiffuse.C` |
+| `vegetationModel` `simplifiedVegetation` | `LAD` | `0` | yes | 8, 12 | `_LIB/vegetationModels/simplifiedVegetation/simplifiedVegetation.C` |
+| `vegetationModel` `simplifiedVegetation` | `Tl` | start | no | 8, 12 | `_LIB/vegetationModels/simplifiedVegetation/simplifiedVegetation.C` |
+| `vegetationModel` `simplifiedVegetation` | `divqrsw` | mesh | yes | 8, 12 | `_LIB/vegetationModels/simplifiedVegetation/simplifiedVegetation.C` |
+| `calcLAI` | `LAD` | start | yes | 8, 12 | `_APP/calcLAI/calcLAI.C` |
+| `calcLAI` | `finalAgglom` | mesh | yes | 8, 12 | `_APP/calcLAI/findCoarseMeshFaces.H` |
+| `calcLAI` | `qr` | start | yes | 8, 12 | `_APP/calcLAI/findCoarseMeshFaces.H` |
+| `calcLAI` | `vegetation` | start | yes | 8, 12 | `_APP/calcLAI/findCoarseMeshFaces.H` |
+| `solarRayTracingGen` | `finalAgglom` | mesh | yes | 8, 12 | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
+| `solarRayTracingGen` | `kcLAIboundary` | `constant` | no | 8 only | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
+| `solarRayTracingGen` | `kcLAIboundary` | mesh | no | 12 only | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
+| `solarRayTracingGen` | `qr` | start | yes | 8, 12 | `_APP/solarRayTracingGen/solarRayTracingGen.C` |
+
+## Built per region
+
+The classes the solver constructs (`<class>::New`) for each kind of region.
+
+| Region | Class | Versions |
+|---|---|---|
+| fluid | `fluidThermo` | 12 only |
+| fluid | `fluidThermoThermophysicalTransportModel` | 12 only |
+| fluid | `fluidThermophysicalTransportModel` | 8 only |
+| fluid | `fvConstraints` | 12 only |
+| fluid | `fvModels` | 12 only |
+| fluid | `grassModel` | 8, 12 |
+| fluid | `momentumTransportModel` | 8, 12 |
+| fluid | `radiationModel` | 8, 12 |
+| fluid | `rhoThermo` | 8 only |
+| fluid | `solarLoadModel` | 8, 12 |
+| fluid | `vegetationModel` | 8, 12 |
+| solid | `buildingMaterialModel` | 8, 12 |
+| vegetation | `radiationModel` | 8, 12 |
+| vegetation | `solarLoadModel` | 8, 12 |
+
 ## Application keywords
 
 What the solver, its utilities and its libraries read outside the model classes.
@@ -128,7 +213,6 @@ What the solver, its utilities and its libraries read outside the model classes.
 | `calcLAI` | `_APP/calcLAI/calcLAI.C` | `vegetationModel` |
 | `lib/blendingLayer` | `_LIB/blendingLayer/blendingLayer.C` | `alphaCoeffT`, `alphaCoeffU`, `blendingCoeffs` { }, `dampingThickness` |
 | `lib/solarLoadModel` | `_LIB/solarLoadModel/derivedFvPatchFields/solarRadiationCoupledBase/solarRadiationCoupledBase.C` | `albedo` (optional), `albedoMode` |
-| `lib/solarLoadModel` | `_LIB/solarLoadModel/viewFactorSky/viewFactorSky.C` | `constantEmissivity`, `grassModel`, `grassPatches`, `smoothing`, `viewFactorConvergenceCheck` = `true` *(12 only)*, `viewFactorMaxIter` = `10000` *(12 only)*, `viewFactorMaxRelResidual` = `1e-6` *(12 only)*, `viewFactorReferenceCheck` = `false` *(12 only)*, `viewFactorReferenceCheckMaxFaces` = `25000` *(12 only)*, `viewFactorReferenceDump` = `false` *(12 only)*, `viewFactorRelTol` = `1e-8` *(12 only)*, `viewFactorResidualReplacementInterval` = `1` *(12 only)*, `viewFactorTolerance` = `1e-8` *(12 only)*, `viewFactorUsePreviousSolution` = `true` *(12 only)*, `viewFactorWorkflow` = `"sparse"` *(12 only)*, `viewFactorWorkflow` = `coeffs_.lookupOrDefault<word>("viewFactorWorkflow", "sparse")` *(12 only)* |
 | `solarRayTracingGen` | `_APP/solarRayTracingGen/shootRaysFINE.H` | `maxDynListLength` = `100000` |
 | `solarRayTracingGen` | `_APP/solarRayTracingGen/solarRayTracingGen.C` | `debug` = `0`, `regions` (optional) *(12 only)*, `regions` { } *(12 only)*, `skyPosVector`, `vegetation` *(12 only)*, `vegetation` (optional) *(12 only)* |
 | `urbanMicroclimateFoam` | `fluid/createFluidFields.H` | `SIMPLE` { } |

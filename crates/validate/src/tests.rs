@@ -78,13 +78,64 @@ fn case() -> MemFs {
         .with("0/vegetation/Tl", field("volScalarField", "    air_to_vegetation { type zeroGradient; }\n"))
 }
 
+/// `fs` with the other fields the solver reads in each region (`field.missing`) added where
+/// they are missing, at each time the region has fields. Their entries come from the mesh as
+/// it is then (a constraint patch gets its type, any other `zeroGradient`), so they follow a
+/// test's edits and add no diagnostics of their own.
+fn complete(fs: &MemFs) -> MemFs {
+    let mut out = fs.clone();
+    let Ok(case) = Case::open(fs) else { return out };
+    let g = format!("{}dimensions [0 1 -2 0 0 0 0];\nvalue (0 0 -9.81);\n", header("uniformDimensionedVectorField"));
+    let times: Vec<String> = fs.list("").unwrap().into_iter().filter(|t| t.parse::<f64>().is_ok()).collect();
+    for r in &case.regions {
+        // Added only where the region's temperature field is: a test without one is about that.
+        let (template, names): (&str, &[&str]) = match r.kind {
+            RegionKind::Fluid => ("T", &["U", "w", "gcr", "p_rgh", "p", "nut", "alphat", "k", "epsilon"]),
+            RegionKind::Solid => ("Ts", &["ws", "pc"]),
+            RegionKind::Vegetation => ("Tl", &["T"]),
+            RegionKind::Single => continue,
+        };
+        let Some(patches) = &r.patches else { continue };
+        let mut bcs = String::new();
+        for p in patches {
+            let kind =
+                if ["empty", "symmetryPlane", "symmetry", "wedge", "cyclic", "processor"].contains(&p.kind.as_str()) {
+                    p.kind.as_str()
+                } else {
+                    "zeroGradient"
+                };
+            bcs.push_str(&format!("    {} {{ type {kind}; }}\n", p.name));
+        }
+        let at = times.iter().map(String::as_str).filter(|t| fs.is_file(&format!("{t}/{}/{template}", r.name)));
+        for t in at {
+            let mut names: Vec<&str> = names.to_vec();
+            // simplifiedVegetation reads LAD from 0.
+            if r.kind == RegionKind::Fluid && t == "0" {
+                names.push("LAD");
+            }
+            for n in names {
+                let rel = format!("{t}/{}/{n}", r.name);
+                if !fs.is_file(&rel) && !fs.is_file(&format!("{rel}.gz")) {
+                    let class = if n == "U" { "volVectorField" } else { "volScalarField" };
+                    out.insert(&rel, field(class, &bcs));
+                }
+            }
+        }
+        let rel = format!("constant/{}/g", r.name);
+        if r.kind != RegionKind::Vegetation && !fs.is_file(&rel) {
+            out.insert(&rel, g.clone());
+        }
+    }
+    out
+}
+
 fn codes(fs: &MemFs) -> Vec<(Level, &'static str)> {
-    let c = Case::open(fs).unwrap();
+    let c = Case::open(&complete(fs)).unwrap();
     check(&c).into_iter().map(|d| (d.level, d.code)).collect()
 }
 
 fn errors(fs: &MemFs) -> Vec<Diagnostic> {
-    let c = Case::open(fs).unwrap();
+    let c = Case::open(&complete(fs)).unwrap();
     check(&c).into_iter().filter(|d| d.level == Level::Error).collect()
 }
 
@@ -390,7 +441,7 @@ fn of8_case() -> MemFs {
 fn a_type_from_the_other_version() {
     // OSB exists only in the OpenFOAM-12 solver; this case is OpenFOAM-8 (regionProperties).
     let mut of8 = of8_case();
-    let c = Case::open(&of8).unwrap();
+    let c = Case::open(&complete(&of8)).unwrap();
     assert_eq!(c.layout.version, Some(OfVersion::V8));
     assert!(check(&c).iter().all(|d| d.level != Level::Error), "{:?}", check(&c));
     edit(&mut of8, "constant/street/transportProperties", "Hamstad5Brick", "OSB");
@@ -450,8 +501,12 @@ fn copies_and_backups_are_not_checked() {
         "vegetationModel simplifiedVegetation;",
         "vegetationModel simplifiedVegetation;\nalternatives { vegetationModel other; }",
     );
-    let c: Vec<_> =
-        Case::open(&fs).map(|c| check(&c)).unwrap().into_iter().filter(|d| d.level == Level::Error).collect();
+    let c: Vec<_> = Case::open(&complete(&fs))
+        .map(|c| check(&c))
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.level == Level::Error)
+        .collect();
     assert!(c.is_empty(), "{c:?}");
 }
 
@@ -734,7 +789,7 @@ fn many_patches_stay_fast() {
     for f in ["T", "U", "p", "k", "epsilon"] {
         fs.insert(&format!("0/air/{f}"), field("volScalarField", &entries));
     }
-    let c = Case::open(&fs).unwrap();
+    let c = Case::open(&complete(&fs)).unwrap();
     let d = check(&c);
     assert!(d.iter().all(|d| d.level != Level::Error), "{:?}", d.iter().take(3).collect::<Vec<_>>());
 }
@@ -968,4 +1023,141 @@ fn review_false_alarms() {
         "#!/bin/sh\n. $WM_PROJECT_DIR/bin/tools/RunFunctions\nrunParallel urbanMicroclimateFoam\n",
     );
     assert_eq!(not_info(&fs), [(Level::Warning, "workflow.np")]);
+}
+
+/// `field.missing` for the fields of `fs` (completed, then with `remove` taken out).
+fn missing(fs: &MemFs, remove: &[&str]) -> Vec<String> {
+    let mut fs = complete(fs);
+    for r in remove {
+        fs = without(&fs, r);
+    }
+    let c = Case::open(&fs).unwrap();
+    check(&c).into_iter().filter(|d| d.code == "field.missing").map(|d| d.path).collect()
+}
+
+fn without(fs: &MemFs, rel: &str) -> MemFs {
+    let mut out = MemFs::new();
+    for (k, v) in all_files(fs, "") {
+        if k != rel {
+            out.insert(&k, v);
+        }
+    }
+    out
+}
+
+fn all_files(fs: &MemFs, dir: &str) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for n in fs.list(dir).unwrap() {
+        let rel = if dir.is_empty() { n } else { format!("{dir}/{n}") };
+        match fs.read(&rel, 1 << 20).unwrap() {
+            Some(b) => out.push((rel, b)),
+            None => out.extend(all_files(fs, &rel)),
+        }
+    }
+    out
+}
+
+#[test]
+fn fields_the_solver_reads_per_region() {
+    let fs = case();
+    assert_eq!(missing(&fs, &[]), Vec::<String>::new());
+    assert_eq!(missing(&fs, &["0/air/w"]), ["0/air/w"]);
+    assert_eq!(missing(&fs, &["0/street/Ts", "0/street/pc"]), ["0/street/Ts", "0/street/pc"]);
+    assert_eq!(missing(&fs, &["0/vegetation/T"]), ["0/vegetation/T"]);
+    assert_eq!(missing(&fs, &["constant/street/g"]), ["constant/street/g"]);
+    // OpenFOAM's thermophysics reads p.
+    assert_eq!(missing(&fs, &["0/air/p"]), ["0/air/p"]);
+    // Optional reads (phi, Tl, Tg) are not required.
+    assert_eq!(missing(&fs, &["0/vegetation/Tl"]), Vec::<String>::new());
+    // A decomposed case runs from processor*/: a warning.
+    let mut dec = complete(&fs);
+    dec.insert("processor0/system/x", "");
+    let mut dec = without(&dec, "0/air/w");
+    dec.insert("processor0/0/air/w", "");
+    let c = Case::open(&dec).unwrap();
+    let d: Vec<_> = check(&c).into_iter().filter(|d| d.code == "field.missing").collect();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].level, Level::Warning);
+}
+
+#[test]
+fn fields_the_selected_models_read() {
+    // simplifiedVegetation reads LAD from 0, whatever time the run starts from.
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "startTime 0;", "startTime 3600;");
+    let moved = complete(&fs);
+    let mut at3600 = MemFs::new();
+    for (k, v) in all_files(&moved, "") {
+        let k = if k.starts_with("0/") && k != "0/air/LAD" { k.replacen("0/", "3600/", 1) } else { k };
+        at3600.insert(&k, v);
+    }
+    assert_eq!(missing(&at3600, &[]), Vec::<String>::new());
+    let d = missing(&at3600, &["0/air/LAD"]);
+    assert_eq!(d, ["0/air/LAD"]);
+    // noVegetation reads nothing.
+    let mut fs = case();
+    edit(&mut fs, "constant/air/vegetationProperties", "simplifiedVegetation", "noVegetation");
+    assert_eq!(missing(&fs, &["0/air/LAD"]), Vec::<String>::new());
+
+    // RAS: nut and alphat for any model, then the model's own fields.
+    let mut fs = case();
+    fs.insert("constant/air/momentumTransport", dict("simulationType RAS;\nRAS\n{\n    model realizableKE;\n}\n"));
+    assert_eq!(missing(&fs, &[]), Vec::<String>::new());
+    assert_eq!(missing(&fs, &["0/air/nut", "0/air/epsilon"]), ["0/air/epsilon", "0/air/nut"]);
+    fs.insert("constant/air/momentumTransport", dict("simulationType RAS;\nRAS\n{\n    model kOmegaSST;\n}\n"));
+    assert_eq!(missing(&fs, &[]), ["0/air/omega"]);
+    // OpenFOAM-8 spells it RASModel; the solver's own model reads LAD from 0 there.
+    let mut of8 = of8_case();
+    of8.insert(
+        "constant/air/momentumTransport",
+        dict("simulationType RAS;\nRAS\n{\n    RASModel porousrealizableKE;\n}\n"),
+    );
+    assert_eq!(missing(&of8, &["0/air/LAD", "0/air/k"]), ["0/air/LAD", "0/air/k"]);
+    // In OpenFOAM-12 it reads LAD from constant/.
+    let mut fs = case();
+    fs.insert(
+        "constant/air/momentumTransport",
+        dict("simulationType RAS;\nRAS\n{\n    model porousrealizableKE;\n}\n"),
+    );
+    assert_eq!(missing(&fs, &[]), ["constant/air/LAD"]);
+    // Laminar: no turbulence fields.
+    fs.insert("constant/air/momentumTransport", dict("simulationType laminar;\n"));
+    assert_eq!(missing(&fs, &["0/air/nut", "0/air/k"]), Vec::<String>::new());
+
+    // viewFactorSky (a radiation model) reads qr where it is selected.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    assert_eq!(missing(&fs, &[]), ["0/vegetation/qr"]);
+    // directAndDiffuse, built from a field, reads qs (its dictionary constructor reads Qs).
+    let mut fs = case();
+    fs.insert("constant/vegetation/solarLoadProperties", dict("solarLoadModel directAndDiffuse;\n"));
+    assert_eq!(missing(&fs, &[]), ["0/vegetation/qs"]);
+    // A `$macro` or an unknown type selects nothing that can be checked.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("m viewFactorSky;\nradiationModel $m;\n"));
+    assert_eq!(missing(&fs, &[]), Vec::<String>::new());
+}
+
+/// The OpenFOAM reads in `fields::OPENFOAM` are where the table says, in both versions. Opt-in:
+/// `UMCF_OF8_SRC` and `UMCF_OF12_SRC` name OpenFOAM source trees (`~/OpenFOAM-8`).
+#[test]
+fn openfoam_reads_match_the_sources() {
+    let (Ok(of8), Ok(of12)) = (std::env::var("UMCF_OF8_SRC"), std::env::var("UMCF_OF12_SRC")) else {
+        eprintln!("skipped: set UMCF_OF8_SRC and UMCF_OF12_SRC to OpenFOAM source trees");
+        return;
+    };
+    for r in fields::OPENFOAM {
+        for (root, file) in [(&of8, r.of8), (&of12, r.of12)] {
+            let path = std::path::Path::new(root).join(file);
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let name = format!("\"{}\"", r.field);
+            assert!(text.contains(&name), "{}: no {name}", path.display());
+            // basicThermo::lookupOrConstruct reads with MUST_READ; fluidThermo calls it for p.
+            assert!(
+                text.contains("MUST_READ") || text.contains(&format!("lookupOrConstruct(mesh, {name})")),
+                "{}: {name} not read",
+                path.display()
+            );
+        }
+    }
 }

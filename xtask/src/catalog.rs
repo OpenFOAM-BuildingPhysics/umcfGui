@@ -56,6 +56,42 @@ pub enum Kind {
     Ras,
 }
 
+/// Where a field is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Instance {
+    /// The time the run starts from (`runTime.name()`, `timeName()`).
+    Time,
+    /// `0`, whatever time the run starts from.
+    Zero,
+    /// `constant/` (of the region).
+    Constant,
+    /// The mesh's directory (`facesInstance()`) or anything else: written by the utilities.
+    Other,
+}
+
+/// Who reads a field.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Owner {
+    /// The solver for every region of a kind: `fluid`, `solid`, `vegetation`.
+    Region(String),
+    /// A family's base class, for every type.
+    Family(String),
+    /// One type: `(family, name)`.
+    Type(String, String),
+    /// A utility or a library file no type owns.
+    Other(String),
+}
+
+/// A file read through an `IOobject` with `MUST_READ` or `READ_IF_PRESENT`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FieldRead {
+    pub owner: Owner,
+    pub name: String,
+    pub instance: Instance,
+    pub required: bool,
+    pub file: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct FamilyScan {
     source: String,
@@ -79,6 +115,9 @@ pub struct Scan {
     types: BTreeMap<(String, String), TypeScan>,
     /// (application, file) → keywords.
     apps: BTreeMap<(String, String), BTreeSet<Kw>>,
+    fields: BTreeSet<FieldRead>,
+    /// (region kind, class) for each `<class>::New(…)` the solver calls for a region kind.
+    builds: BTreeSet<(String, String)>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -185,6 +224,10 @@ pub struct Patterns {
     patch: Regex,
     ras: Regex,
     props: Regex,
+    radiation: Regex,
+    ioobject: Regex,
+    new_call: Regex,
+    cstr_call: Regex,
 }
 
 impl Patterns {
@@ -199,6 +242,11 @@ impl Patterns {
             patch: re(r"makePatchTypeField\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)")?,
             ras: re(r"makeRASModel\s*\(\s*(\w+)\s*\)")?,
             props: re(r#""(\w+Properties)""#)?,
+            // OpenFOAM's macro for radiation models: a family whose base class is OpenFOAM's.
+            radiation: re(r"addToRadiationRunTimeSelectionTables\s*\(\s*(\w+)\s*\)")?,
+            ioobject: re(r"\bIOobject\s*\(")?,
+            new_call: re(r"\b(\w+)\s*::\s*New\s*\(")?,
+            cstr_call: re(r"\bcstrIter\s*(?:\(\s*\)|->\s*second)\s*\(")?,
         })
     }
 }
@@ -227,10 +275,14 @@ fn call_args(text: &str, open: usize) -> Option<&str> {
 /// Splits call arguments at top-level commas.
 fn split_args(args: &str) -> Vec<String> {
     let (mut out, mut cur, mut depth, mut in_str) = (Vec::new(), String::new(), 0i32, false);
+    let mut prev = ' ';
     for c in args.chars() {
+        let after = std::mem::replace(&mut prev, c);
         match c {
             '"' => in_str = !in_str,
             '(' | '<' if !in_str => depth += 1,
+            // `this->x`: an arrow, not a closing template bracket.
+            '>' if !in_str && after == '-' => {}
             ')' | '>' if !in_str => depth -= 1,
             ',' if !in_str && depth == 0 => {
                 out.push(cur.trim().to_string());
@@ -269,6 +321,119 @@ pub fn keywords(pat: &Patterns, text: &str) -> BTreeSet<Kw> {
         out.insert(Kw { name: key.to_string(), access, receiver });
     }
     out
+}
+
+/// The files `text` reads through an `IOobject(…)` with a literal name (`"U"`, or
+/// `groupName("k")`): name, where from, and whether it must be there. Dictionaries
+/// (`IOdictionary`, `…Properties`, `…Dict`) are keywords' business, not fields. A named
+/// `IOobject io(…)` is not read here: it is the form used to test for a file first
+/// (`io.headerOk()`), so what it names is optional.
+pub fn field_reads(pat: &Patterns, text: &str) -> Vec<(String, Instance, bool)> {
+    field_reads_at(pat, text).into_iter().map(|(_, r)| r).collect()
+}
+
+/// [`field_reads`] with the offset of each `IOobject`.
+fn field_reads_at(pat: &Patterns, text: &str) -> Vec<(usize, (String, Instance, bool))> {
+    let mut out = Vec::new();
+    for m in pat.ioobject.find_iter(text) {
+        let Some(raw) = call_args(text, m.end() - 1) else { continue };
+        let args = split_args(raw);
+        let required = if args.iter().any(|a| a.contains("MUST_READ")) {
+            true
+        } else if args.iter().any(|a| a.contains("READ_IF_PRESENT")) {
+            false
+        } else {
+            continue;
+        };
+        let before = text.get(m.start().saturating_sub(120)..m.start()).unwrap_or("");
+        if before.contains("IOdictionary") || before.contains("typeIOobject") {
+            continue;
+        }
+        let Some(first) = args.first() else { continue };
+        let literal =
+            if first.starts_with('"') || first.contains("groupName") { first.split('"').nth(1) } else { None };
+        let Some(name) = literal.filter(|n| !n.is_empty()) else { continue };
+        if name.ends_with("Properties") || name.ends_with("Dict") {
+            continue;
+        }
+        let inst = args.get(1).map(String::as_str).unwrap_or("");
+        // `IOobject(name, instance, local, registry, …)`: under a subdirectory of the instance.
+        let local = args.get(2).is_some_and(|a| a.starts_with('"'));
+        let instance = if local {
+            Instance::Other
+        } else if inst == "\"0\"" {
+            Instance::Zero
+        } else if inst.contains("caseConstant") {
+            Instance::Other
+        } else if inst.contains("constant()") {
+            Instance::Constant
+        } else if inst.contains("name()") || inst.contains("timeName()") {
+            Instance::Time
+        } else {
+            Instance::Other
+        };
+        out.push((m.start(), (name.to_string(), instance, required)));
+    }
+    out
+}
+
+/// A constructor of a class defined in a file: its byte span (`Foam::…::class::class(`, or
+/// `class<Base>::class(`, up to the `}` at the start of a line that ends the body) and its
+/// number of parameters.
+struct Ctor {
+    span: std::ops::Range<usize>,
+    params: usize,
+}
+
+fn constructors(text: &str, class: &str) -> Vec<Ctor> {
+    let c = regex::escape(class);
+    let Ok(re) = Regex::new(&format!(r"\b{c}\s*(?:<[^<>;{{}}()]*>)?\s*::\s*{c}\s*\(")) else { return Vec::new() };
+    re.find_iter(text)
+        .map(|m| {
+            let params = call_args(text, m.end() - 1).map_or(0, |a| split_args(a).len());
+            let end = text.get(m.end()..).and_then(|rest| rest.find("\n}")).map_or(text.len(), |k| m.end() + k);
+            Ctor { span: m.start()..end, params }
+        })
+        .collect()
+}
+
+/// Reads of a model's file that the solver can count on: those every constructor it uses
+/// makes. With `arity` (the solver builds the family with that many arguments, `New(T)`),
+/// only the constructors with that many parameters are used: `directAndDiffuse` reads `qs`
+/// when built from a field, `Qs` when built from a dictionary, and the solver builds it from a
+/// field. A read outside every constructor (a member function) is not required: it may never
+/// run. A file without a constructor of the class keeps its reads as they are.
+fn model_reads(pat: &Patterns, text: &str, class: &str, arity: Option<usize>) -> Vec<(String, Instance, bool)> {
+    let ctors = constructors(text, class);
+    let reads = field_reads_at(pat, text);
+    if ctors.is_empty() {
+        return reads.into_iter().map(|(_, r)| r).collect();
+    }
+    let matching = |c: &&Ctor| arity.is_some_and(|n| c.params == n);
+    let used: Vec<&Ctor> = if ctors.iter().any(|c| matching(&c)) {
+        ctors.iter().filter(matching).collect()
+    } else {
+        ctors.iter().collect()
+    };
+    let in_ctor = |at: usize, c: &Ctor| c.span.contains(&at);
+    reads
+        .iter()
+        .map(|(_, (name, instance, required))| {
+            let every =
+                used.iter().all(|c| reads.iter().any(|(at, (n, i, _))| n == name && i == instance && in_ctor(*at, c)));
+            (name.clone(), *instance, *required && every)
+        })
+        .collect()
+}
+
+/// The region kind a solver file sets up: `fluid/` → `fluid`, `solid/`, `veg/` → `vegetation`.
+fn region_of(path: &str) -> Option<&'static str> {
+    match path.split('/').next() {
+        Some("fluid") => Some("fluid"),
+        Some("solid") => Some("solid"),
+        Some("veg") => Some("vegetation"),
+        _ => None,
+    }
 }
 
 fn dir_of(path: &str) -> &str {
@@ -348,6 +513,9 @@ pub fn scan(pat: &Patterns, files: &BTreeMap<String, String>) -> Result<Scan, St
         for r in ras_re.captures_iter(&body) {
             regs.push(("RASModel".to_string(), r[1].to_string(), Kind::Ras, path.clone()));
         }
+        for r in pat.radiation.captures_iter(&body) {
+            regs.push(("radiationModel".to_string(), r[1].to_string(), Kind::Model, path.clone()));
+        }
     }
 
     let mut s = Scan::default();
@@ -390,6 +558,83 @@ pub fn scan(pat: &Patterns, files: &BTreeMap<String, String>) -> Result<Scan, St
             fam.selector = Some(base.clone());
         }
     }
+    // Field reads, by owner: a type's or family's directory, else the region kind or file.
+    // directory → (owner, C++ class)
+    let mut owners: BTreeMap<String, (Owner, String)> = BTreeMap::new();
+    for ((family, name), t) in &s.types {
+        let dir = dir_of(&t.source);
+        if !dir.is_empty() {
+            owners
+                .entry(dir.to_string())
+                .or_insert_with(|| (Owner::Type(family.clone(), name.clone()), t.class.clone()));
+        }
+    }
+    for (base, f) in &s.families {
+        let dir = dir_of(&f.source);
+        if !dir.is_empty() {
+            owners.entry(dir.to_string()).or_insert_with(|| (Owner::Family(base.clone()), base.clone()));
+        }
+    }
+    // How many arguments the solver builds each class with (`solarLoadModel::New(T)`: one).
+    let mut arities: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    for (_, text) in files.iter().filter(|(p, _)| region_of(p).is_some()) {
+        for c in pat.new_call.captures_iter(text) {
+            let (Some(all), Some(class)) = (c.get(0), c.get(1)) else { continue };
+            let n = call_args(text, all.end() - 1).map_or(0, |a| split_args(a).len());
+            arities.entry(class.as_str().to_string()).or_default().insert(n);
+        }
+    }
+    // …and whether the family's `New` with that many parameters passes the same arguments on
+    // to a constructor (`cstrIter()(T)`, OpenFOAM-8 `cstrIter->second(T)`): the count picks
+    // constructors only then.
+    let passes_on = |family: &str, n: usize| -> bool {
+        let Some(f) = s.families.get(family) else { return false };
+        let dir = dir_of(&f.source);
+        let Ok(new_def) = Regex::new(&format!(r"\b{}\s*::\s*New\s*\(", regex::escape(family))) else { return false };
+        // Every `New` with n parameters (the call site doesn't say which one), and at least one.
+        let mut overloads = files
+            .iter()
+            .filter(|(p, _)| !dir.is_empty() && dir_of(p) == dir && p.contains("New"))
+            .flat_map(|(_, text)| new_def.find_iter(text).map(move |m| (text, m)))
+            .filter(|(text, m)| call_args(text, m.end() - 1).map_or(0, |a| split_args(a).len()) == n)
+            .peekable();
+        overloads.peek().is_some()
+            && overloads.all(|(text, m)| {
+                let body = text
+                    .get(m.end()..)
+                    .map_or("", |rest| rest.find("\n}").map_or(rest, |k| rest.get(..k).unwrap_or(rest)));
+                pat.cstr_call.is_match(body)
+                    && pat
+                        .cstr_call
+                        .find_iter(body)
+                        .all(|c| call_args(body, c.end() - 1).map_or(0, |a| split_args(a).len()) == n)
+            })
+    };
+    let arity = |family: &str| match arities.get(family) {
+        Some(set) if set.len() == 1 => set.iter().next().copied().filter(|n| passes_on(family, *n)),
+        _ => None,
+    };
+    for (path, text) in files {
+        let (owner, reads) = match (owners.get(dir_of(path)), region_of(path)) {
+            (Some((o, class)), _) => {
+                let family = match o {
+                    Owner::Type(f, _) | Owner::Family(f) => f.as_str(),
+                    _ => "",
+                };
+                (o.clone(), model_reads(pat, text, class, arity(family)))
+            }
+            (None, Some(r)) => (Owner::Region(r.to_string()), field_reads(pat, text)),
+            (None, None) => (Owner::Other(app_of(path)), field_reads(pat, text)),
+        };
+        for (name, instance, required) in reads {
+            s.fields.insert(FieldRead { owner: owner.clone(), name, instance, required, file: path.clone() });
+        }
+        if let Some(r) = region_of(path) {
+            for c in pat.new_call.captures_iter(text) {
+                s.builds.insert((r.to_string(), c[1].to_string()));
+            }
+        }
+    }
     // Application and library keywords: every file no type or family owns.
     for (path, text) in files {
         if claimed.contains(dir_of(path)) {
@@ -417,6 +662,8 @@ pub struct Merged {
     families: BTreeMap<String, Entry<FamilyScan>>,
     types: BTreeMap<(String, String), Entry<TypeScan>>,
     apps: BTreeMap<(String, String), Versioned<Kw>>,
+    fields: Versioned<FieldRead>,
+    builds: Versioned<(String, String)>,
 }
 
 fn add_kws(into: &mut Versioned<Kw>, kws: &BTreeSet<Kw>, v: Ver) {
@@ -443,6 +690,12 @@ pub fn merge(scans: Vec<(Ver, Scan)>) -> Merged {
         }
         for (key, kws) in s.apps {
             add_kws(m.apps.entry(key).or_default(), &kws, v);
+        }
+        for f in s.fields {
+            m.fields.entry(f).or_default().insert(v);
+        }
+        for b in s.builds {
+            m.builds.entry(b).or_default().insert(v);
         }
     }
     m
@@ -519,6 +772,35 @@ pub fn render_rs(m: &Merged) -> String {
         s.push_str(&format!(
             "        AppKeywords {{\n            app: {app:?},\n            file: {file:?},\n            keywords: {},\n        }},\n",
             kws_rs(kws, "            ")
+        ));
+    }
+    s.push_str("    ],\n    fields: &[\n");
+    for (f, v) in &m.fields {
+        let owner = match &f.owner {
+            Owner::Region(r) => format!("FieldOwner::Region({r:?})"),
+            Owner::Family(b) => format!("FieldOwner::Family({b:?})"),
+            Owner::Type(family, name) => format!("FieldOwner::Type {{ family: {family:?}, name: {name:?} }}"),
+            Owner::Other(a) => format!("FieldOwner::Other({a:?})"),
+        };
+        let instance = match f.instance {
+            Instance::Time => "FieldInstance::StartTime",
+            Instance::Zero => "FieldInstance::Zero",
+            Instance::Constant => "FieldInstance::Constant",
+            Instance::Other => "FieldInstance::Other",
+        };
+        s.push_str(&format!(
+            "        FieldRead {{ name: {:?}, owner: {owner}, instance: {instance}, required: {}, file: {:?}, versions: {} }},\n",
+            f.name,
+            f.required,
+            f.file,
+            vers_rs(v)
+        ));
+    }
+    s.push_str("    ],\n    builds: &[\n");
+    for ((region, class), v) in &m.builds {
+        s.push_str(&format!(
+            "        RegionBuild {{ region: {region:?}, class: {class:?}, versions: {} }},\n",
+            vers_rs(v)
         ));
     }
     s.push_str("    ],\n};\n");
@@ -614,6 +896,33 @@ pub fn render_md(m: &Merged) -> String {
     s.push_str(&section("Boundary conditions (scalar fields)", &|_, kind| kind == Kind::ScalarBc));
     s.push_str(&section("Boundary conditions (vector fields)", &|_, kind| kind == Kind::VectorBc));
     s.push_str(&section("RAS turbulence models", &|_, kind| kind == Kind::Ras));
+    s.push_str("## Fields read\n\nThe files the solver and its models read when they start, from the time the run starts\nfrom (*start*), `0`, `constant/<region>`, or the mesh's directory (*mesh*: written by the\nradiation utilities). *Required* files stop the run when they are missing.\n\n| Read by | Field | From | Required | Versions | File |\n|---|---|---|---|---|---|\n");
+    for (f, v) in &m.fields {
+        let owner = match &f.owner {
+            Owner::Region(r) => format!("every {r} region"),
+            Owner::Family(b) => format!("`{b}` (every type)"),
+            Owner::Type(family, name) => format!("`{family}` `{name}`"),
+            Owner::Other(a) => format!("`{a}`"),
+        };
+        let from = match f.instance {
+            Instance::Time => "start",
+            Instance::Zero => "`0`",
+            Instance::Constant => "`constant`",
+            Instance::Other => "mesh",
+        };
+        s.push_str(&format!(
+            "| {owner} | `{}` | {from} | {} | {} | `{}` |\n",
+            f.name,
+            if f.required { "yes" } else { "no" },
+            vers_md(v),
+            f.file
+        ));
+    }
+    s.push_str("\n## Built per region\n\nThe classes the solver constructs (`<class>::New`) for each kind of region.\n\n| Region | Class | Versions |\n|---|---|---|\n");
+    for ((region, class), v) in &m.builds {
+        s.push_str(&format!("| {region} | `{class}` | {} |\n", vers_md(v)));
+    }
+    s.push('\n');
     s.push_str("## Application keywords\n\nWhat the solver, its utilities and its libraries read outside the model classes.\n\n| Application | File | Keywords |\n|---|---|---|\n");
     for ((app, file), kws) in &m.apps {
         s.push_str(&format!("| `{app}` | `{file}` | {} |\n", kws_md(kws)));
@@ -624,6 +933,72 @@ pub fn render_md(m: &Merged) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_field_reads() {
+        let pat = Patterns::new().unwrap();
+        let src = r#"
+            U_(IOobject("U", runTime.name(), mesh, IOobject::MUST_READ, IOobject::AUTO_WRITE), mesh),
+            k_(IOobject(this->groupName("k"), this->runTime_.name(), this->mesh_, IOobject::MUST_READ), this->mesh_),
+            LAD_(IOobject("LAD", "0", mesh_, IOobject::MUST_READ), mesh_),
+            g(IOobject("g", runTime.constant(), mesh, IOobject::MUST_READ, IOobject::NO_WRITE)),
+            F(IOobject("F", mesh_.facesInstance(), mesh_, IOobject::MUST_READ)),
+            phi(IOobject("phi", runTime.name(), mesh, IOobject::READ_IF_PRESENT)),
+            rho(IOobject("rho", runTime.name(), mesh, IOobject::NO_READ)),
+            IOdictionary d(IOobject("anyDict", runTime.constant(), mesh, IOobject::MUST_READ));
+            typeIOobject<IOdictionary> r(IOobject("radiationProperties", runTime.constant(), mesh, IOobject::MUST_READ));
+            IOobject(fluidNames[i], runTime.name(), runTime, IOobject::MUST_READ)
+            s(IOobject("s", runTime.name(), "uniform", mesh, IOobject::MUST_READ)),
+            IOobject io("h", runTime.name(), mesh, IOobject::MUST_READ); if (io.headerOk()) {}
+        "#;
+        let got = field_reads(&pat, src);
+        assert_eq!(
+            got,
+            [
+                ("U".to_string(), Instance::Time, true),
+                ("k".to_string(), Instance::Time, true),
+                ("LAD".to_string(), Instance::Zero, true),
+                ("g".to_string(), Instance::Constant, true),
+                ("F".to_string(), Instance::Other, true),
+                ("phi".to_string(), Instance::Time, false),
+                ("s".to_string(), Instance::Other, true),
+            ]
+        );
+    }
+
+    /// With several constructors, a read only some of them make is not required.
+    #[test]
+    fn reads_of_every_constructor() {
+        let pat = Patterns::new().unwrap();
+        let src = r#"
+Foam::m::m(const volScalarField& T)
+:
+    a_(IOobject("qs", T.mesh().time().name(), T.mesh(), IOobject::MUST_READ)),
+    b_(IOobject("qr", T.mesh().time().name(), T.mesh(), IOobject::MUST_READ))
+{
+}
+
+Foam::m::m(const dictionary& dict, const volScalarField& T)
+:
+    a_(IOobject("Qs", T.mesh().time().name(), T.mesh(), IOobject::MUST_READ)),
+    b_(IOobject("qr", T.mesh().time().name(), T.mesh(), IOobject::MUST_READ))
+{
+}
+"#;
+        let got = model_reads(&pat, src, "m", None);
+        let required: Vec<&str> = got.iter().filter(|r| r.2).map(|r| r.0.as_str()).collect();
+        assert_eq!(required, ["qr", "qr"]);
+        assert!(got.iter().any(|r| r.0 == "qs" && !r.2) && got.iter().any(|r| r.0 == "Qs" && !r.2));
+        // Built with one argument: only the one-parameter constructor counts.
+        let one: Vec<(String, bool)> = model_reads(&pat, src, "m", Some(1)).into_iter().map(|r| (r.0, r.2)).collect();
+        assert!(one.contains(&("qs".to_string(), true)) && one.contains(&("Qs".to_string(), false)), "{one:?}");
+        // No constructor of the class in the file: every read counts.
+        assert!(model_reads(&pat, src, "other", None).iter().all(|r| r.2));
+        // A template class, and a read in a member function.
+        let t = "Foam::P<B>::P(const B& b)\n:\n    k_(IOobject(\"k\", t.name(), m, IOobject::MUST_READ))\n{\n}\n\nvoid Foam::P<B>::correct()\n{\n    volScalarField x(IOobject(\"x\", t.name(), m, IOobject::MUST_READ), m);\n}\n";
+        let got: Vec<(String, bool)> = model_reads(&pat, t, "P", None).into_iter().map(|r| (r.0, r.2)).collect();
+        assert_eq!(got, [("k".to_string(), true), ("x".to_string(), false)]);
+    }
 
     #[test]
     fn strips_comments_keeps_strings() {

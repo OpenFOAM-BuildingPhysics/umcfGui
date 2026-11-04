@@ -7,7 +7,7 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Required fields per region and model (which fields the solver reads for a fluid, solid or vegetation region, and for the selected models), and the keywords each selected type needs | A missing `w` or `Ts` file stops the solver at the start; the checks know the patches but not yet the solver's field list | `xtask catalog`, `validate` |
+| 1 | The keywords each selected type needs (the catalog has them per type, with the dictionary they are read from as written in the source: `coeffs_`, `dict`) | A missing required keyword stops the solver at the start; the checks know the selected types but not yet what each one must find | `xtask catalog`, `validate` |
 | 2 | Mesh quality from `foam-mesh`: non-orthogonality, skewness, aspect ratio, volumes, open cells, with `checkMesh`'s thresholds; reading `checkMesh -writeSets` | Bad cells are the most common reason a run diverges; each problem needs a location to show | `validate` |
 | 3 | STL import and diagnostics: open and non-manifold edges, normals, degenerate triangles, units, extent; repair commands (weld, drop degenerate, orient, scale) | Urban geometry is rarely clean, and snappyHexMesh fails late on it | `geom`, `engine` |
 | 4 | 3D scene of meshes and surfaces, CPU rasteriser, BVH picking (triangle → patch / face) | Seeing the case, and picking what a command acts on | `render`, `geom` |

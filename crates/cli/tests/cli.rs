@@ -13,9 +13,18 @@ fn case(name: &str, end_time: &str) -> PathBuf {
     );
     let boundary = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class polyBoundaryMesh;\n}\n1\n(\n    inlet\n    {\n        type patch;\n        nFaces 1;\n        startFace 0;\n    }\n)\n";
     let t = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\ninternalField uniform 300;\nboundaryField\n{\n    inlet { type zeroGradient; }\n}\n";
-    for (rel, text) in
-        [("system/controlDict", control.as_str()), ("constant/air/polyMesh/boundary", boundary), ("0/air/T", t)]
-    {
+    let g = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class uniformDimensionedVectorField;\n}\ndimensions [0 1 -2 0 0 0 0];\nvalue (0 0 -9.81);\n";
+    let mut files = vec![
+        ("system/controlDict".to_string(), control.clone()),
+        ("constant/air/polyMesh/boundary".to_string(), boundary.to_string()),
+        ("constant/air/g".to_string(), g.to_string()),
+    ];
+    // The fields the solver reads in a fluid region.
+    for f in ["T", "U", "w", "gcr", "p_rgh", "p"] {
+        let class = if f == "U" { "volVectorField" } else { "volScalarField" };
+        files.push((format!("0/air/{f}"), t.replace("volScalarField", class)));
+    }
+    for (rel, text) in &files {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();

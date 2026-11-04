@@ -20,6 +20,55 @@ pub struct Catalog {
     pub families: &'static [Family],
     pub types: &'static [SolverType],
     pub app_keywords: &'static [AppKeywords],
+    /// Files the solver and its models read when they start.
+    pub fields: &'static [FieldRead],
+    /// The classes the solver constructs (`<class>::New`) for each kind of region.
+    pub builds: &'static [RegionBuild],
+}
+
+/// Where a field is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldInstance {
+    /// The time the run starts from.
+    StartTime,
+    /// `0`, whatever time the run starts from.
+    Zero,
+    /// `constant/<region>`.
+    Constant,
+    /// The mesh's directory or elsewhere: files the radiation utilities write.
+    Other,
+}
+
+/// Who reads a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldOwner {
+    /// The solver, for every region of a kind (`fluid`, `solid`, `vegetation`).
+    Region(&'static str),
+    /// A family's base class, whichever type is selected.
+    Family(&'static str),
+    /// One selectable type.
+    Type { family: &'static str, name: &'static str },
+    /// A utility or library file.
+    Other(&'static str),
+}
+
+/// A file read through an `IOobject` with `MUST_READ` (`required`) or `READ_IF_PRESENT`.
+#[derive(Debug)]
+pub struct FieldRead {
+    pub name: &'static str,
+    pub owner: FieldOwner,
+    pub instance: FieldInstance,
+    pub required: bool,
+    pub file: &'static str,
+    pub versions: &'static [OfVersion],
+}
+
+/// A class the solver constructs for every region of a kind (`vegetationModel` for `fluid`).
+#[derive(Debug)]
+pub struct RegionBuild {
+    pub region: &'static str,
+    pub class: &'static str,
+    pub versions: &'static [OfVersion],
 }
 
 /// A base class with run-time selection: building materials, vegetation, grass, solar load, …
