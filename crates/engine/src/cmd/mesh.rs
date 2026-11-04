@@ -516,7 +516,27 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     // Logs of the default mesh in a case without one that no region's mesh matches.
     if region.is_none() && !has_default {
         for ((lr, l), used) in snappy.iter().zip(&snappy_used) {
-            if lr.is_none() && (l.layer_phase || l.fatal.is_some()) && !used {
+            if !(lr.is_none() && (l.layer_phase || l.fatal.is_some()) && !used) {
+                continue;
+            }
+            // A run that failed and fits no region (it wrote no mesh, or not one that was
+            // moved into a region): still say it failed, for the case (counted as a warning).
+            if let Some(f) = &l.fatal {
+                let place = match [l.cells, l.faces, l.points] {
+                    [None, None, None] => "before it wrote a mesh".to_string(),
+                    _ => format!("with a mesh of {} that no region has", mesh_size(l.cells, l.faces, l.points)),
+                };
+                let mut d = log_note(
+                    "mesh.snappyhexmesh",
+                    &l.file,
+                    format!(
+                        "snappyHexMesh stopped with a fatal error {place} (no -region, so for which region isn't known): {f}"
+                    ),
+                );
+                d.level = Level::Warning;
+                notes.push(d);
+                warnings += 1;
+            } else {
                 notes.push(log_note(
                     "mesh.snappyhexmesh",
                     &l.file,

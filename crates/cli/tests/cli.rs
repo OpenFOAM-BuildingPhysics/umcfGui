@@ -378,4 +378,24 @@ fn mesh_reports_layer_coverage() {
     .unwrap();
     let text = stdout(&cli(&["mesh", dir.to_str().unwrap()]));
     assert!(text.contains("mesh.snappyhexmesh") && text.contains("cannot find surface"), "{text}");
+    // One that failed before writing any mesh can't be placed by size: a warning for the case.
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\n--> FOAM FATAL ERROR:\ncannot open snappyHexMeshDict\n",
+    )
+    .unwrap();
+    let o = cli(&["mesh", "--json", dir.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let d = v["diagnostics"].to_string();
+    assert!(d.contains("before it wrote a mesh") && d.contains("cannot open snappyHexMeshDict"), "{v}");
+    assert_eq!(v["warnings"], 1, "{v}");
+    // Or after printing the size of a mesh no region has (blockMesh's, before refining).
+    std::fs::write(
+        dir.join("log.snappyHexMesh"),
+        "Exec   : snappyHexMesh -overwrite\nInitial mesh : cells:4000  faces:12800  points:4851\n--> FOAM FATAL ERROR:\nout of memory\n",
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&cli(&["mesh", "--json", dir.to_str().unwrap()]))).unwrap();
+    assert!(v["diagnostics"].to_string().contains("with a mesh of 4000 cells"), "{v}");
+    assert_eq!(v["warnings"], 1, "{v}");
 }
