@@ -66,6 +66,9 @@ pub struct Object {
     /// What each class is: a patch's type (`wall`, `patch`, `empty`, …), `region` for a
     /// surface region.
     pub kinds: Vec<String>,
+    /// Faces or triangles left out: a coordinate that is not finite, or so far from the
+    /// scene's origin that it doesn't fit in single precision.
+    pub dropped: usize,
     bvh: OnceLock<Bvh>,
 }
 
@@ -108,6 +111,7 @@ impl Object {
             edges: Vec::new(),
             classes: Vec::new(),
             kinds: Vec::new(),
+            dropped: 0,
             bvh: OnceLock::new(),
         }
     }
@@ -140,6 +144,7 @@ impl Object {
                     ids.push(*slot);
                 }
                 if ids.len() != face.len() || ids.len() < 3 {
+                    o.dropped += 1;
                     continue;
                 }
                 let n = ids.len();
@@ -168,6 +173,7 @@ impl Object {
             let (Ok(k), Ok(base)) = (u32::try_from(k), u32::try_from(o.points.len())) else { break };
             let p = t.points().map(|p| relative(p, origin));
             if !p.iter().flatten().all(|c| c.is_finite()) {
+                o.dropped += 1;
                 continue;
             }
             o.points.extend(p);
@@ -177,6 +183,22 @@ impl Object {
             o.edges.push(0b111);
         }
         o
+    }
+
+    /// The box around the points `mesh`'s boundary faces use (points no boundary face uses
+    /// don't move the scene's origin); `None` when there are none that are finite.
+    pub fn boundary_bounds(mesh: &PolyMesh) -> Option<BBox> {
+        let mut used = vec![false; mesh.n_points()];
+        for patch in &mesh.boundary {
+            for f in patch.faces() {
+                for p in mesh.face(f).unwrap_or_default() {
+                    if let Some(u) = used.get_mut(*p as usize) {
+                        *u = true;
+                    }
+                }
+            }
+        }
+        BBox::of(mesh.points.iter().zip(&used).filter(|(_, u)| **u).map(|(p, _)| Vec3::new(p[0], p[1], p[2])))
     }
 
     /// A name for people: `mesh air`, `mesh` (single region), `surface constant/triSurface/x.stl`.
@@ -220,6 +242,18 @@ impl Scene {
     /// How many triangles the scene has.
     pub fn triangles(&self) -> usize {
         self.objects.iter().map(|o| o.triangles.len()).sum()
+    }
+
+    /// Each class (patch, surface region) `ray` passes through, at its nearest hit, nearest
+    /// first: what lies under the cursor, however many times the ray crosses one class.
+    pub fn pick_classes(&self, ray: &Ray) -> Vec<Pick> {
+        let mut nearest: Vec<Pick> = Vec::new();
+        for p in self.pick(ray, usize::MAX) {
+            if !nearest.iter().any(|q| q.object == p.object && q.class == p.class) {
+                nearest.push(p);
+            }
+        }
+        nearest
     }
 
     /// Everything `ray` (in world coordinates) passes through, nearest first, up to `limit`.

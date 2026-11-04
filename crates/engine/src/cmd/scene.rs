@@ -12,11 +12,10 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_geom::BBox;
-use umcf_geom::Vec3;
 use umcf_geom::bvh::Ray;
 use umcf_geom::stl;
 use umcf_render::camera::{Camera, View};
-use umcf_render::raster::{ColourBy, MAX_SIDE, Style, draw};
+use umcf_render::raster::{ColourBy, MAX_PIXELS, MAX_SIDE, Style, draw};
 use umcf_render::{Object, Pick, Scene, Source, png};
 
 use super::case::count;
@@ -25,7 +24,7 @@ use crate::params::Params;
 use crate::{CommandSpec, Error, Outcome, Session, needs_case};
 
 /// One selected thing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Sel {
     /// A patch of a region's mesh (`region` is `""` in a single-region case).
     Patch { region: String, patch: String },
@@ -157,10 +156,7 @@ fn scene<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<&'s Scene, Erro
         }
         let boxes = meshes
             .iter()
-            .filter_map(|(_, m)| {
-                m.bounds()
-                    .map(|(lo, hi)| BBox { min: Vec3::new(lo[0], lo[1], lo[2]), max: Vec3::new(hi[0], hi[1], hi[2]) })
-            })
+            .filter_map(|(_, m)| Object::boundary_bounds(m))
             .chain(stls.iter().filter_map(|(_, s)| s.bbox()));
         let mut scene = Scene::new(Scene::origin_for(boxes));
         for (r, m) in &meshes {
@@ -186,6 +182,9 @@ fn side(id: &str, p: &Params, key: &str, default: u32) -> Result<u32, Error> {
 /// The camera and image size the parameters ask for, framing `scene`.
 fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Error> {
     let (w, h) = (side(id, p, "width", DEFAULT_SIZE.0)?, side(id, p, "height", DEFAULT_SIZE.1)?);
+    if u64::from(w) * u64::from(h) > u64::from(MAX_PIXELS) {
+        return Err(Error::Params(format!("{id}: {w} × {h} is more than {MAX_PIXELS} pixels (4096 × 4096)")));
+    }
     let view = match p.str("view")? {
         None => View::Iso,
         Some(v) => View::parse(v).ok_or_else(|| {
@@ -289,6 +288,13 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();
     let mut message = format!("{width} × {height} of {} ({})", labels.join(", "), count(scene.triangles(), "triangle"));
+    let dropped: usize = scene.objects.iter().map(|o| o.dropped).sum();
+    if dropped > 0 {
+        message.push_str(&format!(
+            ", {} left out (coordinates not finite, or too far from the rest to draw)",
+            if dropped == 1 { "1 face or triangle".to_string() } else { format!("{dropped} faces or triangles") }
+        ));
+    }
     if n_selected > 0 {
         message.push_str(&format!(", {n_selected} selected"));
     }
@@ -298,6 +304,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         "png": base64(&file),
         "bytes": file.len(),
         "camera": camera_json(&cam),
+        "left_out": dropped,
         "objects": objects_json(scene),
     });
     Ok(Outcome::new(message, data))
@@ -325,32 +332,37 @@ fn mode(id: &str, p: &Params, allowed: &[(&str, Mode)]) -> Result<Mode, Error> {
 }
 
 fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
+    use std::collections::HashSet;
+    if mode == Mode::Replace {
+        selection.clear();
+    }
+    let mut have: HashSet<Sel> = selection.iter().cloned().collect();
     match mode {
-        Mode::Replace => {
-            selection.clear();
+        Mode::Replace | Mode::Add => {
             for i in items {
-                if !selection.contains(&i) {
+                if have.insert(i.clone()) {
                     selection.push(i);
                 }
             }
         }
-        Mode::Add => {
-            for i in items {
-                if !selection.contains(&i) {
-                    selection.push(i);
-                }
-            }
+        Mode::Remove => {
+            let gone: HashSet<Sel> = items.into_iter().collect();
+            selection.retain(|x| !gone.contains(x));
         }
-        Mode::Remove => selection.retain(|x| !items.contains(x)),
         Mode::Toggle => {
+            // Toggling twice in one list puts an item back as it was.
+            let mut gone: HashSet<Sel> = HashSet::new();
             for i in items {
-                match selection.iter().position(|x| *x == i) {
-                    Some(k) => {
-                        selection.remove(k);
-                    }
-                    None => selection.push(i),
+                if have.remove(&i) {
+                    gone.insert(i);
+                } else if gone.remove(&i) {
+                    have.insert(i);
+                } else {
+                    have.insert(i.clone());
+                    selection.push(i);
                 }
             }
+            selection.retain(|x| !gone.contains(x));
         }
         Mode::None => {}
     }
@@ -372,7 +384,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     label: "Pick",
     menu: "",
     shortcut: None,
-    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region (hits). depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"). mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, width, height).",
+    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, width, height).",
     enabled: needs_case,
     run: pick,
     journal: true,
@@ -392,8 +404,8 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     )?;
     let depth = match p.number("depth")? {
         None => 0,
-        Some(d) if d.fract() == 0.0 && (0.0..=MAX_HITS as f64).contains(&d) => d as usize,
-        Some(_) => return Err(Error::Params(format!("{id}: `depth` is a whole number from 0 to {MAX_HITS}"))),
+        Some(d) if d.fract() == 0.0 && (0.0..MAX_HITS as f64).contains(&d) => d as usize,
+        Some(_) => return Err(Error::Params(format!("{id}: `depth` is a whole number from 0 to {}", MAX_HITS - 1))),
     };
     let (pixel, ray) = (optional(&p, "pixel")?, optional(&p, "ray")?);
     let scene = scene(s, id, &p)?;
@@ -421,7 +433,7 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         _ => return Err(Error::Params(format!("{id}: give `pixel` or `ray` (one of them)"))),
     };
     // One entry per patch or region, at its nearest hit.
-    let hits: Vec<Pick> = scene.pick(&ray, MAX_HITS * 4);
+    let hits: Vec<Pick> = scene.pick_classes(&ray);
     let mut under: Vec<(Sel, &Pick)> = Vec::new();
     for h in &hits {
         let Some(sel) = scene.objects.get(h.object).and_then(|o| Sel::of(o, h.class)) else { continue };
@@ -445,7 +457,9 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let picked = under.get(depth).map(|(sel, _)| sel.clone());
     let n_under = under.len();
     let items: Vec<Sel> = picked.iter().cloned().collect();
-    if !(items.is_empty() && mode != Mode::Replace) {
+    // Nothing under the cursor clears the selection (replace); a depth past what is there
+    // changes nothing.
+    if !items.is_empty() || (mode == Mode::Replace && n_under == 0) {
         apply(&mut s.selection, mode, items);
     }
     let what = |x: &Sel| match x {
@@ -486,6 +500,8 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let list = p.required("items")?.as_array().ok_or_else(|| Error::Params(format!("{id}: `items` is a list")))?;
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let mut items = Vec::new();
+    // Each surface's regions, read once.
+    let mut regions: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for v in list {
         let o = v.as_object().ok_or_else(|| Error::Params(format!("{id}: each item is an object")))?;
         let get = |k: &str| o.get(k).and_then(Value::as_str);
@@ -506,10 +522,14 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
             (None, None, Some(file), Some(solid)) if keys.len() == 2 => {
                 let rel = surface_path(id, file, false)?;
-                let bytes =
-                    case.file(fs, &rel)?.ok_or_else(|| Error::Params(format!("{id}: there is no surface {rel}")))?;
-                let stl = stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {rel}: {e}")))?;
-                if !stl.regions().0.iter().any(|r| r == solid) {
+                if !regions.contains_key(&rel) {
+                    let bytes = case
+                        .file(fs, &rel)?
+                        .ok_or_else(|| Error::Params(format!("{id}: there is no surface {rel}")))?;
+                    let stl = stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {rel}: {e}")))?;
+                    regions.insert(rel.clone(), stl.regions().0);
+                }
+                if !regions.get(&rel).is_some_and(|names| names.iter().any(|r| r == solid)) {
                     return Err(Error::Params(format!("{id}: {rel} has no region `{solid}`")));
                 }
                 Sel::Solid { file: rel, solid: solid.to_string() }

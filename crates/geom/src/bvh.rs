@@ -242,6 +242,13 @@ fn hit(points: &[[f32; 3]], triangles: &[[u32; 3]], ray: &Ray, i: u32) -> Option
     triangles.get(i as usize).and_then(|tri| corners(points, tri)).and_then(|c| intersect(ray, &c))
 }
 
+/// How far the exit of a box is moved out: 1 + 2γ₃ and then some.
+const SLACK: f64 = 1.0 + 4.0 * f64::EPSILON;
+
+/// How far outside a triangle (in its barycentric coordinates) a hit still counts: a ray through
+/// a shared edge or vertex hits the triangles on both sides, as the rasteriser draws them.
+const EDGE: f64 = 1e-9;
+
 /// Where the ray enters the node's box (0 when it starts inside), or `None` when it misses.
 fn slab(ray: &Ray, inv: &[f64; 3], node: &Node) -> Option<f64> {
     let (mut near, mut far) = (0.0_f64, f64::INFINITY);
@@ -257,7 +264,11 @@ fn slab(ray: &Ray, inv: &[f64; 3], node: &Node) -> Option<f64> {
         let a = (lo - o) * i;
         let b = (hi - o) * i;
         near = near.max(a.min(b));
-        far = far.min(a.max(b));
+        // Rounding in the products can put the exit a hair before the entry for a ray that
+        // grazes a face or edge of a flat box (most boundary faces are axis-aligned): the exit
+        // is moved out by a few ulps so such a box is never skipped (Ize, "Robust BVH Ray
+        // Traversal", 2013).
+        far = far.min(a.max(b) * SLACK);
         if near > far {
             return None;
         }
@@ -284,12 +295,12 @@ fn intersect(ray: &Ray, c: &[[f32; 3]; 3]) -> Option<f64> {
     let f = 1.0 / det;
     let s = sub(ray.origin, a);
     let u = f * dot(s, h);
-    if !(0.0..=1.0).contains(&u) {
+    if !(-EDGE..=1.0 + EDGE).contains(&u) {
         return None;
     }
     let q = cross(s, e1);
     let v = f * dot(ray.direction, q);
-    if v < 0.0 || u + v > 1.0 {
+    if v < -EDGE || u + v > 1.0 + EDGE {
         return None;
     }
     let t = f * dot(e2, q);

@@ -9,6 +9,9 @@ use crate::camera::Camera;
 
 /// The largest image side drawn.
 pub const MAX_SIDE: u32 = 8192;
+/// The most pixels drawn (4096 × 4096): a larger image is drawn this size, keeping its
+/// width and taking height off. Drawing takes 16 bytes per pixel.
+pub const MAX_PIXELS: u32 = 4096 * 4096;
 
 /// How classes get their colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -95,7 +98,11 @@ struct Target {
     h: usize,
     depth: Vec<f32>,
     id: Vec<u32>,
-    colour: Vec<[f32; 3]>,
+    colour: Vec<[u8; 3]>,
+}
+
+fn bytes(c: [f32; 3]) -> [u8; 3] {
+    c.map(|ch| (ch * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 const NONE: u32 = u32::MAX;
@@ -149,7 +156,7 @@ impl Target {
                     .any(|(bit, dist)| edges & bit != 0 && *dist < 0.6);
                 let k = if near_edge { EDGE } else { 1.0 };
                 if let Some(col) = self.colour.get_mut(i) {
-                    *col = colour.map(|ch| ch * k);
+                    *col = bytes(colour.map(|ch| ch * k));
                 }
                 if let Some(slot) = self.id.get_mut(i) {
                     *slot = id;
@@ -159,9 +166,16 @@ impl Target {
     }
 }
 
+/// The size an image of `width` × `height` is drawn at: each side from 1 to [`MAX_SIDE`],
+/// and at most [`MAX_PIXELS`] (the width kept, the height cut).
+pub fn size(width: u32, height: u32) -> (u32, u32) {
+    let w = width.clamp(1, MAX_SIDE);
+    (w, height.clamp(1, MAX_SIDE).min(MAX_PIXELS / w))
+}
+
 /// Draws `scene` as `camera` sees it.
 pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
-    let (w, h) = (style.width.clamp(1, MAX_SIDE), style.height.clamp(1, MAX_SIDE));
+    let (w, h) = size(style.width, style.height);
     let (wu, hu) = (w as usize, h as usize);
     let mut t = Target {
         w: wu,
@@ -171,7 +185,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
         colour: (0..hu)
             .flat_map(|y| {
                 let s = y as f32 / (hu.max(2) - 1) as f32;
-                std::iter::repeat_n([0, 1, 2].map(|k| TOP[k] * (1.0 - s) + BOTTOM[k] * s), wu)
+                std::iter::repeat_n(bytes([0, 1, 2].map(|k| TOP[k] * (1.0 - s) + BOTTOM[k] * s)), wu)
             })
             .collect(),
     };
@@ -265,9 +279,9 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                     || differs(x.checked_sub(1).map(|_| i - 1))
                     || differs((y + 1 < hu).then_some(i + wu))
                     || differs(y.checked_sub(1).map(|_| i - wu)));
-            let c = t.colour.get(i).copied().unwrap_or(TOP);
+            let c = t.colour.get(i).copied().unwrap_or([255; 3]);
             let k = if outline { OUTLINE } else { 1.0 };
-            rgba.extend(c.map(|ch| (ch * k * 255.0).round().clamp(0.0, 255.0) as u8));
+            rgba.extend(c.map(|ch| (f32::from(ch) * k).round().clamp(0.0, 255.0) as u8));
             rgba.push(255);
         }
     }

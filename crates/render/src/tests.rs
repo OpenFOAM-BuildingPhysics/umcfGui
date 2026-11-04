@@ -42,6 +42,13 @@ fn cube(at: [f64; 3]) -> PolyMesh {
     PolyMesh::read(&fs, "p", &Limits::default()).unwrap()
 }
 
+/// The cube with a ninth point, far away and used by no face.
+fn cube_with_stray_point() -> PolyMesh {
+    let mut m = cube([0.0; 3]);
+    m.points.push([1e40, 0.0, 0.0]);
+    m
+}
+
 fn scene_of(mesh: &PolyMesh) -> Scene {
     let (lo, hi) = mesh.bounds().unwrap();
     let b = BBox { min: Vec3::new(lo[0], lo[1], lo[2]), max: Vec3::new(hi[0], hi[1], hi[2]) };
@@ -182,8 +189,11 @@ fn a_camera_inside_the_box_clips_and_still_draws() {
     let mut odd = cam;
     odd.distance = f64::NAN;
     odd.fov = -3.0;
-    let img = draw(&s, &odd, &Style { width: 0, height: 100_000, ..Style::default() });
+    let img = draw(&s, &odd, &Style { width: 0, height: 9000, ..Style::default() });
     assert_eq!((img.width, img.height), (1, crate::raster::MAX_SIDE));
+    // At most MAX_PIXELS: the width is kept, the height cut.
+    assert_eq!(crate::raster::size(8192, 8192), (8192, 2048));
+    assert_eq!(crate::raster::size(0, 0), (1, 1));
 }
 
 #[test]
@@ -240,4 +250,31 @@ fn views_parse_and_frame_the_box() {
     }
     let f = Camera::fit(View::Front, &b, 1.0).frame();
     assert!((f.forward.y - 1.0).abs() < 1e-12 && (f.up.z - 1.0).abs() < 1e-12);
+}
+
+/// A point no boundary face uses doesn't move the scene; one that a face uses but that is too
+/// far to draw drops that face, and says so.
+#[test]
+fn far_points_are_left_out_and_counted() {
+    let m = cube_with_stray_point();
+    let b = Object::boundary_bounds(&m).unwrap();
+    assert_eq!((b.min, b.max), (Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
+    let o = Object::from_mesh("air", &m, b.centre());
+    assert_eq!((o.triangles.len(), o.dropped), (12, 0));
+    let mut far = cube([0.0; 3]);
+    far.points[7] = [1e40, 1.0, 1.0];
+    let o = Object::from_mesh("air", &far, Vec3::new(0.5, 0.5, 0.5));
+    // Point 7 is in the top and two side faces.
+    assert_eq!((o.triangles.len(), o.dropped), (6, 3));
+}
+
+/// One entry per patch along a ray, however many of its triangles the ray crosses.
+#[test]
+fn picks_list_each_patch_once() {
+    let s = scene_of(&cube([0.0; 3]));
+    // Through the diagonal of the bottom and top faces: both triangles of each are hit.
+    let ray = Ray { origin: [0.5, 0.5, 5.0], direction: [0.0, 0.0, -1.0] };
+    assert_eq!(s.pick(&ray, 100).len(), 4);
+    let classes: Vec<u32> = s.pick_classes(&ray).iter().map(|p| p.class).collect();
+    assert_eq!(classes, [1, 0]);
 }

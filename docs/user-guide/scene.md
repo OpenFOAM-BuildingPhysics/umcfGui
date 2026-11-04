@@ -21,7 +21,9 @@ By default the scene is every region with a mesh, or every surface when no regio
 patches (the domain top of `air` and of `vegetation`): pick one region to look inside.
 
 Points far from the origin (projected coordinates) keep their precision: the scene stores them
-relative to its own middle.
+relative to the middle of what it shows (of the points the boundary faces use, for a mesh). A
+face with a coordinate that is not finite, or too far from the rest to be drawn, is left out,
+and the snapshot says how many were (`left_out`).
 
 ## Snapshots
 
@@ -34,7 +36,7 @@ the selection in orange (in front of a patch of another region in the same place
 | `view` | `iso` | `iso` (from the front, the right and above), `top`, `bottom`, `front` (from −y), `back`, `left` (from −x), `right` |
 | `azimuth`, `elevation` | the view's | Degrees: azimuth 0 from −y, 90 from +x; elevation from −90 (below) to 90 (above) |
 | `zoom` | 1 | 1 frames the whole scene; 2 is twice as close |
-| `width`, `height` | 1280, 800 | Pixels, at most 8192 |
+| `width`, `height` | 1280, 800 | Pixels: each at most 8192, together at most 4096 × 4096 |
 | `edges` | `false` | Draws the faces' edges (the cells at the boundary) |
 | `colour_by` | `patch` | `patch` (each patch or region its own colour) or `object` (each mesh region or surface) |
 | `regions`, `surfaces` | see above | Which mesh regions and surfaces |
@@ -49,8 +51,8 @@ repair, an undo); a mesh rewritten on disk needs `reload`.
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same
 parameters (`pixel: [x, y]`, from the top left), or along a ray in world coordinates
 (`ray: {"origin": [x, y, z], "direction": [x, y, z]}`). It lists everything the ray passes
-through, nearest first, once per patch or region (`hits`, each with its face or triangle, the
-distance and the point), and selects one of them:
+through, nearest first, once per patch or region at its nearest hit (`hits`, each with its face
+or triangle, the distance and the point), and selects one of them:
 
 | `mode` | Does |
 |---|---|
@@ -60,7 +62,8 @@ distance and the point), and selects one of them:
 | `none` | Only lists what is under the cursor |
 
 `depth` picks the one behind: 0 (default) is the nearest, 1 the next ("select other": a patch
-hidden by another, an internal patch).
+hidden by another, an internal patch), up to 63; 64 are listed at most. A `depth` past what is under the cursor
+changes nothing.
 
 Picking uses a bounding volume hierarchy of each object's triangles, built the first time a
 ray is cast, on the full mesh or surface.

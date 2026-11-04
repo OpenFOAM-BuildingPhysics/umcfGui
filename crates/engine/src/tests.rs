@@ -697,6 +697,7 @@ fn scene_snapshots_draw_the_mesh_or_the_surfaces() {
         (json!({ "view": "Top" }), "no view `Top`"),
         (json!({ "width": 0 }), "from 1 to 8192"),
         (json!({ "width": 1.5 }), "whole number"),
+        (json!({ "width": 8192, "height": 4096 }), "more than 16777216 pixels"),
         (json!({ "regions": ["water"] }), "no region `water`"),
         (json!({ "regions": "air" }), "a list of names"),
         (json!({ "surfaces": ["../x.stl"] }), "not a surface of the case"),
@@ -752,6 +753,12 @@ fn picking_selects_patches_and_lists_what_is_behind() {
     look["depth"] = json!(5);
     let out = s.execute("select.pick", &look).unwrap();
     assert_eq!(out.message, "only 2 under the cursor; 1 selected");
+    // A depth past what is under the cursor changes nothing, even with replace.
+    let mut past = top.clone();
+    past["depth"] = json!(2);
+    let out = s.execute("select.pick", &past).unwrap();
+    assert_eq!(out.data["picked"], Value::Null);
+    assert_eq!(s.selection().len(), 1);
     miss["mode"] = json!("replace");
     let out = s.execute("select.pick", &miss).unwrap();
     assert_eq!(out.message, "nothing under the cursor; 0 selected");
@@ -771,7 +778,7 @@ fn picking_selects_patches_and_lists_what_is_behind() {
         assert!(e.contains(says), "{p}: {e}");
     }
     // Picks are in the journal: they are what later commands act on.
-    assert_eq!(s.journal().iter().filter(|j| j["command"] == "select.pick").count(), 6);
+    assert_eq!(s.journal().iter().filter(|j| j["command"] == "select.pick").count(), 7);
 }
 
 #[test]
@@ -798,6 +805,10 @@ fn selections_are_checked_and_reset_by_opening_a_case() {
         let e = s.execute("select.set", &json!({ "items": items })).unwrap_err().to_string();
         assert!(e.contains(says), "{items}: {e}");
     }
+    // The same surface named many times is read once; duplicates are selected once.
+    let many: Vec<Value> = (0..500).map(|_| json!({ "surface": "box.stl", "solid": "box" })).collect();
+    let out = s.execute("select.set", &json!({ "items": many, "mode": "add" })).unwrap();
+    assert_eq!(out.message, "1 item selected");
     // A failed select.set leaves the selection as it was.
     assert_eq!(s.selection().len(), 1);
     s.execute("select.clear", &Value::Null).unwrap();

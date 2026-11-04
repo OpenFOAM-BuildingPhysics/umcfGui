@@ -626,3 +626,52 @@ fn regions_follow_openfoams_names() {
     assert_eq!(names, ["patch0", "patch1", "patch2", "patch7"]);
     assert_eq!(&of[..4], &[0, 1, 2, 3]);
 }
+
+/// Rays through the edges and corners of flat, axis-aligned faces (what a mesh's boundary is
+/// made of) at coordinates that are not round in binary: the BVH finds what testing every
+/// triangle finds, including the triangles on both sides of the edge.
+#[test]
+fn bvh_finds_hits_on_the_edges_of_flat_boxes() {
+    use crate::bvh::{Bvh, Ray};
+    let (x0, step) = (-45.3f32, 0.7f32);
+    let mut points = Vec::new();
+    let mut tris = Vec::new();
+    // A wall in the plane x = x0 and a floor in z = 0.1, each a grid of quads split in two.
+    for wall in [true, false] {
+        for i in 0..20u32 {
+            for j in 0..20u32 {
+                let base = points.len() as u32;
+                for (a, b) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+                    let (u, v) = (x0 + (i + a) as f32 * step, 0.1 + (j + b) as f32 * step);
+                    points.push(if wall { [x0, u, v] } else { [u, v - 0.1 + x0, 0.1] });
+                }
+                tris.push([base, base + 1, base + 2]);
+                tris.push([base, base + 2, base + 3]);
+            }
+        }
+    }
+    let bvh = Bvh::new(&points, &tris);
+    let mut s = 0x1234_5678_9abc_def1u64;
+    let mut checked = 0;
+    for target in points.iter().step_by(3) {
+        let o = [
+            f64::from(target[0]) + 50.0 * (f64::from(rand(&mut s)) + 0.2),
+            f64::from(target[1]) - 37.0 * f64::from(rand(&mut s)),
+            f64::from(target[2]) + 61.0 * f64::from(rand(&mut s)),
+        ];
+        let d = [f64::from(target[0]) - o[0], f64::from(target[1]) - o[1], f64::from(target[2]) - o[2]];
+        let ray = Ray { origin: o, direction: d };
+        let mut brute: Vec<(f64, u32)> = (0..tris.len())
+            .filter_map(|k| Bvh::new(&points, &tris[k..=k]).cast(&points, &tris[k..=k], &ray).map(|h| (h.t, k as u32)))
+            .collect();
+        brute.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut all: Vec<(f64, u32)> =
+            bvh.cast_all(&points, &tris, &ray, usize::MAX).iter().map(|h| (h.t, h.triangle)).collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        assert_eq!(all, brute, "ray {ray:?}");
+        let first = bvh.cast(&points, &tris, &ray).map(|h| h.t);
+        assert!(first.zip(brute.first()).map_or(first.is_none() && brute.is_empty(), |(f, b)| (f - b.0).abs() < 1e-12));
+        checked += usize::from(!brute.is_empty());
+    }
+    assert!(checked > 200, "{checked}");
+}
