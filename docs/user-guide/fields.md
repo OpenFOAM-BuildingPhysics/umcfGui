@@ -52,9 +52,11 @@ umcf-cli run --case my-case \
   are set in it, and its other keys, comments and `#include`s stay. So does an entry whose type
   comes from an `#include` or a `$macro` in it: the type and entries are set after what it brings
   in. Keys given as `defaults` go into new entries only: a patch keeping its entry keeps its own
-  (its value, say); one whose entry brings text in from elsewhere (with or without a type of its own) gets none either, since that
-  text may hold the value, and the command warns (`bc.unfilled`) so that you can check it. Otherwise the patch gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
-  had none (a condition from a group or a pattern then still applies to the other patches).
+  (its value, say). One whose entry brings text in from elsewhere (with or without a type of its
+  own) gets none either, since that text may hold the value; when a default was given that isn't
+  also an entry, the command warns (`bc.unfilled`) so that you can check it. Otherwise the patch
+  gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the
+  others when it had none (a condition from a group or a pattern then still applies to the other patches).
 - **Nothing else in the file changes, byte for byte**: not the other entries, the comments, the
   layout nor the data lists, ASCII or binary. A file that wouldn't come back unchanged without
   an edit is refused rather than rewritten. Every field file of the test projects comes back
