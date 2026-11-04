@@ -15,16 +15,19 @@ pub(super) const SET: CommandSpec = CommandSpec {
     label: "Set boundary condition",
     menu: "Boundary conditions/Set condition…",
     shortcut: None,
-    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; otherwise its entry is replaced. Nothing else in the file changes.",
+    params: "field: a field of the start time (T, U). type: the condition (fixedValue, zeroGradient, compressible::CFDHAMfluidTemperatureCoupledMixed). value: its value (300 → uniform 300, [2, 0, 0] → uniform (2 0 0), or OpenFOAM text). entries: other keys, {\"inletValue\": \"uniform 0\"}. defaults: keys only a new entry gets ({\"value\": \"uniform 300\"}): a kept entry keeps its own. patches: [{\"region\": \"air\", \"patch\": \"inlet\"}, …]; default the selected patches. A patch whose entry has this type already keeps it, with value and entries set in it; so does an entry without a type of its own that brings text in from an #include or a $macro; an entry kept that brings text in gets no defaults (bc.unfilled warns when a default isn't also given as an entry); otherwise its entry is replaced. Nothing else in the file changes.",
     enabled: needs_case,
     run: set,
     journal: true,
     undoable: true,
 };
 
+/// The most entries and defaults one condition takes (OpenFOAM's take a handful).
+const MAX_KEYS: usize = 64;
+
 fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SET.id;
-    let p = Params::new(id, p, &["field", "type", "value", "entries", "patches"])?;
+    let p = Params::new(id, p, &["field", "type", "value", "entries", "defaults", "patches"])?;
     let field = p.required_str("field")?;
     if key(id, field).is_err() || field.contains(['(', ')']) {
         return Err(Error::Params(format!("{id}: `{field}` is not a field name")));
@@ -32,6 +35,11 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let kind = p.required_str("type")?;
     if key(id, kind).is_err() || kind.contains(['(', ')']) {
         return Err(Error::Params(format!("{id}: `{kind}` is not a boundary condition type")));
+    }
+    // Counted before anything is converted.
+    let count = |k: &str| p.required(k).ok().and_then(Value::as_object).map_or(0, |o| o.len());
+    if count("entries") + count("defaults") + usize::from(p.required("value").is_ok()) > MAX_KEYS {
+        return Err(Error::Params(format!("{id}: more than {MAX_KEYS} entries and defaults")));
     }
     let mut entries: Vec<(String, String)> = Vec::new();
     if let Ok(v) = p.required("entries") {
@@ -48,6 +56,17 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if let Ok(v) = p.required("value") {
         entries.push(("value".to_string(), value_text(id, v)?));
     }
+    let mut defaults: Vec<(String, String)> = Vec::new();
+    if let Ok(v) = p.required("defaults") {
+        let o = v.as_object().ok_or_else(|| Error::Params(format!("{id}: `defaults` is an object")))?;
+        for (k, v) in o {
+            let k = key(id, k)?;
+            if k == "type" {
+                return Err(Error::Params(format!("{id}: `type` is not a default")));
+            }
+            defaults.push((k.to_string(), value_text(id, v)?));
+        }
+    }
     let patches = patches(s, &p)?;
     // One edit per region: each region's field is its own file.
     let mut by_region: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -55,11 +74,12 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         by_region.entry(r.as_str()).or_default().push(patch.as_str());
     }
     let pairs: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let fills: Vec<(&str, &str)> = defaults.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     // A uniform value has as many components as the field's type.
     for region in by_region.keys() {
         let class = s.case().and_then(|c| c.region(region)).and_then(|r| r.field(field)).and_then(|f| f.class.clone());
         if let Some(n) = class.as_deref().and_then(components) {
-            for (k, v) in &entries {
+            for (k, v) in entries.iter().chain(&defaults) {
                 if let Some(got) = uniform_components(v)
                     && got != n
                     && (k == "value" || k.ends_with("Value"))
@@ -76,9 +96,17 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let o = s.opened_mut()?;
     let mut files = Vec::new();
     let mut dropped: Vec<(String, String)> = Vec::new();
+    let mut unfilled: Vec<(String, String)> = Vec::new();
     for (region, names) in &by_region {
-        let gone = o.case.set_bc(o.fs.as_ref(), region, field, names, kind, &pairs)?;
-        dropped.extend(gone.into_iter().map(|p| (region.to_string(), p)));
+        let report = o.case.set_bc(
+            o.fs.as_ref(),
+            region,
+            field,
+            names,
+            &umcf_model::Condition { kind, entries: &pairs, defaults: &fills },
+        )?;
+        dropped.extend(report.replaced.into_iter().map(|p| (region.to_string(), p)));
+        unfilled.extend(report.unfilled.into_iter().map(|p| (region.to_string(), p)));
         if let Some(f) = o.case.region(region).and_then(|r| r.field(field)) {
             files.push(f.path.clone());
         }
@@ -95,6 +123,18 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "patch": patch,
             "field": field,
             "message": "the entry it had took text from an #include or a $macro: the new entry replaces it, and that text is no longer used here",
+        }));
+    }
+    for (region, patch) in &unfilled {
+        let path = o.case.region(region).and_then(|r| r.field(field)).map(|f| f.path.clone()).unwrap_or_default();
+        found.push(json!({
+            "level": "warning",
+            "code": "bc.unfilled",
+            "path": path,
+            "region": region,
+            "patch": patch,
+            "field": field,
+            "message": "the entry brings text in from an #include or a $macro, which isn't read here: it keeps that text, and the defaults (the value shown) were not set in it. Check that it has what the type needs, or give the value explicitly",
         }));
     }
     // Entries the file brings in from elsewhere can still override the ones set here.
@@ -158,10 +198,7 @@ fn components(class: &str) -> Option<usize> {
 fn uniform_components(text: &str) -> Option<usize> {
     let v = text.trim().strip_prefix("uniform")?.trim();
     match v.strip_prefix('(').and_then(|v| v.strip_suffix(')')) {
-        Some(inner) => {
-            let parts: Vec<&str> = inner.split_whitespace().collect();
-            parts.iter().all(|p| p.parse::<f64>().is_ok()).then_some(parts.len())
-        }
+        Some(inner) => inner.split_whitespace().try_fold(0usize, |n, p| p.parse::<f64>().ok().map(|_| n + 1)),
         None => v.parse::<f64>().is_ok().then_some(1),
     }
 }

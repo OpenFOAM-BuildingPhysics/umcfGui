@@ -69,8 +69,10 @@ Select the patches in the view or the browser (Ctrl+click adds one), then *Set c
 - the **type**, typed or picked from the suggestions under it: OpenFOAM's common types and the
   solver's own for the field (scalar or vector) and the case's OpenFOAM version, from the
   [catalog](../solver-coverage.md). Any other type can be typed; the case check judges it;
-- the **value** (`uniform 300`, `uniform (2 0 0)`), and other entries, one `key value` per line
-  (`inletValue uniform 0`);
+- the **value** (`uniform 300`, `uniform (2 0 0)`), filled in from the first patch. Left as it
+  is, it goes only to patches that get a new entry, and a patch keeping its entry keeps its own
+  value; changed, it goes to every selected patch;
+- other entries, one `key value` per line (`inletValue uniform 0`);
 - what each patch has **now**, and whether the entries already there stay (the same type) or the
   patch gets a new entry.
 

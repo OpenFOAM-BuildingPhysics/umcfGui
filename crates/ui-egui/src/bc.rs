@@ -28,11 +28,9 @@ pub struct BcForm {
     /// The field and patches the type and value were filled in for, from the first patch's
     /// condition.
     pub(crate) filled_for: Option<(String, Vec<(String, String)>)>,
-    /// The value filled in: not sent unchanged when every patch keeps its entry, so each keeps
-    /// its own value. A new entry always gets the value shown.
+    /// The value filled in. Unchanged, it is sent as a default: a patch that gets a new entry
+    /// gets it, one that keeps its entry keeps its own value.
     pub(crate) filled_value: String,
-    /// Every selected patch's own entry has the type given: they are kept.
-    pub(crate) all_keep: bool,
 }
 
 impl BcForm {
@@ -48,9 +46,13 @@ impl BcForm {
         let mut p = Map::new();
         p.insert("field".into(), json!(self.field));
         p.insert("type".into(), json!(kind));
-        let unchanged = self.all_keep && self.value == self.filled_value;
-        if !self.value.trim().is_empty() && !unchanged {
-            p.insert("value".into(), json!(self.value.trim()));
+        let value = self.value.trim();
+        if !value.is_empty() {
+            if self.value == self.filled_value {
+                p.insert("defaults".into(), json!({ "value": value }));
+            } else {
+                p.insert("value".into(), json!(value));
+            }
         }
         let mut entries = Map::new();
         for line in self.more.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -59,6 +61,9 @@ impl BcForm {
                 .map(|(k, v)| (k, v.trim().trim_end_matches(';').trim()))
                 .filter(|(_, v)| !v.is_empty())
                 .ok_or_else(|| format!("`{line}`: write an entry as `key value`."))?;
+            if k == "value" || k == "type" {
+                return Err(format!("Give the {k} in its own field, not as another entry."));
+            }
             entries.insert(k.to_string(), json!(v));
         }
         if !entries.is_empty() {
@@ -229,12 +234,11 @@ impl App {
                             .is_some_and(|b| b.patch == *p && b.kind.as_deref() == Some(kind))
                     })
                     .count();
-                form.all_keep = !kind.is_empty() && kept == patches.len();
                 let note = match kept {
                     _ if kind.is_empty() => None,
                     0 => Some("Each patch gets a new entry with this type.".to_string()),
                     k if k == patches.len() => Some(
-                        "Same type: each patch keeps its entry; the value and entries here are set in it.".to_string(),
+                        "Same type: each patch keeps its entry and its value; the entries here, and the value once changed, are set in it.".to_string(),
                     ),
                     k => {
                         let n = patches.len();
@@ -248,7 +252,7 @@ impl App {
                         } else {
                             format!("the other{rest} {} get", n - k)
                         };
-                        Some(format!("{k} of the {n} patches {has} entry; {other} a new one."))
+                        Some(format!("{k} of the {n} patches {has} entry and value; {other} a new one with the value shown."))
                     }
                 };
                 if let Some(n) = note {

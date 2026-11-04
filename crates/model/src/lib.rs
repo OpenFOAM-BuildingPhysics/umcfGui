@@ -228,6 +228,25 @@ struct Original {
     fingerprint: Option<Fingerprint>,
 }
 
+/// A boundary condition for [`Case::set_bc`]: its type, the entries set, and the defaults only a
+/// new entry gets.
+#[derive(Debug, Clone, Copy)]
+pub struct Condition<'a> {
+    pub kind: &'a str,
+    pub entries: &'a [(&'a str, &'a str)],
+    pub defaults: &'a [(&'a str, &'a str)],
+}
+
+/// What [`Case::set_bc`] couldn't do as asked, by patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BcReport {
+    /// Their replaced entry brought in text from elsewhere (`#include`, `$macro`): it is gone.
+    pub replaced: Vec<String>,
+    /// Their kept entry brings in text from elsewhere, which isn't read here: the defaults were
+    /// not set in it, and it may have no value.
+    pub unfilled: Vec<String>,
+}
+
 /// What [`Case::save`] writes for one file.
 enum Pending {
     Dict(Arc<Document>),
@@ -732,21 +751,24 @@ impl Case {
 
     /// Sets the boundary condition of `patches` in a field of the start time. A patch whose own
     /// entry already has type `kind` keeps it, with `entries` set in it (its other keys,
-    /// comments and `#include`s stay). Otherwise its entry becomes `{ type <kind>; <key>
-    /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
-    /// or pattern entry stays for the other patches it covers. Nothing else in the file
-    /// changes, byte for byte: not the other entries, the comments, nor the data lists.
-    /// [`Case::save`] writes it. Returns the patches whose replaced entry brought in text from
-    /// elsewhere (an `#include`, a `$macro`): that is gone from them now.
+    /// comments and `#include`s stay). So does an entry without a type of its own that brings
+    /// text in from an `#include` or a `$macro`: the type and `entries` are set after it.
+    /// Otherwise its entry becomes `{ type <kind>; <key> <value>; … }`, replacing one of
+    /// exactly that name: a new type starts afresh, and a group or pattern entry stays for the
+    /// other patches it covers. Nothing else in the file changes, byte for byte: not the other
+    /// entries, the comments, nor the data lists. [`Case::save`] writes it. `defaults` go into
+    /// new entries only, after `entries` (a key in both is taken from `entries`): a kept entry
+    /// keeps its own. Returns which patches lost text from elsewhere and which kept an entry
+    /// from elsewhere without the defaults.
     pub fn set_bc(
         &mut self,
         fs: &dyn CaseFs,
         region: &str,
         field: &str,
         patches: &[&str],
-        kind: &str,
-        entries: &[(&str, &str)],
-    ) -> Result<Vec<String>> {
+        condition: &Condition,
+    ) -> Result<BcReport> {
+        let Condition { kind, entries, defaults } = *condition;
         let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
         let r = self
             .regions
@@ -769,15 +791,21 @@ impl Case {
         }
         // The placeholder of a field's data lists can't be written by an edit: the list would be
         // spliced in there.
-        let words =
-            std::iter::once(kind).chain(patches.iter().copied()).chain(entries.iter().flat_map(|(k, v)| [*k, *v]));
+        let words = std::iter::once(kind)
+            .chain(patches.iter().copied())
+            .chain(entries.iter().chain(defaults).flat_map(|(k, v)| [*k, *v]));
         if let Some(w) = words.into_iter().find(|w| w.contains(umcf_foam_field::PLACEHOLDER)) {
             return Err(Error::Bc(format!("`{w}` can't be written into a field file")));
         }
         let path = info.path.clone();
         let name = info.name.clone();
+        // A new entry: the entries, then the defaults not given, `value` last as OpenFOAM writes it.
+        let given: std::collections::HashSet<&str> = entries.iter().map(|(k, _)| *k).collect();
+        let mut fresh: Vec<&(&str, &str)> =
+            entries.iter().chain(defaults.iter().filter(|(k, _)| !given.contains(k))).collect();
+        fresh.sort_by_key(|(k, _)| *k == "value");
         let mut body = format!("{{ type {kind};");
-        for (k, v) in entries {
+        for (k, v) in fresh {
             body.push_str(&format!(" {k} {v};"));
         }
         body.push_str(" }");
@@ -795,6 +823,7 @@ impl Case {
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
         // Patches whose replaced entry brought in text from elsewhere (`#include`, `$macro`).
         let mut dropped = Vec::new();
+        let mut unfilled = Vec::new();
         let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
             for p in patches {
                 let indirect_value = doc
@@ -810,16 +839,25 @@ impl Case {
                         matches!(i, umcf_foam_dict::Item::Directive { .. } | umcf_foam_dict::Item::Macro { .. })
                     })
                 });
+                let missing_defaults = defaults.iter().any(|(k, _)| !entries.iter().any(|(e, _)| e == k));
                 if visible.as_deref() == Some(kind) {
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
                     }
+                    // Its own keys are kept as they are; what it brings in isn't read here.
+                    if from_elsewhere && missing_defaults {
+                        unfilled.push(p.to_string());
+                    }
                 } else if visible.is_none() && from_elsewhere {
                     // Kept, with the type and entries set after what it brings in (the last
-                    // one read wins).
+                    // one read wins). No defaults: what it brings in isn't read here, and a
+                    // default could override a value it has.
                     doc.set(&["boundaryField", p, "type"], kind)?;
                     for (k, v) in entries {
                         doc.set(&["boundaryField", p, k], v)?;
+                    }
+                    if missing_defaults {
+                        unfilled.push(p.to_string());
                     }
                 } else {
                     if from_elsewhere || indirect_value {
@@ -837,7 +875,7 @@ impl Case {
         if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
             *f = summary;
         }
-        Ok(dropped)
+        Ok(BcReport { replaced: dropped, unfilled })
     }
 
     /// Writes the changed dictionaries and returns their paths.

@@ -959,3 +959,44 @@ fn undoing_a_saved_condition_is_a_change_to_save() {
     assert_eq!(text(&s, "0/air/T"), original);
     assert!(s.case().unwrap().changed().is_empty());
 }
+
+#[test]
+fn defaults_go_into_new_entries_only() {
+    // inlet keeps its fixedValue (uniform 300); outlet gets a new fixedValue entry.
+    let fs = fs().with(
+        "constant/air/polyMesh/boundary",
+        "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class polyBoundaryMesh;\n}\n2\n(\n    inlet { type patch; nFaces 1; startFace 0; }\n    outlet { type patch; nFaces 1; startFace 1; }\n)\n",
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let p = json!([{"region": "air", "patch": "inlet"}, {"region": "air", "patch": "outlet"}]);
+    s.execute(
+        "bc.set",
+        &json!({"field": "T", "type": "fixedValue", "defaults": {"value": "uniform 280"}, "entries": {"note": "\"set\""}, "patches": p}),
+    )
+    .unwrap();
+    assert_eq!(bc_of(&s, "T", "inlet"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
+    assert_eq!(bc_of(&s, "T", "outlet"), Some((Some("fixedValue".into()), Some("uniform 280".into()))));
+    // A key given as an entry wins over the same default in a new entry.
+    s.execute(
+        "bc.set",
+        &json!({"field": "T", "type": "zeroGradient", "patches": [{"region": "air", "patch": "outlet"}]}),
+    )
+    .unwrap();
+    s.execute(
+        "bc.set",
+        &json!({"field": "T", "type": "fixedValue", "entries": {"value": "uniform 310"}, "defaults": {"value": "uniform 280"}, "patches": [{"region": "air", "patch": "outlet"}]}),
+    )
+    .unwrap();
+    assert_eq!(bc_of(&s, "T", "outlet"), Some((Some("fixedValue".into()), Some("uniform 310".into()))));
+    // So many keys are refused.
+    let many: serde_json::Map<String, Value> = (0..65).map(|k| (format!("k{k}"), json!("1"))).collect();
+    let e = s
+        .execute("bc.set", &json!({"field": "T", "type": "fixedValue", "defaults": many, "patches": p}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("more than 64"), "{e}");
+    // Defaults are checked like values.
+    let bad = json!({"field": "U", "type": "fixedValue", "defaults": {"value": "uniform 1"}, "patches": p});
+    assert!(s.execute("bc.set", &bad).is_err());
+}
