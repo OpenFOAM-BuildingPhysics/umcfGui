@@ -918,6 +918,18 @@ impl Case {
         })
     }
 
+    /// The size a file a command edits may have, decompressed: [`Case::rewrite_file`]'s cap, so
+    /// that what it wrote can be read back.
+    fn edit_cap(&self) -> u64 {
+        self.options.field_bytes.max(1 << 20)
+    }
+
+    /// The patches of `boundary` bytes [`Case::rewrite_file`] returned.
+    fn reparse_boundary(&self, path: &str, bytes: &[u8]) -> Result<Vec<Patch>> {
+        let limits = umcf_foam_mesh::Limits { max_bytes: self.edit_cap(), ..Default::default() };
+        umcf_foam_mesh::parse_boundary_bytes(bytes, &limits).map_err(|e| Error::Bc(format!("{path}: {e}")))
+    }
+
     /// Rewrites one file a command edits (a field, a mesh's `boundary`) with `edit`, keeping
     /// every byte it doesn't touch, and puts it; returns the new bytes.
     fn rewrite_file(
@@ -926,7 +938,7 @@ impl Case {
         path: &str,
         edit: impl FnOnce(&mut umcf_foam_dict::Document) -> umcf_foam_field::Result<()>,
     ) -> Result<Vec<u8>> {
-        let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes.max(1 << 20), ..Default::default() };
+        let limits = umcf_foam_field::Limits { max_bytes: self.edit_cap(), ..Default::default() };
         let (bytes, base) = self.edit_base(fs, path)?;
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
         let out = umcf_foam_field::rewrite(&bytes, &limits, edit)
@@ -1021,7 +1033,7 @@ impl Case {
             }
             Ok(())
         })?;
-        let parsed = umcf_foam_mesh::parse_boundary_bytes(&out).map_err(|e| Error::Bc(format!("{path}: {e}")))?;
+        let parsed = self.reparse_boundary(&path, &out)?;
         if let Some(reg) = self.regions.get_mut(r) {
             reg.patches = Some(parsed);
         }
@@ -1108,7 +1120,7 @@ impl Case {
                 }
                 Ok(())
             })?;
-            let parsed = umcf_foam_mesh::parse_boundary_bytes(&out).map_err(|e| Error::Bc(format!("{opath}: {e}")))?;
+            let parsed = self.reparse_boundary(&opath, &out)?;
             if let Some(reg) = self.regions.get_mut(i) {
                 reg.patches = Some(parsed);
             }
