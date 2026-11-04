@@ -98,6 +98,9 @@ pub struct App {
     shown_for: Option<String>,
     /// The open case's STL surfaces, listed again after each command (not on every frame).
     surfaces: Vec<String>,
+    /// They couldn't be listed when the case opened: the first listing that works shows them
+    /// as opening would have.
+    unlisted: bool,
     /// The scene of this revision failed to build, with why: it isn't tried again until the
     /// revision changes.
     scene_error: Option<(u64, String)>,
@@ -202,6 +205,7 @@ impl App {
             revision: 0,
             shown_for: None,
             surfaces: Vec::new(),
+            unlisted: false,
             scene_error: None,
             styled: false,
         };
@@ -221,7 +225,9 @@ impl App {
     /// when there is none (as `scene.snapshot` does).
     fn reset_shown(&mut self) {
         self.shown_for = self.session.location().map(String::from);
-        self.surfaces = self.list_surfaces().unwrap_or_default();
+        let listed = self.list_surfaces();
+        self.unlisted = listed.is_none() && self.session.case().is_some();
+        self.surfaces = listed.unwrap_or_default();
         self.viewport.camera = None;
         self.expanded.clear();
         let Some(case) = self.session.case() else {
@@ -262,6 +268,13 @@ impl App {
         // A listing that failed keeps the last one, and what is shown with it.
         let Some(surfaces) = self.list_surfaces() else { return };
         self.surfaces = surfaces;
+        if std::mem::take(&mut self.unlisted) && self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
+            self.shown_surfaces = self.surfaces.clone();
+            if !self.shown_surfaces.is_empty() {
+                self.expanded.insert("surfaces".into());
+            }
+            self.revision += 1;
+        }
         let surfaces = &self.surfaces;
         let regions: Vec<String> = self
             .session
@@ -1647,6 +1660,13 @@ pub fn run(options: Options) -> Result<(), String> {
             }
             eprintln!("umcf-gui: {id}: {e}");
         }
+    }
+    // A case whose surfaces couldn't be listed would show nothing.
+    if options.screenshot.is_some()
+        && app.unlisted
+        && let Some(e) = app.log.iter().rev().find(|e| !e.ok && e.command == "surfaces")
+    {
+        return Err(e.message.clone());
     }
     if !options.show.is_empty() {
         let unknown = app.show_only(&options.show);

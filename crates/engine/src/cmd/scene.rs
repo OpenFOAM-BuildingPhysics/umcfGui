@@ -603,16 +603,20 @@ impl Session {
     }
 
     /// The STL surfaces of the open case (case-relative paths, sorted), including those a
-    /// command put there and the case has not saved yet. A panic while listing them (a bug)
-    /// comes back as [`Error::Panicked`].
+    /// command put there and the case has not saved yet. A directory that can't be listed is an
+    /// error, unsaved surfaces or not (a missing one is no surfaces), and so is a panic while
+    /// listing (a bug, [`Error::Panicked`]).
     pub fn surfaces(&self) -> Result<Vec<String>, Error> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self.case().zip(self.fs()) {
-            Some((case, fs)) => surface_files(case, fs, false).0,
-            None => Vec::new(),
+            Some((case, fs)) => {
+                let (names, listed) = surface_files(case, fs, false);
+                listed.map(|()| names).map_err(|e| Error::Failed(format!("the surfaces can't be listed: {e}")))
+            }
+            None => Ok(Vec::new()),
         }))
         .map_err(|payload| Error::Panicked {
             id: "surfaces".to_string(),
             message: crate::panic_message(payload.as_ref()),
-        })
+        })?
     }
 }

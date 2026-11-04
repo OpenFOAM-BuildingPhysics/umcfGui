@@ -351,6 +351,8 @@ struct Watched {
     fs: MemFs,
     reads: Arc<AtomicUsize>,
     panics: Arc<AtomicBool>,
+    /// Listing `constant/triSurface` fails (an unreadable directory).
+    unreadable: Arc<AtomicBool>,
 }
 
 impl Watched {
@@ -377,6 +379,9 @@ impl CaseFs for Watched {
     }
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         self.surface(rel);
+        if rel.starts_with("constant/triSurface") && self.unreadable.load(Ordering::SeqCst) {
+            return Err(FsError::BadPath(rel.to_string()));
+        }
         self.fs.list(rel)
     }
 }
@@ -395,7 +400,7 @@ fn watched() -> (App, Arc<AtomicUsize>, Arc<AtomicBool>) {
     fs.insert("constant/triSurface/bad.stl", bad);
     let (reads, panics) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
     let mut s = Session::with_backup(".umcfgui/backup/test");
-    let fs = Watched { fs, reads: reads.clone(), panics: panics.clone() };
+    let fs = Watched { fs, reads: reads.clone(), panics: panics.clone(), unreadable: Default::default() };
     s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
     (App::new(s), reads, panics)
 }
@@ -432,6 +437,19 @@ fn a_bug_while_building_the_scene_is_an_error_not_a_crash() {
     assert!(matches!(s.surfaces(), Err(umcf_engine::Error::Panicked { .. })));
     panics.store(false, Ordering::SeqCst);
     assert_eq!(s.surfaces().unwrap(), ["constant/triSurface/bad.stl"]);
+}
+
+#[test]
+fn a_surface_directory_that_cant_be_listed_is_an_error() {
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let mut fs = case();
+    fs.insert("constant/triSurface/a.stl", vec![0u8; 84]);
+    let fs = Watched { fs, reads: Default::default(), panics: Default::default(), unreadable: unreadable.clone() };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    unreadable.store(true, Ordering::SeqCst);
+    let err = s.surfaces().err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(err.contains("can't be listed"), "{err}");
     assert!(s.scene(&json!({ "regions": [""] })).is_ok());
 }
 
@@ -445,4 +463,31 @@ fn a_bug_while_listing_surfaces_keeps_what_is_shown() {
     assert_eq!(app.shown_surfaces, ["constant/triSurface/bad.stl"]);
     assert!(app.log.last().is_some_and(|e| !e.ok && e.command == "surfaces"));
     assert!(app.results_open);
+}
+
+#[test]
+fn surfaces_that_could_not_be_listed_at_opening_show_once_they_can() {
+    // No mesh: opening shows every surface.
+    let mut fs = MemFs::new();
+    fs.insert("system/controlDict", format!("{HEADER}application urbanMicroclimateFoam;\nendTime 3600;\n"));
+    let mut bad = vec![0u8; 80];
+    bad.extend(0u32.to_le_bytes());
+    fs.insert("constant/triSurface/a.stl", bad);
+    let (reads, panics) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(
+        Box::new(Watched { fs, reads, panics: panics.clone(), unreadable: Default::default() }),
+        "mem",
+        OpenOptions::default(),
+        false,
+    )
+    .unwrap();
+    panics.store(true, Ordering::SeqCst);
+    let mut app = App::new(s);
+    assert!(app.shown_regions.is_empty() && app.shown_surfaces.is_empty());
+    assert!(app.unlisted);
+    panics.store(false, Ordering::SeqCst);
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    assert!(!app.unlisted);
+    assert_eq!(app.shown_surfaces, ["constant/triSurface/a.stl"]);
 }
