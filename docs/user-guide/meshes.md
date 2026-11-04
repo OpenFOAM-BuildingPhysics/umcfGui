@@ -97,6 +97,7 @@ is reported as `mesh.stale-set`.
 | `mesh.stale-set` | Warning | A `checkMesh` set names more faces, cells or points than the mesh has: it was written for another mesh |
 | `mesh.unreadable-set` | Warning | A `checkMesh` set could not be read |
 | `mesh.checkmesh-incomplete` | Error | A `checkMesh` log longer than is read has failures that are not listed: times past the first 1000 that failed a check or stopped (summarized by the size of mesh they checked, and matched to the mesh as other results are), or failed checks past 200 findings of one time. A warning in a vegetation region, as the findings themselves would be |
+| `mesh.checkmesh-unmatched` | Warning | Such failed times whose mesh size isn't known (past 16 sizes, or without mesh stats, which `checkMesh` prints only when the topology changes: usually times with moved points): they may be of another mesh |
 
 Tested against `checkMesh`:
 - The five regions of the 3×3 test case give the same cell counts, volumes (min, max, total),

@@ -87,7 +87,7 @@ fn log_json(l: &CheckMeshLog) -> Value {
         "notes": l.notes,
         "cells": l.cells,
         "fatal": l.fatal,
-        "skipped": l.skipped.map(|s| json!({ "times": s.times, "failed": s.failed })),
+        "skipped": l.skipped.map(|s| json!({ "times": s.times, "failed": s.failed, "unfinished": s.unfinished })),
         "truncated": l.truncated,
         "unlisted_problems": l.unlisted_problems,
     })

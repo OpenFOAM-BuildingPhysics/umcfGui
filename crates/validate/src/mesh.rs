@@ -666,6 +666,8 @@ pub struct Skipped {
     pub times: usize,
     /// Times with a failed check or a fatal error.
     pub failed: usize,
+    /// Times that end without checkMesh's verdict (the log stops in them).
+    pub unfinished: usize,
 }
 
 /// The most mesh sizes the skipped times of a log are summarized by.
@@ -676,6 +678,8 @@ pub const MAX_SKIPPED_SIZES: usize = 16;
 struct SkippedTime {
     sizes: [Option<u64>; 3],
     failed: bool,
+    /// `Mesh OK.`, `Failed N mesh checks.` or a fatal error was seen.
+    verdict: bool,
 }
 
 /// Adds a skipped time to the summaries in `out` (after the kept results, from `first`).
@@ -701,6 +705,7 @@ fn summarize(out: &mut Vec<CheckMeshLog>, first: usize, head: &CheckMeshLog, t: 
     if let Some(s) = at.and_then(|k| out.get_mut(k)).and_then(|l| l.skipped.as_mut()) {
         s.times += 1;
         s.failed += usize::from(t.failed);
+        s.unfinished += usize::from(!t.verdict);
     }
 }
 
@@ -739,6 +744,11 @@ pub fn parse_checkmesh_log(file: &str, text: &str) -> Vec<CheckMeshLog> {
                 summarize(&mut out, first_skipped, &head, done);
             } else if failure(t) {
                 cur.failed = true;
+                cur.verdict |= !t.starts_with("***");
+            } else if t == "Mesh OK."
+                || t.strip_prefix("Failed ").and_then(|r| r.strip_suffix(" mesh checks.")).is_some()
+            {
+                cur.verdict = true;
             } else {
                 for (k, key) in ["cells:", "faces:", "points:"].iter().enumerate() {
                     if let Some(n) = t.strip_prefix(key).and_then(|r| r.trim().parse::<u64>().ok())
@@ -917,16 +927,31 @@ pub fn checkmesh_log_diagnostics(log: &CheckMeshLog, native: Option<&Quality>) -
     if let Some(s) = log.skipped {
         // Times past MAX_LOG_RESULTS: only whether they failed is known.
         let source = format!("checkMesh ({}{version}, times past the first {MAX_LOG_RESULTS})", log.file);
-        if s.failed > 0 {
+        // Past MAX_SKIPPED_SIZES sizes (or without mesh stats), the mesh is unknown.
+        let unknown = log.cells.is_none() && log.faces.is_none() && log.points.is_none();
+        let failed = format!(
+            "{} of these {} times failed a check or stopped with a fatal error (not listed): run checkMesh on fewer times (-time) to see them",
+            s.failed, s.times
+        );
+        if s.failed > 0 && unknown {
             push(
-                Level::Error,
-                "mesh.checkmesh-incomplete",
+                Level::Warning,
+                "mesh.checkmesh-unmatched",
                 format!(
-                    "{source}: {} of these {} times failed a check or stopped with a fatal error (not listed): run checkMesh on fewer times (-time) to see them",
-                    s.failed, s.times
+                    "{source}: {failed}; their mesh size isn't known (checkMesh prints it only when the topology changes: these are usually times with moved points), so they may be of another mesh"
                 ),
             );
-        } else {
+        } else if s.failed > 0 {
+            push(Level::Error, "mesh.checkmesh-incomplete", format!("{source}: {failed}"));
+        }
+        if s.unfinished > 0 {
+            push(
+                Level::Warning,
+                "mesh.checkmesh",
+                format!("{source}: {} of these {} times stop before checkMesh's verdict", s.unfinished, s.times),
+            );
+        }
+        if s.failed == 0 && s.unfinished == 0 {
             push(
                 Level::Info,
                 "mesh.checkmesh",

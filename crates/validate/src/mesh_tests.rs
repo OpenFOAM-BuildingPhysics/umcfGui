@@ -403,7 +403,7 @@ fn a_long_checkmesh_log_is_cut_with_a_note() {
     let logs = parse_checkmesh_log("log.checkMesh", &log);
     assert_eq!(logs.len(), MAX_LOG_RESULTS + 1, "the times read, and one summary of the rest");
     let summary = logs.last().unwrap();
-    assert_eq!((summary.skipped, summary.cells), (Some(Skipped { times: 50, failed: 0 }), Some(8)));
+    assert_eq!((summary.skipped, summary.cells), (Some(Skipped { times: 50, failed: 0, unfinished: 0 }), Some(8)));
     let d = checkmesh_log_diagnostics(summary, None);
     assert_eq!((d.len(), d[0].level), (1, Info), "{d:?}");
 
@@ -422,7 +422,10 @@ fn a_long_checkmesh_log_is_cut_with_a_note() {
         logs.iter().filter(|l| l.skipped.is_some()).map(|l| (l.cells, l.skipped)).collect();
     assert_eq!(
         summaries,
-        [(Some(8), Some(Skipped { times: 1, failed: 1 })), (Some(9), Some(Skipped { times: 2, failed: 0 }))]
+        [
+            (Some(8), Some(Skipped { times: 1, failed: 1, unfinished: 0 })),
+            (Some(9), Some(Skipped { times: 2, failed: 0, unfinished: 0 }))
+        ]
     );
     let failed = logs.iter().find(|l| l.cells == Some(8) && l.skipped.is_some()).unwrap();
     let mut d = checkmesh_log_diagnostics(failed, None);
@@ -442,7 +445,20 @@ fn a_long_checkmesh_log_is_cut_with_a_note() {
     let logs = parse_checkmesh_log("log.checkMesh", &log);
     let summaries: Vec<&CheckMeshLog> = logs.iter().filter(|l| l.skipped.is_some()).collect();
     assert_eq!(summaries.len(), MAX_SKIPPED_SIZES + 1);
-    assert_eq!(summaries.last().map(|l| (l.cells, l.skipped)), Some((None, Some(Skipped { times: 5, failed: 0 }))));
+    assert_eq!(
+        summaries.last().map(|l| (l.cells, l.skipped)),
+        Some((None, Some(Skipped { times: 5, failed: 0, unfinished: 0 })))
+    );
+    // A failure of an unknown size isn't pinned on this mesh: unmatched, a warning; and a
+    // skipped time the log stops in is not a pass.
+    log.push_str("Time = 3\n    cells:            999\n ***Error in face pyramids: 1 faces\nFailed 1 mesh checks.\n");
+    log.push_str("Time = 4\n    cells:            998\nChecking geometry...\n");
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let unknown = logs.iter().find(|l| l.skipped.is_some() && l.cells.is_none()).unwrap();
+    assert_eq!(unknown.skipped, Some(Skipped { times: 7, failed: 1, unfinished: 1 }));
+    let d = checkmesh_log_diagnostics(unknown, None);
+    let got: Vec<(&str, crate::Level)> = d.iter().map(|x| (x.code, x.level)).collect();
+    assert_eq!(got, [("mesh.checkmesh-unmatched", Warning), ("mesh.checkmesh", Warning)], "{d:?}");
 
     // More findings in one time than are kept: the failed checks not listed are an error.
     let mut log = String::from("Exec   : checkMesh\n");
