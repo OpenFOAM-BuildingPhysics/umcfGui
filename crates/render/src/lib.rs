@@ -247,13 +247,8 @@ impl Scene {
     /// Each class (patch, surface region) `ray` passes through, at its nearest hit, nearest
     /// first: what lies under the cursor, however many times the ray crosses one class.
     pub fn pick_classes(&self, ray: &Ray) -> Vec<Pick> {
-        let mut nearest: Vec<Pick> = Vec::new();
-        for p in self.pick(ray, usize::MAX) {
-            if !nearest.iter().any(|q| q.object == p.object && q.class == p.class) {
-                nearest.push(p);
-            }
-        }
-        nearest
+        let mut seen = std::collections::HashSet::new();
+        self.pick(ray, usize::MAX).into_iter().filter(|p| seen.insert((p.object, p.class))).collect()
     }
 
     /// Everything `ray` (in world coordinates) passes through, nearest first, up to `limit`.

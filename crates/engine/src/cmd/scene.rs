@@ -252,7 +252,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800, at most 8192). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,

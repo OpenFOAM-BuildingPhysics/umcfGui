@@ -94,6 +94,13 @@ impl Bvh {
             let (Some(c), Ok(i)) = (corners(points, t), u32::try_from(i)) else { continue };
             let mut b = Bounds::EMPTY;
             c.iter().for_each(|p| b.add(p));
+            // Padded by more than the edge tolerance of the triangle test (and a rounding
+            // step), so a ray the triangle test accepts on an edge or corner never misses the
+            // box.
+            let size = (0..3).fold(0.0f32, |m, k| m.max(b.hi[k] - b.lo[k]));
+            let pad = size * 1e-7;
+            b.lo = b.lo.map(|x| (x - pad).next_down());
+            b.hi = b.hi.map(|x| (x + pad).next_up());
             boxes.push(b);
             centres.push([0, 1, 2].map(|k| (b.lo[k] + b.hi[k]) * 0.5));
             order.push(i);
