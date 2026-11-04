@@ -96,6 +96,19 @@ pub struct App {
     revision: u64,
     /// The case the shown lists were made for.
     shown_for: Option<String>,
+    /// The open case's STL surfaces, listed again after each command (not on every frame).
+    surfaces: Vec<String>,
+    /// They couldn't be listed when the case opened: the first listing that works shows them
+    /// as opening would have.
+    unlisted: bool,
+    /// Why the last listing of the surfaces failed; `None` when it worked.
+    listing_error: Option<String>,
+    /// Names [`App::show_only`] was asked for while the surfaces couldn't be listed: the first
+    /// listing that works shows those that are surfaces.
+    waiting: Vec<String>,
+    /// The scene of this revision failed to build, with why: it isn't tried again until the
+    /// revision changes.
+    scene_error: Option<(u64, String)>,
     styled: bool,
 }
 
@@ -196,6 +209,11 @@ impl App {
             expanded: BTreeSet::new(),
             revision: 0,
             shown_for: None,
+            surfaces: Vec::new(),
+            unlisted: false,
+            listing_error: None,
+            waiting: Vec::new(),
+            scene_error: None,
             styled: false,
         };
         app.reset_shown();
@@ -214,6 +232,10 @@ impl App {
     /// when there is none (as `scene.snapshot` does).
     fn reset_shown(&mut self) {
         self.shown_for = self.session.location().map(String::from);
+        let listed = self.list_surfaces();
+        self.unlisted = listed.is_none() && self.session.case().is_some();
+        self.waiting.clear();
+        self.surfaces = listed.unwrap_or_default();
         self.viewport.camera = None;
         self.expanded.clear();
         let Some(case) = self.session.case() else {
@@ -226,16 +248,53 @@ impl App {
         if case.regions.len() == 1 {
             self.expanded.extend(case.regions.iter().map(|r| format!("region:{}", r.name)));
         }
-        self.shown_surfaces = if self.shown_regions.is_empty() { self.session.surfaces() } else { Vec::new() };
+        self.shown_surfaces = if self.shown_regions.is_empty() { self.surfaces.clone() } else { Vec::new() };
         if !self.shown_surfaces.is_empty() {
             self.expanded.insert("surfaces".into());
+        }
+    }
+
+    /// The case's surfaces; a failure to list them goes in the log and the results card.
+    fn list_surfaces(&mut self) -> Option<Vec<String>> {
+        let listed = self.session.surfaces();
+        self.listing_error = listed.as_ref().err().map(ToString::to_string);
+        match listed {
+            Ok(s) => Some(s),
+            Err(e) => {
+                self.log_entry(Entry {
+                    command: "surfaces".to_string(),
+                    ok: false,
+                    message: e.to_string(),
+                    data: Value::Null,
+                });
+                None
+            }
         }
     }
 
     /// Drops from what the 3D view shows the regions and surfaces the case no longer has (a
     /// surface an undo took away): the scene would not build without them.
     fn prune_shown(&mut self) {
-        let surfaces = self.session.surfaces();
+        // A listing that failed keeps the last one, and what is shown with it.
+        let Some(surfaces) = self.list_surfaces() else { return };
+        self.surfaces = surfaces;
+        if std::mem::take(&mut self.unlisted) && self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
+            self.shown_surfaces = self.surfaces.clone();
+            if !self.shown_surfaces.is_empty() {
+                self.expanded.insert("surfaces".into());
+            }
+            self.revision += 1;
+        }
+        let waiting = std::mem::take(&mut self.waiting);
+        for f in &self.surfaces {
+            let named = waiting.iter().any(|n| f == n || f.rsplit('/').next() == Some(n.as_str()));
+            if named && !self.shown_surfaces.contains(f) {
+                self.shown_surfaces.push(f.clone());
+                self.expanded.insert("surfaces".into());
+                self.revision += 1;
+            }
+        }
+        let surfaces = &self.surfaces;
         let regions: Vec<String> = self
             .session
             .case()
@@ -249,8 +308,11 @@ impl App {
     }
 
     /// Shows only these mesh regions and surfaces (by region name or surface file name) in the
-    /// 3D view.
+    /// 3D view; returns the names that are neither. While the surfaces can't be listed, those
+    /// names wait for the first listing that works.
     pub fn show_only(&mut self, names: &[String]) -> Vec<String> {
+        // What is shown is chosen now: a listing that works later doesn't change it.
+        self.unlisted = false;
         let regions: Vec<String> = self.session.case().map_or(Vec::new(), |c| {
             c.regions
                 .iter()
@@ -259,10 +321,10 @@ impl App {
                 .collect()
         });
         let surfaces: Vec<String> = self
-            .session
-            .surfaces()
-            .into_iter()
-            .filter(|f| names.iter().any(|n| f == n || f.rsplit('/').next() == Some(n.as_str())))
+            .surfaces
+            .iter()
+            .filter(|f| names.iter().any(|n| *f == n || f.rsplit('/').next() == Some(n.as_str())))
+            .cloned()
             .collect();
         if !surfaces.is_empty() {
             self.expanded.insert("surfaces".into());
@@ -274,7 +336,8 @@ impl App {
                 !regions.contains(n) && !surfaces.iter().any(|f| f == *n || f.rsplit('/').next() == Some(n.as_str()))
             })
             .cloned()
-            .collect();
+            .collect::<Vec<String>>();
+        self.waiting = if self.listing_error.is_some() { unknown.clone() } else { Vec::new() };
         self.shown_regions = regions;
         self.shown_surfaces = surfaces;
         self.viewport.camera = None;
@@ -291,6 +354,17 @@ impl App {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
             Err(e) => Entry { command: id.to_string(), ok: false, message: e.to_string(), data: Value::Null },
         };
+        self.log_entry(entry);
+        if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
+            self.reset_shown();
+        } else {
+            self.prune_shown();
+        }
+        result.map_err(|e| e.to_string())
+    }
+
+    /// Logs an entry, opening the results card when it failed or has diagnostics.
+    fn log_entry(&mut self, entry: Entry) {
         if entry.data.get("diagnostics").and_then(Value::as_array).is_some_and(|d| !d.is_empty()) || !entry.ok {
             self.results_open = true;
         }
@@ -298,12 +372,6 @@ impl App {
         if self.log.len() > LOG {
             self.log.remove(0);
         }
-        if (opens && result.is_ok()) || self.session.location().map(String::from) != self.shown_for {
-            self.reset_shown();
-        } else {
-            self.prune_shown();
-        }
-        result.map_err(|e| e.to_string())
     }
 
     /// What the ribbon and the search do with a command: run one without parameters, open the
@@ -325,10 +393,15 @@ impl App {
             Some(v) => v.angles(),
             None => self.viewport.camera.map_or(View::Iso.angles(), |c| (c.azimuth, c.elevation)),
         };
-        if let Ok(scene) = self.session.scene(&params)
-            && let Some(b) = scene.bbox()
-        {
-            self.viewport.camera = Some(Camera::fit_angles(az, el, &b, aspect));
+        match self.session.scene(&params) {
+            Ok(scene) => {
+                if let Some(b) = scene.bbox() {
+                    self.viewport.camera = Some(Camera::fit_angles(az, el, &b, aspect));
+                }
+                // It builds now (a file changed outside the window): the view draws it.
+                self.scene_error = None;
+            }
+            Err(e) => self.scene_error = Some((self.revision, e.to_string())),
         }
     }
 
@@ -429,7 +502,7 @@ impl App {
     /// The dark bar: the name, save, undo and redo, the open case, the theme.
     fn app_bar(&mut self, ui: &mut Ui) {
         let t = self.tokens.clone();
-        let ink = Ink { line: t.bar_text, fill: Color32::from_rgb(0x6a, 0xa8, 0xf0) };
+        let ink = Ink { line: t.bar_text, fill: t.bar_accent };
         let bar = Tokens { hover: t.bar_raised, accent_soft: t.bar_raised, ..t.clone() };
         ui.horizontal_centered(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
@@ -891,11 +964,22 @@ impl App {
             let params = self.shown();
             let selection = self.session.selection().to_vec();
             let revision = self.revision;
-            match self.session.scene(&params) {
-                Ok(scene) => action = self.viewport.show(ui, rect, scene, &selection, revision, &t),
-                Err(e) => {
-                    ui.put(rect, egui::Label::new(RichText::new(e.to_string()).color(t.error)));
-                }
+            let failed = self.scene_error.as_ref().filter(|(r, _)| *r == revision).map(|(_, e)| e.clone());
+            let error = match failed {
+                Some(e) => Some(e),
+                None => match self.session.scene(&params) {
+                    Ok(scene) => {
+                        action = self.viewport.show(ui, rect, scene, &selection, revision, &t);
+                        None
+                    }
+                    Err(e) => {
+                        self.scene_error = Some((revision, e.to_string()));
+                        Some(e.to_string())
+                    }
+                },
+            };
+            if let Some(e) = error {
+                ui.put(rect, egui::Label::new(RichText::new(e).color(t.error)));
             }
         }
         match action {
@@ -979,7 +1063,8 @@ impl App {
         let t = self.tokens.clone();
         // The regions of the surfaces shown, from the scene the view draws.
         let params = self.shown();
-        let classes: Vec<(String, Vec<String>)> = if self.shown_surfaces.is_empty() {
+        let failed = self.scene_error.as_ref().is_some_and(|(r, _)| *r == self.revision);
+        let classes: Vec<(String, Vec<String>)> = if self.shown_surfaces.is_empty() || failed {
             Vec::new()
         } else {
             self.session.scene(&params).map_or(Vec::new(), |scene| {
@@ -1022,7 +1107,7 @@ impl App {
                     return;
                 };
                 let selection = self.session.selection();
-                let surfaces = self.session.surfaces();
+                let surfaces = &self.surfaces;
                 // The rows shown, so the card is as tall as they are (up to the view's height).
                 let mut rows = 3 + if self.expanded.contains("regions") { case.regions.len() } else { 0 };
                 for r in &case.regions {
@@ -1097,7 +1182,7 @@ impl App {
                             toggle = Some("surfaces".into());
                         }
                         if open {
-                            for f in &surfaces {
+                            for f in surfaces {
                                 let key = format!("surface:{f}");
                                 let sopen = self.expanded.contains(&key);
                                 let shown = self.shown_surfaces.contains(f);
@@ -1138,6 +1223,8 @@ impl App {
         }
         for (name, regions) in [(show_region, true), (show_surface, false)] {
             let Some(name) = name else { continue };
+            self.unlisted = false;
+            self.waiting.clear();
             let v = if regions { &mut self.shown_regions } else { &mut self.shown_surfaces };
             match v.iter().position(|x| *x == name) {
                 Some(k) => {
@@ -1591,11 +1678,28 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     for (id, params) in startup {
         if let Err(e) = app.run(&id, params) {
+            // A screenshot of a window whose case or commands failed would not show what was
+            // asked for: stop with the error instead.
+            if options.screenshot.is_some() {
+                return Err(format!("{id}: {e}"));
+            }
             eprintln!("umcf-gui: {id}: {e}");
         }
     }
+    // Surfaces that couldn't be listed would be missing from the picture.
+    if options.screenshot.is_some()
+        && let Some(e) = &app.listing_error
+    {
+        return Err(e.clone());
+    }
     if !options.show.is_empty() {
-        for n in app.show_only(&options.show) {
+        let unknown = app.show_only(&options.show);
+        if options.screenshot.is_some()
+            && let Some(n) = unknown.first()
+        {
+            return Err(format!("--show: no region with a mesh or surface named `{n}`"));
+        }
+        for n in unknown {
             eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
         }
     }

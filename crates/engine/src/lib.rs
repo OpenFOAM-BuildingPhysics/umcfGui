@@ -358,12 +358,7 @@ impl Session {
             }
             Err(payload) => {
                 self.restore(saved);
-                let message = payload
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "no message".to_string());
-                Err(Error::Panicked { id: spec.id.to_string(), message })
+                Err(Error::Panicked { id: spec.id.to_string(), message: panic_message(payload.as_ref()) })
             }
         }
     }
@@ -380,3 +375,12 @@ fn needs_case(s: &Session) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests;
+
+/// What a caught panic said.
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_string())
+}

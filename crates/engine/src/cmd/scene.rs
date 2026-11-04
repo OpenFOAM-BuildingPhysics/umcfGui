@@ -82,6 +82,17 @@ fn optional<'a>(p: &Params<'a>, key: &str) -> Result<Option<&'a Value>, Error> {
 
 /// The scene the parameters ask for, built or as cached.
 fn scene<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<&'s Scene, Error> {
+    build(s, id, p)?;
+    cached(s, id)
+}
+
+/// The scene last built.
+fn cached<'s>(s: &'s Session, id: &str) -> Result<&'s Scene, Error> {
+    s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
+}
+
+/// Builds the scene the parameters ask for into the cache, unless it is there already.
+fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let with_mesh: Vec<&str> = case.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.as_str()).collect();
     let regions: Vec<String> = match optional(p, "regions")? {
@@ -173,7 +184,7 @@ fn scene<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<&'s Scene, Erro
         }
         s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene });
     }
-    s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
+    Ok(())
 }
 
 /// A pixel count from 1 to [`MAX_SIDE`].
@@ -575,17 +586,37 @@ impl Session {
     /// The scene `regions`, `surfaces` and `reload` in `params` ask for (as `scene.snapshot`
     /// takes them), built or as cached: for a viewport that draws it itself. Reading it changes
     /// nothing in the case.
+    ///
+    /// A panic while building it (a bug) comes back as [`Error::Panicked`], as a command's
+    /// would.
     pub fn scene(&mut self, params: &Value) -> Result<&Scene, Error> {
         let p = Params::new("scene", params, &WHICH)?;
-        scene(self, "scene", &p)
+        // Built into the cache under the guard, then borrowed from it.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(self, "scene", &p))) {
+            Ok(Ok(())) => cached(self, "scene"),
+            Ok(Err(e)) => Err(e),
+            Err(payload) => {
+                self.scene = None;
+                Err(Error::Panicked { id: "scene".to_string(), message: crate::panic_message(payload.as_ref()) })
+            }
+        }
     }
 
     /// The STL surfaces of the open case (case-relative paths, sorted), including those a
-    /// command put there and the case has not saved yet.
-    pub fn surfaces(&self) -> Vec<String> {
-        match self.case().zip(self.fs()) {
-            Some((case, fs)) => surface_files(case, fs, false).0,
-            None => Vec::new(),
-        }
+    /// command put there and the case has not saved yet. A directory that can't be listed is an
+    /// error, unsaved surfaces or not (a missing one is no surfaces), and so is a panic while
+    /// listing (a bug, [`Error::Panicked`]).
+    pub fn surfaces(&self) -> Result<Vec<String>, Error> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self.case().zip(self.fs()) {
+            Some((case, fs)) => {
+                let (names, listed) = surface_files(case, fs, false);
+                listed.map(|()| names).map_err(|e| Error::Failed(format!("the surfaces can't be listed: {e}")))
+            }
+            None => Ok(Vec::new()),
+        }))
+        .map_err(|payload| Error::Panicked {
+            id: "surfaces".to_string(),
+            message: crate::panic_message(payload.as_ref()),
+        })?
     }
 }

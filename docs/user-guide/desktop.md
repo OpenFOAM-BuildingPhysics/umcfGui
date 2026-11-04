@@ -21,7 +21,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
-| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits |
+| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
 
 ## The window
 
@@ -66,3 +66,7 @@ check. Escape closes the parameter card, the results and the search.
 - A command's parameters are typed as JSON; forms for them come with the commands that need
   them most (boundary conditions, meshing).
 - Opening a large case, reading a mesh and running a check happen while the window waits.
+- The window reads the case's files when it needs them, not when they change. An STL copied
+  into `constant/triSurface` shows in the browser after the next command; a file changed outside
+  the window shows when the case is opened again. A scene that failed to build (a mesh not
+  written yet) is read again by the next command or *Fit*.
