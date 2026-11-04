@@ -103,6 +103,9 @@ pub struct App {
     unlisted: bool,
     /// Why the last listing of the surfaces failed; `None` when it worked.
     listing_error: Option<String>,
+    /// Names [`App::show_only`] was asked for while the surfaces couldn't be listed: the first
+    /// listing that works shows those that are surfaces.
+    waiting: Vec<String>,
     /// The scene of this revision failed to build, with why: it isn't tried again until the
     /// revision changes.
     scene_error: Option<(u64, String)>,
@@ -209,6 +212,7 @@ impl App {
             surfaces: Vec::new(),
             unlisted: false,
             listing_error: None,
+            waiting: Vec::new(),
             scene_error: None,
             styled: false,
         };
@@ -230,6 +234,7 @@ impl App {
         self.shown_for = self.session.location().map(String::from);
         let listed = self.list_surfaces();
         self.unlisted = listed.is_none() && self.session.case().is_some();
+        self.waiting.clear();
         self.surfaces = listed.unwrap_or_default();
         self.viewport.camera = None;
         self.expanded.clear();
@@ -280,6 +285,15 @@ impl App {
             }
             self.revision += 1;
         }
+        let waiting = std::mem::take(&mut self.waiting);
+        for f in &self.surfaces {
+            let named = waiting.iter().any(|n| f == n || f.rsplit('/').next() == Some(n.as_str()));
+            if named && !self.shown_surfaces.contains(f) {
+                self.shown_surfaces.push(f.clone());
+                self.expanded.insert("surfaces".into());
+                self.revision += 1;
+            }
+        }
         let surfaces = &self.surfaces;
         let regions: Vec<String> = self
             .session
@@ -294,7 +308,8 @@ impl App {
     }
 
     /// Shows only these mesh regions and surfaces (by region name or surface file name) in the
-    /// 3D view.
+    /// 3D view; returns the names that are neither. While the surfaces can't be listed, those
+    /// names wait for the first listing that works.
     pub fn show_only(&mut self, names: &[String]) -> Vec<String> {
         // What is shown is chosen now: a listing that works later doesn't change it.
         self.unlisted = false;
@@ -321,7 +336,8 @@ impl App {
                 !regions.contains(n) && !surfaces.iter().any(|f| f == *n || f.rsplit('/').next() == Some(n.as_str()))
             })
             .cloned()
-            .collect();
+            .collect::<Vec<String>>();
+        self.waiting = if self.listing_error.is_some() { unknown.clone() } else { Vec::new() };
         self.shown_regions = regions;
         self.shown_surfaces = surfaces;
         self.viewport.camera = None;
@@ -1208,6 +1224,7 @@ impl App {
         for (name, regions) in [(show_region, true), (show_surface, false)] {
             let Some(name) = name else { continue };
             self.unlisted = false;
+            self.waiting.clear();
             let v = if regions { &mut self.shown_regions } else { &mut self.shown_surfaces };
             match v.iter().position(|x| *x == name) {
                 Some(k) => {
