@@ -15,4 +15,5 @@ How umcfGui sees urbanMicroclimateFoam cases, and what it does with them.
   surface regions in them.
 - [Fields and results](fields.md): reading the solver's field files, ASCII or binary,
   compressed or not.
+- [The desktop app](desktop.md): `umcf-gui`, the window and what each part of it does.
 - [Command line](command-line.md): `umcf-cli check`, `render` and `run`, without the GUI.

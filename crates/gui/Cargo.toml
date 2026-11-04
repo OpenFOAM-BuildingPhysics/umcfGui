@@ -1,0 +1,17 @@
+[package]
+name = "umcf-gui"
+description = "umcfGui, the desktop application: an OpenFOAM case editor and viewer for urbanMicroclimateFoam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "umcf-gui"
+path = "src/main.rs"
+
+[dependencies]
+umcf-ui-egui.workspace = true
+
+[lints]
+workspace = true

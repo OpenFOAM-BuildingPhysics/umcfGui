@@ -1,0 +1,272 @@
+//! The interface driven without a window (egui_kittest): clicks and keys go through the same
+//! code as on the desktop, and every change is a command in the session.
+
+use eframe::egui::{self, Modifiers, PointerButton, Pos2, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
+use serde_json::json;
+use umcf_core::MemFs;
+use umcf_engine::{Sel, Session};
+use umcf_model::OpenOptions;
+use umcf_render::camera::View;
+
+use crate::App;
+
+const HEADER: &str = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class dictionary;\n}\n";
+
+fn h(class: &str) -> String {
+    format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n")
+}
+
+/// A single-region case whose mesh is a unit cube: patches ground (bottom), sky (top), walls.
+fn case() -> MemFs {
+    let mut fs = MemFs::new();
+    fs.insert(
+        "system/controlDict",
+        format!(
+            "{HEADER}application urbanMicroclimateFoam;\nstartTime 0;\nendTime 3600;\ndeltaT 60;\nwriteInterval 600;\n"
+        ),
+    );
+    fs.insert("system/fvSolution", format!("{HEADER}PIMPLE\n{{\n    nOuterCorrectors 1;\n}}\n"));
+    let pts: String = (0..8)
+        .map(|i| {
+            let b = |k: usize| if (i >> k) & 1 == 1 { 1 } else { 0 };
+            format!("({} {} {})\n", b(0), b(1), b(2))
+        })
+        .collect();
+    let d = "constant/polyMesh";
+    fs.insert(&format!("{d}/points"), format!("{}8\n(\n{pts})\n", h("vectorField")));
+    fs.insert(
+        &format!("{d}/faces"),
+        format!("{}6\n(\n4(0 2 3 1)\n4(4 5 7 6)\n4(0 1 5 4)\n4(2 6 7 3)\n4(0 4 6 2)\n4(1 3 7 5)\n)\n", h("faceList")),
+    );
+    fs.insert(&format!("{d}/owner"), format!("{}6\n(\n0 0 0 0 0 0\n)\n", h("labelList")));
+    fs.insert(&format!("{d}/neighbour"), format!("{}0\n(\n)\n", h("labelList")));
+    let patch = |n: &str, count: u32, start: u32| {
+        format!("    {n}\n    {{\n        type wall;\n        nFaces {count};\n        startFace {start};\n    }}\n")
+    };
+    fs.insert(
+        &format!("{d}/boundary"),
+        format!(
+            "{}3\n(\n{}{}{})\n",
+            h("polyBoundaryMesh"),
+            patch("ground", 1, 0),
+            patch("sky", 1, 1),
+            patch("walls", 4, 2)
+        ),
+    );
+    fs.insert(
+        "0/T",
+        format!(
+            "{}internalField uniform 300;\nboundaryField\n{{\n    sky {{ type fixedValue; value uniform 290; }}\n    \"(ground|walls)\" {{ type zeroGradient; }}\n}}\n",
+            h("volScalarField")
+        ),
+    );
+    fs
+}
+
+fn app() -> App {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(case()), "mem", OpenOptions::default(), false).unwrap();
+    App::new(s)
+}
+
+fn harness(app: App) -> Harness<'static, App> {
+    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run();
+    h
+}
+
+fn click_at(h: &mut Harness<'_, App>, pos: Pos2, modifiers: Modifiers) {
+    h.hover_at(pos);
+    h.run();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers });
+    }
+    h.run();
+}
+
+fn tree_item<'a>(h: &'a Harness<'_, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(egui::Role::TreeItem, label)
+}
+
+#[test]
+fn the_ribbon_comes_from_the_registry() {
+    let mut h = harness(app());
+    for tab in ["Case", "Geometry", "Mesh", "Boundary conditions", "View"] {
+        h.get_by_role_and_label(egui::Role::Tab, tab);
+    }
+    // A command without parameters runs from its button.
+    h.get_by_label("Check").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "case.check");
+    // Another tab, another ribbon.
+    h.get_by_role_and_label(egui::Role::Tab, "Mesh").click();
+    h.run();
+    h.get_by_label("Check mesh").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "mesh.check");
+    // Undo is disabled until there is something to undo.
+    assert!(h.get_by_label("Undo").accesskit_node().is_disabled());
+}
+
+#[test]
+fn the_workspace_switcher_offers_what_exists() {
+    let mut h = harness(app());
+    h.get_by_label("Workspace").click();
+    h.run();
+    assert!(h.state().workspace_menu);
+    // Run and Results are planned: they can't be chosen yet.
+    assert!(h.get_by_role_and_label(egui::Role::Button, "Run").accesskit_node().is_disabled());
+    h.get_by_role_and_label(egui::Role::Button, "Setup").click();
+    h.run();
+    assert!(!h.state().workspace_menu);
+}
+
+#[test]
+fn the_browser_selects_patches() {
+    let mut h = harness(app());
+    // The single region is open: its patches are listed.
+    tree_item(&h, "(single region)");
+    tree_item(&h, "sky").click();
+    h.run();
+    assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "sky".into() }]);
+    // Ctrl+click adds, Ctrl+click on a selected one takes it out.
+    tree_item(&h, "walls").click_modifiers(Modifiers::COMMAND);
+    h.run();
+    assert_eq!(h.state().session().selection().len(), 2);
+    tree_item(&h, "sky").click_modifiers(Modifiers::COMMAND);
+    h.run();
+    assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "walls".into() }]);
+    // The properties card shows the selection.
+    h.get_by_label("Properties");
+    h.get_by_label("patch · wall · 4 faces");
+    // Each change was a command.
+    let commands: Vec<&str> = h.state().log.iter().map(|e| e.command.as_str()).collect();
+    assert_eq!(commands, ["select.set", "select.set", "select.set"]);
+}
+
+#[test]
+fn a_click_in_the_view_picks_through_the_engine() {
+    let mut h = harness(app());
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    let rect = h.state().viewport.rect.unwrap();
+    click_at(&mut h, rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "sky".into() }]);
+    assert_eq!(h.state().log.last().unwrap().command, "select.pick");
+    // The status bar says what is under the cursor.
+    assert_eq!(h.state().viewport.hover.as_deref(), Some("patch sky"));
+    // A click beside the cube clears the selection.
+    click_at(&mut h, rect.min + vec2(5.0, rect.height() - 5.0), Modifiers::NONE);
+    assert!(h.state().session().selection().is_empty());
+    // Dragging turns the view.
+    let before = h.state().viewport.camera.unwrap().azimuth;
+    let c = rect.center();
+    h.event(egui::Event::PointerButton {
+        pos: c,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for k in 1..=5 {
+        h.event(egui::Event::PointerMoved(c + vec2(10.0 * k as f32, 0.0)));
+        h.step();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: c + vec2(50.0, 0.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    assert!(h.state().viewport.camera.unwrap().azimuth < before - 5.0);
+    // A drag is not a click: nothing was picked.
+    assert!(h.state().session().selection().is_empty());
+}
+
+#[test]
+fn the_search_lists_commands_and_runs_them() {
+    let mut h = harness(app());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::P);
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("mesh");
+    h.run();
+    assert!(h.query_by_label("Set run controls").is_none(), "filtered out");
+    h.get_by_label("Check mesh").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "mesh.check");
+    assert!(h.state().search.is_empty() && !h.state().search_open);
+}
+
+#[test]
+fn the_axis_triad_turns_the_view() {
+    let mut h = harness(app());
+    h.get_by_label("+Z view").click();
+    h.run();
+    assert_eq!(h.state().viewport.camera.unwrap().elevation, 90.0);
+    h.get_by_label("-Y view").click();
+    h.run();
+    let c = h.state().viewport.camera.unwrap();
+    assert_eq!((c.azimuth, c.elevation), (0.0, 0.0));
+}
+
+#[test]
+fn commands_with_parameters_open_a_dialog_and_undo_has_its_shortcut() {
+    let mut h = harness(app());
+    h.state_mut().invoke("control.set");
+    h.run();
+    assert!(h.state().dialog.is_some());
+    // Not JSON: the dialog stays and says why.
+    h.state_mut().dialog.as_mut().unwrap().params = "{endTime: 1}".into();
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(h.state().dialog.as_ref().unwrap().error.as_deref().unwrap().starts_with("not JSON"));
+    h.state_mut().dialog.as_mut().unwrap().params = r#"{"endTime": 7200}"#.into();
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(h.state().dialog.is_none());
+    let end = |h: &Harness<'_, App>| {
+        h.state().session().case().unwrap().dict(umcf_model::CONTROL_DICT).unwrap().value(&["endTime"])
+    };
+    assert_eq!(end(&h).as_deref(), Some("7200"));
+    assert_eq!(h.state().session().case().unwrap().changed(), ["system/controlDict"]);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(end(&h).as_deref(), Some("3600"));
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
+    h.run();
+    assert_eq!(end(&h).as_deref(), Some("7200"));
+    // The history strip: one chip per edit; a click on it goes back there.
+    h.get_by_label("Undo one").click();
+    h.run();
+    assert_eq!(end(&h).as_deref(), Some("3600"));
+    h.get_by_label("Edit 1").click();
+    h.run();
+    assert_eq!(end(&h).as_deref(), Some("7200"));
+    let (done, undone) = h.state().session().history();
+    assert_eq!((done.len(), undone.len()), (1, 0));
+    assert_eq!((done[0].command, done[0].detail.as_str()), ("control.set", "endTime 7200"));
+}
+
+#[test]
+fn without_a_case_the_shell_says_what_to_do() {
+    let mut h = harness(App::new(Session::with_backup(".umcfgui/backup/test")));
+    h.get_by_label("No case open.");
+    for save in h.get_all_by_role_and_label(egui::Role::Button, "Save") {
+        assert!(save.accesskit_node().is_disabled());
+    }
+    h.get_by_label("Open a case…").click();
+    h.run();
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.id), Some("case.open"));
+    let _ = json!({});
+}
+
+#[test]
+fn registry_shortcuts_parse() {
+    use crate::shortcut;
+    let s = shortcut("Ctrl+Shift+Z").unwrap();
+    assert_eq!((s.modifiers, s.logical_key), (Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z));
+    assert_eq!(shortcut("F7").unwrap().logical_key, egui::Key::F7);
+    assert!(shortcut("Ctrl+Nope").is_none());
+}

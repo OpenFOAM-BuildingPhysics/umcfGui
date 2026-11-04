@@ -290,7 +290,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
     }
     let n_selected = selected.len();
-    let image = draw(scene, &cam, &Style { width, height, edges, selected, colour_by });
+    let image = draw(scene, &cam, &Style { width, height, edges, selected, colour_by, ..Style::default() });
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();
     let mut message = format!("{width} × {height} of {} ({})", labels.join(", "), count(scene.triangles(), "triangle"));
@@ -569,4 +569,23 @@ fn clear(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Params::new(CLEAR.id, p, &[])?;
     s.selection.clear();
     Ok(Outcome::new("nothing selected", json!({ "selection": [] })))
+}
+
+impl Session {
+    /// The scene `regions`, `surfaces` and `reload` in `params` ask for (as `scene.snapshot`
+    /// takes them), built or as cached: for a viewport that draws it itself. Reading it changes
+    /// nothing in the case.
+    pub fn scene(&mut self, params: &Value) -> Result<&Scene, Error> {
+        let p = Params::new("scene", params, &WHICH)?;
+        scene(self, "scene", &p)
+    }
+
+    /// The STL surfaces of the open case (case-relative paths, sorted), including those a
+    /// command put there and the case has not saved yet.
+    pub fn surfaces(&self) -> Vec<String> {
+        match self.case().zip(self.fs()) {
+            Some((case, fs)) => surface_files(case, fs, false).0,
+            None => Vec::new(),
+        }
+    }
 }

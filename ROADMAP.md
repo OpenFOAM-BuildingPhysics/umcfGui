@@ -21,7 +21,8 @@
 | STL import, diagnostics and repair (`geom`, `geometry.*`, `umcf-cli surface`) | ✅ vertices, open and non-manifold edges, regions and parts as `surfaceCheck` counts them on the local cases and OpenFOAM's tutorial surfaces; repairs checked with `surfaceCheck` and `surfaceFeatures` |
 | 3D scene and picking (`render`, `scene.snapshot`, `select.*`, `umcf-cli render`) | ✅ meshes' boundary patches and STL surfaces drawn by a CPU rasteriser; picks a patch or surface region (and what lies behind it) through a BVH; 573 000 boundary triangles drawn and picked in 0.14 s |
 | Boundary conditions by picking | ⬜ |
-| `ui-egui` (SolidCraft-style shell and viewport), control channel, MCP | ⬜ |
+| Desktop app (`ui-egui`, `umcf-gui`): SolidCraft-style shell (workspaces, ribbon and command search from the registry, browser, properties, results, navigation bar, axis triad, edit history), 3D view with picking | ✅ CPU-drawn view; every action a command; light and dark themes |
+| Control channel, MCP, wgpu viewport | ⬜ |
 | Meshing set-up (blockMesh, snappyHexMesh) and its checks | ⬜ |
 | Batch job scripts (SLURM/PBS), optional local `runner` | ⬜ |
 
@@ -39,3 +40,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-04 — M0.17 layer coverage from `snappyHexMesh`'s log; logs read from `log/` too.
 - 2026-11-04 — M0.18 STL surfaces: the `geom` crate (reading, checks, repairs), `geometry.import`, `geometry.check`, `geometry.repair`, `geometry.scale`, `umcf-cli surface`; surfaces saved with the case.
 - 2026-11-04 — M0.19 3D scene: the `render` crate (scene, CPU rasteriser, PNG), a triangle BVH in `geom`, `scene.snapshot`, `select.pick`, `select.set`, `select.clear`, the session's selection, `umcf-cli render`.
+- 2026-11-04 — M0.20 desktop app: `ui-egui` and `umcf-gui` with a SolidCraft-style layout; the engine names the edits in its undo history.

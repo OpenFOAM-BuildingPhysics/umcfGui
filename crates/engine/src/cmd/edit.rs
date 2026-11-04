@@ -106,8 +106,8 @@ fn undo(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Params::new(UNDO.id, p, &[])?;
     let previous = s.undo.pop().ok_or_else(|| Error::Failed("nothing to undo".to_string()))?;
     let o = s.opened_mut()?;
-    let current = std::mem::replace(&mut o.case, previous);
-    s.redo.push(current);
+    let current = std::mem::replace(&mut o.case, previous.case);
+    s.redo.push(crate::Step { case: current, edit: previous.edit });
     Ok(Outcome::new("undone", json!({ "undo": s.undo.len(), "redo": s.redo.len() })))
 }
 
@@ -132,7 +132,7 @@ fn redo(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Params::new(REDO.id, p, &[])?;
     let next = s.redo.pop().ok_or_else(|| Error::Failed("nothing to redo".to_string()))?;
     let o = s.opened_mut()?;
-    let current = std::mem::replace(&mut o.case, next);
-    s.undo.push(current);
+    let current = std::mem::replace(&mut o.case, next.case);
+    s.undo.push(crate::Step { case: current, edit: next.edit });
     Ok(Outcome::new("redone", json!({ "undo": s.undo.len(), "redo": s.redo.len() })))
 }
