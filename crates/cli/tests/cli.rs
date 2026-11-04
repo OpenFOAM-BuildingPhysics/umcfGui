@@ -248,6 +248,12 @@ fn mesh_checks_the_mesh() {
     let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(v["regions"][0]["quality"]["cells"], 1);
     assert!((v["regions"][0]["quality"]["total_volume"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+    assert!(v["regions"][0]["quality"]["all_geometry"].is_null(), "only with --all-geometry");
+    let o = cli(&["mesh", "--json", "--all-geometry", dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let g = &v["regions"][0]["quality"]["all_geometry"];
+    assert_eq!((g["concave_cells"]["count"].as_u64(), g["min_flatness"].as_f64()), (Some(0), Some(1.0)), "{g}");
 
     let bad = cube("mesh-bad", true);
     let o = cli(&["mesh", bad.to_str().unwrap()]);
@@ -295,8 +301,9 @@ fn mesh_reads_checkmesh_results() {
     let codes: Vec<&str> =
         v["regions"][0]["diagnostics"].as_array().unwrap().iter().map(|d| d["code"].as_str().unwrap()).collect();
     assert!(codes.contains(&"mesh.checkmesh") && codes.contains(&"mesh.stale-set"), "{codes:?}");
-    // The log's skewness finding repeats the native check: a note, not counted.
-    assert_eq!(v["warnings"], 1, "only the stale set: {}", v["regions"][0]["diagnostics"]);
+    // The native check finds no skew face in the cube: the log's finding counts, and says so.
+    assert_eq!(v["warnings"], 2, "the skewness and the stale set: {}", v["regions"][0]["diagnostics"]);
+    assert!(v["regions"][0]["diagnostics"].to_string().contains("doesn't find it"));
 
     // A log of another mesh (more cells) is left out, with a note; one for no region too.
     std::fs::write(
@@ -305,9 +312,12 @@ fn mesh_reads_checkmesh_results() {
     )
     .unwrap();
     std::fs::write(dir.join("log.checkMesh.solid"), "Exec   : checkMesh -region solid\nMesh OK.\n").unwrap();
+    // A log with no `Exec` line (empty, cut, compressed): a note, not silently dropped.
+    std::fs::write(dir.join("log.checkMesh.gz"), "").unwrap();
     let o = cli(&["mesh", dir.to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(0), "the error was about another mesh: {o:?}");
     let text = stdout(&o);
     assert!(text.contains("not used: it checked a mesh of 5 cells, ? faces, ? points"), "{text}");
     assert!(text.contains("checked region `solid`, which this case doesn't have"), "{text}");
+    assert!(text.contains("log.checkMesh.gz") && text.contains("no `Exec : checkMesh` line"), "{text}");
 }

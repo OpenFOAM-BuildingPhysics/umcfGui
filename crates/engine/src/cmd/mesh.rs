@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_validate::mesh::{
-    CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, Quality, SetOf, checkmesh_log_diagnostics, diagnostics,
-    parse_checkmesh_log, quality, soften_for_vegetation, stale_set, unreadable,
+    AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf,
+    checkmesh_log_diagnostics, diagnostics, parse_checkmesh_log, quality, quality_all, soften_for_vegetation,
+    stale_set, unreadable,
 };
 use umcf_validate::{Diagnostic, Level};
 
@@ -18,7 +19,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     label: "Check mesh",
     menu: "Mesh/Check",
     shortcut: None,
-    params: "region: one region (default: every region with a mesh). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each).",
+    params: "region: one region (default: every region with a mesh). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
     enabled: needs_case,
     run: check,
     journal: false,
@@ -44,11 +45,30 @@ fn log_note(file: &str, message: String) -> Diagnostic {
 /// The `checkMesh` logs in the case directory (`log.checkMesh`, `log.checkMesh.<anything>`),
 /// and notes on those that could not be read.
 fn checkmesh_logs(fs: &dyn CaseFs, notes: &mut Vec<Diagnostic>) -> Vec<CheckMeshLog> {
-    let names = fs.list("").unwrap_or_default();
+    let names = match fs.list("") {
+        Ok(names) => names,
+        Err(e) => {
+            notes.push(log_note(
+                ".",
+                format!("the case directory could not be listed, so no checkMesh log was read: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
     let mut out = Vec::new();
     for n in names.iter().filter(|n| n.starts_with("log.checkMesh") && fs.is_file(n)) {
         match fs.read(n, MAX_LOG_BYTES) {
-            Ok(Some(bytes)) => out.extend(parse_checkmesh_log(n, &String::from_utf8_lossy(&bytes))),
+            Ok(Some(bytes)) => {
+                let logs = parse_checkmesh_log(n, &String::from_utf8_lossy(&bytes));
+                if logs.is_empty() {
+                    notes.push(log_note(
+                        n,
+                        "not used: no `Exec : checkMesh` line (an empty, cut or compressed log, or another program's)"
+                            .to_string(),
+                    ));
+                }
+                out.extend(logs);
+            }
             Ok(None) => {}
             Err(e) => notes.push(log_note(n, format!("not read: {e}"))),
         }
@@ -68,40 +88,74 @@ fn log_json(l: &CheckMeshLog) -> Value {
         "notes": l.notes,
         "cells": l.cells,
         "fatal": l.fatal,
+        "skipped": l.skipped.map(|s| json!({ "times": s.times, "failed": s.failed, "unfinished": s.unfinished })),
+        "truncated": l.truncated,
+        "unlisted_problems": l.unlisted_problems,
     })
+}
+
+/// Labels a set may hold beyond the size of its mesh. A valid set holds each label once, below
+/// the mesh's size; a set from another mesh with labels beyond it is still read (and reported
+/// stale), and only one with more labels than size + margin is unreadable (`mesh.unreadable-set`).
+const STALE_SET_MARGIN: usize = 1 << 20;
+
+/// The bound on reading a set of a mesh with `size` faces, cells or points: its labels, and the
+/// bytes they take as text (up to ten digits and a separator each, plus the header).
+fn set_limits(size: usize) -> Limits {
+    let max_elements = size.saturating_add(STALE_SET_MARGIN);
+    let max_bytes = (max_elements as u64).saturating_mul(11).saturating_add(64 << 10);
+    Limits { max_bytes, max_elements, ..Limits::default() }
+}
+
+fn set_warning(region: &str, path: String, message: String) -> Diagnostic {
+    Diagnostic {
+        level: Level::Warning,
+        code: "mesh.unreadable-set",
+        path,
+        region: (!region.is_empty()).then(|| region.to_string()),
+        patch: None,
+        field: None,
+        message,
+    }
 }
 
 /// The sets `checkMesh -writeSets` left in the region's `polyMesh/sets`, with their labels;
 /// one naming more than the mesh has is stale (`mesh.stale-set`).
 fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<Diagnostic>) -> Vec<Value> {
     let dir = mesh_dir(region);
-    let present = umcf_foam_mesh::list_sets(fs, &dir).unwrap_or_default();
+    let present = match umcf_foam_mesh::list_sets(fs, &dir) {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(set_warning(
+                region,
+                format!("{dir}/sets"),
+                format!("the sets could not be listed, so checkMesh's sets were not read: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
     let mut sets = Vec::new();
     for (name, of, holds) in CHECKMESH_SETS.iter().filter(|(n, _, _)| present.iter().any(|p| p == n)) {
-        let mut set = match umcf_foam_mesh::read_set(fs, &dir, name, &Limits::default()) {
+        let size = match of {
+            SetOf::Faces => mesh.n_faces(),
+            SetOf::Cells => mesh.n_cells(),
+            SetOf::Points => mesh.n_points(),
+        };
+        let mut set = match umcf_foam_mesh::read_set(fs, &dir, name, &set_limits(size)) {
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(e) => {
-                out.push(Diagnostic {
-                    level: Level::Warning,
-                    code: "mesh.unreadable-set",
-                    path: format!("{dir}/sets/{name}"),
-                    region: (!region.is_empty()).then(|| region.to_string()),
-                    patch: None,
-                    field: None,
-                    message: format!("the checkMesh set `{name}` could not be read: {e}"),
-                });
+                out.push(set_warning(
+                    region,
+                    format!("{dir}/sets/{name}"),
+                    format!("the checkMesh set `{name}` could not be read: {e}"),
+                ));
                 sets.push(json!({ "name": name, "holds": holds, "error": e.to_string() }));
                 continue;
             }
         };
         // OpenFOAM writes a set in hash order: the lowest labels first.
         set.labels.sort_unstable();
-        let size = match of {
-            SetOf::Faces => mesh.n_faces(),
-            SetOf::Cells => mesh.n_cells(),
-            SetOf::Points => mesh.n_points(),
-        };
         let largest = set.labels.iter().copied().max();
         let stale = largest.is_some_and(|m| m as usize >= size);
         if let (true, Some(m)) = (stale, largest) {
@@ -122,6 +176,33 @@ fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<
 
 fn found(f: &Found) -> Value {
     json!({ "count": f.count, "places": f.places, "first": f.first })
+}
+
+fn all_geometry_json(g: &AllGeometry) -> Value {
+    json!({
+        "low_quality_tets": found(&g.low_quality_tets),
+        "min_edge_length": g.min_edge_length,
+        "max_edge_length": g.max_edge_length,
+        "near_distance": g.near_distance,
+        "short_edge_points": found(&g.short_edge_points),
+        "near_points": found(&g.near_points),
+        "concave_faces": found(&g.concave_faces),
+        "max_concave_angle": g.max_concave_angle,
+        "min_flatness": g.min_flatness,
+        "average_flatness": g.average_flatness,
+        "warped_faces": found(&g.warped_faces),
+        "min_determinant": g.min_determinant,
+        "average_determinant": g.average_determinant,
+        "underdetermined_cells": found(&g.underdetermined_cells),
+        "concave_cells": found(&g.concave_cells),
+        "min_weight": g.min_weight,
+        "average_weight": g.average_weight,
+        "low_weight_faces": found(&g.low_weight_faces),
+        "min_volume_ratio": g.min_volume_ratio,
+        "average_volume_ratio": g.average_volume_ratio,
+        "low_volume_ratio_faces": found(&g.low_volume_ratio_faces),
+        "unchecked": g.unchecked,
+    })
 }
 
 fn quality_json(q: &Quality) -> Value {
@@ -151,12 +232,14 @@ fn quality_json(q: &Quality) -> Value {
         "non_finite_points": found(&q.non_finite_points),
         "non_finite_faces": found(&q.non_finite_faces),
         "non_finite_cells": found(&q.non_finite_cells),
+        "all_geometry": q.all.as_ref().map_or(Value::Null, all_geometry_json),
     })
 }
 
 fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let p = Params::new(CHECK.id, p, &["region"])?;
+    let p = Params::new(CHECK.id, p, &["region", "all_geometry"])?;
     let region = p.str("region")?;
+    let all_geometry = p.bool("all_geometry")?.unwrap_or(false);
     let case = s.case().ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let fs = s.fs().ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let names: Vec<String> = match region {
@@ -174,7 +257,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     // Logs for no region of the case (only when every region is checked).
     if region.is_none() {
         let all: Vec<&str> = case.regions.iter().map(|x| x.name.as_str()).collect();
+        let mut noted: Vec<&str> = Vec::new();
         for l in logs.iter().filter(|l| !all.contains(&l.region.as_str())) {
+            // One note per file (a long log has a result per time).
+            if noted.contains(&l.file.as_str()) {
+                continue;
+            }
+            noted.push(&l.file);
             let what = if l.region.is_empty() {
                 format!(
                     "checked the default mesh (no -region), which this case doesn't have; its regions are {}",
@@ -207,7 +296,11 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             };
             match &mesh {
                 Ok(m) if differs(m) => {
-                    let at = l.time.as_deref().map_or(String::new(), |t| format!(" (time {t})"));
+                    let at = match (&l.time, l.skipped) {
+                        (Some(t), _) => format!(" (time {t})"),
+                        (None, Some(_)) => format!(" (times past the first {MAX_LOG_RESULTS})"),
+                        (None, None) => String::new(),
+                    };
                     let size = |c: Option<u64>, f: Option<u64>, p: Option<u64>| {
                         let s = |x: Option<u64>| x.map_or("?".to_string(), |x| x.to_string());
                         format!("{} cells, {} faces, {} points", s(c), s(f), s(p))
@@ -228,11 +321,9 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 _ => mine.push(l),
             }
         }
-        let native = mesh.is_ok();
-        let from_logs: Vec<Diagnostic> = mine.iter().flat_map(|l| checkmesh_log_diagnostics(l, native)).collect();
         let (q, sets) = match &mesh {
             Ok(mesh) => {
-                let q = quality(mesh);
+                let q = if all_geometry { quality_all(mesh) } else { quality(mesh) };
                 d.extend(diagnostics(&q, r));
                 let sets = checkmesh_sets(fs, r, mesh, &mut d);
                 (Some(q), sets)
@@ -242,7 +333,8 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 (None, Vec::new())
             }
         };
-        let mut from_logs = from_logs;
+        let mut from_logs: Vec<Diagnostic> =
+            mine.iter().flat_map(|l| checkmesh_log_diagnostics(l, q.as_ref())).collect();
         if case.region(r).is_some_and(|x| x.kind == umcf_model::RegionKind::Vegetation) {
             soften_for_vegetation(&mut d);
             soften_for_vegetation(&mut from_logs);

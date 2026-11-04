@@ -51,6 +51,32 @@ coordinates that are not numbers. The solver solves no flow equations on that me
 carries the leaf temperature and the radiation exchange), and cases with a few wrongly oriented
 faces there run: the large 3×3 cases have 6 to 12, which `checkMesh` reports too.
 
+### With `-allGeometry`
+
+`umcf-cli mesh --all-geometry` (`mesh.check` with `all_geometry: true`) adds the checks of
+`checkMesh -allGeometry`, ported from OpenFOAM-12 with its thresholds. They are slower (33 s
+for 5.4 million cells, against 6 minutes for `checkMesh`) and all warnings: they hurt accuracy
+or convergence, not the run.
+
+| Code | Level | What it means (`checkMesh`'s threshold) |
+|---|---|---|
+| `mesh.face-tets` | Warning | Faces whose decomposition into tets has a tet of low quality or negative volume (counted per failed test, up to three per face, as `checkMesh` does). Particle tracking and cell-point interpolation use the tets; the flow solution doesn't |
+| `mesh.short-edges` | Warning | Points on edges shorter than a millionth of the mesh's extent |
+| `mesh.near-points` | Warning | Pairs of points closer than a millionth of the mesh's extent. Like `checkMesh`, this counts only pairs about equally far from the origin, so it finds near-duplicate points |
+| `mesh.concave-faces` | Warning | Faces with an angle between consecutive edges concave by more than 10° |
+| `mesh.warped-faces` | Warning | Faces whose area is less than 0.8 of the sum of their triangles' areas |
+| `mesh.cell-determinant` | Warning | Cells whose internal faces leave a direction poorly determined (determinant below 0.001), which gradients need. Cells of thin solid layers, with internal faces in one direction only, have it. The normals of `empty` and `wedge` patches are left out, as `checkMesh` does |
+| `mesh.concave-cells` | Warning | Cells with a face centre on the outer side of another face's plane |
+| `mesh.face-weights` | Warning | Faces with an interpolation weight below 0.05 (the face much nearer one cell centre) |
+| `mesh.volume-ratio` | Warning | Faces between cells whose volumes differ by more than 100 times |
+| `mesh.unchecked` | Info | Faces, cells or points left out of the pairwise checks (tet base points, concave cells, near points): over 1000 points or faces each, or past a work budget proportional to the mesh's size. Only a hostile or broken mesh reaches it |
+
+If a coordinate is so large that a millionth of the extent overflows, short edges and near
+points are not looked for (the mesh has `mesh.non-finite` or nonsense coordinates anyway).
+
+Face-tet failures in a `checkMesh` log are warnings since M0.16 (they were errors): the
+finite-volume solvers don't use the tet decomposition.
+
 `checkMesh` counts high aspect ratios and skewness as failed checks. They are warnings here
 because a case usually runs with them, if more slowly or less accurately.
 
@@ -72,16 +98,16 @@ boundary formula. Wedge directions are not left out of the aspect ratio.
   - Each failed check (`***`) becomes `mesh.checkmesh`. It is an error, as `checkMesh` means it
     (wrong orientation, zero or negative volumes or areas, open cells, non-orthogonality
     errors, invalid labels, boundary, zone and wedge errors). The quality findings are
-    warnings: aspect ratio, skewness, small weights and volume ratios, small determinants,
+    warnings: aspect ratio, skewness, face tets, small weights and volume ratios, small determinants,
     concave cells, non-aligned edges, boundary openness.
   - Each remark (`*`) becomes a note.
   - A log that ends in a fatal error is an error; one that stops before its verdict is a
     warning.
   - A finding the native check also makes (its default checks: aspect ratio, skewness,
     pyramids, volumes, areas, open cells, non-orthogonality, boundary openness) is a note when
-    the mesh was checked natively too, so nothing counts twice. The others (`-allGeometry`'s
-    weights, volume ratios, determinants, concave cells; topology errors) count as `checkMesh`
-    says.
+    the mesh was checked natively too, so nothing counts twice. So is an `-allGeometry` finding
+    (face tets, weights, volume ratios, determinants, concave cells) when the native check ran
+    with `--all-geometry`. The others (topology errors) count as `checkMesh` says.
 - **Its sets:** the face, cell and point sets `checkMesh` writes (OpenFOAM-8 on every run,
   OpenFOAM-12 with `-writeSets`) in `constant/<region>/polyMesh/sets`, such as `skewFaces`,
   `wrongOrientedFaces` and `nonClosedCells`. Their labels are listed lowest first, for the 3D
@@ -96,6 +122,8 @@ is reported as `mesh.stale-set`.
 | `mesh.checkmesh` | Error / Warning / Info | What a `checkMesh` log in the case reported for the region |
 | `mesh.stale-set` | Warning | A `checkMesh` set names more faces, cells or points than the mesh has: it was written for another mesh |
 | `mesh.unreadable-set` | Warning | A `checkMesh` set could not be read |
+| `mesh.checkmesh-incomplete` | Error | A `checkMesh` log longer than is read has failures that are not listed: times past the first 1000 that failed a check or stopped (summarized by the size of mesh they checked, and matched to the mesh as other results are), or failed checks past 200 findings of one time. A warning in a vegetation region, as the findings themselves would be |
+| `mesh.checkmesh-unmatched` | Warning | Such failed times whose mesh size isn't known (past 16 sizes, or without mesh stats, which `checkMesh` prints only when the topology changes: usually times with moved points): they may be of another mesh |
 
 Tested against `checkMesh`:
 - The five regions of the 3×3 test case give the same cell counts, volumes (min, max, total),
@@ -103,7 +131,11 @@ Tested against `checkMesh`:
   OpenFOAM-12's `checkMesh`, to the six digits it prints (the opt-in test
   `matches_checkmesh_on_the_3x3_case`). The number of high-aspect cells is the same too (2880 in
   `buildings`, 1632 in `street`).
-- On a copy of the `vegetation` mesh of the partly ported 3×3 case (5.4 million cells), OpenFOAM-12's `checkMesh -writeSets` finds 1440 incorrectly oriented faces. Its `wrongOrientedFaces` set holds the same faces as `mesh.face-pyramids`.
+- With `-allGeometry`, the five regions give the same edge lengths, concave faces and maximum
+  angle, flatness, determinants and the cells below 0.001, concave cells, interpolation weights
+  and volume ratios (minimum and average) as OpenFOAM-12's `checkMesh -allGeometry` (the opt-in
+  test `matches_checkmesh_all_geometry_on_the_3x3_case`).
+- On a copy of the `vegetation` mesh of the partly ported 3×3 case (5.4 million cells), OpenFOAM-12's `checkMesh -writeSets` finds 1440 incorrectly oriented faces. Its `wrongOrientedFaces` set holds the same faces as `mesh.face-pyramids`. With `-allGeometry` it finds 2880 face-tet errors, 96 concave faces (max 25.62°) and 44,396 concave cells, as `--all-geometry` does.
 - The Hong Kong project's `air` mesh (16 million cells) gives what OpenFOAM-8's `checkMesh`
   printed for it: non-orthogonality max 80.6° and average 11.5°, 41 faces above 70°, and
   skewness max 5.79 with 8 faces above 4.

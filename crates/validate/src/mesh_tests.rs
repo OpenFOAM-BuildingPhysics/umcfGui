@@ -290,7 +290,7 @@ fn checkmesh_logs() {
     let l = parse_checkmesh_log("log.checkMesh.ground", OF8_LOG).pop().unwrap();
     assert_eq!((l.region.as_str(), l.version.as_deref(), l.failed, l.ok), ("", Some("8"), Some(1), false));
     assert_eq!(l.problems, ["High aspect ratio cells found, Max aspect ratio: 1147.3909, number of cells 4025"]);
-    let d = checkmesh_log_diagnostics(&l, false);
+    let d = checkmesh_log_diagnostics(&l, None);
     assert_eq!(d.len(), 1);
     assert_eq!(
         (d[0].level, d[0].code, d[0].path.as_str()),
@@ -301,17 +301,17 @@ fn checkmesh_logs() {
     let l = parse_checkmesh_log("log.checkMesh.vegetation", OF12_LOG).pop().unwrap();
     assert_eq!(l.region, "vegetation");
     assert_eq!(l.notes, ["Number of regions: 9"]);
-    let d = checkmesh_log_diagnostics(&l, false);
+    let d = checkmesh_log_diagnostics(&l, None);
     let levels: Vec<crate::Level> = d.iter().map(|d| d.level).collect();
     assert_eq!(levels, [crate::Level::Error, crate::Level::Info]);
     assert_eq!(d[0].region.as_deref(), Some("vegetation"));
 
     // Mesh OK; a log cut short; another utility's log.
     let ok = parse_checkmesh_log("log.checkMesh", "Exec   : checkMesh\nMesh OK.\n").pop().unwrap();
-    assert!(ok.ok && checkmesh_log_diagnostics(&ok, false).is_empty());
+    assert!(ok.ok && checkmesh_log_diagnostics(&ok, None).is_empty());
     let cut =
         parse_checkmesh_log("log.checkMesh", "Exec   : checkMesh -allGeometry\nChecking geometry...\n").pop().unwrap();
-    assert!(checkmesh_log_diagnostics(&cut, false)[0].message.contains("stops before"));
+    assert!(checkmesh_log_diagnostics(&cut, None)[0].message.contains("stops before"));
     assert_eq!(parse_checkmesh_log("log.blockMesh", "Exec   : blockMesh\n"), []);
     assert_eq!(parse_checkmesh_log("log.x", "no header at all"), []);
     // One result per time checked.
@@ -321,7 +321,7 @@ fn checkmesh_logs() {
     assert_eq!(times, [Some("3"), Some("8")]);
     assert_eq!(logs[1].problems, ["Max skewness = 5.8, 8 highly skew faces"]);
     assert_eq!(logs[1].version.as_deref(), Some("8"));
-    assert!(checkmesh_log_diagnostics(&logs[0], false)[0].message.contains("OpenFOAM-8, time 3)"));
+    assert!(checkmesh_log_diagnostics(&logs[0], None)[0].message.contains("OpenFOAM-8, time 3)"));
 }
 
 #[test]
@@ -351,34 +351,345 @@ fn checkmesh_levels_and_sizes() {
     let log = "Exec   : checkMesh\n    points:           12\n    faces:            20\n    cells:            4\n ***Duplicate boundary patch walls\n ***Max skewness = 5, 1 highly skew faces\n ***Cells with invalid face labels found, number of cells 2\n ***Boundary openness (1 0 0) possible hole in boundary description.\nFailed 3 mesh checks.\n";
     let l = parse_checkmesh_log("log.checkMesh", log).pop().unwrap();
     assert_eq!((l.cells, l.faces, l.points), (Some(4), Some(20), Some(12)));
-    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, false).iter().map(|d| d.level).collect();
+    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, None).iter().map(|d| d.level).collect();
     use crate::Level::{Error, Warning};
     assert_eq!(levels, [Error, Warning, Error, Warning]);
     let fatal = "Exec   : checkMesh\n\n--> FOAM FATAL ERROR: \ncannot find file \"points\"\n\nFOAM exiting\n";
     let l = parse_checkmesh_log("log.checkMesh", fatal).pop().unwrap();
     assert_eq!(l.fatal.as_deref(), Some("cannot find file \"points\""));
-    let d = checkmesh_log_diagnostics(&l, false);
+    let d = checkmesh_log_diagnostics(&l, None);
     assert_eq!((d.len(), d[0].level), (1, Error));
     assert!(CHECKMESH_SETS.iter().any(|(n, _, _)| *n == "nonManifoldPoints"));
 }
 
 #[test]
 fn checkmesh_findings_the_native_check_makes_are_notes() {
-    let log = "Exec   : checkMesh\n ***Error in face pyramids: 3 faces are incorrectly oriented.\n ***Faces with small interpolation weight (< 0.05) found, number of faces: 2\nFailed 2 mesh checks.\n";
+    let log = "Exec   : checkMesh\n ***Error in face pyramids: 3 faces are incorrectly oriented.\n ***Faces with small interpolation weight (< 0.05) found, number of faces: 2\n    ***Max skewness = 5, 1 highly skew faces detected\nFailed 3 mesh checks.\n";
     let l = parse_checkmesh_log("log.checkMesh", log).pop().unwrap();
     use crate::Level::{Error, Info, Warning};
-    let levels =
-        |native| -> Vec<crate::Level> { checkmesh_log_diagnostics(&l, native).iter().map(|d| d.level).collect() };
-    assert_eq!(levels(false), [Error, Warning]);
-    // Natively checked: the pyramids are the native check's; the weights (-allGeometry) stay.
-    assert_eq!(levels(true), [Info, Warning]);
+    let levels = |native: Option<&Quality>| -> Vec<crate::Level> {
+        checkmesh_log_diagnostics(&l, native).iter().map(|d| d.level).collect()
+    };
+    assert_eq!(levels(None), [Error, Warning, Warning]);
+    // The native check found wrong pyramids: that one is the native check's; the weights
+    // (-allGeometry) stay; the skewness it didn't find keeps checkMesh's level.
+    let mut q = Quality::default();
+    q.wrong_pyramids.count = 3;
+    assert_eq!(levels(Some(&q)), [Info, Warning, Warning]);
+    assert!(checkmesh_log_diagnostics(&l, Some(&q))[2].message.contains("doesn't find it"));
+    // Found nothing natively: the pyramids stay an error.
+    assert_eq!(levels(Some(&Quality::default())), [Error, Warning, Warning]);
     // The zip-up check (topology) has no native counterpart: it stays an error.
     let zip = "Exec   : checkMesh\n ***Open cells found, number of cells: 2. This problem may be fixable using the zipUpMesh utility.\n ***Open cells found, max cell openness: 0.1, number of open cells 1\nFailed 2 mesh checks.\n";
     let l = parse_checkmesh_log("log.checkMesh", zip).pop().unwrap();
-    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, true).iter().map(|d| d.level).collect();
+    let mut q = Quality::default();
+    q.open_cells.count = 1;
+    let levels: Vec<crate::Level> = checkmesh_log_diagnostics(&l, Some(&q)).iter().map(|d| d.level).collect();
     assert_eq!(levels, [Error, Info]);
     // A parallel log's processor prefix.
     let par = "[0] Exec   : checkMesh -parallel\n[0] \n[0] --> FOAM FATAL ERROR: \n[0] cannot open file\n";
     let l = parse_checkmesh_log("log.checkMesh", par).pop().unwrap();
     assert_eq!(l.fatal.as_deref(), Some("cannot open file"));
+}
+
+#[test]
+fn a_long_checkmesh_log_is_cut_with_a_note() {
+    use crate::Level::{Error, Info, Warning};
+    // With the banner before the first time, as in every real log.
+    let mut log = String::from("Exec   : checkMesh -allTime\nCreate time\n\n");
+    for _ in 0..(MAX_LOG_RESULTS + 50) {
+        log.push_str("Time = 1\n    cells:            8\nMesh OK.\n");
+    }
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    assert_eq!(logs.len(), MAX_LOG_RESULTS + 1, "the times read, and one summary of the rest");
+    let summary = logs.last().unwrap();
+    assert_eq!((summary.skipped, summary.cells), (Some(Skipped { times: 50, failed: 0, unfinished: 0 }), Some(8)));
+    let d = checkmesh_log_diagnostics(summary, None);
+    assert_eq!((d.len(), d[0].level), (1, Info), "{d:?}");
+
+    // Failures past the times read are counted per size of mesh: a time of the mesh with 8
+    // cells failed; the 9-cell times passed.
+    let mut log = String::from("Exec   : checkMesh -allTime\n");
+    for _ in 0..MAX_LOG_RESULTS {
+        log.push_str("Time = 1\n    cells:            8\nMesh OK.\n");
+    }
+    log.push_str("Time = 2\n    cells:            8\n ***Error in face pyramids: 3 faces are incorrectly oriented.\nFailed 1 mesh checks.\n");
+    log.push_str(
+        "Time = 3\n    cells:            9\nMesh OK.\nTime = 4\n    cells:            9\nFailed 0 mesh checks.\n",
+    );
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let summaries: Vec<(Option<u64>, Option<Skipped>)> =
+        logs.iter().filter(|l| l.skipped.is_some()).map(|l| (l.cells, l.skipped)).collect();
+    assert_eq!(
+        summaries,
+        [
+            (Some(8), Some(Skipped { times: 1, failed: 1, unfinished: 0 })),
+            (Some(9), Some(Skipped { times: 2, failed: 0, unfinished: 0 }))
+        ]
+    );
+    let failed = logs.iter().find(|l| l.cells == Some(8) && l.skipped.is_some()).unwrap();
+    let mut d = checkmesh_log_diagnostics(failed, None);
+    assert_eq!((d[0].code, d[0].level), ("mesh.checkmesh-incomplete", Error), "{d:?}");
+    // In a vegetation region it is a warning, as the finding itself would be.
+    soften_for_vegetation(&mut d);
+    assert_eq!(d[0].level, Warning);
+
+    // Past MAX_SKIPPED_SIZES sizes: one summary of unknown size.
+    let mut log = String::from("Exec   : checkMesh -allTime\n");
+    for _ in 0..MAX_LOG_RESULTS {
+        log.push_str("Time = 1\nMesh OK.\n");
+    }
+    for n in 0..(MAX_SKIPPED_SIZES + 5) {
+        log.push_str(&format!("Time = 2\n    cells:            {}\nMesh OK.\n", 100 + n));
+    }
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let summaries: Vec<&CheckMeshLog> = logs.iter().filter(|l| l.skipped.is_some()).collect();
+    assert_eq!(summaries.len(), MAX_SKIPPED_SIZES + 1);
+    assert_eq!(
+        summaries.last().map(|l| (l.cells, l.skipped)),
+        Some((None, Some(Skipped { times: 5, failed: 0, unfinished: 0 })))
+    );
+    // A failure of an unknown size isn't pinned on this mesh: unmatched, a warning; and a
+    // skipped time the log stops in is not a pass.
+    log.push_str("Time = 3\n    cells:            999\n ***Error in face pyramids: 1 faces\nFailed 1 mesh checks.\n");
+    log.push_str("Time = 4\n    cells:            998\nChecking geometry...\nFailed invalid mesh checks.\n");
+    let logs = parse_checkmesh_log("log.checkMesh", &log);
+    let unknown = logs.iter().find(|l| l.skipped.is_some() && l.cells.is_none()).unwrap();
+    assert_eq!(unknown.skipped, Some(Skipped { times: 7, failed: 1, unfinished: 1 }));
+    let d = checkmesh_log_diagnostics(unknown, None);
+    let got: Vec<(&str, crate::Level)> = d.iter().map(|x| (x.code, x.level)).collect();
+    assert_eq!(got, [("mesh.checkmesh-unmatched", Warning), ("mesh.checkmesh", Warning)], "{d:?}");
+
+    // More findings in one time than are kept: the failed checks not listed are an error.
+    let mut log = String::from("Exec   : checkMesh\n");
+    for _ in 0..(MAX_LOG_FINDINGS + 50) {
+        log.push_str(" ***x\n *y\n");
+    }
+    let l = parse_checkmesh_log("log.checkMesh", &log).pop().unwrap();
+    assert_eq!(l.problems.len() + l.notes.len(), MAX_LOG_FINDINGS);
+    assert!(l.truncated && l.unlisted_problems == 150);
+    let d = checkmesh_log_diagnostics(&l, None);
+    assert!(d.iter().any(|x| x.code == "mesh.checkmesh-incomplete" && x.message.contains("150 more failed")), "{d:?}");
+}
+
+/// `checkMesh -region <r> -allGeometry` (OpenFOAM-12) on the 3×3 case: the extra checks.
+#[test]
+fn matches_checkmesh_all_geometry_on_the_3x3_case() {
+    let Ok(dir) = std::env::var("UMCF_CHECKMESH_CASE") else {
+        eprintln!("skipped: set UMCF_CHECKMESH_CASE to the Mesh_3x3_small case");
+        return;
+    };
+    let fs = umcf_core::DirFs::new(dir);
+    // region, min / max edge length, concave faces and max angle, min / average flatness and
+    // warped faces, min / average determinant and cells below it, concave cells, min / average
+    // weight, min / average volume ratio.
+    type Row = (&'static str, [f64; 2], (usize, f64), [f64; 2], usize, [f64; 2], usize, usize, [f64; 2], [f64; 2]);
+    let rows: [Row; 5] = [
+        (
+            "air",
+            [0.748, 112.092],
+            (0, 0.0),
+            [1.0, 1.0],
+            0,
+            [2.95111e-07, 1.75484],
+            1076,
+            16,
+            [0.0969, 0.330489],
+            [0.107297, 0.521682],
+        ),
+        (
+            "buildings",
+            [0.0024454, 5.0],
+            (0, 0.0),
+            [1.0, 1.0],
+            0,
+            [4.63801e-10, 9.07642e-08],
+            7200,
+            0,
+            [0.363973, 0.454673],
+            [0.571986, 0.857429],
+        ),
+        (
+            "vegetation",
+            [0.5599, 28.572],
+            (11, 21.084),
+            [0.780219, 0.999922],
+            1,
+            [0.045618, 1.88871],
+            0,
+            27,
+            [0.108613, 0.475727],
+            [0.0229838, 0.939237],
+        ),
+        (
+            "street",
+            [0.00374037, 5.0],
+            (0, 0.0),
+            [1.0, 1.0],
+            0,
+            [4.51248e-11, 0.202071],
+            4912,
+            0,
+            [0.0969414, 0.426245],
+            [0.107348, 0.801418],
+        ),
+        (
+            "roofs",
+            [0.00374037, 5.0],
+            (0, 0.0),
+            [1.0, 1.0],
+            0,
+            [2.26262e-10, 6.6414e-06],
+            4500,
+            0,
+            [0.0969414, 0.425082],
+            [0.107348, 0.810331],
+        ),
+    ];
+    let near = |a: f64, b: f64| (a - b).abs() <= 1e-5 * b.abs().max(1e-30);
+    for (r, edge, (n_concave, angle), flat, n_warped, det, n_det, n_concave_cells, weight, ratio) in rows {
+        let m = PolyMesh::read(&fs, &umcf_foam_mesh::mesh_dir(r), &Limits::default()).unwrap();
+        let g = quality_all(&m).all.unwrap();
+        assert!(near(g.min_edge_length, edge[0]) && near(g.max_edge_length, edge[1]), "{r}: edges {g:?}");
+        assert_eq!((g.short_edge_points.count, g.near_points.count, g.low_quality_tets.count), (0, 0, 0), "{r}");
+        assert_eq!(g.concave_faces.count, n_concave, "{r}");
+        assert!(n_concave == 0 || (g.max_concave_angle - angle).abs() < 1e-3, "{r}: angle {}", g.max_concave_angle);
+        assert!(near(g.min_flatness, flat[0]) && near(g.average_flatness, flat[1]), "{r}: flatness");
+        assert_eq!(g.warped_faces.count, n_warped, "{r}");
+        assert!(near(g.min_determinant, det[0]) && near(g.average_determinant, det[1]), "{r}: det {g:?}");
+        assert_eq!(g.underdetermined_cells.count, n_det, "{r}");
+        assert_eq!(g.concave_cells.count, n_concave_cells, "{r}");
+        assert!(near(g.min_weight, weight[0]) && near(g.average_weight, weight[1]), "{r}: weight {g:?}");
+        assert!(near(g.min_volume_ratio, ratio[0]) && near(g.average_volume_ratio, ratio[1]), "{r}: ratio");
+        assert_eq!((g.low_weight_faces.count, g.low_volume_ratio_faces.count, g.unchecked), (0, 0, 0), "{r}");
+    }
+}
+
+#[test]
+fn all_geometry_on_a_regular_block() {
+    let q = quality_all(&block([3, 3, 3], false, &|p| p));
+    let g = q.all.as_ref().unwrap();
+    assert!(close(g.min_edge_length, 1.0) && close(g.max_edge_length, 1.0), "{g:?}");
+    assert!(close(g.min_weight, 0.5) && close(g.average_weight, 0.5), "{g:?}");
+    assert!(close(g.min_volume_ratio, 1.0) && close(g.min_flatness, 1.0));
+    // A corner cell has three internal faces, one along each axis: determinant 1.
+    assert!(close(g.min_determinant, 1.0), "{}", g.min_determinant);
+    assert_eq!(g.max_concave_angle, 0.0);
+    assert_eq!(g.low_quality_tets.count + g.concave_cells.count + g.near_points.count + g.unchecked, 0);
+    assert!(diagnostics(&q, "").is_empty());
+    // The default checks don't run these.
+    assert!(quality(&block([1, 1, 1], false, &|p| p)).all.is_none());
+}
+
+#[test]
+fn all_geometry_finds_thin_cells_and_near_points() {
+    // A layer 1e-12 thick between z = 1 and z = 1 + 1e-12: its edges are shorter than a
+    // millionth of the extent (3.5e-6), its points are near the ones below (checkMesh finds
+    // only such near-duplicates: it compares points whose squared distances from the origin
+    // differ by less than the squared near distance), its volume is 1e-12 of its neighbours',
+    // and its faces' interpolation weights are small.
+    let thin = |p: [f64; 3]| [p[0], p[1], if p[2] >= 2.0 { p[2] - 1.0 + 1e-12 } else { p[2] }];
+    let q = quality_all(&block([2, 2, 3], false, &thin));
+    let g = q.all.as_ref().unwrap();
+    assert!(g.min_edge_length < 2e-12, "{}", g.min_edge_length);
+    assert_eq!(g.short_edge_points.count, 18, "two 3×3 planes of points");
+    assert_eq!((g.near_points.count, g.near_points.places), (9, 18), "nine pairs");
+    assert_eq!(g.low_volume_ratio_faces.count, 8, "4 faces below the layer, 4 above");
+    assert_eq!(g.low_weight_faces.count, 8);
+    assert!(g.underdetermined_cells.count >= 4, "{g:?}");
+    let codes: Vec<&str> = diagnostics(&q, "").iter().map(|d| d.code).collect();
+    for c in ["mesh.short-edges", "mesh.near-points", "mesh.volume-ratio", "mesh.face-weights", "mesh.cell-determinant"]
+    {
+        assert!(codes.contains(&c), "{c}: {codes:?}");
+    }
+    assert!(diagnostics(&q, "").iter().all(|d| d.level == crate::Level::Warning || d.code.starts_with("mesh.aspect")));
+}
+
+#[test]
+fn all_geometry_finds_bad_tets_concave_cells_and_warped_faces() {
+    // The inner point of a 2×2×2 block pushed past a corner: the cells around it fold.
+    let q = quality_all(&block([2, 2, 2], false, &|p| if p == [1.0, 1.0, 1.0] { [1.8, 1.8, 1.8] } else { p }));
+    let g = q.all.as_ref().unwrap();
+    assert!(g.low_quality_tets.count > 0 && g.low_quality_tets.places <= g.low_quality_tets.count, "{g:?}");
+    assert!(g.concave_cells.count > 0, "{g:?}");
+    // Two opposite corners of the top lifted: a saddle, no longer flat.
+    let q = quality_all(&block([1, 1, 1], false, &|p| {
+        if p == [1.0, 0.0, 1.0] || p == [0.0, 1.0, 1.0] { [p[0], p[1], 4.0] } else { p }
+    }));
+    let g = q.all.as_ref().unwrap();
+    assert!(g.warped_faces.count > 0 && g.min_flatness < WARN_FLATNESS, "{g:?}");
+}
+
+#[test]
+fn all_geometry_bounds_its_work_on_hostile_meshes() {
+    // Every point but one at (1, 1, 1): 1330 points in one grid cell, more than are compared
+    // pairwise; they are counted as unchecked rather than taking quadratic time.
+    let q = quality_all(&block([10, 10, 10], false, &|p| if p == [0.0; 3] { p } else { [1.0; 3] }));
+    let g = q.all.as_ref().unwrap();
+    assert!(g.unchecked >= 1330 && g.near_points.count == 0, "{}", g.unchecked);
+    assert!(diagnostics(&q, "").iter().any(|d| d.code == "mesh.unchecked"));
+    // Fewer: every pair is near.
+    let g = quality_all(&block([7, 7, 7], false, &|p| if p == [0.0; 3] { p } else { [1.0; 3] })).all.unwrap();
+    assert_eq!((g.near_points.count, g.near_points.places), (511 * 510 / 2, 511));
+    // A coordinate near the largest number: a millionth of the extent overflows, so short
+    // edges and near points are not looked for (rather than every edge being short).
+    let g = quality_all(&block([2, 1, 1], false, &|p| if p == [2.0, 1.0, 1.0] { [1e300, 1.0, 1.0] } else { p }))
+        .all
+        .unwrap();
+    assert!(!g.near_distance.is_finite());
+    assert_eq!((g.short_edge_points.count, g.near_points.count), (0, 0));
+    // An infinite one is left out of the extent.
+    let g =
+        quality_all(&block([2, 1, 1], false, &|p| if p == [2.0, 1.0, 1.0] { [f64::INFINITY, 1.0, 1.0] } else { p }))
+            .all
+            .unwrap();
+    assert!(g.near_distance.is_finite() && g.short_edge_points.count == 0, "{g:?}");
+}
+
+#[test]
+fn near_points_on_a_lattice_centred_at_the_origin() {
+    // Many points share their distance from the origin; none is near another, and all are
+    // checked (a search in checkMesh's sorted order would compare whole rings).
+    let g = quality_all(&block([12, 12, 12], false, &|p| [p[0] - 6.0, p[1] - 6.0, p[2] - 6.0])).all.unwrap();
+    assert_eq!((g.near_points.count, g.unchecked), (0, 0));
+    // A near-duplicate there is found: the point (1, 0, 0) moved to 1e-9 from the origin.
+    let g = quality_all(&block([12, 12, 12], false, &|p| {
+        if p == [7.0, 6.0, 6.0] { [1e-9, 0.0, 0.0] } else { [p[0] - 6.0, p[1] - 6.0, p[2] - 6.0] }
+    }))
+    .all
+    .unwrap();
+    assert_eq!((g.near_points.count, g.near_points.places, g.unchecked), (1, 2, 0));
+}
+
+#[test]
+fn the_determinant_leaves_out_empty_and_wedge_directions() {
+    // 2D (empty ±z): a corner cell's internal faces are along x and y; the missing z counts 1.
+    let g = quality_all(&block([2, 2, 1], true, &|p| p)).all.unwrap();
+    assert_eq!(g.geometric_directions, [true, true, false]);
+    assert!(close(g.min_determinant, 1.0), "{}", g.min_determinant);
+    // A wedge about the x axis between z = ±y·tan(2.5°) for y in 1..3: the z normal is not a
+    // direction of the mesh, so the determinant is 2D, not near 0.
+    let t = 2.5f64.to_radians().tan();
+    let mut m = block([2, 2, 1], false, &|p| [p[0], p[1] + 1.0, (2.0 * p[2] - 1.0) * (p[1] + 1.0) * t]);
+    for p in m.boundary.iter_mut().filter(|p| p.name == "zMin" || p.name == "zMax") {
+        p.kind = "wedge".to_string();
+    }
+    let g = quality_all(&m).all.unwrap();
+    assert_eq!(g.geometric_directions, [true, true, false]);
+    assert!(g.min_determinant > 0.5 && g.underdetermined_cells.count == 0, "{g:?}");
+}
+
+#[test]
+fn all_geometry_log_findings_are_notes_only_when_checked_natively() {
+    let log = "Exec   : checkMesh -allGeometry\n ***Concave cells (using face planes) found, number of cells: 2\nFailed 1 mesh checks.\n";
+    let l = parse_checkmesh_log("log.checkMesh", log).pop().unwrap();
+    let level = |q: &Quality| checkmesh_log_diagnostics(&l, Some(q))[0].level;
+    // Without -allGeometry natively: checkMesh's level, without "doesn't find it".
+    let q = quality(&block([1, 1, 1], false, &|p| p));
+    assert_eq!(level(&q), crate::Level::Warning);
+    assert!(!checkmesh_log_diagnostics(&l, Some(&q))[0].message.contains("doesn't find"));
+    let mut q = quality_all(&block([1, 1, 1], false, &|p| p));
+    assert!(checkmesh_log_diagnostics(&l, Some(&q))[0].message.contains("doesn't find it"));
+    q.all.as_mut().unwrap().concave_cells.count = 2;
+    assert_eq!(level(&q), crate::Level::Info);
 }
