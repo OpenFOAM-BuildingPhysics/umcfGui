@@ -680,7 +680,14 @@ fn a_boundary_condition_changes_its_entry_only() {
     let mut fs = case();
     let mut c = Case::open(&fs).unwrap();
     let before = fs.read("0/air/T", 1 << 20).unwrap().unwrap();
-    c.set_bc(&fs, "air", "T", &["top", "inlet"], "fixedValue", &[("value", "uniform 290")]).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "T",
+        &["top", "inlet"],
+        &Condition { kind: "fixedValue", entries: &[("value", "uniform 290")], defaults: &[] },
+    )
+    .unwrap();
     let bcs = c.region("air").unwrap().field("T").unwrap().bcs.clone().unwrap();
     let summary: Vec<_> = bcs.iter().map(|b| (b.patch.as_str(), b.kind.as_deref(), b.value.as_deref())).collect();
     assert_eq!(
@@ -703,8 +710,14 @@ fn a_boundary_condition_changes_its_entry_only() {
     assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), after.as_bytes());
     // What can't be edited says why.
     let e = |r: Result<Vec<String>>| r.err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(e(c.set_bc(&fs, "air", "U", &["top"], "fixedValue", &[])).contains("no field U of region air"));
-    assert!(e(c.set_bc(&fs, "nowhere", "T", &["top"], "fixedValue", &[])).contains("no region"));
+    assert!(
+        e(c.set_bc(&fs, "air", "U", &["top"], &Condition { kind: "fixedValue", entries: &[], defaults: &[] }))
+            .contains("no field U of region air")
+    );
+    assert!(
+        e(c.set_bc(&fs, "nowhere", "T", &["top"], &Condition { kind: "fixedValue", entries: &[], defaults: &[] }))
+            .contains("no region")
+    );
 }
 
 #[test]
@@ -712,7 +725,10 @@ fn a_boundary_field_from_elsewhere_is_not_edited() {
     let fs = case()
         .with("0/street/T", format!("{}internalField uniform 290;\n#include \"bcs\"\n", header("volScalarField", "T")));
     let mut c = Case::open(&fs).unwrap();
-    let e = c.set_bc(&fs, "street", "T", &["top"], "zeroGradient", &[]).unwrap_err().to_string();
+    let e = c
+        .set_bc(&fs, "street", "T", &["top"], &Condition { kind: "zeroGradient", entries: &[], defaults: &[] })
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("comes from elsewhere"), "{e}");
     assert!(c.changed().is_empty());
 }
@@ -727,14 +743,29 @@ fn the_same_type_keeps_its_entry() {
         ),
     );
     let mut c = Case::open(&fs).unwrap();
-    c.set_bc(&fs, "air", "U", &["ground"], "atmBoundaryLayerInletVelocity", &[("value", "uniform (2 0 0)")]).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "U",
+        &["ground"],
+        &Condition { kind: "atmBoundaryLayerInletVelocity", entries: &[("value", "uniform (2 0 0)")], defaults: &[] },
+    )
+    .unwrap();
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(
         text.contains("        type            atmBoundaryLayerInletVelocity;\n        #include        \"include/ABLConditions\"\n        value           uniform (2 0 0); // from the profile\n"),
         "{text}"
     );
     // Another type starts afresh, and says what it dropped.
-    let dropped = c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (0 0 0)")]).unwrap();
+    let dropped = c
+        .set_bc(
+            &fs,
+            "air",
+            "U",
+            &["ground"],
+            &Condition { kind: "fixedValue", entries: &[("value", "uniform (0 0 0)")], defaults: &[] },
+        )
+        .unwrap();
     assert_eq!(dropped, ["ground"]);
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("#include") && text.contains("type            fixedValue;"), "{text}");
@@ -746,7 +777,14 @@ fn undo_past_a_saved_condition_writes_the_original_back() {
     let original = fs.read("0/air/T", 1 << 20).unwrap().unwrap();
     let before = Case::open(&fs).unwrap();
     let mut c = before.clone();
-    c.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "T",
+        &["top"],
+        &Condition { kind: "fixedValue", entries: &[("value", "uniform 1")], defaults: &[] },
+    )
+    .unwrap();
     assert_eq!(c.save(&mut fs, None).unwrap(), ["0/air/T"]);
     // The case from before the edit (what an undo puts back) is not what is on disk now.
     let mut undone = before;
@@ -758,7 +796,7 @@ fn undo_past_a_saved_condition_writes_the_original_back() {
     // And the edited case is now the one with a change to save.
     assert_eq!(c.changed(), ["0/air/T"]);
     // An edit from the undone case starts from the original, not from what was saved.
-    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    undone.set_bc(&fs, "air", "T", &["top"], &Condition { kind: "zeroGradient", entries: &[], defaults: &[] }).unwrap();
     let text = String::from_utf8(undone.file(&fs, "0/air/T").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("uniform 1"), "{text}");
 }
@@ -773,11 +811,21 @@ fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
         ),
     );
     let mut c = Case::open(&fs).unwrap();
-    c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (1 0 0)")]).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "U",
+        &["ground"],
+        &Condition { kind: "fixedValue", entries: &[("value", "uniform (1 0 0)")], defaults: &[] },
+    )
+    .unwrap();
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(text.contains("$inletCommon") && text.contains("type") && text.contains("uniform (1 0 0)"), "{text}");
     for (kind, k) in [("__umcfListA0", "value"), ("fixedValue", "__umcfListA0")] {
-        let e = c.set_bc(&fs, "air", "U", &["top"], kind, &[(k, "uniform (0 0 0)")]).unwrap_err().to_string();
+        let e = c
+            .set_bc(&fs, "air", "U", &["top"], &Condition { kind, entries: &[(k, "uniform (0 0 0)")], defaults: &[] })
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("can't be written"), "{e}");
     }
 }
@@ -787,7 +835,14 @@ fn an_outside_change_after_the_undone_original_is_saved_back_is_seen() {
     let mut fs = case();
     let before = Case::open(&fs).unwrap();
     let mut c = before.clone();
-    c.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    c.set_bc(
+        &fs,
+        "air",
+        "T",
+        &["top"],
+        &Condition { kind: "fixedValue", entries: &[("value", "uniform 1")], defaults: &[] },
+    )
+    .unwrap();
     c.save(&mut fs, None).unwrap();
     let mut undone = before;
     assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
@@ -797,7 +852,7 @@ fn an_outside_change_after_the_undone_original_is_saved_back_is_seen() {
     fs.insert("0/air/T", outside.clone());
     assert!(undone.changed().is_empty());
     assert_eq!(undone.file(&fs, "0/air/T").unwrap().unwrap().as_slice(), outside.as_bytes());
-    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    undone.set_bc(&fs, "air", "T", &["top"], &Condition { kind: "zeroGradient", entries: &[], defaults: &[] }).unwrap();
     assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
     assert!(String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().contains("uniform 299"));
 }
@@ -807,7 +862,14 @@ fn an_undo_never_writes_an_original_older_than_an_outside_change() {
     let mut fs = case();
     let s0 = Case::open(&fs).unwrap();
     let mut a = s0.clone();
-    a.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    a.set_bc(
+        &fs,
+        "air",
+        "T",
+        &["top"],
+        &Condition { kind: "fixedValue", entries: &[("value", "uniform 1")], defaults: &[] },
+    )
+    .unwrap();
     a.save(&mut fs, None).unwrap();
     let mut undone = s0.clone();
     undone.save(&mut fs, None).unwrap();
@@ -816,7 +878,7 @@ fn an_undo_never_writes_an_original_older_than_an_outside_change() {
         String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().replace("uniform 300", "uniform 299");
     fs.insert("0/air/T", outside.clone());
     let before_b = undone.clone();
-    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    undone.set_bc(&fs, "air", "T", &["top"], &Condition { kind: "zeroGradient", entries: &[], defaults: &[] }).unwrap();
     undone.save(&mut fs, None).unwrap();
     // Undoing B gives back the outside version, not the first original.
     let mut back = before_b;

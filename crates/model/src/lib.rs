@@ -228,6 +228,15 @@ struct Original {
     fingerprint: Option<Fingerprint>,
 }
 
+/// A boundary condition for [`Case::set_bc`]: its type, the entries set, and the defaults only a
+/// new entry gets.
+#[derive(Debug, Clone, Copy)]
+pub struct Condition<'a> {
+    pub kind: &'a str,
+    pub entries: &'a [(&'a str, &'a str)],
+    pub defaults: &'a [(&'a str, &'a str)],
+}
+
 /// What [`Case::save`] writes for one file.
 enum Pending {
     Dict(Arc<Document>),
@@ -736,17 +745,19 @@ impl Case {
     /// <value>; … }`, replacing one of exactly that name: a new type starts afresh, and a group
     /// or pattern entry stays for the other patches it covers. Nothing else in the file
     /// changes, byte for byte: not the other entries, the comments, nor the data lists.
-    /// [`Case::save`] writes it. Returns the patches whose replaced entry brought in text from
-    /// elsewhere (an `#include`, a `$macro`): that is gone from them now.
+    /// [`Case::save`] writes it. `defaults` go into new entries only, after `entries` (a key in
+    /// both is taken from `entries`): a kept entry keeps its own. Returns the patches whose
+    /// replaced entry brought in text from elsewhere (an `#include`, a `$macro`): that is gone
+    /// from them now.
     pub fn set_bc(
         &mut self,
         fs: &dyn CaseFs,
         region: &str,
         field: &str,
         patches: &[&str],
-        kind: &str,
-        entries: &[(&str, &str)],
+        condition: &Condition,
     ) -> Result<Vec<String>> {
+        let Condition { kind, entries, defaults } = *condition;
         let which = if region.is_empty() { field.to_string() } else { format!("{field} of region {region}") };
         let r = self
             .regions
@@ -769,15 +780,20 @@ impl Case {
         }
         // The placeholder of a field's data lists can't be written by an edit: the list would be
         // spliced in there.
-        let words =
-            std::iter::once(kind).chain(patches.iter().copied()).chain(entries.iter().flat_map(|(k, v)| [*k, *v]));
+        let words = std::iter::once(kind)
+            .chain(patches.iter().copied())
+            .chain(entries.iter().chain(defaults).flat_map(|(k, v)| [*k, *v]));
         if let Some(w) = words.into_iter().find(|w| w.contains(umcf_foam_field::PLACEHOLDER)) {
             return Err(Error::Bc(format!("`{w}` can't be written into a field file")));
         }
         let path = info.path.clone();
         let name = info.name.clone();
+        // A new entry: the entries, then the defaults not given, `value` last as OpenFOAM writes it.
+        let mut fresh: Vec<&(&str, &str)> =
+            entries.iter().chain(defaults.iter().filter(|(k, _)| !entries.iter().any(|(e, _)| e == k))).collect();
+        fresh.sort_by_key(|(k, _)| *k == "value");
         let mut body = format!("{{ type {kind};");
-        for (k, v) in entries {
+        for (k, v) in fresh {
             body.push_str(&format!(" {k} {v};"));
         }
         body.push_str(" }");
