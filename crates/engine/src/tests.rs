@@ -1000,3 +1000,39 @@ fn defaults_go_into_new_entries_only() {
     let bad = json!({"field": "U", "type": "fixedValue", "defaults": {"value": "uniform 1"}, "patches": p});
     assert!(s.execute("bc.set", &bad).is_err());
 }
+
+#[test]
+fn patches_are_set_renamed_and_undone() {
+    let mut s = session();
+    s.execute("select.set", &json!({"items": [{"region": "air", "patch": "inlet"}]})).unwrap();
+    let o = s.execute("patch.set", &json!({"type": "wall", "groups": ["wall", "ground"]})).unwrap();
+    assert_eq!(o.message, "air/inlet: type wall; groups (wall ground)");
+    let inlet = |s: &Session, name: &str| {
+        s.case().unwrap().region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == name).cloned()
+    };
+    let p = inlet(&s, "inlet").unwrap();
+    assert_eq!((p.kind.as_str(), p.groups.len()), ("wall", 2));
+    // Renamed: the fields follow, and it stays selected.
+    let o = s.execute("patch.set", &json!({"name": "west"})).unwrap();
+    assert!(o.data["renamed_in"].as_array().unwrap().iter().any(|f| f == "0/air/T"), "{}", o.data);
+    assert!(inlet(&s, "west").is_some() && inlet(&s, "inlet").is_none());
+    assert_eq!(bc_of(&s, "T", "west"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
+    assert_eq!(s.selection(), [Sel::Patch { region: "air".into(), patch: "west".into() }]);
+    // Undone: the old name everywhere, and the selection has nothing stale.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(inlet(&s, "inlet").is_some());
+    assert!(s.selection().is_empty());
+    // Refused.
+    let p = json!([{"region": "air", "patch": "inlet"}]);
+    for bad in [
+        json!({"patches": p}),
+        json!({"type": "a b", "patches": p}),
+        json!({"name": "x;y", "patches": p}),
+        json!({"groups": "wall", "patches": p}),
+        json!({"entries": {"nFaces": 3}, "patches": p}),
+        json!({"type": "wall", "patches": [{"region": "air", "patch": "nowhere"}]}),
+        json!({"type": "wall"}),
+    ] {
+        assert!(s.execute("patch.set", &bad).is_err(), "{bad}");
+    }
+}

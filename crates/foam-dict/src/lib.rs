@@ -123,6 +123,26 @@ impl Document {
 }
 
 impl Dict {
+    /// Sets the entry at `path` below this dictionary, as [`Document::set`] does from the root:
+    /// an existing entry keeps its key, comments and alignment; a new one is laid out like its
+    /// siblings.
+    pub fn set(&mut self, path: &[&str], value: &str) -> Result<()> {
+        let nodes = cst::parse_value(value, &Limits::default())?;
+        edit::set(self, path, nodes, "")
+    }
+
+    /// Gives the entry `key` (the last one with that key) the key `to`, keeping its value,
+    /// comments and layout. `false` when there is no such entry.
+    pub fn rename(&mut self, key: &str, to: &str) -> bool {
+        match self.get_mut(key) {
+            Some(e) => {
+                e.key.text = if edit::needs_quotes(to) { format!("\"{to}\"") } else { to.to_string() };
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The last entry with this key (keys compare without quotes). Directives and macros are
     /// not entries.
     pub fn get(&self, key: &str) -> Option<&Entry> {

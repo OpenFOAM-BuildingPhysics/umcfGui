@@ -173,6 +173,32 @@ directory or its `log/`, for each region:
 OpenFOAM-8 and 12 print the same tables; the `iglooWithFridges` tutorial meshed by either gives
 `igloo` its 1 layer, and the fridges 1.96 and 2.09 of their 3 (65% and 70%: warnings).
 
+## Editing patches
+
+`patch.set` changes patches of a region's mesh in `constant/<region>/polyMesh/boundary`: the
+type (`patch`, `wall`, `mappedWall`, `symmetry`, `empty`, …), the groups (`inGroups`), other
+entries (`neighbourRegion`, `neighbourPatch`, `method`, …), or the name.
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'patch.set={"type": "wall", "groups": ["wall"], "patches": [{"region": "air", "patch": "ground"}]}' \
+  --cmd 'patch.set={"name": "terrain", "patches": [{"region": "air", "patch": "ground"}]}' \
+  --cmd 'case.save={}'
+```
+
+- Only those entries change, byte for byte: the other patches, the comments, the layout. A
+  gzipped `boundary.gz` is compressed again.
+- **A new name follows the patch**: into its own `boundaryField` entry in each field file of the
+  region at the start time (an entry by group or pattern stays as it is), and into the mapped
+  patches of other regions that name it (`neighbourPatch`, `samplePatch`). A field file too big
+  to be read here keeps the old name, and the command says which (`patch.unread`).
+- The type is set as given: the [case check](checks.md) then says what the fields' conditions
+  need (a constraint type such as `empty` or `symmetry` wants the same condition type).
+- A decomposed case keeps the old patches in its `processor*` directories until it is
+  decomposed again; the command warns (`patch.decomposed`).
+- The meshing dictionaries are not changed: meshing again makes the patches as they say.
+- One step in the undo history, written by `case.save` after a backup.
+
 ## Tested on
 
 Every region of six projects, from 25,000 to 16 million cells, reads and passes these checks:

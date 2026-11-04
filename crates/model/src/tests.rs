@@ -946,3 +946,56 @@ fn an_undo_never_writes_an_original_older_than_an_outside_change() {
     back.save(&mut fs, None).unwrap();
     assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), outside.as_bytes());
 }
+
+#[test]
+fn a_patch_is_retyped_regrouped_and_renamed_everywhere_it_is_named() {
+    let street = "1\n(\n    street_to_air\n    {\n        type            mappedWall;\n        inGroups        List<word> 1(wall);\n        nFaces          4;\n        startFace       10;\n        neighbourRegion air;\n        neighbourPatch  ground;\n    }\n)\n";
+    let fs =
+        case().with("constant/street/polyMesh/boundary", format!("{}{street}", header("polyBoundaryMesh", "boundary")));
+    let mut c = Case::open(&fs).unwrap();
+    let before = String::from_utf8(fs.read("constant/air/polyMesh/boundary", 1 << 20).unwrap().unwrap()).unwrap();
+    // Type and groups.
+    let report = c
+        .set_patch(
+            &fs,
+            "air",
+            "top",
+            &PatchChange { kind: Some("symmetry"), groups: Some(&["sky"]), ..Default::default() },
+        )
+        .unwrap();
+    assert_eq!(report, PatchReport::default());
+    let top = c.region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "top").cloned().unwrap();
+    assert_eq!((top.kind.as_str(), top.groups.as_slice()), ("symmetry", &["sky".to_string()][..]));
+    let after = String::from_utf8(c.file(&fs, "constant/air/polyMesh/boundary").unwrap().unwrap().to_vec()).unwrap();
+    let head = before.split("    top").next().unwrap();
+    assert!(after.starts_with(head), "{after}");
+    // A new name, in the mesh, the field files and the street's mapped patch.
+    let report =
+        c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
+    assert_eq!(report.fields, ["0/air/T"]);
+    assert_eq!(report.partners, ["street/street_to_air"]);
+    let air = c.region("air").unwrap();
+    assert!(air.patches.as_ref().unwrap().iter().any(|p| p.name == "terrain"));
+    assert!(air.field("T").unwrap().bcs.as_ref().unwrap().iter().any(|b| b.patch == "terrain"));
+    let st = c.region("street").unwrap().patches.as_ref().unwrap().first().cloned().unwrap();
+    assert!(st.params.iter().any(|(k, v)| k == "neighbourPatch" && v == "terrain"), "{:?}", st.params);
+    let mut changed = c.changed();
+    changed.sort();
+    assert_eq!(changed, ["0/air/T", "constant/air/polyMesh/boundary", "constant/street/polyMesh/boundary"]);
+    // What can't be done says why.
+    let e = |r: Result<PatchReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("terrain"), ..Default::default() }))
+            .contains("already")
+    );
+    assert!(e(c.set_patch(&fs, "air", "nowhere", &PatchChange::default())).contains("no patch"));
+    assert!(
+        e(c.set_patch(
+            &fs,
+            "street",
+            "street_to_air",
+            &PatchChange { kind: Some("__umcfListA0"), ..Default::default() }
+        ))
+        .contains("can't be written")
+    );
+}

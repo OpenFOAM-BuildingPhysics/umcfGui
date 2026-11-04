@@ -355,6 +355,37 @@ fn entry_list(doc: &Document) -> Vec<&Node> {
         .collect()
 }
 
+/// The name token and the dictionary of patch `name` in a `boundary` file's document, to edit.
+pub fn boundary_patch_mut<'a>(
+    doc: &'a mut Document,
+    name: &str,
+) -> Option<(&'a mut umcf_foam_dict::Tok, &'a mut umcf_foam_dict::Dict)> {
+    use umcf_foam_dict::Item;
+    for item in &mut doc.root.items {
+        let list = match item {
+            Item::Value(n @ Node::List { .. }) => n,
+            Item::Entry(e) => match e.value.as_mut_slice() {
+                [n @ Node::List { .. }] => n,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let Node::List { items, .. } = list else { continue };
+        let at = items.windows(2).position(|w| matches!(w, [Node::Atom(t), Node::Dict { .. }] if t.text == name));
+        if let Some(i) = at
+            && let [Node::Atom(t), Node::Dict { body, .. }, ..] = items.get_mut(i..).unwrap_or_default()
+        {
+            return Some((t, body));
+        }
+    }
+    None
+}
+
+/// The patches of a `boundary` file's bytes, as [`read_boundary`] reads them.
+pub fn parse_boundary_bytes(bytes: &[u8]) -> Result<Vec<Patch>> {
+    parse_boundary(bytes)
+}
+
 fn named_dicts(doc: &Document) -> Vec<(&str, &umcf_foam_dict::Dict)> {
     let mut out = Vec::new();
     for list in entry_list(doc) {

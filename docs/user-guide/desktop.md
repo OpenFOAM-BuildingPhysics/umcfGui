@@ -59,6 +59,14 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search.
 
+## Patches
+
+*Edit patch* (on the *Mesh* and *Boundary conditions* tabs) opens a card for the selected
+patches, filled from the first: the name (one patch at a time), the type, typed or picked from the
+suggestions under it, the groups, other entries (`neighbourRegion air`), and what each patch is
+now. *Set* sends only what was changed, as [`patch.set`](meshes.md#editing-patches): a renamed
+patch stays selected, and its field files follow.
+
 ## Boundary conditions
 
 Select the patches in the view or the browser (Ctrl+click adds one), then *Set condition* on the

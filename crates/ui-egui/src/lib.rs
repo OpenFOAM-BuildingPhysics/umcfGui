@@ -38,6 +38,7 @@ use umcf_render::camera::{Camera, View};
 
 pub mod bc;
 pub mod icons;
+pub mod patch;
 pub mod ribbon;
 pub mod theme;
 pub mod viewport;
@@ -89,6 +90,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// The boundary-condition card, while it is open.
     pub bc: Option<bc::BcForm>,
+    /// The patch card, while it is open.
+    pub patch_form: Option<patch::PatchForm>,
     /// Commands that ran, newest last (at most [`LOG`]).
     pub log: Vec<Entry>,
     /// The results card is open (it opens when a command reports diagnostics).
@@ -208,6 +211,7 @@ impl App {
             search_open: false,
             dialog: None,
             bc: None,
+            patch_form: None,
             log: Vec::new(),
             results_open: false,
             expanded: BTreeSet::new(),
@@ -385,13 +389,21 @@ impl App {
         // Setting a condition has a form of its own.
         if id == "bc.set" {
             self.dialog = None;
+            self.patch_form = None;
             self.bc = Some(bc::BcForm::default());
+            return;
+        }
+        if id == "patch.set" {
+            self.dialog = None;
+            self.bc = None;
+            self.patch_form = Some(patch::PatchForm::default());
             return;
         }
         if takes_none(spec) {
             let _ = self.run(id, json!({}));
         } else {
             self.bc = None;
+            self.patch_form = None;
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
         }
     }
@@ -485,6 +497,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.dialog = None;
             self.bc = None;
+            self.patch_form = None;
             self.results_open = false;
             self.workspace_menu = false;
             self.search.clear();
@@ -1275,10 +1288,14 @@ impl App {
             .fixed_pos(pos2(canvas.right() - t.gap, canvas.top() + t.gap + 112.0));
         let mut set_bc = false;
         let mut close_bc = false;
+        let (mut set_patch, mut close_patch) = (false, false);
         area.show(ctx, |ui| {
             ui.set_width(width + 16.0);
             if self.bc.is_some() {
                 (set_bc, close_bc) = self.bc_card(ui, width, room);
+                ui.add_space(t.gap);
+            } else if self.patch_form.is_some() {
+                (set_patch, close_patch) = self.patch_card(ui, width, room);
                 ui.add_space(t.gap);
             } else if let Some(d) = &mut self.dialog
                 && let Some(spec) = Session::command(d.id)
@@ -1391,6 +1408,11 @@ impl App {
             self.bc = None;
         } else if set_bc {
             self.set_bc();
+        }
+        if close_patch {
+            self.patch_form = None;
+        } else if set_patch {
+            self.set_patch();
         }
         if close_results {
             self.results_open = false;

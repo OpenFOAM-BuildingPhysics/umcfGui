@@ -132,14 +132,23 @@ const SETUP: &[Tab] = &[
     Tab {
         name: "Mesh",
         menu: "Mesh",
-        groups: &[Group { name: "Quality", items: &[Item::Command("mesh.check", "Check mesh", Icon::MeshCheck)] }],
+        groups: &[
+            Group { name: "Quality", items: &[Item::Command("mesh.check", "Check mesh", Icon::MeshCheck)] },
+            Group { name: "Patches", items: &[Item::Command("patch.set", "Edit patch", Icon::Patch)] },
+        ],
         note: Some("Meshing set-up (blockMesh, snappyHexMesh) comes here"),
     },
     Tab {
         name: "Boundary conditions",
         menu: "Boundary conditions",
         groups: &[
-            Group { name: "Conditions", items: &[Item::Command("bc.set", "Set condition", Icon::Condition)] },
+            Group {
+                name: "Conditions",
+                items: &[
+                    Item::Command("patch.set", "Edit patch", Icon::Patch),
+                    Item::Command("bc.set", "Set condition", Icon::Condition),
+                ],
+            },
             Group { name: "Selection", items: &[Item::Command("select.clear", "Select none", Icon::SelectNone)] },
         ],
         note: Some("Pick patches in the view (Ctrl+click for more), then set their condition"),

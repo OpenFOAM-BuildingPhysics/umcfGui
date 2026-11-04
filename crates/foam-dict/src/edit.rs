@@ -126,7 +126,7 @@ fn push(dict: &mut Dict, entry: Entry) {
 
 /// Keys that read back as something else unless quoted: white space and punctuation, and a
 /// leading `(`, which would start a list (a pattern key such as `"(U|k)"`).
-fn needs_quotes(key: &str) -> bool {
+pub(crate) fn needs_quotes(key: &str) -> bool {
     key.is_empty()
         || key.starts_with('(')
         || key.bytes().any(|b| b.is_ascii_whitespace() || matches!(b, b'{' | b'}' | b';' | b'"' | b'[' | b']'))

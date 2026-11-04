@@ -204,7 +204,7 @@ fn uniform_components(text: &str) -> Option<usize> {
 }
 
 /// A value: a number or a list of numbers is `uniform`, text is OpenFOAM text as given.
-fn value_text(id: &str, v: &Value) -> Result<String, Error> {
+pub(super) fn value_text(id: &str, v: &Value) -> Result<String, Error> {
     let numbers = v.as_array().is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_number));
     let text = foam_text(id, v)?;
     if v.is_number() || numbers {

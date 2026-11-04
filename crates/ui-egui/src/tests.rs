@@ -618,3 +618,46 @@ fn the_condition_card_reads_its_entries() {
     assert!(bad.params().unwrap_err().contains("key value"));
     assert!(crate::bc::BcForm { kind: " ".into(), ..form }.params().is_err());
 }
+
+#[test]
+fn a_patch_is_edited_from_its_card() {
+    let mut app = app();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    let mut h = harness(app);
+    h.get_by_role_and_label(egui::Role::Tab, "Mesh").click();
+    h.run();
+    h.get_by_label("Edit patch").click();
+    h.run();
+    // Filled from the patch.
+    let f = h.state().patch_form.clone().unwrap();
+    assert_eq!((f.name.as_str(), f.kind.as_str()), ("sky", "wall"));
+    h.get_by_label("symmetry").click();
+    h.run();
+    type_into(&mut h, egui::Role::TextInput, "Name", "Top");
+    h.get_by_label("Set").click();
+    h.run();
+    assert!(h.state().patch_form.is_none(), "{:?}", h.state().patch_form);
+    let case = h.state().session().case().unwrap();
+    let p = case.region("").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "skyTop").cloned().unwrap();
+    assert_eq!(p.kind, "symmetry");
+    assert_eq!(h.state().log.last().unwrap().command, "patch.set");
+}
+
+#[test]
+fn the_patch_card_sends_only_what_changed() {
+    let form = crate::patch::PatchForm {
+        name: "top".into(),
+        kind: "wall".into(),
+        groups: "wall  sky".into(),
+        filled: ("top".into(), "wall".into(), "wall sky".into()),
+        ..Default::default()
+    };
+    assert!(form.params(true).unwrap_err().contains("Nothing changed"));
+    let typed = crate::patch::PatchForm { kind: "patch".into(), more: "neighbourRegion air".into(), ..form.clone() };
+    assert_eq!(typed.params(true).unwrap(), json!({ "type": "patch", "entries": { "neighbourRegion": "air" } }));
+    // A name is sent for one patch only.
+    let renamed = crate::patch::PatchForm { name: "roof".into(), ..form.clone() };
+    assert_eq!(renamed.params(true).unwrap(), json!({ "name": "roof" }));
+    assert!(renamed.params(false).is_err());
+    assert!(crate::patch::PatchForm { kind: " ".into(), ..form }.params(true).is_err());
+}

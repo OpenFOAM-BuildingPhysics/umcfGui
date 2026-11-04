@@ -140,8 +140,17 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             "{id}: nothing to show: the case has no mesh and no STL surface in {SURFACE_DIR}"
         )));
     }
+    // The files the scene is drawn from that commands may have put: the surfaces, and the
+    // meshes' patch lists (a patch renamed or retyped).
+    let boundaries: Vec<String> = regions
+        .iter()
+        .flat_map(|r| {
+            let b = format!("{}/boundary", mesh_dir(r));
+            [format!("{b}.gz"), b]
+        })
+        .collect();
     let versions: Vec<(String, Option<Arc<Vec<u8>>>)> =
-        surfaces.iter().map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
+        surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
     let reload = p.bool("reload")?.unwrap_or(false);
     let same = |c: &Cached| {
         c.opens == s.opens
@@ -159,10 +168,18 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     if reload || !s.scene.as_ref().is_some_and(same) {
         let mut meshes = Vec::new();
         for r in &regions {
-            let mesh = PolyMesh::read(fs, &mesh_dir(r), &Limits::default()).map_err(|e| {
+            let mut mesh = PolyMesh::read(fs, &mesh_dir(r), &Limits::default()).map_err(|e| {
                 let which = if r.is_empty() { String::new() } else { format!(" of region {r}") };
                 Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
             })?;
+            // The patches as the case has them (renamed or retyped and not saved yet), when
+            // they are the same faces.
+            if let Some(patches) = case.region(r).and_then(|x| x.patches.as_ref())
+                && patches.len() == mesh.boundary.len()
+                && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
+            {
+                mesh.boundary = patches.clone();
+            }
             meshes.push((r, mesh));
         }
         let mut stls = Vec::new();
