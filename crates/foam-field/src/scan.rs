@@ -12,7 +12,7 @@ use crate::{Arch, Error, Kind, Limits, ListData};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Tag(String);
 
-const STEM: &[u8] = b"__umcfList";
+const STEM: &[u8] = crate::PLACEHOLDER.as_bytes();
 
 impl Tag {
     /// The suffix is as short as can be unused: `L` letters with 26^L above the number of

@@ -64,16 +64,32 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
     }
     // What the case check says now about these patches' conditions.
-    let found: Vec<Value> = umcf_validate::check(&o.case)
-        .iter()
-        .filter(|d| {
-            d.field.as_deref() == Some(field)
-                && d.patch
-                    .as_deref()
-                    .is_some_and(|x| patches.iter().any(|(r, p)| p == x && d.region.as_deref().unwrap_or("") == r))
-        })
-        .map(diagnostic)
-        .collect();
+    let mut found: Vec<Value> = Vec::new();
+    // Entries the file brings in from elsewhere can still override the ones set here.
+    for region in by_region.keys() {
+        if let Some(f) = o.case.region(region).and_then(|r| r.field(field)).filter(|f| f.indirect) {
+            found.push(json!({
+                "level": "warning",
+                "code": "bc.indirect",
+                "path": f.path,
+                "region": region,
+                "patch": null,
+                "field": field,
+                "message": "boundaryField also takes entries from an #include or a $macro: one of them may set these patches after the entries set here",
+            }));
+        }
+    }
+    found.extend(
+        umcf_validate::check(&o.case)
+            .iter()
+            .filter(|d| {
+                d.field.as_deref() == Some(field)
+                    && d.patch
+                        .as_deref()
+                        .is_some_and(|x| patches.iter().any(|(r, p)| p == x && d.region.as_deref().unwrap_or("") == r))
+            })
+            .map(diagnostic),
+    );
     let names: Vec<String> = patches
         .iter()
         .map(|(r, p)| if r.is_empty() || by_region.len() == 1 { p.clone() } else { format!("{r}/{p}") })
@@ -103,7 +119,12 @@ fn value_text(id: &str, v: &Value) -> Result<String, Error> {
     let bad = || Error::Params(format!("{id}: `{text}` is not one OpenFOAM value"));
     doc.set(&["x"], &text).map_err(|_| bad())?;
     let back = umcf_foam_dict::Document::parse(&doc.to_string()).map_err(|_| bad())?;
-    if back.root.entries().count() != 1 || !back.root.problems().is_empty() || text.contains("__umcfList") {
+    // A comment would swallow what follows the value in the entry written around it.
+    if back.root.entries().count() != 1
+        || !back.root.problems().is_empty()
+        || text.contains("//")
+        || text.contains("/*")
+    {
         return Err(bad());
     }
     Ok(text)

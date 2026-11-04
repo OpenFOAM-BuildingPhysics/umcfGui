@@ -391,6 +391,7 @@ impl App {
         if takes_none(spec) {
             let _ = self.run(id, json!({}));
         } else {
+            self.bc = None;
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
         }
     }

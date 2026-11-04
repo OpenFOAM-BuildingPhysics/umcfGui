@@ -738,3 +738,45 @@ fn the_same_type_keeps_its_entry() {
     let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
     assert!(!text.contains("#include") && text.contains("type            fixedValue;"), "{text}");
 }
+
+#[test]
+fn undo_past_a_saved_condition_writes_the_original_back() {
+    let mut fs = case();
+    let original = fs.read("0/air/T", 1 << 20).unwrap().unwrap();
+    let before = Case::open(&fs).unwrap();
+    let mut c = before.clone();
+    c.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    assert_eq!(c.save(&mut fs, None).unwrap(), ["0/air/T"]);
+    // The case from before the edit (what an undo puts back) is not what is on disk now.
+    let mut undone = before;
+    assert_eq!(undone.changed(), ["0/air/T"]);
+    assert_eq!(undone.file(&fs, "0/air/T").unwrap().unwrap().as_slice(), original.as_slice());
+    assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
+    assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), original);
+    assert!(undone.changed().is_empty());
+    // And the edited case is now the one with a change to save.
+    assert_eq!(c.changed(), ["0/air/T"]);
+    // An edit from the undone case starts from the original, not from what was saved.
+    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    let text = String::from_utf8(undone.file(&fs, "0/air/T").unwrap().unwrap().to_vec()).unwrap();
+    assert!(!text.contains("uniform 1"), "{text}");
+}
+
+#[test]
+fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
+    let fs = case().with(
+        "0/air/U",
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    ground\n    {{\n        $inletCommon\n    }}\n    top {{ type fixedValue; value nonuniform List<vector> 2((1 0 0) (2 0 0)); }}\n}}\n",
+            header("volVectorField", "U")
+        ),
+    );
+    let mut c = Case::open(&fs).unwrap();
+    c.set_bc(&fs, "air", "U", &["ground"], "fixedValue", &[("value", "uniform (1 0 0)")]).unwrap();
+    let text = String::from_utf8(c.file(&fs, "0/air/U").unwrap().unwrap().to_vec()).unwrap();
+    assert!(text.contains("$inletCommon") && text.contains("type") && text.contains("uniform (1 0 0)"), "{text}");
+    for (kind, k) in [("__umcfListA0", "value"), ("fixedValue", "__umcfListA0")] {
+        let e = c.set_bc(&fs, "air", "U", &["top"], kind, &[(k, "uniform (0 0 0)")]).unwrap_err().to_string();
+        assert!(e.contains("can't be written"), "{e}");
+    }
+}

@@ -49,16 +49,22 @@ umcf-cli run --case my-case \
 ```
 
 - A patch whose own entry has that type already **keeps its entry**: the value and entries given
-  are set in it, and its other keys, comments and `#include`s stay. Otherwise the patch gets a new
-  entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
+  are set in it, and its other keys, comments and `#include`s stay. So does an entry whose type
+  comes from an `#include` or a `$macro` in it: the type and entries are set after what it brings
+  in. Otherwise the patch gets a new entry, `{ type …; <entries>; value …; }`, in place of its own one, or after the others when it
   had none (a condition from a group or a pattern then still applies to the other patches).
 - **Nothing else in the file changes, byte for byte**: not the other entries, the comments, the
   layout nor the data lists, ASCII or binary; a `.gz` file is compressed again. A file that
   wouldn't come back unchanged without an edit is refused rather than rewritten. Every field
   file of the test projects comes back byte for byte.
+- When `boundaryField` itself takes entries from an `#include` or a `$macro`, the command warns
+  (`bc.indirect`): one of them may set the same patches after the entries set here.
 - A field whose `boundaryField` comes from elsewhere (`boundaryField $common;`, an `#include`)
   is not edited: the condition is in that other file.
-- The edit is one step in the undo history, and is written by `case.save` after a backup.
+- The edit is one step in the undo history, and is written by `case.save` after a backup. An
+  undo after the save is a change to save again: saving writes the file as it was.
+- Text OpenFOAM reads as a list's data while the file is edited (`__umcfList…`) and comments in
+  a value are refused.
 - The command returns the [case check](checks.md)'s findings for those patches and that field: a
   type the solver doesn't have for the case's OpenFOAM version, or a constraint patch (`empty`,
   `cyclic`) given another type.

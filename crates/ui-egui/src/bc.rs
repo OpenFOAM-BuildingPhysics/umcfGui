@@ -25,8 +25,12 @@ pub struct BcForm {
     /// Other entries, one `key value` per line.
     pub more: String,
     pub error: Option<String>,
-    /// The field the type and value were filled in for, from the first patch's condition.
-    pub(crate) filled_for: Option<String>,
+    /// The field and patches the type and value were filled in for, from the first patch's
+    /// condition.
+    pub(crate) filled_for: Option<(String, Vec<(String, String)>)>,
+    /// The value filled in: sent only when it was changed, so a patch keeping its entry keeps
+    /// its own value.
+    pub(crate) filled_value: String,
 }
 
 impl BcForm {
@@ -42,7 +46,7 @@ impl BcForm {
         let mut p = Map::new();
         p.insert("field".into(), json!(self.field));
         p.insert("type".into(), json!(kind));
-        if !self.value.trim().is_empty() {
+        if !self.value.trim().is_empty() && self.value != self.filled_value {
             p.insert("value".into(), json!(self.value.trim()));
         }
         let mut entries = Map::new();
@@ -99,9 +103,8 @@ pub fn current<'a>(session: &'a Session, region: &str, patch: &str, field: &str)
     let r = session.case()?.region(region)?;
     let groups = r.patches.as_ref()?.iter().find(|p| p.name == patch).map(|p| p.groups.as_slice()).unwrap_or(&[]);
     let bcs = r.field(field)?.bcs.as_ref()?;
-    bcs.iter()
-        .find(|b| !b.pattern && b.patch == patch)
-        .or_else(|| bcs.iter().find(|b| !b.pattern && groups.contains(&b.patch)))
+    // A quoted key that is the name itself (`"inlet"`) is the patch's own entry too.
+    bcs.iter().find(|b| b.patch == patch).or_else(|| bcs.iter().find(|b| !b.pattern && groups.contains(&b.patch)))
 }
 
 /// The short text of a condition: its type and value.
@@ -127,12 +130,14 @@ impl App {
             form.field = fields.first().map(|(f, _)| f.clone()).unwrap_or_default();
         }
         // Start from what the first patch has.
-        if form.filled_for.as_deref() != Some(form.field.as_str()) {
+        let key = (form.field.clone(), patches.clone());
+        if form.filled_for.as_ref() != Some(&key) {
             let b = patches.first().and_then(|(r, p)| current(&self.session, r, p, &form.field));
             form.kind = b.and_then(|b| b.kind.clone()).unwrap_or_default();
             form.value = b.and_then(|b| b.value.clone()).filter(|v| !v.starts_with("nonuniform")).unwrap_or_default();
             form.more.clear();
-            form.filled_for = Some(form.field.clone());
+            form.filled_value = form.value.clone();
+            form.filled_for = Some(key);
         }
         let class = fields.iter().find(|(f, _)| *f == form.field).map(|(_, c)| c.clone()).unwrap_or_default();
         let muted = Ink { line: t.text_muted, fill: t.accent };

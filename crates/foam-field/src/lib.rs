@@ -398,6 +398,10 @@ impl Field {
     }
 }
 
+/// The text every placeholder of a list starts with while a file is edited: an edit must not
+/// write it (see [`rewrite`]).
+pub const PLACEHOLDER: &str = "__umcfList";
+
 /// Rewrites a field file with `edit` applied to its dictionary (a boundary condition changed,
 /// say), keeping every byte the edit doesn't touch: the lists go back exactly as they were
 /// (ASCII or binary), and a gzip file is compressed again. A file that wouldn't come back

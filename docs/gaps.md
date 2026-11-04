@@ -7,8 +7,11 @@ in the same pull request that closes it.
 
 | # | Gap | Why it matters | Where |
 |---|---|---|---|
-| 1 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces where they must be, inconsistent normals where the inside matters, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
-| 2 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
+| 1 | Patches of an existing mesh: change a patch's type (`patch`, `wall`, `symmetry`, `empty`, …), rename it (in every field file too) and set its groups (`patch.set`); new patches from picked faces, a box or an STL region, through OpenFOAM's `topoSet` and `createPatch` (`patch.create`) | Real cases need their patches split and typed before conditions can be set; today that is hand-written dictionaries and utilities | `model`, `engine`, `ui-egui` |
+| 2 | Patches of a new case on its STL surfaces: name and type the patches snappyHexMesh and blockMesh make from the surfaces' regions and the background box | A new case comes out of meshing with the right patches | `model`, `validate`, `ui-egui` |
+| 3 | Reset the mesh and mesh again (`mesh.reset`): put back the case's meshing state (no `polyMesh`, no meshing results) and run the meshing steps of the workflow again | After a change to the geometry or the patches the mesh is out of date | `model`, `runner`, `engine` |
+| 4 | Meshing set-up: typed `blockMeshDict` / `snappyHexMeshDict` / `surfaceFeaturesDict`, checks before running (inside point in the fluid, closed surfaces where they must be, inconsistent normals where the inside matters, background box covers the geometry) | Creating cases from geometry, not only editing existing ones | `model`, `validate` |
+| 5 | `run.export` (the workflow's scripts as a command), batch job scripts (SLURM/PBS), and the optional local runner | `Allprepare`/`Allrun`/`Allclean` are written from the workflow only by a development example (`cargo run -p umcf-model --example workflow`); the job wrappers and running them are not there | `model`, `runner`, `engine` |
 
 ## Known limits
 

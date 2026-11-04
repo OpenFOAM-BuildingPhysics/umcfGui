@@ -913,6 +913,8 @@ fn boundary_conditions_refuse_what_would_break_the_file() {
         json!({"field": "T", "type": "a;b", "patches": p}),
         json!({"field": "T", "type": "fixedValue", "value": "uniform 1; type zeroGradient", "patches": p}),
         json!({"field": "T", "type": "fixedValue", "value": "{ x 1; }; y", "patches": p}),
+        json!({"field": "T", "type": "fixedValue", "value": "uniform 1 // note", "patches": p}),
+        json!({"field": "T", "type": "__umcfListA0", "patches": p}),
         json!({"field": "T", "type": "fixedValue", "entries": {"type": "x"}, "patches": p}),
         json!({"field": "T", "type": "fixedValue", "patches": [{"region": "air", "patch": "nowhere"}]}),
         json!({"field": "T", "type": "fixedValue", "patches": [{"region": "street", "patch": "inlet"}]}),
@@ -932,4 +934,20 @@ fn boundary_condition_types_offered() {
     assert!(scalar.contains(&"compressible::CFDHAMfluidTemperatureCoupledMixed"), "{scalar:?}");
     let vector = s.bc_types("volVectorField");
     assert!(vector.contains(&"noSlip") && !vector.contains(&"compressible::CFDHAMfluidTemperatureCoupledMixed"));
+}
+
+#[test]
+fn undoing_a_saved_condition_is_a_change_to_save() {
+    let mut s = session();
+    let original = text(&s, "0/air/T");
+    let p = json!([{"region": "air", "patch": "inlet"}]);
+    s.execute("bc.set", &json!({"field": "T", "type": "zeroGradient", "patches": p})).unwrap();
+    s.execute("case.save", &json!({})).unwrap();
+    assert_ne!(text(&s, "0/air/T"), original);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.case().unwrap().changed(), ["0/air/T"]);
+    assert_eq!(bc_of(&s, "T", "inlet"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
+    s.execute("case.save", &json!({})).unwrap();
+    assert_eq!(text(&s, "0/air/T"), original);
+    assert!(s.case().unwrap().changed().is_empty());
 }
