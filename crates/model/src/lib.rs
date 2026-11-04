@@ -195,10 +195,10 @@ struct DiskState {
     /// Files that are not dictionaries, written through [`Case::put_file`]: as this session
     /// last saved them.
     raw: BTreeMap<String, Option<Fingerprint>>,
-    /// Files that are not dictionaries, as they were on disk before this session first saved a
-    /// command's version of them (`None`: there was none). A case from before that command (an
-    /// undo snapshot) has them so, even after the save.
-    originals: BTreeMap<String, Option<Arc<Vec<u8>>>>,
+    /// Files that are not dictionaries, as they were on disk when this session first saved a
+    /// command's version of them. A case from before that command (an undo snapshot) has them
+    /// so, even after the save.
+    originals: BTreeMap<String, Original>,
     /// `(backup dir, file)` pairs already backed up: a file is backed up once per session.
     backed_up: std::collections::BTreeSet<(String, String)>,
 }
@@ -218,6 +218,14 @@ struct RawFile {
     /// The file on disk this one was made from (`None`: there was none). Saving over that file,
     /// or over what this session last saved there, is not a conflict.
     base: Option<Fingerprint>,
+}
+
+/// A file as it was before this session's first save over it.
+#[derive(Debug, Clone)]
+struct Original {
+    /// `None`: there was no file.
+    bytes: Option<Arc<Vec<u8>>>,
+    fingerprint: Option<Fingerprint>,
 }
 
 /// What [`Case::save`] writes for one file.
@@ -626,8 +634,8 @@ impl Case {
         // Files a command put that this case doesn't have (it is from before that command):
         // changed when a save wrote the command's version over the original.
         out.extend(disk.originals.iter().filter(|(rel, _)| !self.raw.contains_key(rel.as_str())).filter_map(
-            |(rel, original)| match (original, disk.raw.get(rel.as_str()).copied().flatten()) {
-                (Some(o), Some(saved)) if fingerprint(o) != saved => Some(rel.as_str()),
+            |(rel, o)| match (&o.bytes, disk.raw.get(rel.as_str()).copied().flatten()) {
+                (Some(_), Some(saved)) if o.fingerprint != Some(saved) => Some(rel.as_str()),
                 _ => None,
             },
         ));
@@ -643,7 +651,7 @@ impl Case {
             return Ok(Some(Arc::clone(&f.bytes)));
         }
         // From before a command whose version was saved: as it was then.
-        if let Some(original) = self.saved_over(rel) {
+        if let Some((original, _)) = self.saved_over(rel) {
             return Ok(Some(original));
         }
         Ok(fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new))
@@ -656,28 +664,20 @@ impl Case {
         self.raw.get(rel).map(|f| &f.bytes)
     }
 
-    /// The bytes a file had before this session saved a command's version over it, when this
-    /// case doesn't hold a version (it is from before that command) and there was a file.
-    fn saved_over(&self, rel: &str) -> Option<Arc<Vec<u8>>> {
+    /// The file as it was before this session saved a command's version over it, when this
+    /// case doesn't hold a version (it is from before that command), there was a file, and the
+    /// disk still has the command's version.
+    fn saved_over(&self, rel: &str) -> Option<(Arc<Vec<u8>>, Fingerprint)> {
         if self.raw.contains_key(rel) {
             return None;
         }
         let disk = lock(&self.disk);
-        disk.raw.get(rel).copied().flatten()?;
-        disk.originals.get(rel).cloned().flatten()
-    }
-
-    /// The bytes a command about to put `rel` starts from, when the case holds no version: as
-    /// before this session's save of a version, or else as on disk now, read once and kept as
-    /// the original.
-    fn hold(&self, fs: &dyn CaseFs, rel: &str) -> Result<Option<Arc<Vec<u8>>>> {
-        let saved = lock(&self.disk).raw.get(rel).copied().flatten().is_some();
-        if saved {
-            return Ok(lock(&self.disk).originals.get(rel).cloned().flatten());
+        let saved = disk.raw.get(rel).copied().flatten()?;
+        let o = disk.originals.get(rel)?;
+        match (&o.bytes, o.fingerprint) {
+            (Some(b), Some(f)) if f != saved => Some((Arc::clone(b), f)),
+            _ => None,
         }
-        let now = fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new);
-        lock(&self.disk).originals.insert(rel.to_string(), now.clone());
-        Ok(now)
     }
 
     /// The files [`Case::put_file`] wrote (saved or not), by path.
@@ -690,6 +690,32 @@ impl Case {
     /// [`Case::file`] returned); the save refuses if that changed in the meantime. At most
     /// [`MAX_FILE_BYTES`].
     pub fn put_file(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
+        self.puttable(rel)?;
+        let base = match self.raw.get(rel) {
+            Some(f) => f.base,
+            None => match self.saved_over(rel) {
+                Some((_, f)) => Some(f),
+                None => fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b)),
+            },
+        };
+        self.put_based(rel, bytes, base)
+    }
+
+    /// [`Case::put_file`] with the fingerprint of the file the new bytes were made from.
+    fn put_based(&mut self, rel: &str, bytes: Vec<u8>, base: Option<Fingerprint>) -> Result<()> {
+        self.puttable(rel)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(
+                FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
+            );
+        }
+        let fingerprint = fingerprint(&bytes);
+        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
+        Ok(())
+    }
+
+    /// Whether a command may put a file at `rel`: a path inside the case, not a dictionary.
+    fn puttable(&self, rel: &str) -> Result<()> {
         let bad = rel.is_empty()
             || rel.starts_with('/')
             || rel.contains('\\')
@@ -701,17 +727,6 @@ impl Case {
         if self.files.contains_key(self.resolve(rel)) {
             return Err(Error::IsDict(rel.to_string()));
         }
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(
-                FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
-            );
-        }
-        let base = match self.raw.get(rel) {
-            Some(f) => f.base,
-            None => self.hold(fs, rel)?.as_deref().map(|b| fingerprint(b)),
-        };
-        let fingerprint = fingerprint(&bytes);
-        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
         Ok(())
     }
 
@@ -767,9 +782,14 @@ impl Case {
         body.push_str(" }");
         let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
         // Read once: the bytes edited are the ones the save will check the disk against.
-        let bytes = match self.put_bytes(&path) {
-            Some(b) => Some(Arc::clone(b)),
-            None => self.hold(fs, &path)?,
+        let (bytes, base) = match (self.raw.get(&path), self.saved_over(&path)) {
+            (Some(f), _) => (Some(Arc::clone(&f.bytes)), f.base),
+            (None, Some((b, f))) => (Some(b), Some(f)),
+            (None, None) => {
+                let b = fs.read(&path, MAX_FILE_BYTES)?.map(Arc::new);
+                let f = b.as_deref().map(|b| fingerprint(b));
+                (b, f)
+            }
         };
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
         let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
@@ -802,7 +822,7 @@ impl Case {
         .map_err(|source| Error::Field { path: path.clone(), source })?;
         let parsed = Field::parse_with(&out, &limits).map_err(|source| Error::Field { path: path.clone(), source })?;
         let summary = summarise(name, path.clone(), &parsed);
-        self.put_file(fs, &path, out)?;
+        self.put_based(&path, out, base)?;
         if let Some(f) = self.regions.get_mut(r).and_then(|r| r.fields.iter_mut().find(|f| f.path == path)) {
             *f = summary;
         }
@@ -860,7 +880,7 @@ impl Case {
                     on_disk.map(Arc::new),
                     MAX_FILE_BYTES,
                 ));
-            } else if let Some(original) = self.saved_over(&rel) {
+            } else if let Some((original, fp)) = self.saved_over(&rel) {
                 // An undo past a saved command: the original goes back.
                 let saved = lock(&self.disk).raw.get(&rel).copied().flatten();
                 let on_disk = match fs.read(&rel, MAX_FILE_BYTES) {
@@ -870,7 +890,6 @@ impl Case {
                 if on_disk.as_deref().map(fingerprint) != saved {
                     return Err(Error::Conflict { path: rel });
                 }
-                let fp = fingerprint(&original);
                 plan.push((rel, Pending::Raw(original, fp), on_disk.map(Arc::new), MAX_FILE_BYTES));
             }
         }
@@ -934,7 +953,13 @@ impl Case {
                     lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: text, doc });
                 }
                 Pending::Raw(_, fp) => {
-                    lock(&self.disk).raw.insert(rel.clone(), Some(fp));
+                    let mut disk = lock(&self.disk);
+                    // What this first save replaced, for a case from before the command.
+                    if !disk.originals.contains_key(&rel) {
+                        let fingerprint = original.as_deref().map(|b| fingerprint(b));
+                        disk.originals.insert(rel.clone(), Original { bytes: original.clone(), fingerprint });
+                    }
+                    disk.raw.insert(rel.clone(), Some(fp));
                 }
             }
             saved.push(rel);

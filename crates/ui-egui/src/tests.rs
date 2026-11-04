@@ -608,8 +608,11 @@ fn the_condition_card_reads_its_entries() {
         json!({ "field": "U", "type": "fixedValue", "value": "uniform (1 0 0)", "entries": { "inletValue": "uniform (0 0 0)", "refValue": "uniform (1 1 1)" } })
     );
     // A value as filled in from the patch isn't sent: each patch keeping its entry keeps its own.
-    let kept = crate::bc::BcForm { filled_value: "uniform (1 0 0)".into(), ..form.clone() };
+    let kept = crate::bc::BcForm { filled_value: "uniform (1 0 0)".into(), all_keep: true, ..form.clone() };
     assert!(kept.params().unwrap().get("value").is_none());
+    // A new entry (another type, or a patch without one) gets the value shown.
+    let new = crate::bc::BcForm { all_keep: false, ..kept.clone() };
+    assert_eq!(new.params().unwrap()["value"], "uniform (1 0 0)");
     let bad = crate::bc::BcForm { more: "lonely".into(), ..form.clone() };
     assert!(bad.params().unwrap_err().contains("key value"));
     assert!(crate::bc::BcForm { kind: " ".into(), ..form }.params().is_err());

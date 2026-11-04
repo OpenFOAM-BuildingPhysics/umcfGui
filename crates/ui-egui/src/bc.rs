@@ -28,9 +28,11 @@ pub struct BcForm {
     /// The field and patches the type and value were filled in for, from the first patch's
     /// condition.
     pub(crate) filled_for: Option<(String, Vec<(String, String)>)>,
-    /// The value filled in: sent only when it was changed, so a patch keeping its entry keeps
-    /// its own value.
+    /// The value filled in: not sent unchanged when every patch keeps its entry, so each keeps
+    /// its own value. A new entry always gets the value shown.
     pub(crate) filled_value: String,
+    /// Every selected patch's own entry has the type given: they are kept.
+    pub(crate) all_keep: bool,
 }
 
 impl BcForm {
@@ -46,7 +48,8 @@ impl BcForm {
         let mut p = Map::new();
         p.insert("field".into(), json!(self.field));
         p.insert("type".into(), json!(kind));
-        if !self.value.trim().is_empty() && self.value != self.filled_value {
+        let unchanged = self.all_keep && self.value == self.filled_value;
+        if !self.value.trim().is_empty() && !unchanged {
             p.insert("value".into(), json!(self.value.trim()));
         }
         let mut entries = Map::new();
@@ -226,6 +229,7 @@ impl App {
                             .is_some_and(|b| b.patch == *p && b.kind.as_deref() == Some(kind))
                     })
                     .count();
+                form.all_keep = !kind.is_empty() && kept == patches.len();
                 let note = match kept {
                     _ if kind.is_empty() => None,
                     0 => Some("Each patch gets a new entry with this type.".to_string()),

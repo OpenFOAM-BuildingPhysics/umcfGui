@@ -780,3 +780,23 @@ fn an_entry_from_elsewhere_is_kept_and_placeholders_are_refused() {
         assert!(e.contains("can't be written"), "{e}");
     }
 }
+
+#[test]
+fn an_outside_change_after_the_undone_original_is_saved_back_is_seen() {
+    let mut fs = case();
+    let before = Case::open(&fs).unwrap();
+    let mut c = before.clone();
+    c.set_bc(&fs, "air", "T", &["top"], "fixedValue", &[("value", "uniform 1")]).unwrap();
+    c.save(&mut fs, None).unwrap();
+    let mut undone = before;
+    assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
+    // The disk has the original again: a change made outside now is what the case sees.
+    let outside =
+        String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().replace("uniform 300", "uniform 299");
+    fs.insert("0/air/T", outside.clone());
+    assert!(undone.changed().is_empty());
+    assert_eq!(undone.file(&fs, "0/air/T").unwrap().unwrap().as_slice(), outside.as_bytes());
+    undone.set_bc(&fs, "air", "T", &["top"], "zeroGradient", &[]).unwrap();
+    assert_eq!(undone.save(&mut fs, None).unwrap(), ["0/air/T"]);
+    assert!(String::from_utf8(fs.read("0/air/T", 1 << 20).unwrap().unwrap()).unwrap().contains("uniform 299"));
+}
