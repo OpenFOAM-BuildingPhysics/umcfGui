@@ -222,8 +222,8 @@ Run per processor once the case is decomposed, in this order:
 
 | Utility | Writes | Re-run after |
 |---|---|---|
-| `faceAgglomerate -region <rad>` (OpenFOAM) | `finalAgglom` | a mesh, patch, view factor dictionary or decomposition change |
-| `calcLAI -region air` (with trees) | `kcLAIboundary`, `divqrsw`, `LAI` | the above, the sun or irradiance tables, `LAD` |
+| `faceAgglomerate -region <rad> -dict system/<rad>/viewFactorsDict` *12* (without `-dict` it reads `system/viewFactorsDict`) | `finalAgglom` | a mesh, patch, view factor dictionary or decomposition change |
+| `calcLAI -region air` (with trees) | `kcLAIboundary`, `divqrsw` (and `LAI` with `-writeFields`) | the above, the sun or irradiance tables, `LAD` |
 | `viewFactorsGen -region <rad>` (OpenFOAM) | `F`, `globalFaceFaces`, `constructMap`, `constructMapDim`, `subMap` | a mesh, patch, view factor dictionary or decomposition change |
 | `solarRayTracingGen -region <rad>` | `sunViewCoeff`, `skyViewCoeff`, `sunskyMap`, `solarLoadFineFaces` | any of the above |
 
@@ -258,7 +258,8 @@ time base.
 | | OpenFOAM-8 | OpenFOAM-12 |
 |---|---|---|
 | region list | `constant/regionProperties` | `controlDict` `regions` and `regionSolvers` |
-| mapped patches | `sampleMode`, `sampleRegion`, `samplePatch` | `neighbourRegion`, `neighbourPatch`, `method` |
+| mapped patches (`mapped`, `mappedWall`) | `sampleMode`, `sampleRegion`, `samplePatch` | `neighbourRegion`, `neighbourPatch`; `method` optional (nearest by default) |
+| `mappedInternal` patch | – | `offsetMode normal` with `distance`, or `offsetMode direction` with `offset` |
 | mapped value condition | `mapped` | `mappedValue` |
 | mapped patch type (sky sides of the radiation region) | `mappedPatch` | `mapped` |
 | canopy patch `air_to_vegetation` | `mappedWall`, `sampleMode nearestCell` | `mappedInternal` |
