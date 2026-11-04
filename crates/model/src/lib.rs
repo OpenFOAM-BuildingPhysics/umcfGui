@@ -202,6 +202,16 @@ fn lock(disk: &Disk) -> std::sync::MutexGuard<'_, DiskState> {
     disk.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A file that is not a dictionary, as a command wrote it.
+#[derive(Debug, Clone)]
+struct RawFile {
+    bytes: Arc<Vec<u8>>,
+    fingerprint: Fingerprint,
+    /// The file on disk this one was made from (`None`: there was none). Saving over that file,
+    /// or over what this session last saved there, is not a conflict.
+    base: Option<Fingerprint>,
+}
+
 /// What [`Case::save`] writes for one file.
 enum Pending {
     Dict(Arc<Document>),
@@ -227,7 +237,7 @@ pub struct Case {
     paths: std::collections::BTreeSet<String>,
     files: BTreeMap<String, Arc<Document>>,
     /// Files that are not dictionaries, as commands wrote them.
-    raw: BTreeMap<String, (Arc<Vec<u8>>, Fingerprint)>,
+    raw: BTreeMap<String, RawFile>,
     /// Paths that are the same file as a loaded one (a symlinked dictionary): path → that one.
     aliases: BTreeMap<String, String>,
     disk: Disk,
@@ -593,7 +603,7 @@ impl Case {
         out.extend(
             self.raw
                 .iter()
-                .filter(|(rel, (_, fp))| disk.raw.get(rel.as_str()).copied().flatten() != Some(*fp))
+                .filter(|(rel, f)| disk.raw.get(rel.as_str()).copied().flatten() != Some(f.fingerprint))
                 .map(|(rel, _)| rel.as_str()),
         );
         out.sort_unstable();
@@ -604,8 +614,8 @@ impl Case {
     /// case has them, written by a command and not saved yet, or else read from `fs`. `None`
     /// when there is no such file.
     pub fn file(&self, fs: &dyn CaseFs, rel: &str) -> Result<Option<Arc<Vec<u8>>>> {
-        if let Some((bytes, _)) = self.raw.get(rel) {
-            return Ok(Some(Arc::clone(bytes)));
+        if let Some(f) = self.raw.get(rel) {
+            return Ok(Some(Arc::clone(&f.bytes)));
         }
         Ok(fs.read(rel, MAX_FILE_BYTES)?.map(Arc::new))
     }
@@ -615,9 +625,10 @@ impl Case {
         self.raw.keys().map(String::as_str)
     }
 
-    /// Sets the bytes of a file that is not a dictionary; [`Case::save`] writes it. What is on
-    /// disk at `rel` is noted the first time (the file must still be that at the save). At
-    /// most [`MAX_FILE_BYTES`].
+    /// Sets the bytes of a file that is not a dictionary; [`Case::save`] writes it. A change to
+    /// a file the case doesn't hold yet is based on what is on disk at `rel` now (what
+    /// [`Case::file`] returned); the save refuses if that changed in the meantime. At most
+    /// [`MAX_FILE_BYTES`].
     pub fn put_file(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
         let bad = rel.is_empty()
             || rel.starts_with('/')
@@ -635,12 +646,16 @@ impl Case {
                 FsError::TooLarge { path: rel.to_string(), size: bytes.len() as u64, limit: MAX_FILE_BYTES }.into()
             );
         }
-        if !lock(&self.disk).raw.contains_key(rel) {
-            let on_disk = fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b));
-            lock(&self.disk).raw.insert(rel.to_string(), on_disk);
-        }
-        let fp = fingerprint(&bytes);
-        self.raw.insert(rel.to_string(), (Arc::new(bytes), fp));
+        let base = match self.raw.get(rel) {
+            Some(f) => f.base,
+            None => {
+                let on_disk = fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b));
+                lock(&self.disk).raw.entry(rel.to_string()).or_insert(on_disk);
+                on_disk
+            }
+        };
+        let fingerprint = fingerprint(&bytes);
+        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
         Ok(())
     }
 
@@ -679,16 +694,22 @@ impl Case {
                     return Err(Error::Conflict { path: rel });
                 }
                 plan.push((rel, Pending::Dict(Arc::clone(doc)), original, limit));
-            } else if let Some((bytes, fp)) = self.raw.get(&rel) {
-                let recorded = lock(&self.disk).raw.get(&rel).copied().flatten();
+            } else if let Some(f) = self.raw.get(&rel) {
+                let saved = lock(&self.disk).raw.get(&rel).copied().flatten();
                 let on_disk = match fs.read(&rel, MAX_FILE_BYTES) {
                     Err(FsError::TooLarge { .. }) => return Err(Error::Conflict { path: rel }),
                     r => r?,
                 };
-                if on_disk.as_deref().map(fingerprint) != recorded {
+                let now = on_disk.as_deref().map(fingerprint);
+                if now != f.base && (now.is_none() || now != saved) {
                     return Err(Error::Conflict { path: rel });
                 }
-                plan.push((rel, Pending::Raw(Arc::clone(bytes), *fp), on_disk.map(Arc::new), MAX_FILE_BYTES));
+                plan.push((
+                    rel,
+                    Pending::Raw(Arc::clone(&f.bytes), f.fingerprint),
+                    on_disk.map(Arc::new),
+                    MAX_FILE_BYTES,
+                ));
             }
         }
         // 2. Backups: once per file and session (backup directory).

@@ -154,7 +154,7 @@ fn split_cap(stl: &Stl, topo: &crate::check::Topology, k: usize, remove: &[bool]
 /// What [`weld`] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Welded {
-    /// Vertices moved onto another within the tolerance.
+    /// Distinct vertices moved onto another within the tolerance.
     pub moved: usize,
     /// Triangles removed because two of their vertices became one.
     pub removed: usize,
@@ -175,9 +175,17 @@ pub fn weld(stl: &mut Stl, tolerance: f64) -> Welded {
         c.iter().all(|x| x.abs() < 1e15).then(|| c.map(|x| x as i64))
     };
     let mut grid: HashMap<[i64; 3], Vec<[f32; 3]>> = HashMap::new();
+    // Each place is decided once: every copy of a vertex goes where the first went, so the
+    // triangles that share it still do.
+    let mut decided: HashMap<[u32; 3], [f32; 3]> = HashMap::new();
+    let key = |v: [f32; 3]| v.map(|x| if x == 0.0 { 0 } else { x.to_bits() });
     let t2 = tolerance * tolerance;
     for t in &mut stl.triangles {
         for v in &mut t.vertices {
+            if let Some(q) = decided.get(&key(*v)) {
+                *v = *q;
+                continue;
+            }
             let p = Vec3::from_f32(*v);
             let Some(c) = cell(p) else { continue };
             let mut best: Option<([f32; 3], f64)> = None;
@@ -191,13 +199,17 @@ pub fn weld(stl: &mut Stl, tolerance: f64) -> Welded {
             }
             match best {
                 Some((q, _)) => {
+                    decided.insert(key(*v), q);
                     if q != *v {
                         *v = q;
                         w.moved += 1;
                     }
                 }
                 // Kept vertices are more than the tolerance apart, so a cell holds a handful.
-                None => grid.entry(c).or_default().push(*v),
+                None => {
+                    decided.insert(key(*v), *v);
+                    grid.entry(c).or_default().push(*v);
+                }
             }
         }
     }
@@ -293,10 +305,19 @@ pub fn orient(stl: &mut Stl) -> Oriented {
 }
 
 /// Multiplies every coordinate by `factor` (`0.001` for a file in millimetres). A factor that
-/// is not a positive number changes nothing and returns `false`: a negative one would mirror
-/// the surface and turn its normals inside out.
+/// is not a positive number changes nothing and returns `false` (a negative one would mirror
+/// the surface and turn its normals inside out), and so does one that would take a finite
+/// coordinate beyond what an STL file's numbers hold.
 pub fn scale(stl: &mut Stl, factor: f64) -> bool {
     if !(factor > 0.0 && factor.is_finite()) {
+        return false;
+    }
+    let overflows = stl
+        .triangles
+        .iter()
+        .flat_map(|t| t.vertices.iter().flatten())
+        .any(|x| x.is_finite() && !((f64::from(*x) * factor) as f32).is_finite());
+    if overflows {
         return false;
     }
     for t in &mut stl.triangles {

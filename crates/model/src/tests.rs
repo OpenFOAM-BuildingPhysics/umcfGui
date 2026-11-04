@@ -615,3 +615,26 @@ fn files_put_by_commands_are_saved_with_checks_and_backups() {
     }
     assert!(matches!(c.put_file(&fs, "system/controlDict", Vec::new()), Err(Error::IsDict(_))));
 }
+
+#[test]
+fn a_file_changed_on_disk_after_undo_is_the_new_base() {
+    let mut fs = case().with("constant/triSurface/box.stl", "v1");
+    let opened = Case::open(&fs).unwrap();
+    let mut c = opened.clone();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"v1 repaired".to_vec()).unwrap();
+    // Undo, then the file is exported again outside.
+    let mut c = opened.clone();
+    fs.insert("constant/triSurface/box.stl", "v2");
+    let read = c.file(&fs, "constant/triSurface/box.stl").unwrap().unwrap();
+    assert_eq!(read.as_slice(), b"v2");
+    c.put_file(&fs, "constant/triSurface/box.stl", b"v2 repaired".to_vec()).unwrap();
+    assert_eq!(c.save(&mut fs, None).unwrap(), ["constant/triSurface/box.stl"]);
+    assert_eq!(fs.read("constant/triSurface/box.stl", 100).unwrap().unwrap(), b"v2 repaired");
+    // A version made from v1 that comes back (redo) can't overwrite what changed outside.
+    let mut stale = opened.clone();
+    stale
+        .put_file(&MemFs::new().with("constant/triSurface/box.stl", "v1"), "constant/triSurface/box.stl", b"x".to_vec())
+        .unwrap();
+    fs.insert("constant/triSurface/box.stl", "v3");
+    assert!(matches!(stale.save(&mut fs, None), Err(Error::Conflict { .. })));
+}

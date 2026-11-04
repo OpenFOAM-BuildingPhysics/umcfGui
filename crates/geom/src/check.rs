@@ -52,12 +52,16 @@ pub struct Report {
     pub triangles: usize,
     /// Distinct vertices.
     pub points: usize,
-    /// The surface's regions as OpenFOAM names them, in the order of their first triangle:
-    /// the solids' names made into words (solids of the same name are one region), or
-    /// `patch<N>` for a binary file's attribute values. The first [`MAX_LISTED`].
+    /// The surface's regions as OpenFOAM names them, in its order: the solids' names made
+    /// into words, in the order they first appear (solids of the same name are one region), or
+    /// for a binary file `patch0` up to `patch<N>` for the largest attribute value N. The
+    /// first [`MAX_LISTED`].
     pub regions: Vec<String>,
     /// How many regions there are.
     pub region_count: usize,
+    /// Regions without triangles (empty solids, or attribute values no triangle has): OpenFOAM
+    /// makes each an empty patch.
+    pub empty_regions: usize,
     /// Solids whose name OpenFOAM changes (`Building 1` → `Building1`): (name, region). The
     /// first [`MAX_LISTED`].
     pub renamed: Vec<(String, String)>,
@@ -467,30 +471,48 @@ pub fn analyse(stl: &Stl) -> Report {
         inconsistent_edges: topo.inconsistent_edges,
         ..Report::default()
     };
-    // Regions, by the solid (or attribute value) of each triangle: one pass over the
-    // triangles, one name per solid.
-    let mut seen = std::collections::HashSet::new();
-    let mut names = std::collections::HashSet::new();
-    for t in &stl.triangles {
-        if !seen.insert(t.solid) {
-            continue;
-        }
-        let name = match stl.format {
-            crate::stl::Format::Ascii => {
-                let raw = stl.solids.get(t.solid as usize).map_or("", String::as_str);
-                let name = crate::stl::foam_name(raw);
-                if !raw.is_empty() && raw != name && r.renamed.len() < MAX_LISTED {
-                    r.renamed.push((raw.to_string(), name.clone()));
+    // Regions as OpenFOAM makes them (STLReader / triSurface::calcPatches).
+    match stl.format {
+        crate::stl::Format::Ascii => {
+            let mut used = vec![false; stl.solids.len()];
+            for t in &stl.triangles {
+                if let Some(u) = used.get_mut(t.solid as usize) {
+                    *u = true;
                 }
-                name
             }
-            crate::stl::Format::Binary => format!("patch{}", t.solid),
-        };
-        if names.insert(name.clone()) && r.regions.len() < MAX_LISTED {
-            r.regions.push(name);
+            // Region name → whether a triangle is in it, in order of appearance.
+            let mut index: HashMap<String, usize> = HashMap::new();
+            let mut has: Vec<bool> = Vec::new();
+            for (raw, u) in stl.solids.iter().zip(&used) {
+                let name = crate::stl::foam_name(raw);
+                if !raw.is_empty() && *raw != name && r.renamed.len() < MAX_LISTED {
+                    r.renamed.push((raw.clone(), name.clone()));
+                }
+                let k = *index.entry(name.clone()).or_insert_with(|| {
+                    has.push(false);
+                    if r.regions.len() < MAX_LISTED {
+                        r.regions.push(name);
+                    }
+                    has.len() - 1
+                });
+                if let Some(h) = has.get_mut(k) {
+                    *h |= *u;
+                }
+            }
+            r.region_count = has.len();
+            r.empty_regions = has.iter().filter(|h| !**h).count();
+        }
+        crate::stl::Format::Binary => {
+            let mut values: Vec<u32> = stl.triangles.iter().map(|t| t.solid).collect();
+            values.sort_unstable();
+            values.dedup();
+            if let Some(&max) = values.last() {
+                r.region_count = max as usize + 1;
+                r.empty_regions = r.region_count - values.len();
+                r.regions = (0..=max).take(MAX_LISTED).map(|k| format!("patch{k}")).collect();
+            }
         }
     }
-    r.region_count = names.len();
     for (k, t) in stl.triangles.iter().enumerate().take(topo.tri.len()) {
         let Ok(k32) = u32::try_from(k) else { break };
         if !t.is_finite() {

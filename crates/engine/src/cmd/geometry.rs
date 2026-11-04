@@ -20,7 +20,8 @@ use crate::{CommandSpec, Error, Outcome, Session, needs_case};
 /// Where a case's surfaces are.
 pub const SURFACE_DIR: &str = "constant/triSurface";
 
-/// The extensions OpenFOAM reads as STL (it picks the reader by extension).
+/// The extensions OpenFOAM reads as STL (it picks the reader by extension, case-sensitively:
+/// `.stlb` is always read as binary).
 const EXTENSIONS: [&str; 4] = [".stl", ".stlb", ".stl.gz", ".stlb.gz"];
 
 fn always(_: &Session) -> Result<(), String> {
@@ -28,8 +29,25 @@ fn always(_: &Session) -> Result<(), String> {
 }
 
 fn is_surface_name(name: &str) -> bool {
+    EXTENSIONS.iter().any(|e| name.len() > e.len() && name.ends_with(e))
+}
+
+/// An STL name whose extension OpenFOAM doesn't recognise only for its case (`.STL`).
+fn is_miscased(name: &str) -> bool {
+    !is_surface_name(name) && is_surface_name(&name.to_ascii_lowercase())
+}
+
+/// `name` with an STL extension in lower case (`Building.STL` → `Building.stl`).
+fn lower_extension(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
-    EXTENSIONS.iter().any(|e| lower.len() > e.len() && lower.ends_with(e))
+    match EXTENSIONS.iter().rev().find(|e| lower.ends_with(*e)) {
+        Some(e) => format!("{}{e}", name.get(..name.len() - e.len()).unwrap_or_default()),
+        None => name.to_string(),
+    }
+}
+
+fn is_stlb(rel: &str) -> bool {
+    rel.ends_with(".stlb") || rel.ends_with(".stlb.gz")
 }
 
 /// The case-relative path of surface `name` (`buildings.stl` or
@@ -43,7 +61,7 @@ fn surface_path(id: &str, name: &str) -> Result<String, Error> {
     }
     if !is_surface_name(file) {
         return Err(Error::Params(format!(
-            "{id}: `{name}` is not an STL file name (OpenFOAM reads {} as STL)",
+            "{id}: `{name}` is not an STL file name (OpenFOAM reads {}, in lower case, as STL)",
             EXTENSIONS.join(", ")
         )));
     }
@@ -92,7 +110,20 @@ fn check_bytes(file: &str, bytes: &[u8]) -> (Value, Vec<Diagnostic>) {
     match stl::read(bytes, &limits()) {
         Ok(stl) => {
             let r = analyse(&stl);
-            (report_json(file, &stl, &r), diagnostics(file, &stl, &r))
+            let mut d = diagnostics(file, &stl, &r);
+            if is_miscased(file.rsplit('/').next().unwrap_or(file)) {
+                let message = format!(
+                    "OpenFOAM doesn't know the extension (it reads only {}, in lower case): rename the file",
+                    EXTENSIONS.join(", ")
+                );
+                let code = "surface.extension";
+                let path = file.to_string();
+                d.insert(
+                    0,
+                    Diagnostic { level: Level::Error, code, path, region: None, patch: None, field: None, message },
+                );
+            }
+            (report_json(file, &stl, &r), d)
         }
         Err(e) => (json!({ "file": file, "error": e.to_string() }), vec![unreadable(file, &e.to_string())]),
     }
@@ -117,11 +148,24 @@ fn read_outside(id: &str, path: &str) -> Result<Vec<u8>, Error> {
         .ok_or_else(|| Error::Failed(format!("{path}: no such file")))
 }
 
-/// The bytes a surface is stored as under `rel`: in its own format, compressed when the name
-/// ends in `.gz`.
-fn encode(stl: &Stl, rel: &str) -> Vec<u8> {
-    let bytes = stl.to_bytes();
-    if rel.to_ascii_lowercase().ends_with(".gz") { stl::gzip(&bytes) } else { bytes }
+/// The bytes a surface is stored as under `rel`: in its own format (binary for a `.stlb`,
+/// which OpenFOAM reads as binary), compressed when the name ends in `.gz`; and how many
+/// triangles with coordinates that are not numbers were left out.
+fn encode(stl: &Stl, rel: &str) -> (Vec<u8>, usize) {
+    let dropped = stl.triangles.iter().filter(|t| !t.is_finite()).count();
+    let bytes = if is_stlb(rel) && stl.format != stl::Format::Binary {
+        let mut b = stl.clone();
+        b.format = stl::Format::Binary;
+        b.solids.clear();
+        b.to_bytes()
+    } else {
+        stl.to_bytes()
+    };
+    (if rel.ends_with(".gz") { stl::gzip(&bytes) } else { bytes }, dropped)
+}
+
+fn left_out(n: usize) -> String {
+    format!("{} with coordinates that are not numbers left out", count(n, "triangle"))
 }
 
 /// Puts `bytes` into the case as surface `rel` and checks them. `notes` replaces what reading
@@ -144,11 +188,11 @@ fn store(
 }
 
 /// The surface `rel` of the open case, as it now is.
-fn load(s: &Session, rel: &str) -> Result<(Vec<u8>, Stl), Error> {
+fn load(s: &Session, rel: &str) -> Result<(std::sync::Arc<Vec<u8>>, Stl), Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let bytes = case.file(fs, rel)?.ok_or_else(|| Error::Failed(format!("there is no surface {rel}")))?;
     let stl = stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{rel}: {e}")))?;
-    Ok((bytes.as_ref().clone(), stl))
+    Ok((bytes, stl))
 }
 
 fn result(message: String, mut data: Value, diags: &[Diagnostic]) -> Outcome {
@@ -191,6 +235,9 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 Error::Failed("no case is open (give `path` to check a file outside a case)".to_string())
             })?;
             let files = match file {
+                Some(f) if is_miscased(f.rsplit('/').next().unwrap_or(f)) => {
+                    vec![format!("{SURFACE_DIR}/{}", f.strip_prefix("constant/triSurface/").unwrap_or(f))]
+                }
                 Some(f) => vec![surface_path(CHECK.id, f)?],
                 None => {
                     let mut names: Vec<String> = match fs.list(SURFACE_DIR) {
@@ -202,7 +249,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     };
                     names.retain(|n| fs.is_file(n));
                     names.extend(case.put_paths().filter(|p| p.starts_with("constant/triSurface/")).map(String::from));
-                    names.retain(|n| n.rsplit('/').next().is_some_and(is_surface_name));
+                    names.retain(|n| n.rsplit('/').next().is_some_and(|f| is_surface_name(f) || is_miscased(f)));
                     names.sort();
                     names.dedup();
                     names
@@ -245,7 +292,8 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(IMPORT.id, p, &["path", "name", "replace", "scale"])?;
     let path = p.required_str("path")?;
     let own = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let rel = surface_path(IMPORT.id, p.str("name")?.unwrap_or(own))?;
+    // `Building.STL` comes in as `Building.stl`: OpenFOAM knows only the lower-case extension.
+    let rel = surface_path(IMPORT.id, &p.str("name")?.map_or_else(|| lower_extension(own), String::from))?;
     let replace = p.bool("replace")?.unwrap_or(false);
     let scale = p.number("scale")?;
     if scale.is_some_and(|f| f <= 0.0) {
@@ -261,22 +309,31 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let mut stl = stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{path}: {e}")))?;
     let mut why = Vec::new();
     if let Some(f) = scale {
-        repair::scale(&mut stl, f);
+        if !repair::scale(&mut stl, f) {
+            return Err(Error::Params(format!(
+                "geometry.import: scaling by {f} takes coordinates beyond what STL holds"
+            )));
+        }
         why.push(format!("scaled by {f}"));
     }
-    if stl.openfoam.is_some() {
+    let stlb = is_stlb(&rel);
+    if stl.openfoam.is_some() || (stl.header_solid && !stlb) || (stlb && stl.format != stl::Format::Binary) {
         why.push("written again, as OpenFOAM can't read it as it was".to_string());
     }
     // A compressed file under a plain name (or the other way round) is written again too.
     let gz = bytes.starts_with(&[0x1f, 0x8b]);
-    if gz != rel.to_ascii_lowercase().ends_with(".gz") {
+    if gz != rel.ends_with(".gz") {
         why.push(if gz { "decompressed".to_string() } else { "compressed".to_string() });
     }
     let (out, notes) = if why.is_empty() {
         (bytes, None)
     } else {
         let notes = std::mem::take(&mut stl.notes);
-        (encode(&stl, &rel), Some(notes))
+        let (out, dropped) = encode(&stl, &rel);
+        if dropped > 0 {
+            why.push(left_out(dropped));
+        }
+        (out, Some(notes))
     };
     let (surface, diags) = store(s, &rel, out, notes)?;
     let how = if why.is_empty() { String::new() } else { format!(" ({})", why.join(", ")) };
@@ -329,7 +386,7 @@ fn repair_cmd(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         if d.left > 0 {
             line.push_str(&format!(
-                ", {} left (on an edge of more than two triangles)",
+                ", {} left: removing them would open the surface (see the user guide)",
                 count(d.left, "triangle without area")
             ));
         }
@@ -354,8 +411,11 @@ fn repair_cmd(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             json!({ "flipped": o.flipped, "outward": o.outward, "conflicts": o.conflicts }),
         );
     }
-    let out = encode(&stl, &rel);
-    let unchanged = out == bytes;
+    let (out, dropped) = encode(&stl, &rel);
+    if dropped > 0 {
+        done.push(left_out(dropped));
+    }
+    let unchanged = out.as_slice() == bytes.as_slice();
     let (surface, diags) = store(s, &rel, out, Some(Vec::new()))?;
     data.insert("file".to_string(), json!(rel));
     data.insert("surface".to_string(), surface);
@@ -382,9 +442,16 @@ fn scale(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         p.number("factor")?.ok_or_else(|| Error::Params("geometry.scale: `factor` is required".to_string()))?;
     let (_, mut stl) = load(s, &rel)?;
     if !repair::scale(&mut stl, factor) {
-        return Err(Error::Params("geometry.scale: `factor` is a positive number".to_string()));
+        return Err(Error::Params(
+            "geometry.scale: `factor` is a positive number that keeps the coordinates within what STL holds"
+                .to_string(),
+        ));
     }
-    let (surface, diags) = store(s, &rel, encode(&stl, &rel), Some(Vec::new()))?;
-    let message = format!("{rel}: scaled by {factor}");
+    let (out, dropped) = encode(&stl, &rel);
+    let (surface, diags) = store(s, &rel, out, Some(Vec::new()))?;
+    let mut message = format!("{rel}: scaled by {factor}");
+    if dropped > 0 {
+        message.push_str(&format!("; {}", left_out(dropped)));
+    }
     Ok(result(message, json!({ "file": rel, "factor": factor, "surface": surface }), &diags))
 }

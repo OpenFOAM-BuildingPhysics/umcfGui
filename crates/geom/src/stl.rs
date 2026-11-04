@@ -93,6 +93,9 @@ pub struct Stl {
     /// Why OpenFOAM would not read the file as it is; `None` when it reads what [`read`] did.
     /// Writing the surface again ([`Stl::to_bytes`]) gives a file it reads.
     pub openfoam: Option<String>,
+    /// A binary file whose header starts with `solid`: OpenFOAM takes a `.stl` file like that
+    /// for ASCII and can't read it (a `.stlb` file it reads as binary regardless).
+    pub header_solid: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -165,31 +168,34 @@ fn read_plain(bytes: &[u8], limits: &Limits, compressed: bool) -> Result<Stl, St
     // compressed file).
     let foam = |n: u64| -> Option<String> {
         let data = len - HEADER as u64;
-        if solid {
-            Some("its header starts with `solid`, so OpenFOAM takes it for an ASCII file and can't read it".to_string())
-        } else if !compressed && (n < data / RECORD as u64 || n > data / (RECORD as u64 / 2)) {
+        if !compressed && (n < data / RECORD as u64 || n > data / (RECORD as u64 / 2)) {
             Some(format!("its header announces {n} triangles, which OpenFOAM doesn't accept for a file of {len} bytes"))
         } else {
             None
         }
     };
-    if expected == len && !(solid && is_text(bytes)) {
-        return read_binary(bytes, u64::from(n), limits, Vec::new(), foam(u64::from(n)));
+    let text = solid && is_text(bytes);
+    if expected == len && !text {
+        return read_binary(bytes, u64::from(n), limits, Vec::new(), foam(u64::from(n)), solid);
     }
-    if solid {
+    if text {
         return read_ascii(bytes, limits);
     }
+    // A binary file that doesn't fit its count (its header may start with `solid` too).
     if n == 0 && body > 0 && body.is_multiple_of(RECORD as u64) {
         let held = body / RECORD as u64;
         let note = format!("the header announces no triangles, but the file holds {held}: they were read");
-        return read_binary(bytes, held, limits, vec![note], foam(0));
+        return read_binary(bytes, held, limits, vec![note], foam(0), solid);
     }
     if expected < len && n > 0 {
         let note = format!("{} bytes after the last triangle were ignored", len - expected);
-        return read_binary(bytes, u64::from(n), limits, vec![note], foam(u64::from(n)));
+        return read_binary(bytes, u64::from(n), limits, vec![note], foam(u64::from(n)), solid);
     }
-    if expected > len && n > 0 {
+    if expected > len && n > 0 && !solid {
         return Err(StlError::Truncated { announced: u64::from(n), held: body / RECORD as u64 });
+    }
+    if solid {
+        return read_ascii(bytes, limits);
     }
     Err(StlError::NotStl)
 }
@@ -211,6 +217,7 @@ fn read_binary(
     limits: &Limits,
     notes: Vec<String>,
     openfoam: Option<String>,
+    header_solid: bool,
 ) -> Result<Stl, StlError> {
     let n = usize::try_from(n).map_err(|_| StlError::TooManyTriangles(limits.max_triangles))?;
     if n > limits.max_triangles {
@@ -234,7 +241,7 @@ fn read_binary(
             solid: u32::from(attribute),
         });
     }
-    Ok(Stl { format: Format::Binary, solids: Vec::new(), triangles, notes, openfoam })
+    Ok(Stl { format: Format::Binary, solids: Vec::new(), triangles, notes, openfoam, header_solid })
 }
 
 /// Counts of what an ASCII file had wrong.
@@ -244,6 +251,8 @@ struct Odd {
     malformed: usize,
     /// Lines starting with a word that isn't STL.
     unknown: usize,
+    /// Lines read here that OpenFOAM's reader rejects.
+    rejected: usize,
     clipped: usize,
 }
 
@@ -290,18 +299,32 @@ fn read_ascii(bytes: &[u8], limits: &Limits) -> Result<Stl, StlError> {
         let mut words = line.split_ascii_whitespace();
         let Some(word) = words.next() else { continue };
         let is = |k: &str| word.eq_ignore_ascii_case(k);
+        // OpenFOAM's lexer takes keywords in lower or upper case, not mixed.
+        if word.bytes().any(|b| b.is_ascii_lowercase()) && word.bytes().any(|b| b.is_ascii_uppercase()) {
+            odd.rejected += 1;
+        }
         if is("solid") {
             if facet.take().is_some() {
                 odd.malformed += 1;
             }
             let name = line.get(word.len()..).unwrap_or_default().trim();
+            if !name.is_ascii() {
+                odd.rejected += 1;
+            }
             current = Some(new_solid(name, &mut solids, &mut odd)?);
         } else if is("facet") {
             if facet.is_some() {
                 odd.malformed += 1;
             }
             let normal = match words.next() {
-                Some(w) if w.eq_ignore_ascii_case("normal") => floats(&mut words).unwrap_or([0.0; 3]),
+                Some(w) if w.eq_ignore_ascii_case("normal") => match floats(&mut words) {
+                    Some(n) => n,
+                    // `nan nan nan` from some exporters: OpenFOAM stops there.
+                    None => {
+                        odd.rejected += 1;
+                        [0.0; 3]
+                    }
+                },
                 _ => [0.0; 3],
             };
             facet = Some((normal, Vec::with_capacity(3), false));
@@ -311,7 +334,13 @@ fn read_ascii(bytes: &[u8], limits: &Limits) -> Result<Stl, StlError> {
                 Some(v) if f.1.len() < 3 => f.1.push(v),
                 _ => f.2 = true,
             }
+            if words.next().is_some() {
+                odd.rejected += 1;
+            }
         } else if is("endfacet") {
+            if words.next().is_some() {
+                odd.rejected += 1;
+            }
             match facet.take() {
                 Some((normal, v, false)) if v.len() == 3 => {
                     if triangles.len() >= limits.max_triangles {
@@ -348,12 +377,18 @@ fn read_ascii(bytes: &[u8], limits: &Limits) -> Result<Stl, StlError> {
     if odd.unknown > 0 {
         notes.push(format!("{} line(s) that are not STL were skipped", odd.unknown));
     }
+    if odd.rejected > 0 {
+        notes.push(format!(
+            "{} line(s) read here that OpenFOAM rejects: a facet normal that isn't three numbers (`nan`), keywords in mixed case, words after a vertex or `endfacet`, or a solid name that isn't ASCII",
+            odd.rejected
+        ));
+    }
     if odd.clipped > 0 {
         notes.push(format!("{} solid name(s) longer than {MAX_NAME} characters were cut short", odd.clipped));
     }
-    let openfoam = (odd.malformed + odd.unknown > 0)
+    let openfoam = (odd.malformed + odd.unknown + odd.rejected > 0)
         .then(|| "OpenFOAM stops with an error at the first facet or line it can't read".to_string());
-    Ok(Stl { format: Format::Ascii, solids, triangles, notes, openfoam })
+    Ok(Stl { format: Format::Ascii, solids, triangles, notes, openfoam, header_solid: false })
 }
 
 /// A number as STL text: plain where that is short, in exponent form otherwise. Either reads
@@ -382,9 +417,11 @@ fn unit_normal(t: &Triangle) -> [f32; 3] {
 }
 
 impl Stl {
-    /// Writes the surface in its own format. The facet normals are recomputed from the
-    /// winding. ASCII solids keep their names and order; the triangles of a solid that was
-    /// split in the file are written together.
+    /// Writes the surface in its own format, in a form OpenFOAM reads. The facet normals are
+    /// recomputed from the winding. ASCII solids keep their order, and their names as OpenFOAM
+    /// reads them ([`foam_name`], in ASCII); the triangles of a solid that was split in the
+    /// file are written together, and solids without triangles are written empty. Triangles
+    /// with a coordinate that is not a finite number are left out (no reader takes them).
     pub fn to_bytes(&self) -> Vec<u8> {
         match self.format {
             Format::Ascii => self.to_ascii(),
@@ -398,8 +435,17 @@ impl Stl {
         order.sort_by_key(|&k| self.triangles.get(k).map_or(0, |t| t.solid));
         let mut out = String::with_capacity(self.triangles.len().saturating_mul(260));
         let mut open: Option<u32> = None;
-        let name = |s: u32| self.solids.get(s as usize).map_or(String::new(), |n| n.clone());
-        for t in order.iter().filter_map(|&k| self.triangles.get(k)) {
+        // The name OpenFOAM reads it as, in characters its reader takes.
+        let name = |s: u32| {
+            let raw = self.solids.get(s as usize).map_or("", String::as_str);
+            let n: String = foam_name(raw).chars().filter(char::is_ascii_graphic).collect();
+            if n.is_empty() { "solid".to_string() } else { n }
+        };
+        let mut used = vec![false; self.solids.len()];
+        for t in order.iter().filter_map(|&k| self.triangles.get(k)).filter(|t| t.is_finite()) {
+            if let Some(u) = used.get_mut(t.solid as usize) {
+                *u = true;
+            }
             if open != Some(t.solid) {
                 if let Some(s) = open {
                     let _ = writeln!(out, "endsolid {}", name(s));
@@ -415,16 +461,16 @@ impl Stl {
             }
             out.push_str("    endloop\n  endfacet\n");
         }
-        match open {
-            Some(s) => {
-                let _ = writeln!(out, "endsolid {}", name(s));
-            }
-            None => {
-                // No triangles: the solids are written empty, so their names survive.
-                for n in self.solids.iter().map(String::as_str).chain(self.solids.is_empty().then_some("")) {
-                    let _ = writeln!(out, "solid {n}\nendsolid {n}");
-                }
-            }
+        if let Some(s) = open {
+            let _ = writeln!(out, "endsolid {}", name(s));
+        }
+        // Solids without triangles are regions too (empty patches): written empty.
+        for (k, _) in used.iter().enumerate().filter(|(_, u)| !**u) {
+            let n = name(u32::try_from(k).unwrap_or(u32::MAX));
+            let _ = writeln!(out, "solid {n}\nendsolid {n}");
+        }
+        if out.is_empty() {
+            out.push_str("solid solid\nendsolid solid\n");
         }
         out.into_bytes()
     }
@@ -434,9 +480,10 @@ impl Stl {
         let mut header = b"binary STL written by umcfGui".to_vec();
         header.resize(HEADER, b' ');
         out.extend_from_slice(&header);
-        let n = u32::try_from(self.triangles.len()).unwrap_or(u32::MAX);
+        let finite = self.triangles.iter().filter(|t| t.is_finite());
+        let n = u32::try_from(finite.clone().count()).unwrap_or(u32::MAX);
         out.extend_from_slice(&n.to_le_bytes());
-        for t in self.triangles.iter().take(n as usize) {
+        for t in finite.take(n as usize) {
             for x in unit_normal(t).iter().chain(t.vertices.iter().flatten()) {
                 out.extend_from_slice(&x.to_le_bytes());
             }

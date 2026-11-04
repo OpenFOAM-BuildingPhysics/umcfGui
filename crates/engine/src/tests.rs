@@ -482,7 +482,7 @@ fn cube_stl(format: umcf_geom::stl::Format, inward: bool) -> Vec<u8> {
         }
     }
     let solids = if format == umcf_geom::stl::Format::Ascii { vec!["box".to_string()] } else { Vec::new() };
-    Stl { format, solids, triangles, notes: Vec::new(), openfoam: None }.to_bytes()
+    Stl { format, solids, triangles, notes: Vec::new(), openfoam: None, header_solid: false }.to_bytes()
 }
 
 fn codes(out: &Outcome) -> Vec<String> {
@@ -598,4 +598,40 @@ fn geometry_parameters_are_checked() {
         assert!(matches!(s.execute(id, &p), Err(Error::Failed(_))), "{id} {p}");
     }
     assert!(Session::new().execute("geometry.check", &Value::Null).is_err(), "no case and no path");
+}
+
+#[test]
+fn geometry_names_follow_openfoams_extensions() {
+    use umcf_geom::stl::Format;
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-ext", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let windows = dir.join("Building.STL");
+    std::fs::write(&windows, cube_stl(Format::Ascii, false)).unwrap();
+    let mut s = session();
+    // `.STL` comes in as `.stl`, which OpenFOAM knows.
+    let out = s.execute("geometry.import", &json!({ "path": windows.to_str().unwrap() })).unwrap();
+    assert_eq!(out.data["file"], "constant/triSurface/Building.stl");
+    assert!(matches!(
+        s.execute("geometry.import", &json!({ "path": windows.to_str().unwrap(), "name": "b.STL" })),
+        Err(Error::Params(_))
+    ));
+    // An ASCII file as `.stlb` is written binary: OpenFOAM reads `.stlb` as binary.
+    let out = s.execute("geometry.import", &json!({ "path": windows.to_str().unwrap(), "name": "b.stlb" })).unwrap();
+    assert!(out.message.contains("written again"), "{}", out.message);
+    let b = s.case().unwrap().file(s.fs().unwrap(), "constant/triSurface/b.stlb").unwrap().unwrap();
+    assert_eq!(b.len(), 84 + 50 * 12);
+    // Scaling past what STL holds is refused.
+    let e = s.execute("geometry.scale", &json!({ "file": "b.stlb", "factor": 1e39 })).unwrap_err();
+    assert!(matches!(e, Error::Params(_)), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A `.STL` already in the case is reported.
+    let mut fs = fs();
+    fs.insert("constant/triSurface/Old.STL", cube_stl(Format::Ascii, false));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let out = s.execute("geometry.check", &Value::Null).unwrap();
+    assert_eq!(codes(&out), ["surface.extension", "surface.summary"]);
+    assert_eq!(codes(&s.execute("geometry.check", &json!({ "file": "Old.STL" })).unwrap())[0], "surface.extension");
 }

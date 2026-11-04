@@ -17,7 +17,14 @@ fn cube() -> Stl {
             triangles.push(Triangle { vertices: t.map(p), normal: [0.0; 3], solid: 0 });
         }
     }
-    Stl { format: Format::Ascii, solids: vec!["box".to_string()], triangles, notes: Vec::new(), openfoam: None }
+    Stl {
+        format: Format::Ascii,
+        solids: vec!["box".to_string()],
+        triangles,
+        notes: Vec::new(),
+        openfoam: None,
+        header_solid: false,
+    }
 }
 
 fn reread(stl: &Stl) -> Stl {
@@ -54,7 +61,12 @@ fn ascii_and_binary_round_trip() {
     let back = read(&bytes, &Limits::default()).unwrap();
     assert_eq!(back.format, Format::Binary);
     assert_eq!(back.triangles[3].solid, 7);
-    assert_eq!(analyse(&back).regions, vec!["patch0", "patch7"]);
+    let r = analyse(&back);
+    assert_eq!(
+        (r.regions.len(), r.region_count, r.empty_regions),
+        (8, 8, 6),
+        "patch0 to patch7, as OpenFOAM makes them"
+    );
     assert!(analyse(&back).is_clean_closed());
 }
 
@@ -67,9 +79,18 @@ fn a_binary_header_starting_with_solid_is_still_binary() {
     bytes[..11].copy_from_slice(b"solid cube ");
     let back = read(&bytes, &Limits::default()).unwrap();
     assert_eq!((back.format, back.triangles.len()), (Format::Binary, 12));
-    // OpenFOAM reads it as ASCII and fails; written again, it reads.
-    assert!(back.openfoam.as_deref().unwrap().contains("starts with `solid`"));
-    assert_eq!(read(&back.to_bytes(), &Limits::default()).unwrap().openfoam, None);
+    // OpenFOAM reads a `.stl` like that as ASCII and fails; written again, it reads.
+    assert!(back.header_solid);
+    assert!(!read(&back.to_bytes(), &Limits::default()).unwrap().header_solid);
+
+    // With a `solid` header and bytes after the triangles, or a count of 0, still binary.
+    let mut odd = bytes.clone();
+    odd.extend_from_slice(b"\n\n");
+    let back = read(&odd, &Limits::default()).unwrap();
+    assert_eq!((back.format, back.triangles.len(), back.header_solid), (Format::Binary, 12, true));
+    odd.truncate(bytes.len());
+    odd[80..84].copy_from_slice(&0u32.to_le_bytes());
+    assert_eq!(read(&odd, &Limits::default()).unwrap().triangles.len(), 12);
 
     // Bytes after the last triangle: read, with a note.
     bytes.extend_from_slice(b"junk");
@@ -128,7 +149,8 @@ fn odd_ascii_is_read_with_notes() {
     assert!(s.notes[1].starts_with("1 line(s)"), "{:?}", s.notes);
     let r = analyse(&s);
     assert_eq!(r.non_finite.triangles, vec![1]);
-    assert_eq!(r.regions, vec!["Building1", "solid"]);
+    assert_eq!(r.regions, vec!["Building1", "solid", "Roof"]);
+    assert_eq!(r.empty_regions, 1);
     assert_eq!(r.renamed, vec![("Building 1".to_string(), "Building1".to_string())]);
     let long = format!("solid {}\nendsolid\n", "n".repeat(1000));
     let s = read(long.as_bytes(), &Limits::default()).unwrap();
@@ -430,4 +452,57 @@ fn a_cap_is_removed_by_splitting_its_neighbour() {
     assert_eq!((after.degenerate.count, after.open_edges, after.inconsistent_edges), (0, open_before, 0));
     assert_eq!(s.triangles.len(), 4, "the cap is gone, the triangle above is two halves");
     assert!(s.triangles.iter().all(|t| t.cross().z > 0.0), "windings kept");
+}
+
+#[test]
+fn ascii_openfoam_rejects_is_flagged() {
+    let base = "solid a\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid a\n";
+    assert_eq!(read(base.as_bytes(), &Limits::default()).unwrap().openfoam, None);
+    for bad in [
+        base.replace("normal 0 0 1", "normal nan nan nan"),
+        base.replace("solid a\n", "Solid a\n"),
+        base.replace("vertex 0 1 0", "vertex 0 1 0 7"),
+        base.replace("solid a\n", "solid caf\u{e9}\n"),
+    ] {
+        let s = read(bad.as_bytes(), &Limits::default()).unwrap();
+        assert_eq!(s.triangles.len(), 1, "{bad}");
+        assert!(s.openfoam.is_some(), "{bad}");
+    }
+}
+
+#[test]
+fn writing_leaves_out_what_no_reader_takes() {
+    let mut c = cube();
+    c.triangles[0].vertices[0][0] = f32::INFINITY;
+    c.solids[0] = "caf\u{e9} 1".to_string();
+    c.solids.push("empty".to_string());
+    let back = reread(&c);
+    assert_eq!((back.triangles.len(), back.openfoam.as_deref()), (11, None));
+    assert_eq!(back.solids, vec!["caf1", "empty"]);
+    c.format = Format::Binary;
+    assert_eq!(reread(&c).triangles.len(), 11);
+    // Scaling past what an f32 holds is refused.
+    let mut c = cube();
+    assert!(!scale(&mut c, 1e39));
+    assert_eq!(c, cube());
+}
+
+#[test]
+fn weld_moves_every_copy_of_a_vertex_together() {
+    // v at the origin, used by two triangles that close on each other; q1 and w on either
+    // side, within the tolerance of v but not of each other.
+    let tri = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| Triangle { vertices: [a, b, c], normal: [0.0; 3], solid: 0 };
+    let (q1, v, w) = ([0.9, 0.0, 0.0], [0.0, 0.0, 0.0], [-0.5, 0.0, 0.0]);
+    let (y, z) = ([0.0, 5.0, 0.0], [0.0, 0.0, 5.0]);
+    let mut s = cube();
+    s.triangles = vec![
+        tri(q1, [5.0, 5.0, 0.0], [5.0, 0.0, 5.0]),
+        tri(v, y, z),
+        tri(w, [-5.0, 5.0, 0.0], [-5.0, 0.0, 5.0]),
+        tri(v, z, y),
+    ];
+    let open = analyse(&s).open_edges;
+    weld(&mut s, 1.0);
+    assert_eq!(s.triangles[1].vertices[0], s.triangles[3].vertices[0]);
+    assert!(analyse(&s).open_edges <= open);
 }

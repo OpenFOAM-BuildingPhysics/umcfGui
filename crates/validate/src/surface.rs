@@ -45,7 +45,15 @@ pub fn unreadable(file: &str, why: &str) -> Diagnostic {
 pub fn diagnostics(file: &str, stl: &Stl, r: &Report) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut add = |level, code, message: String| out.push(Diagnostic::new(level, code, file, message));
-    if let Some(why) = &stl.openfoam {
+    let stlb = file.ends_with(".stlb") || file.ends_with(".stlb.gz");
+    let why = if stlb && stl.format == umcf_geom::stl::Format::Ascii {
+        Some("OpenFOAM reads a `.stlb` file as binary, and this one is ASCII".to_string())
+    } else if stl.header_solid && !stlb {
+        Some("its header starts with `solid`, so OpenFOAM takes it for an ASCII file".to_string())
+    } else {
+        stl.openfoam.clone()
+    };
+    if let Some(why) = &why {
         add(
             Level::Error,
             "surface.openfoam",
@@ -77,6 +85,22 @@ pub fn diagnostics(file: &str, stl: &Stl, r: &Report) -> Vec<Diagnostic> {
     if r.triangles == 0 {
         add(Level::Warning, "surface.empty", "has no triangles".to_string());
         return out;
+    }
+    if r.empty_regions > 0 {
+        let what = match stl.format {
+            umcf_geom::stl::Format::Binary => format!(
+                "the triangles' attribute values go up to {}, so OpenFOAM makes {} regions (patches after snappyHexMesh), {} of them empty; some programs keep a colour there",
+                r.region_count.saturating_sub(1),
+                r.region_count,
+                r.empty_regions
+            ),
+            umcf_geom::stl::Format::Ascii => format!(
+                "{} without triangles: OpenFOAM still makes {} (empty patches after snappyHexMesh)",
+                plural(r.empty_regions, "solid is", "solids are"),
+                if r.empty_regions == 1 { "it a region" } else { "each a region" }
+            ),
+        };
+        add(Level::Warning, "surface.regions", what);
     }
     for (name, region) in &r.renamed {
         add(
