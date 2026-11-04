@@ -128,9 +128,11 @@ of simulated time.
 1. **Patch types.** The CFDHAM conditions and `mappedValue` need a mapped patch;
    `mappedLeafTemperature` needs `mappedInternal` *12*.
 2. **Pairs.** An air wall coupled to a solid is `mappedWall` with `neighbourRegion <solid>;
-   neighbourPatch <solid patch>;` and the solid patch is `mappedWall` back to `air` (*8*:
-   `sampleMode nearestPatchFace; sampleRegion; samplePatch;`). Faces are matched by nearest, so
-   the two sides need not match face for face.
+   neighbourPatch <solid patch>; method nearest;` and the solid patch is `mappedWall` back to
+   `air` (*8*: `sampleMode nearestPatchFace; sampleRegion; samplePatch;`). With `method nearest`
+   (*8*: `nearestPatchFace`) faces are matched by nearest, so the two sides need not match face
+   for face. *12* without `method` assumes the two patches match and maps them by an octree:
+   only for solids that meet the air face for face.
 3. **Radiation reaches the solids by name.** With a `vegetation` region, the solid temperature
    condition reads `qr` and `qs` from the **vegetation patch named like the air patch** it is
    coupled to (`CFDHAMsolidTemperatureCoupledMixed…C:351`, and the same in
@@ -258,7 +260,7 @@ time base.
 | | OpenFOAM-8 | OpenFOAM-12 |
 |---|---|---|
 | region list | `constant/regionProperties` | `controlDict` `regions` and `regionSolvers` |
-| mapped patches (`mapped`, `mappedWall`) | `sampleMode`, `sampleRegion`, `samplePatch` | `neighbourRegion`, `neighbourPatch`; `method` optional (nearest by default) |
+| mapped patches (`mapped`, `mappedWall`) | `sampleMode`, `sampleRegion`, `samplePatch` | `neighbourRegion`, `neighbourPatch`, `method` (`nearest`, `matching`, `intersection`, …); without `method` the patches are taken to match face for face (`mappedPatchBase.H:36-41`) |
 | `mappedInternal` patch | – | `offsetMode normal` with `distance`, or `offsetMode direction` with `offset` |
 | mapped value condition | `mapped` | `mappedValue` |
 | mapped patch type (sky sides of the radiation region) | `mappedPatch` | `mapped` |
