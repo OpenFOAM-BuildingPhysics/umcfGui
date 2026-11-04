@@ -487,11 +487,13 @@ fn startup(text: &str, class: &str, arity: Option<usize>) -> Vec<Vec<std::ops::R
             let mut spans = vec![ctor.span.clone()];
             for (name, params, span) in &functions {
                 // A call of this object's function, not another object's (`dict.read(`), with
-                // as many arguments as this overload takes.
+                // as many arguments as this overload takes, that runs whenever the constructor
+                // does (not `if (flag) initialise();`).
                 let Ok(call) = Regex::new(&format!(r"(?:^|[^\w.>]){}\s*\(", regex::escape(name))) else { continue };
-                let called = call
-                    .find_iter(body)
-                    .any(|c| call_args(body, c.end() - 1).is_some_and(|a| split_args(a).len() == *params));
+                let called = call.find_iter(body).any(|c| {
+                    call_args(body, c.end() - 1).is_some_and(|a| split_args(a).len() == *params)
+                        && unconditional(text, &ctor.span, ctor.span.start + c.end() - 1)
+                });
                 if called {
                     spans.push(span.clone());
                 }
@@ -1223,6 +1225,11 @@ Foam::m::m(const volScalarField& T)
 "#;
         let names: Vec<String> = startup_keywords(&pat, src, "m", Some(1)).into_iter().map(|k| k.name).collect();
         assert_eq!(names, ["a1", "onMaster", "smoothing"]);
+        // Called only under a condition: what it reads is not read at every build.
+        let cond = src.replace("{\n    initialise();\n}", "{\n    if (flag) initialise();\n}");
+        assert_ne!(cond, src);
+        let names: Vec<String> = startup_keywords(&pat, &cond, "m", Some(1)).into_iter().map(|k| k.name).collect();
+        assert_eq!(names, ["a1"]);
         // After an early return: not always.
         let ret = src.replace("    bool s = readBool", "    if (!on) return;\n    bool s = readBool");
         let names: Vec<String> = startup_keywords(&pat, &ret, "m", Some(1)).into_iter().map(|k| k.name).collect();
