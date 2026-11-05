@@ -40,8 +40,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn examples_are_cases_of_their_version_without_errors() {
     let list = examples();
     let count = |v| list.iter().filter(|(x, _)| *x == v).count();
-    // The OpenFOAM-8 ones follow in their own change (CodeRabbit reviews 300 files at most).
-    assert!(count(OfVersion::V12) >= 4 && matches!(count(OfVersion::V8), 0 | 4..), "examples missing: {list:?}");
+    assert!(count(OfVersion::V8) >= 4 && count(OfVersion::V12) >= 4, "examples missing: {list:?}");
     let mut failures = Vec::new();
     for (version, dir) in &list {
         let case = match Case::open(&DirFs::new(dir)) {

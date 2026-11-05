@@ -96,11 +96,13 @@ UMCF_DICT_TREES=$HOME/OpenFOAM-8/tutorials:$HOME/OpenFOAM-12/tutorials cargo tes
 
 ## Example cases
 
-`examples/of12` (and `examples/of8`, to follow) hold small cases of the solver's features (the
-street canyon with air only, with walls and street, with grass, with a tree), made from the
-urbanMicroclimateFoam tutorials ([`examples/README.md`](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md)).
-Every test run checks them: each is a case of its directory's version, the check finds no error
-and no warning about the scripts, every dictionary round-trips. That they run needs OpenFOAM and urbanMicroclimateFoam:
+`examples/of8` and `examples/of12` hold small cases of the solver's features (the street canyon
+with air only, with walls and street, with grass, with a tree), made from the urbanMicroclimateFoam
+tutorials
+([`examples/README.md`](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md)).
+Every test run checks them: each is a case of its directory's version, the check finds no error and
+no warning about the scripts, every dictionary round-trips. That they run needs OpenFOAM and
+urbanMicroclimateFoam:
 
 ```sh
 cargo xtask examples                      # all of them, each on a temporary copy, about 20 s

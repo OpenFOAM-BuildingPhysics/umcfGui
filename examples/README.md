@@ -1,7 +1,7 @@
 # Example cases
 
-Small urbanMicroclimateFoam cases, for OpenFOAM-12 (`of12/`; the OpenFOAM-8 ones, `of8/`, follow),
-that run in seconds: to try umcfGui without cases of your own, and to test it and the solver.
+Small urbanMicroclimateFoam cases, for OpenFOAM-8 (`of8/`) and OpenFOAM-12 (`of12/`), that run
+in seconds: to try umcfGui without cases of your own, and to test it and the solver.
 
 | Case | Regions | Exercises |
 |---|---|---|
