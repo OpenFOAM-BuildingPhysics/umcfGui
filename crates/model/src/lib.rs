@@ -798,8 +798,9 @@ impl Case {
     /// disk but didn't load as a dictionary (whatever `replace`).
     pub fn put_description(&mut self, fs: &dyn CaseFs, text: &str, replace: bool) -> Result<()> {
         let rel = description::PATH;
-        // The same file as another dictionary (a link): writing it would write that one.
-        if self.resolve(rel) != rel {
+        // The same file as another dictionary (a link, either way): writing it would change
+        // what that one reads.
+        if self.resolve(rel) != rel || self.aliases.values().any(|p| p == rel) {
             return Err(Error::IsDict(rel.to_string()));
         }
         if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel)) {

@@ -377,4 +377,19 @@ fn a_description_linked_to_another_dictionary_is_not_written() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(matches!(r, Err(crate::Error::IsDict(_))), "{r:?}");
     assert!(c.changed().is_empty());
+
+    // The other way: a case file that is a link to the description.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write(PATH, format!("{}regions {{ }}\n", header("dictionary", "umcfWorkflow")).as_bytes()).unwrap();
+    std::fs::create_dir_all(root.join("constant/air")).unwrap();
+    std::os::unix::fs::symlink("../../system/umcfWorkflow", root.join("constant/air/transportProperties")).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    let r = c.put_description(&fs, "regions { }\n", true);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(r, Err(crate::Error::IsDict(_))), "{r:?}");
+    assert!(c.changed().is_empty());
 }
