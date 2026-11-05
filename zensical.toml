@@ -25,6 +25,7 @@ nav = [
     "user-guide/command-line.md",
   ] },
   { "What a Case Needs" = "case-requirements.md" },
+  { "The Common Workflow" = "common-workflow.md" },
   { "Solver Coverage" = "solver-coverage.md" },
   { "Gaps" = "gaps.md" },
   { "Architecture" = "architecture.md" },
