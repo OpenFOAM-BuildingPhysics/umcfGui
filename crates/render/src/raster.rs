@@ -307,7 +307,7 @@ pub fn covered(
                 while obj.origin_index.get(end) == Some(face) {
                     end += 1;
                 }
-                if !obj.class.get(n).is_some_and(|c| keep(k, *c)) {
+                if !keep(k, obj.class.get(n).copied().unwrap_or(0)) {
                     n = end;
                     continue;
                 }

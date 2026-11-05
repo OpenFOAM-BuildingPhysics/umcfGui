@@ -1249,10 +1249,19 @@ fn a_rectangle_selects_what_is_seen_in_it_or_everything_through_it() {
     let mut faces = surface.clone();
     faces["faces"] = json!(true);
     assert_eq!(s.execute("select.rect", &faces).unwrap().data["in"], 0);
-    // Picking faces, a surface in front doesn't hide the mesh (as a click passes over it).
+    // Picking faces, a surface in front doesn't hide the mesh (as a click passes over it): the
+    // box made twice the size covers the cube from above.
+    s.execute("geometry.scale", &json!({ "file": "box.stl", "factor": 2 })).unwrap();
     faces["regions"] = json!(["air"]);
+    faces.as_object_mut().unwrap().remove("view");
+    faces["camera"] = json!({ "target": [0.5, 0.5, 0.5], "distance": 10, "azimuth": 0, "elevation": 90 });
+    let mut patches = faces.clone();
+    patches["faces"] = json!(false);
+    let out = s.execute("select.rect", &patches).unwrap();
+    assert_eq!(out.data["items"], json!([{ "surface": "constant/triSurface/box.stl", "solid": "box" }]));
     let out = s.execute("select.rect", &faces).unwrap();
     assert_eq!(out.data["items"], json!([{ "region": "air", "face": 1 }]));
+    s.execute("edit.undo", &json!({})).unwrap();
 
     // The camera as scene.snapshot returns it places the view exactly.
     let shot = s.execute("scene.snapshot", &json!({ "view": "top", "width": 100, "height": 100, "zoom": 3 })).unwrap();
