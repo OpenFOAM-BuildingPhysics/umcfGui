@@ -61,8 +61,10 @@ The split, given that most cases are too big to run locally:
   Without the feature these commands stay in the registry with `enabled` returning
   `Err("built without local runner")`, so the UI, MCP and scripts all see the same set of
   commands.
-- A future `remote` runner (ssh + scheduler) would plug into the same `Pipeline`. It is not
-  planned yet.
+- OpenFOAM runs only on Linux. The runner (planned, row 12 of [the gaps](gaps.md)) is to run
+  steps locally first, then reach OpenFOAM where it is: through WSL on Windows, in a virtual
+  machine or container (macOS), or on a remote machine by ssh with a scheduler, all through the
+  same `Pipeline` (see [the common workflow](common-workflow.md#running-anywhere)).
 
 ## Domain mapping (from the solver source)
 
