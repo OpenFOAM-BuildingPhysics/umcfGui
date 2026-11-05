@@ -32,8 +32,8 @@ fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-fn list(v: &Value, k: &str) -> Vec<Value> {
-    v.get(k).and_then(Value::as_array).cloned().unwrap_or_default()
+fn list<'a>(v: &'a Value, k: &str) -> &'a [Value] {
+    v.get(k).and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
 /// A step with what it is given: `blockMesh(blockMeshDict.air)`, `setSet(batch)`,
@@ -48,12 +48,41 @@ fn step(st: &Value) -> String {
     if restore.is_empty() { name } else { format!("{name}(restore {})", restore.join(", ")) }
 }
 
-/// Keeps the first `limit` lines of `part`, and says how many more there are.
-fn capped(out: &mut Vec<(Kind, String)>, part: Vec<(Kind, String)>, limit: usize) {
-    let more = part.len().saturating_sub(limit);
-    out.extend(part.into_iter().take(limit));
-    if more > 0 {
-        out.push((Kind::Info, format!("… and {more} more")));
+/// The lines of one part, at most `limit` of them: a line past the limit is counted, not made.
+struct Part<'a> {
+    out: &'a mut Vec<(Kind, String)>,
+    left: usize,
+    more: usize,
+}
+
+impl<'a> Part<'a> {
+    fn new(out: &'a mut Vec<(Kind, String)>, limit: usize) -> Self {
+        Part { out, left: limit, more: 0 }
+    }
+
+    fn full(&self) -> bool {
+        self.left == 0
+    }
+
+    fn push(&mut self, kind: Kind, line: impl FnOnce() -> String) {
+        if self.left == 0 {
+            self.more += 1;
+        } else {
+            self.left -= 1;
+            self.out.push((kind, line()));
+        }
+    }
+
+    /// `n` lines past the limit, counted without being made.
+    fn skip(&mut self, n: usize) {
+        self.more += n;
+    }
+
+    /// Says how many lines didn't fit.
+    fn end(self) {
+        if self.more > 0 {
+            self.out.push((Kind::Info, format!("… and {} more", self.more)));
+        }
     }
 }
 
@@ -64,17 +93,15 @@ fn capped(out: &mut Vec<(Kind, String)>, part: Vec<(Kind, String)>, limit: usize
 pub fn lines(data: &Value) -> Vec<(Kind, String)> {
     let mut out = Vec::new();
     let Some(d) = data.get("description").filter(|d| d.is_object()) else { return out };
-    let mut messages = Vec::new();
+    let mut messages = Part::new(&mut out, MESSAGES);
     for p in list(data, "problems") {
-        messages.push((Kind::Warning, format!("{}: {}", s(&p, "at"), s(&p, "message"))));
+        messages.push(Kind::Warning, || format!("{}: {}", s(p, "at"), s(p, "message")));
     }
-    for n in list(data, "notes") {
-        if let Some(n) = n.as_str() {
-            messages.push((Kind::Info, n.to_string()));
-        }
+    for n in list(data, "notes").iter().filter_map(Value::as_str) {
+        messages.push(Kind::Info, || n.to_string());
     }
-    capped(&mut out, messages, MESSAGES);
-    let mut desc = Vec::new();
+    messages.end();
+    let mut desc = Part::new(&mut out, DESCRIPTION);
     let mut settings = Vec::new();
     if let Some(v) = d.get("version").and_then(Value::as_str) {
         settings.push(format!("for {v}"));
@@ -103,8 +130,13 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
     if d.get("reconstruct").and_then(Value::as_bool) == Some(true) {
         settings.push("reconstructed".to_string());
     }
-    desc.push((Kind::Text, settings.join(", ")));
+    desc.push(Kind::Text, || settings.join(", "));
     for r in list(d, "regions") {
+        let patches = list(r, "patches");
+        if desc.full() {
+            desc.skip(1 + patches.len());
+            continue;
+        }
         let mesh = match r.get("mesh") {
             Some(Value::String(m)) => format!(", mesh {m}"),
             Some(Value::Array(steps)) => {
@@ -112,20 +144,24 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
             }
             _ => String::new(),
         };
-        let steps = some(list(&r, "steps").iter().map(step));
+        let steps = some(list(r, "steps").iter().map(step));
         let steps = if steps.is_empty() { String::new() } else { format!(", steps {}", steps.join(" ")) };
-        desc.push((Kind::Text, format!("{} ({}){mesh}{steps}", s(&r, "name"), s(&r, "kind"))));
-        for p in list(&r, "patches") {
+        desc.push(Kind::Text, || format!("{} ({}){mesh}{steps}", s(r, "name"), s(r, "kind")));
+        for (i, p) in patches.iter().enumerate() {
+            if desc.full() {
+                desc.skip(patches.len() - i);
+                break;
+            }
             let role = p.get("role").and_then(Value::as_str).unwrap_or("no role");
             let partner = p
                 .get("partner")
                 .filter(|q| q.is_object())
                 .map(|q| format!(" → {}/{}", s(q, "region"), s(q, "patch")))
                 .unwrap_or_default();
-            desc.push((Kind::Text, format!("    {}: {role}{partner}", s(&p, "name"))));
+            desc.push(Kind::Text, || format!("    {}: {role}{partner}", s(p, "name")));
         }
     }
-    capped(&mut out, desc, DESCRIPTION);
+    desc.end();
     out
 }
 
@@ -203,6 +239,20 @@ mod tests {
         assert_eq!(l[MESSAGES + 1], (Kind::Text, "no solver run".to_string()));
         assert!(l[MESSAGES + 2].1.ends_with("b19→T, … and 10 more)"), "{:?}", l[MESSAGES + 2]);
         assert_eq!(l.len(), MESSAGES + 3);
+    }
+
+    #[test]
+    fn many_patches_are_counted_not_shown() {
+        let patches: Vec<Value> = (0..400).map(|i| json!({ "name": format!("p{i}"), "role": "side" })).collect();
+        let data = json!({ "description": { "solver": null, "regions": [
+            { "name": "a", "kind": "fluid", "patches": patches },
+            { "name": "b", "kind": "solid", "patches": [{ "name": "q", "role": "ground" }] },
+        ] } });
+        let l = lines(&data);
+        // The settings, region a and 298 of its patches; 102 of them, region b and its patch left.
+        assert_eq!(l.len(), DESCRIPTION + 1);
+        assert_eq!(l[DESCRIPTION - 1], (Kind::Text, "    p297: side".to_string()));
+        assert_eq!(l[DESCRIPTION], (Kind::Info, "… and 104 more".to_string()));
     }
 
     #[test]
