@@ -25,6 +25,7 @@ pub mod check;
 pub mod near;
 pub mod repair;
 pub mod stl;
+pub mod trees;
 
 /// A point or direction in 3D, in double precision.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

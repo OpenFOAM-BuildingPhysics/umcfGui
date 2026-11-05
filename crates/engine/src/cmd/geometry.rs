@@ -9,6 +9,7 @@ use umcf_core::{CaseFs, DirFs};
 use umcf_geom::check::{Listed, Report, analyse};
 use umcf_geom::repair;
 use umcf_geom::stl::{self, Limits, Stl};
+use umcf_geom::trees as trees_geom;
 use umcf_model::{Case, MAX_FILE_BYTES};
 use umcf_validate::surface::{diagnostics, unreadable};
 use umcf_validate::{Diagnostic, Level};
@@ -345,6 +346,89 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let how = if why.is_empty() { String::new() } else { format!(" ({})", why.join(", ")) };
     let message = format!("{rel}: imported from {path}{how}");
     Ok(result(message, json!({ "file": rel, "rewritten": why, "surface": surface }), &diags))
+}
+
+pub(super) const TREES: CommandSpec = CommandSpec {
+    id: "geometry.trees",
+    label: "Tree crowns",
+    menu: "Geometry/Tree crowns…",
+    shortcut: None,
+    params: "The trees, one of: table: a file of the case, one tree a line (x y z CD CH: the crown's base, diameter and height; a first line of these column names in any order, or none; tabs, spaces or commas); path: such a file outside the case; trees: [{\"x\": …, \"y\": …, \"z\": …, \"diameter\": …, \"height\": …}]. name: the surface in constant/triSurface (default trees.stl). solid: the surface's one region (default trees). replace: true to replace a surface of that name. Each crown is a rhombicuboctahedron of the tree's crown diameter and height standing on its z, closed and wound outward (44 triangles). case.save writes it. Reports what geometry.check reports.",
+    enabled: needs_case,
+    run: trees,
+    journal: true,
+    undoable: true,
+};
+
+fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(TREES.id, p, &["table", "path", "trees", "name", "solid", "replace"])?;
+    let rel = surface_path(TREES.id, p.str("name")?.unwrap_or("trees.stl"), false)?;
+    let solid = stl::foam_name(p.str("solid")?.unwrap_or("trees"));
+    let replace = p.bool("replace")?.unwrap_or(false);
+    let given = |k: &str| p.value(k).is_some_and(|v| !v.is_null());
+    if ["table", "path", "trees"].iter().filter(|k| given(k)).count() != 1 {
+        return Err(Error::Params(format!("{}: give the trees one way: table, path or trees", TREES.id)));
+    }
+    {
+        let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
+        if !replace && (case.put_paths().any(|p| p == rel) || fs.is_file(&rel)) {
+            return Err(Error::Failed(format!("{rel} is already there: pass \"replace\": true to replace it")));
+        }
+    }
+    let list: Vec<trees_geom::Tree> = if given("trees") {
+        let items = p
+            .value("trees")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Params(format!("{}: `trees` is a list", TREES.id)))?;
+        if items.len() > trees_geom::MAX_TREES {
+            return Err(Error::Params(format!("{}: more than {} trees", TREES.id, trees_geom::MAX_TREES)));
+        }
+        let mut out = Vec::with_capacity(items.len());
+        for (k, t) in items.iter().enumerate() {
+            let num = |key: &str| {
+                t.get(key)
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| Error::Params(format!("{}: tree {k}: `{key}` is a number", TREES.id)))
+            };
+            let tree = trees_geom::Tree {
+                x: num("x")?,
+                y: num("y")?,
+                z: num("z")?,
+                diameter: num("diameter")?,
+                height: num("height")?,
+            };
+            if let Some(why) = tree.problem() {
+                return Err(Error::Params(format!("{}: tree {k}: {why}", TREES.id)));
+            }
+            out.push(tree);
+        }
+        out
+    } else {
+        let (what, bytes) = if given("path") {
+            let path = p.required_str("path")?;
+            (path.to_string(), read_outside(TREES.id, path)?)
+        } else {
+            let table = p.required_str("table")?;
+            let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
+            let bytes =
+                case.file(fs, table)?.ok_or_else(|| Error::Failed(format!("{table}: no such file in the case")))?;
+            (table.to_string(), bytes.to_vec())
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| Error::Failed(format!("{what}: not text")))?;
+        trees_geom::read_table(text).map_err(|e| Error::Failed(format!("{what}: {e}")))?
+    };
+    if list.is_empty() {
+        return Err(Error::Params(format!("{}: no trees", TREES.id)));
+    }
+    let stl = trees_geom::crowns(&list, &solid);
+    let (out, dropped) = encode(&stl, &rel);
+    if dropped > 0 {
+        return Err(Error::Failed(format!("{}: {}", TREES.id, left_out(dropped))));
+    }
+    let (surface, diags) = store(s, &rel, out, None)?;
+    let message = format!("{rel}: {} as crowns ({solid})", count(list.len(), "tree"));
+    Ok(result(message, json!({ "file": rel, "trees": list.len(), "solid": solid, "surface": surface }), &diags))
 }
 
 pub(super) const REPAIR: CommandSpec = CommandSpec {

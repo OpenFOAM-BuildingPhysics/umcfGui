@@ -42,6 +42,11 @@ impl<'a> Params<'a> {
         self.map.is_none_or(Map::is_empty)
     }
 
+    /// The value of `key` as given, if it is.
+    pub(crate) fn value(&self, key: &str) -> Option<&'a Value> {
+        self.get(key)
+    }
+
     fn get(&self, key: &str) -> Option<&'a Value> {
         self.map.and_then(|m| m.get(key))
     }

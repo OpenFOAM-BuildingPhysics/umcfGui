@@ -18,6 +18,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     case::INFO,
     case::CHECK,
     geometry::IMPORT,
+    geometry::TREES,
     geometry::CHECK,
     geometry::REPAIR,
     geometry::SCALE,

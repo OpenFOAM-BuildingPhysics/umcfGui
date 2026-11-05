@@ -106,6 +106,34 @@ is (an ASCII file named `.stlb` is written binary), or when its compression does
 name (`.gz`). A surface already there is replaced only with `"replace": true`. The name must
 end in `.stl`, `.stlb`, `.stl.gz` or `.stlb.gz`, in lower case, which OpenFOAM reads as STL.
 
+## Tree crowns
+
+`geometry.trees` writes the trees' crowns as one surface (`trees.stl`, or `name`), for meshing
+the vegetation: a rhombicuboctahedron per tree, of its crown diameter and height, standing on
+its z (the bottom of the foliage). Each crown is closed and wound outward, 44 triangles. The
+trees come from a table, in the case (`table`) or outside it (`path`), or as a list (`trees`):
+
+```text
+x       y       z       CD      CH
+260     260     2.5     5.5     5.5
+330     330     2.5     5.5     5.5
+```
+
+One tree a line, the numbers separated by tabs, spaces or commas. The first line names the columns,
+`x y z CD CH` in any order, with other columns left alone (a tree height `H` beside the crown's
+`CH`, say); `D`/`H` or `diameter`/`height` stand for the crown's when there is no `CD`/`CH`.
+Without that line a tree is exactly five numbers, in that order. Lines starting with `#` or `//`
+are skipped. At most 80 000 trees, which keeps the surface within the case's file size limit; a
+crown much smaller than its coordinates (beyond the seven digits STL holds) is refused. The surface
+has one region, `trees` (or `solid`). Only the crowns are made, no trunks: the solver's vegetation
+model works on the leaf area density of the tree zone, which the crowns bound.
+
+The shape is the one the vegetation workflow's tree script (`tree_shape_simple.py`) makes. That
+script writes the eight triangular faces as squares with a corner twice (16 triangles without
+area for two trees), winds some faces inward, and centres each crown on its z, which the table
+calls the bottom of the foliage: a crown of 5.5 m at z = 2.5 reaches 0.25 m below the ground. A
+table written for it gives crowns half their height higher here.
+
 Imported and repaired surfaces are part of the case's unsaved changes: `case.save` writes them,
 after a backup of the file each replaces, and refuses to overwrite a file that changed on disk
 since the change was made from it. Until then, `edit.undo` takes a change back; after a save,

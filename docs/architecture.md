@@ -153,7 +153,7 @@ egui, command-driven app). Code ported from it keeps its copyright notice and ge
 
 ## Command families (initial)
 
-`case.*` (new, open, save, clean, export-allrun) · `geometry.*` (import, repair, scale) ·
+`case.*` (new, open, save, clean, export-allrun) · `geometry.*` (import, trees, repair, scale) ·
 `mesh.*` (setup, block, refine, layers, check) · `patch.*` · `region.*` · `material.*` · `bc.*` ·
 `control.*` (controlDict, fvSolution, fvSchemes entries) · `mesh.*` · `veg.*` · `solar.*` ·
 `run.*` (export always; start, stop, status only with `runner`) · `post.*` (probe, slice, timeseries) · `view.*` (UI-only,
