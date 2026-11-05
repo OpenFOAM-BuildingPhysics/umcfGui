@@ -118,7 +118,7 @@ The radiation region (`vegetation`, or `air` without trees):
 | Role | `T` (vegetation only) | `qr` | `qs` |
 |---|---|---|---|
 | every patch of `air`, by the same name | `mappedValue` *12* (`mapped` with `field`, `setAverage`, `average` *8*) | `greyDiffusiveRadiationViewFactor` with `emissivityMode lookup; emissivity …; qro uniform 0;` (`qro` R) | `solarLoadRadiationViewFactor` with `albedoMode lookup; albedo …; qso uniform 0;` (`qso` R) |
-| `air_to_vegetation` | `mappedLeafTemperature` with `field Tl;` (the tutorials also carry *8*'s `setAverage`, `average`, `interpolationScheme`, which *12* ignores) | the same | the same |
+| `air_to_vegetation` | `mappedLeafTemperature` with `field Tl;` *12* (the tutorials also carry *8*'s `setAverage`, `average`, `interpolationScheme`, which *12* ignores) | the same | the same |
 
 The solid temperature conditions take `qr` and `qs` at the first iteration and then every 600 s
 of simulated time.
@@ -227,7 +227,7 @@ Run per processor once the case is decomposed, in this order:
 | `faceAgglomerate -region <rad> -dict system/<rad>/viewFactorsDict` *12* (without `-dict` it reads `system/viewFactorsDict`) | `finalAgglom` | a mesh, patch, view factor dictionary or decomposition change |
 | `calcLAI -region air` (with trees) | `kcLAIboundary`, `divqrsw` (and `LAI` with `-writeFields`) | the above, the sun or irradiance tables, `LAD` |
 | `viewFactorsGen -region <rad>` (OpenFOAM) | `F`, `globalFaceFaces`, `constructMap`, `constructMapDim`, `subMap` | a mesh, patch, view factor dictionary or decomposition change |
-| `solarRayTracingGen -region <rad>` | `sunViewCoeff`, `skyViewCoeff`, `sunskyMap`, `solarLoadFineFaces` | any of the above |
+| `solarRayTracingGen -region <rad>` | `sunViewCoeff`, `skyViewCoeff`, `sunskyMap`, `solarLoadFineFaces` | any of the above, the sun or irradiance tables, `LAD` |
 
 `solarRayTracingGen` needs `kcLAIboundary` whenever the region list has a vegetation region, with
 one entry per sun position. `calcLAI` reads the `<model>Coeffs` dictionary of the vegetation
