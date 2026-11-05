@@ -2,7 +2,8 @@ name: CI
 
 # Every quality gate (`cargo xtask ci`) on every push to main and every pull request: fmt, clippy
 # (default and --no-default-features), tests (both feature sets), layers, assets, wasm, docs
-# (rustdoc -D warnings, nav, strict site build) and deny (licences).
+# (rustdoc -D warnings, nav, strict site build) and deny (licences). The desktop app is also built
+# and its interface tested on Windows and macOS.
 #
 # The tests against real cases (UMCF_CASES, UMCF_DICT_TREES, …) need files that are not in the
 # repository; they report a skip here and run locally before merging (docs/contributing.md).
@@ -57,3 +58,24 @@ jobs:
           uv pip install -r requirements_docs.txt
       - name: cargo xtask ci
         run: cargo xtask ci
+
+  desktop:
+    # The desktop app on the other systems it runs on: built, and its interface tests run (the
+    # folder dialog is the system's own on each: IFileDialog, NSOpenPanel, the desktop portal).
+    name: desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the desktop app
+        run: cargo build -p umcf-gui --locked
+      - name: Test the desktop interface
+        run: cargo test -p umcf-ui-egui --locked

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 umcf-ui-egui.workspace = true
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 
 [lints]
 workspace = true

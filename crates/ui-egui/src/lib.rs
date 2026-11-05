@@ -89,6 +89,11 @@ pub struct App {
     /// chosen, Escape, or a click elsewhere.
     pub search_open: bool,
     pub dialog: Option<Dialog>,
+    /// The folder dialog *Open* uses (see [`Options::pick_folder`]).
+    pub pick_folder: Option<PickFolder>,
+    /// *Open* asked for the folder dialog: the window shows it after this frame, over itself
+    /// (see [`App::folder_picked`]).
+    pub folder_requested: bool,
     /// The boundary-condition card, while it is open.
     pub bc: Option<bc::BcForm>,
     /// The patch card, while it is open.
@@ -212,6 +217,8 @@ impl App {
             focus_search: false,
             search_open: false,
             dialog: None,
+            pick_folder: None,
+            folder_requested: false,
             bc: None,
             patch_form: None,
             new_patch: None,
@@ -389,7 +396,12 @@ impl App {
     /// card for one with.
     pub fn invoke(&mut self, id: &'static str) {
         let Some(spec) = Session::command(id) else { return };
-        // Setting a condition has a form of its own.
+        // Opening a case asks for its folder in the system's dialog, when there is one.
+        if id == "case.open" && self.pick_folder.is_some() {
+            self.folder_requested = true;
+            return;
+        }
+        // Setting a condition and editing patches have forms of their own.
         if matches!(id, "bc.set" | "patch.set" | "patch.create") {
             self.dialog = None;
             self.bc = (id == "bc.set").then(bc::BcForm::default);
@@ -404,6 +416,43 @@ impl App {
             self.patch_form = None;
             self.new_patch = None;
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+        }
+    }
+
+    /// What the folder dialog gave: the case opens, nothing happens, or (no dialog) the *Open*
+    /// card asks for the path.
+    pub fn folder_picked(&mut self, picked: Picked) {
+        match picked {
+            Picked::Folder(path) => self.open_folder(&path),
+            Picked::Cancelled => {}
+            Picked::Unavailable => {
+                self.bc = None;
+                self.patch_form = None;
+                self.new_patch = None;
+                let error = "No folder dialog on this system (a desktop portal or zenity): type the case's path.";
+                self.dialog = Some(Dialog {
+                    id: "case.open",
+                    params: "{\n  \"path\": \"\"\n}".to_string(),
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+
+    /// Opens the case in `path`. When that doesn't work (unsaved changes, not a case), the
+    /// *Open* card shows the path and why, to change or confirm (`discard`).
+    pub fn open_folder(&mut self, path: &str) {
+        let result = self.run("case.open", json!({ "path": path }));
+        // An Open card from an earlier folder that didn't open goes once one does.
+        if result.is_ok() && self.dialog.as_ref().is_some_and(|d| d.id == "case.open") {
+            self.dialog = None;
+        }
+        if let Err(e) = result {
+            self.bc = None;
+            self.patch_form = None;
+            self.new_patch = None;
+            let params = serde_json::to_string_pretty(&json!({ "path": path })).unwrap_or_default();
+            self.dialog = Some(Dialog { id: "case.open", params, error: Some(e) });
         }
     }
 
@@ -1659,9 +1708,26 @@ impl App {
     }
 }
 
+/// What the folder dialog gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Picked {
+    Folder(String),
+    Cancelled,
+    /// There is no dialog to show (Linux without a desktop portal or `zenity`).
+    Unavailable,
+}
+
+/// The window the desktop app runs in: the folder dialog's parent.
+pub use eframe::Frame;
+
+/// Asks for a folder in the system's own dialog, over `parent`, starting in `start`.
+pub type PickFolder = fn(start: Option<&str>, parent: &Frame) -> Picked;
+
 /// Where the desktop app starts.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
+    /// The folder dialog *Open* uses; without one, *Open* asks for the path in its card.
+    pub pick_folder: Option<PickFolder>,
     /// A case directory to open.
     pub case: Option<String>,
     /// Commands to run after opening it: `(id, params)`.
@@ -1690,8 +1756,17 @@ struct Desktop {
 }
 
 impl eframe::App for Desktop {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.app.show(ui);
+        // The folder dialog, over this window (modal to it), once the frame is drawn.
+        if std::mem::take(&mut self.app.folder_requested)
+            && let Some(pick) = self.app.pick_folder
+        {
+            let start = self.app.session.location().map(String::from);
+            let picked = pick(start.as_deref(), frame);
+            self.app.folder_picked(picked);
+            ui.ctx().request_repaint();
+        }
         if self.done.load(std::sync::atomic::Ordering::SeqCst) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -1730,6 +1805,7 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     startup.extend(options.commands.iter().cloned());
     let mut app = App::new(Session::new());
+    app.pick_folder = options.pick_folder;
     if options.dark {
         app.tokens = Tokens::dark();
     }

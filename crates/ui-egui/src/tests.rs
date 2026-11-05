@@ -726,3 +726,53 @@ fn the_new_patch_card_reads_its_fields() {
     assert!(NewPatchForm { distance: String::new(), ..near.clone() }.params(None).is_err());
     assert!(NewPatchForm { file: " ".into(), ..near }.params(None).is_err());
 }
+
+#[test]
+fn open_asks_for_the_folder_in_the_systems_dialog() {
+    use crate::Picked;
+    // A case on disk.
+    let dir = std::env::temp_dir().join(format!("umcf-gui-{}-open", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("system")).unwrap();
+    std::fs::write(
+        dir.join("system/controlDict"),
+        format!(
+            "{HEADER}application urbanMicroclimateFoam;\nstartTime 0;\nendTime 3600;\ndeltaT 60;\nwriteInterval 600;\n"
+        ),
+    )
+    .unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    // With a dialog, Open (here from the ribbon) asks the window for it.
+    let mut app = App::new(Session::new());
+    app.pick_folder = Some(|_, _| Picked::Cancelled);
+    let mut h = harness(app);
+    h.get_by_label("Open").click();
+    h.run();
+    assert!(h.state().folder_requested && h.state().dialog.is_none());
+    let mut app = App::new(Session::new());
+    // Cancelled: nothing happens.
+    app.folder_picked(Picked::Cancelled);
+    assert!(app.session().location().is_none() && app.dialog.is_none());
+    // Not a case: the card shows the path and why.
+    app.folder_picked(Picked::Folder("/nonexistent/umcf-case".to_string()));
+    let d = app.dialog.take().unwrap();
+    assert_eq!(d.id, "case.open");
+    assert!(d.params.contains("/nonexistent/umcf-case") && d.error.is_some(), "{d:?}");
+    // No dialog on this system: the card asks for the path.
+    app.folder_picked(Picked::Unavailable);
+    let d = app.dialog.take().unwrap();
+    assert!(d.error.unwrap().contains("type the case's path"));
+    // A case: opened, and the card from the folder before goes.
+    app.folder_picked(Picked::Folder("/nonexistent/umcf-case".to_string()));
+    assert!(app.dialog.is_some());
+    app.folder_picked(Picked::Folder(path.clone()));
+    assert_eq!(app.session().location(), Some(path.as_str()));
+    assert!(app.dialog.is_none());
+    assert_eq!(app.log.last().unwrap().command, "case.open");
+    // Without a dialog at all, Open is the card.
+    let mut app = App::new(Session::new());
+    app.invoke("case.open");
+    assert_eq!(app.dialog.as_ref().map(|d| d.id), Some("case.open"));
+    assert!(!app.folder_requested);
+    let _ = std::fs::remove_dir_all(&dir);
+}
