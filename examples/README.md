@@ -38,8 +38,8 @@ made small:
 - **Meshes:** the air's blocks have 3 to 6 uniform cells (about 2600 cells); the walls and the
   street keep their graded resolution through the material (at most 20 cells) and have the air's
   cells along it, so that each coupled face has one partner.
-- **Runs:** serial (`Allrun` without `decomposePar` and `reconstructPar`, `runApplication` for
-  `runParallel`), `endTime 7200` with `maxFluidIteration 30`, and lower relaxation for the air
+- **Runs:** serial (OpenFOAM-12's `Allrun` without `decomposePar` and `reconstructPar`,
+  `runApplication` for `runParallel`; the OpenFOAM-8 ones were serial already), `endTime 7200` with `maxFluidIteration 30`, and lower relaxation for the air
   (`p_rgh` 0.3, `U` 0.5, `h` 0.5) so the coarse mesh's first iterations stay stable. The probes
   write at every step.
 - **Scripts:** `Allprepare` and `Allrun` stop at the first failing step (`set -e`); the
