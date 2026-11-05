@@ -89,6 +89,8 @@ pub struct App {
     /// chosen, Escape, or a click elsewhere.
     pub search_open: bool,
     pub dialog: Option<Dialog>,
+    /// The folder dialog *Open* uses (see [`Options::pick_folder`]).
+    pub pick_folder: Option<PickFolder>,
     /// The boundary-condition card, while it is open.
     pub bc: Option<bc::BcForm>,
     /// The patch card, while it is open.
@@ -212,6 +214,7 @@ impl App {
             focus_search: false,
             search_open: false,
             dialog: None,
+            pick_folder: None,
             bc: None,
             patch_form: None,
             new_patch: None,
@@ -390,6 +393,16 @@ impl App {
     pub fn invoke(&mut self, id: &'static str) {
         let Some(spec) = Session::command(id) else { return };
         // Setting a condition has a form of its own.
+        // Opening a case asks for its folder in the system's dialog, when there is one.
+        if id == "case.open"
+            && let Some(pick) = self.pick_folder
+        {
+            let start = self.session.location().map(String::from);
+            if let Some(path) = pick(start.as_deref()) {
+                self.open_folder(&path);
+            }
+            return;
+        }
         if matches!(id, "bc.set" | "patch.set" | "patch.create") {
             self.dialog = None;
             self.bc = (id == "bc.set").then(bc::BcForm::default);
@@ -404,6 +417,18 @@ impl App {
             self.patch_form = None;
             self.new_patch = None;
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+        }
+    }
+
+    /// Opens the case in `path`. When that doesn't work (unsaved changes, not a case), the
+    /// *Open* card shows the path and why, to change or confirm (`discard`).
+    pub fn open_folder(&mut self, path: &str) {
+        if let Err(e) = self.run("case.open", json!({ "path": path })) {
+            self.bc = None;
+            self.patch_form = None;
+            self.new_patch = None;
+            let params = serde_json::to_string_pretty(&json!({ "path": path })).unwrap_or_default();
+            self.dialog = Some(Dialog { id: "case.open", params, error: Some(e) });
         }
     }
 
@@ -1659,9 +1684,15 @@ impl App {
     }
 }
 
+/// Asks for a folder (the system's own dialog), starting in the given one; `None` when the
+/// person cancels or there is no dialog.
+pub type PickFolder = fn(start: Option<&str>) -> Option<String>;
+
 /// Where the desktop app starts.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
+    /// The folder dialog *Open* uses; without one, *Open* asks for the path in its card.
+    pub pick_folder: Option<PickFolder>,
     /// A case directory to open.
     pub case: Option<String>,
     /// Commands to run after opening it: `(id, params)`.
@@ -1730,6 +1761,7 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     startup.extend(options.commands.iter().cloned());
     let mut app = App::new(Session::new());
+    app.pick_folder = options.pick_folder;
     if options.dark {
         app.tokens = Tokens::dark();
     }

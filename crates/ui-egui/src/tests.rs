@@ -726,3 +726,45 @@ fn the_new_patch_card_reads_its_fields() {
     assert!(NewPatchForm { distance: String::new(), ..near.clone() }.params(None).is_err());
     assert!(NewPatchForm { file: " ".into(), ..near }.params(None).is_err());
 }
+
+/// The case folder the test picker answers with.
+static PICKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[test]
+fn open_asks_for_the_folder_in_the_systems_dialog() {
+    // A case on disk.
+    let dir = std::env::temp_dir().join(format!("umcf-gui-{}-open", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("system")).unwrap();
+    std::fs::write(
+        dir.join("system/controlDict"),
+        format!(
+            "{HEADER}application urbanMicroclimateFoam;\nstartTime 0;\nendTime 3600;\ndeltaT 60;\nwriteInterval 600;\n"
+        ),
+    )
+    .unwrap();
+    PICKED.set(dir.to_string_lossy().into_owned()).unwrap();
+    // Cancelled: nothing happens.
+    let mut app = App::new(Session::new());
+    app.pick_folder = Some(|_| None);
+    app.invoke("case.open");
+    assert!(app.session().location().is_none() && app.dialog.is_none());
+    // Not a case: the card shows the path and why.
+    app.pick_folder = Some(|_| Some("/nonexistent/umcf-case".to_string()));
+    app.invoke("case.open");
+    let d = app.dialog.clone().unwrap();
+    assert_eq!(d.id, "case.open");
+    assert!(d.params.contains("/nonexistent/umcf-case") && d.error.is_some(), "{d:?}");
+    // A case: opened, through the ribbon's Open.
+    app.dialog = None;
+    app.pick_folder = Some(|start| {
+        assert!(start.is_none());
+        PICKED.get().cloned()
+    });
+    let mut h = harness(app);
+    h.get_by_label("Open").click();
+    h.run();
+    assert_eq!(h.state().session().location(), PICKED.get().map(String::as_str));
+    assert_eq!(h.state().log.last().unwrap().command, "case.open");
+    let _ = std::fs::remove_dir_all(&dir);
+}

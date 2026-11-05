@@ -56,6 +56,12 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   done; a click on a chip undoes or redoes up to it. When there are more than fit, the ones
   nearest the marker are shown, with the number left out on each side.
 
+*Open* (Ctrl+O) asks for the case's folder in the system's own dialog: the desktop portal on
+Linux (`xdg-desktop-portal`, which GNOME and KDE run), or `zenity` where there is none. A folder
+that doesn't open (not a case, or the open case has unsaved changes) brings up the *Open* card
+with the path and why, to change it or to open anyway (`"discard": true`). Without either dialog
+nothing comes up: open the case from the command line (`umcf-gui <case>`).
+
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search.
 

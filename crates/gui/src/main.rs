@@ -24,8 +24,24 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
   --screenshot  write a PNG of the window once it has drawn, then quit
 ";
 
+/// The system's folder dialog (the desktop portal on Linux), for *Open*.
+fn pick_folder(start: Option<&str>) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new().set_title("Open a case");
+    if let Some(dir) = start.filter(|d| std::path::Path::new(d).is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let path = dialog.pick_folder()?;
+    match path.into_os_string().into_string() {
+        Ok(p) => Some(p),
+        Err(p) => {
+            eprintln!("umcf-gui: {} is not UTF-8 text: it can't be opened", p.to_string_lossy());
+            None
+        }
+    }
+}
+
 fn parse(args: &[String]) -> Result<Options, String> {
-    let mut o = Options::default();
+    let mut o = Options { pick_folder: Some(pick_folder), ..Options::default() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
