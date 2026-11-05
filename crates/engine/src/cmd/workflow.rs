@@ -13,7 +13,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     label: "Workflow description",
     menu: "Case/Workflow description",
     shortcut: None,
-    params: "none. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case, after an undo past a save). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, and patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner.",
+    params: "none. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, and patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner.",
     enabled: needs_case,
     run: show,
     journal: false,
@@ -43,7 +43,7 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             count(d.regions.len(), "region")
         ),
         "disk" => format!(
-            "{PATH} is on disk but not in the open case (an undo took it back after it was saved; open the case again to read it): as the scripts and meshes have it, {}",
+            "{PATH} is on disk but not in the open case (written or undone since the case was opened; edit.redo or opening the case again brings it in): as the scripts and meshes have it, {}",
             count(d.regions.len(), "region")
         ),
         _ => format!(
@@ -89,7 +89,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         umcf_model::Error::NotLoaded { .. } => match elsewhere {
             OnDisk::NotOpen => Error::Failed(format!(
-                "{PATH} is on disk but not in the open case (an undo took it back after it was saved): open the case again first"
+                "{PATH} is on disk but not in the open case (written or undone since the case was opened): edit.redo or open the case again first"
             )),
             _ => Error::Failed(format!(
                 "{PATH} is there but doesn't read as a dictionary: mend or remove it first (it isn't written over)"

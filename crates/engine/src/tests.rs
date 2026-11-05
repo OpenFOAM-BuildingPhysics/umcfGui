@@ -1635,7 +1635,7 @@ fn workflow_show_after_an_undo_past_a_save() {
     // The saved file is still on disk, a good dictionary the open case doesn't hold.
     let out = s.execute("workflow.show", &Value::Null).unwrap();
     assert_eq!(out.data["source"], "disk");
-    assert!(out.message.contains("an undo took it back"), "{}", out.message);
+    assert!(out.message.contains("written or undone since the case was opened"), "{}", out.message);
     let e = s.execute("workflow.import", &json!({ "replace": true })).unwrap_err();
-    assert!(e.to_string().contains("open the case again first"), "{e}");
+    assert!(e.to_string().contains("edit.redo or open the case again first"), "{e}");
 }
