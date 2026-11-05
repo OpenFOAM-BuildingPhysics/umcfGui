@@ -274,22 +274,16 @@ impl Rect {
     }
 }
 
-/// What `rect` of the image `camera` sees at `width` × `height` (sized as [`draw`] sizes it)
-/// covers, as (object index, triangle index) in order, each once.
+/// What `rect` of the image [`draw`] makes of `scene` with `camera` and `style` covers, as
+/// (object index, triangle index) in order, each once. Of the style only the size and the
+/// selection count: selected classes and faces are in front where they lie on others, as drawn.
 ///
 /// - `through` false: the triangles seen in it, in front of everything else, at the middle of
 ///   one of its pixels or more (a triangle smaller than a pixel may be missed).
-/// - `through` true: every triangle of each face (mesh face, STL triangle) whose middle (its
+/// - `through` true: the first triangle of each face (mesh face, STL triangle) whose middle (its
 ///   area-weighted centre) is inside it and in front of the camera, seen or hidden.
-pub fn covered(
-    scene: &Scene,
-    camera: &Camera,
-    width: u32,
-    height: u32,
-    rect: Rect,
-    through: bool,
-) -> Vec<(usize, u32)> {
-    let (w, h) = size(width, height);
+pub fn covered(scene: &Scene, camera: &Camera, style: &Style, rect: Rect, through: bool) -> Vec<(usize, u32)> {
+    let (w, h) = size(style.width, style.height);
     let (wu, hu) = (w as usize, h as usize);
     let Some((xs, ys)) = rect.pixels(wu, hu) else { return Vec::new() };
     let lens = Lens::new(scene, camera, wu, hu);
@@ -327,8 +321,8 @@ pub fn covered(
                 let centre = if area > 0.0 { sum.map(|v| v / area) } else { first };
                 if count > 0 && centre[2] >= lens.near {
                     let p = lens.project(centre);
-                    if rect.contains(p.x, p.y) {
-                        out.extend((n..end).filter_map(|t| u32::try_from(t).ok()).map(|t| (k, t)));
+                    if let (true, Ok(t)) = (rect.contains(p.x, p.y), u32::try_from(n)) {
+                        out.push((k, t));
                     }
                 }
                 n = end;
@@ -340,15 +334,24 @@ pub fn covered(
     // Each triangle's id: its object's first id plus its index.
     let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());
     let mut next: u32 = 0;
-    for obj in &scene.objects {
+    for (k, obj) in scene.objects.iter().enumerate() {
         first.push(next);
         let view = lens.view(obj);
+        let selected: Vec<bool> = (0..obj.classes.len())
+            .map(|c| style.selected.contains(&(k, u32::try_from(c).unwrap_or(u32::MAX))))
+            .collect();
+        let mut picked: Vec<u32> = style.selected_faces.iter().filter(|(o, _)| *o == k).map(|(_, f)| *f).collect();
+        picked.sort_unstable();
         for (n, tri) in obj.triangles.iter().enumerate() {
             let [Some(a), Some(b), Some(c)] = tri.map(|i| view.get(i as usize).copied()) else { continue };
             let Some(id) = u32::try_from(n).ok().and_then(|n| next.checked_add(n)).filter(|id| *id != NONE) else {
                 break;
             };
-            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, false);
+            // In front as `draw` puts it.
+            let class = obj.class.get(n).copied().unwrap_or(0);
+            let front = selected.get(class as usize).copied().unwrap_or(false)
+                || (!picked.is_empty() && obj.origin_index.get(n).is_some_and(|f| picked.binary_search(f).is_ok()));
+            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, front);
         }
         next = next.saturating_add(u32::try_from(obj.triangles.len()).unwrap_or(u32::MAX));
     }

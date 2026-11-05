@@ -270,16 +270,21 @@ impl Viewport {
         }
 
         let mut action = self.triad(ui, rect, &cam, tokens);
-        // The rectangle being dragged; let go, it selects.
+        // The rectangle being dragged; let go, it selects. Let go with no position known, or
+        // found up without a release seen (the view wasn't shown meanwhile), it is dropped.
         let pointer = ui.input(|i| i.pointer.latest_pos());
-        if let (Some(a), Some(b)) = (self.corner, pointer) {
-            let r = Rect::from_two_pos(a, b).intersect(rect);
-            if selecting {
+        let released = response.drag_stopped();
+        if let Some(a) = self.corner {
+            if let (true, Some(b)) = (selecting, pointer) {
+                let r = Rect::from_two_pos(a, b).intersect(rect);
                 let fill = tokens.accent.gamma_multiply(0.12);
                 ui.painter().rect(r, 0.0, fill, egui::Stroke::new(1.0, tokens.accent), egui::StrokeKind::Inside);
             }
-            if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            if released || !ui.input(|i| i.pointer.primary_down()) {
                 self.corner = None;
+            }
+            if let (true, Some(b)) = (released, pointer) {
+                let r = Rect::from_two_pos(a, b).intersect(rect);
                 let m = ui.input(|i| i.modifiers);
                 let mode = if m.command {
                     "remove"

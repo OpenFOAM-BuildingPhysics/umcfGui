@@ -360,15 +360,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let selection = s.selection.clone();
     let scene = scene(s, id, &p)?;
     let (cam, width, height) = camera(id, &p, scene)?;
-    let mut selected = Vec::new();
-    for (k, o) in scene.objects.iter().enumerate() {
-        for c in 0..o.classes.len() {
-            let Ok(c) = u32::try_from(c) else { break };
-            if Sel::of(o, c).is_some_and(|x| selection.contains(&x)) {
-                selected.push((k, c));
-            }
-        }
-    }
+    let selected = selected_classes(scene, &selection);
     let selected_faces = selected_faces(scene, &selection);
     let n_selected = selected.len() + selected_faces.len();
     let image =
@@ -454,6 +446,21 @@ fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
         }
         Mode::None => {}
     }
+}
+
+/// The selected patches and surface regions as the renderer takes them: (object index, class).
+fn selected_classes(scene: &Scene, selection: &[Sel]) -> Vec<(usize, u32)> {
+    let chosen: std::collections::HashSet<&Sel> = selection.iter().filter(|s| !matches!(s, Sel::Face { .. })).collect();
+    let mut out = Vec::new();
+    for (k, o) in scene.objects.iter().enumerate() {
+        for c in 0..o.classes.len() {
+            let Ok(c) = u32::try_from(c) else { break };
+            if !chosen.is_empty() && Sel::of(o, c).is_some_and(|x| chosen.contains(&x)) {
+                out.push((k, c));
+            }
+        }
+    }
+    out
 }
 
 /// The selected faces as the renderer takes them: (object index, face label), for mesh objects.
@@ -634,24 +641,41 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let r = p.required("rect")?.as_array().filter(|a| a.len() == 4).ok_or_else(bad)?;
     let c = |i: usize| r.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
     let area = umcf_render::raster::Rect { a: [c(0)?, c(1)?], b: [c(2)?, c(3)?] };
+    let selection = s.selection.clone();
     let scene = scene(s, id, &p)?;
-    let (cam, w, h) = camera(id, &p, scene)?;
-    let mut items: Vec<Sel> = Vec::new();
+    let (cam, width, height) = camera(id, &p, scene)?;
+    let style = Style {
+        width,
+        height,
+        selected: selected_classes(scene, &selection),
+        selected_faces: selected_faces(scene, &selection),
+        ..Style::default()
+    };
+    // (object, class or face) once each, then what they select.
+    let mut keys: Vec<(usize, u32)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (k, t) in umcf_render::raster::covered(scene, &cam, w, h, area, through) {
+    for (k, t) in umcf_render::raster::covered(scene, &cam, &style, area, through) {
         let Some(o) = scene.objects.get(k) else { continue };
-        let t = t as usize;
-        let sel = if faces {
-            o.origin_index.get(t).and_then(|f| Sel::face_of(o, *f))
-        } else {
-            o.class.get(t).and_then(|c| Sel::of(o, *c))
-        };
-        if let Some(sel) = sel
-            && seen.insert(sel.clone())
+        if faces && !matches!(o.source, Source::Mesh { .. }) {
+            continue;
+        }
+        let key = if faces { o.origin_index.get(t as usize) } else { o.class.get(t as usize) };
+        if let Some(key) = key
+            && seen.insert((k, *key))
         {
-            items.push(sel);
+            keys.push((k, *key));
         }
     }
+    if keys.len() > MAX_ITEMS {
+        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items in the rectangle")));
+    }
+    let items: Vec<Sel> = keys
+        .into_iter()
+        .filter_map(|(k, x)| {
+            let o = scene.objects.get(k)?;
+            if faces { Sel::face_of(o, x) } else { Sel::of(o, x) }
+        })
+        .collect();
     let n = items.len();
     let listed: Vec<Value> = items.iter().take(MAX_LISTED).map(Sel::to_json).collect();
     let before = s.selection.len();
