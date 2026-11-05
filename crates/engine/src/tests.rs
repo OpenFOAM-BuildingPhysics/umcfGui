@@ -1580,6 +1580,7 @@ fn geometry_trees_from_a_table_a_file_or_a_list() {
     }
 }
 
+#[test]
 fn workflow_show_and_import() {
     let mut s = session();
     // No description yet: as the case's scripts and meshes have it.
