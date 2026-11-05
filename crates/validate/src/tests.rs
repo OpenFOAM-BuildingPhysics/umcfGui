@@ -961,6 +961,79 @@ setFields -region air\n";
 }
 
 #[test]
+fn openfoam_8_reads_dict_paths_in_the_region() {
+    // The OpenFOAM-8 vegetation tutorial: the path goes through the region's directory.
+    let script = "#!/bin/sh\ntopoSet -region vegetation -dict system/../air/topoSetDict\n";
+    let mut of8 = with_script(of8_case(), "Allprepare", script);
+    of8.insert("system/air/topoSetDict", dict(""));
+    assert!(!codes(&of8).iter().any(|(_, c)| *c == "workflow.missing"), "{:?}", codes(&of8));
+    // An OpenFOAM-12 path in an OpenFOAM-8 case reads system/vegetation/air/topoSetDict.
+    let mut of8 =
+        with_script(of8_case(), "Allprepare", "#!/bin/sh\ntopoSet -region vegetation -dict system/air/topoSetDict\n");
+    of8.insert("system/air/topoSetDict", dict(""));
+    let c = Case::open(&of8).unwrap();
+    let missing: Vec<String> =
+        check(&c).into_iter().filter(|d| d.code == "workflow.missing").map(|d| d.message).collect();
+    assert!(missing.iter().any(|m| m.contains("system/vegetation/air/topoSetDict")), "{missing:?}");
+    // OpenFOAM-12 reads the path from the case: system/../air/topoSetDict is air/topoSetDict.
+    let mut of12 = with_script(case(), "Allprepare", script);
+    of12.insert("system/air/topoSetDict", dict(""));
+    let c = Case::open(&of12).unwrap();
+    let missing: Vec<String> =
+        check(&c).into_iter().filter(|d| d.code == "workflow.missing").map(|d| d.message).collect();
+    assert!(missing.iter().any(|m| m.contains("reads air/topoSetDict")), "{missing:?}");
+    let mut of12 =
+        with_script(case(), "Allprepare", "#!/bin/sh\ntopoSet -region vegetation -dict system/air/topoSetDict\n");
+    of12.insert("system/air/topoSetDict", dict(""));
+    assert!(!codes(&of12).iter().any(|(_, c)| *c == "workflow.missing"), "{:?}", codes(&of12));
+}
+
+/// What `workflow.missing` says `script` (a line of Allprepare) reads, in `fs`.
+fn missing_reads(fs: MemFs, script: &str) -> Vec<String> {
+    let fs = with_script(fs, "Allprepare", &format!("#!/bin/sh\n{script}\n"));
+    let c = Case::open(&fs).unwrap();
+    check(&c).into_iter().filter(|d| d.code == "workflow.missing").map(|d| d.message).collect()
+}
+
+#[test]
+fn dict_paths_as_each_version_reads_them() {
+    let reads = |fs: MemFs, script: &str, path: &str| {
+        let m = missing_reads(fs, script);
+        assert!(m.iter().any(|m| m.contains(&format!("reads {path},"))), "{script}: {m:?}");
+    };
+    // A directory: the dictionary in it, through the region in OpenFOAM-8.
+    reads(of8_case(), "topoSet -region vegetation -dict system", "system/vegetation/topoSetDict");
+    reads(case(), "topoSet -region vegetation -dict system", "system/topoSetDict");
+    // A bare name: OpenFOAM-8 puts the region before it, OpenFOAM-12 looks in system/.
+    reads(of8_case(), "topoSet -region vegetation -dict myDict", "vegetation/myDict");
+    reads(case(), "topoSet -region vegetation -dict myDict", "system/vegetation/myDict");
+    reads(case(), "topoSet -dict myDict", "system/myDict");
+    reads(case(), "blockMesh -region air -dict myDict", "system/air/myDict");
+    reads(case(), "faceAgglomerate -region vegetation -dict myDict", "system/myDict");
+    // faceAgglomerate reads through the mesh too (setConstantMeshDictionaryIO.H).
+    reads(
+        of8_case(),
+        "faceAgglomerate -region vegetation -dict constant/viewFactorsDict",
+        "constant/vegetation/viewFactorsDict",
+    );
+    // blockMesh reads it through the Time: from the case.
+    reads(of8_case(), "blockMesh -region air -dict system/blockMeshDict.air", "system/blockMeshDict.air");
+    // An absolute path is itself.
+    reads(of8_case(), "topoSet -region vegetation -dict /abs/topoSetDict", "/abs/topoSetDict");
+}
+
+#[test]
+fn collapsing_paths() {
+    use crate::workflow::collapse;
+    assert_eq!(collapse("system/vegetation/../air/topoSetDict"), "system/air/topoSetDict");
+    assert_eq!(collapse("./a//b/."), "a/b");
+    assert_eq!(collapse("../x"), "../x");
+    assert_eq!(collapse("a/../../b"), "../b");
+    assert_eq!(collapse("/.."), "/");
+    assert_eq!(collapse("/a/../b"), "/b");
+}
+
+#[test]
 fn copies_over_dictionaries_and_broken_first_lines() {
     let mut fs = with_script(
         case(),

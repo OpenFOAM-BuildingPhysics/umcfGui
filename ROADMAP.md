@@ -55,3 +55,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-05 — M0.32 the ribbon is tall enough for its group labels (File, Inspect, Configure), which ran over its bottom edge.
 - 2026-11-05 — M0.33 a renamed patch's new name follows into `0.orig` and the region's `viewFactorsDict`; `patch.set` lists the result time directories and each file and line that still has the old name.
 - 2026-11-05 — M0.34 the common workflow designed (`docs/common-workflow.md`): `system/umcfWorkflow` as the case's description, the dictionaries, fields and scripts generated from it, running OpenFOAM natively, through WSL, in a VM or container, or by ssh; the gaps rows 4–9 and 12 ordered towards it.
+- 2026-11-05 — M0.35 a mesh header's `nCells: 400` (as topoSet and changeDictionary write it) is read; the check follows `-dict` paths as each version reads them: OpenFOAM-8 through the region's directory for the applications that read through the mesh, a directory, a bare name, `..`.
