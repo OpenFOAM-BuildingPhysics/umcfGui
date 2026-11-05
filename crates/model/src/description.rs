@@ -321,7 +321,7 @@ impl Description {
         for e in doc.root.entries() {
             let key = e.key();
             if !seen.insert(key) && key != "FoamFile" {
-                problem(key, "is given twice: the first is read".into());
+                problem(key, "is given twice: the later ones are left out".into());
                 continue;
             }
             match key {
@@ -470,6 +470,15 @@ fn unescaped(t: &str) -> String {
     }
 }
 
+/// Whether `e`'s key came before in its dictionary (a problem at `at`, and the entry is left out).
+fn twice<'a>(seen: &mut HashSet<&'a str>, e: &'a Entry, at: &str, problem: &mut impl FnMut(&str, String)) -> bool {
+    if seen.insert(e.key()) {
+        return false;
+    }
+    problem(at, "is given twice: the later ones are left out".into());
+    true
+}
+
 /// An entry's key as the name it stands for.
 fn entry_name(e: &Entry) -> String {
     unescaped(&e.key.text)
@@ -515,8 +524,12 @@ fn list(e: &Entry) -> Option<&[Node]> {
 fn read_radiation(body: &umcf_foam_dict::Dict, problem: &mut impl FnMut(&str, String)) -> Option<Radiation> {
     let mut region = None;
     let mut rad = Radiation { region: String::new(), lai_region: None, view_factors: true, solar_ray_tracing: true };
+    let mut seen = HashSet::new();
     for e in body.entries() {
         let at = format!("radiation/{}", e.key());
+        if twice(&mut seen, e, &at, problem) {
+            continue;
+        }
         match e.key() {
             "region" => match single(e) {
                 Some(r) => region = Some(r),
@@ -565,8 +578,13 @@ fn read_region(
         patches: Vec::new(),
     };
     let mut kind = None;
+    // One `patches` (or `kind`, …) per region: a second is a problem, not read.
+    let mut seen = HashSet::new();
     for e in body.entries() {
         let here = format!("{at}/{}", e.key());
+        if twice(&mut seen, e, &here, problem) {
+            continue;
+        }
         match e.key() {
             "kind" => match single(e).as_deref() {
                 Some("fluid") => kind = Some(RegionKind::Fluid),
@@ -626,8 +644,12 @@ fn read_region(
 
 fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> PatchDesc {
     let mut p = PatchDesc { name: name.to_string(), role: None, partner: None };
+    let mut seen = HashSet::new();
     for e in body.entries() {
         let here = format!("{at}/{}", e.key());
+        if twice(&mut seen, e, &here, problem) {
+            continue;
+        }
         match e.key() {
             "role" => match single(e).as_deref().and_then(Role::parse) {
                 Some(role) => p.role = Some(role),

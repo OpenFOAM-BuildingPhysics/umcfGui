@@ -363,6 +363,22 @@ fn a_case_holds_one_description() {
 }
 
 #[test]
+fn a_key_given_twice_in_a_region_or_patch_is_read_once() {
+    let doc = Document::parse(
+        "regions { air { kind fluid; patches { a { role inlet; role outlet; } } patches { a { role side; } } } }\nradiation { region air; region street; }\n",
+    )
+    .unwrap();
+    let (d, problems) = Description::read(&doc);
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(at, ["regions/air/patches/a/role", "regions/air/patches", "radiation/region"], "{problems:?}");
+    assert!(problems.iter().all(|p| p.message == "is given twice: the later ones are left out"), "{problems:?}");
+    let air = d.region("air").unwrap();
+    assert_eq!(air.patches.len(), 1);
+    assert_eq!(air.patches[0].role, Some(Role::Inlet));
+    assert_eq!(d.radiation.map(|r| r.region), Some("air".to_string()));
+}
+
+#[test]
 fn a_region_given_twice_is_read_once_even_when_the_first_is_wrong() {
     let doc = Document::parse("regions { air 1; air { kind fluid; } }\n").unwrap();
     let (d, problems) = Description::read(&doc);
