@@ -1,8 +1,8 @@
 # 3D scene and selection
 
 umcfGui shows a case in 3D as its meshes' boundary patches and its STL surfaces. What is drawn
-or picked is always a patch or a surface region, never just a pixel: each triangle knows the
-mesh face or STL triangle it came from. Picking selects what later commands act on (boundary
+or picked is a patch, a surface region or a single mesh face, never just a pixel: each triangle
+knows the mesh face or STL triangle it came from. Picking selects what later commands act on (boundary
 conditions by picking, for example).
 
 ## What the scene shows
@@ -110,5 +110,5 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
   the 3×3 case takes about 5 s and 1.3 GB, almost all of it reading. Its 573 000 boundary
   triangles are drawn and picked in well under a second.
 - No level of detail and no transparency yet; the renderer draws every triangle on one core.
-- Selections are whole patches and surface regions. Single faces and cells come with the
-  commands that need them.
+- Selections are whole patches, surface regions and single mesh faces (`faces: true`). Picking
+  many faces at once (a drag rectangle, a brush) and picking cells are not there yet.
