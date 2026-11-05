@@ -364,6 +364,14 @@ fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(TREES.id, p, &["table", "path", "trees", "name", "solid", "replace"])?;
     let rel = surface_path(TREES.id, p.str("name")?.unwrap_or("trees.stl"), false)?;
     let solid = stl::foam_name(p.str("solid")?.unwrap_or("trees"));
+    // The ASCII writer keeps printable ASCII only: a name it would change is refused, so the
+    // region is the name reported.
+    if !solid.chars().all(|c| c.is_ascii_graphic()) {
+        return Err(Error::Params(format!(
+            "{}: `{solid}` as a region name: printable ASCII only (letters, digits, `_` …), as STL writes it",
+            TREES.id
+        )));
+    }
     // Binary STL has no region names: the region would be OpenFOAM's `patch0`.
     if is_stlb(&rel) && p.value("solid").is_some_and(|v| !v.is_null()) {
         return Err(Error::Params(format!(

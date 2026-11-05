@@ -119,19 +119,19 @@ x       y       z       CD      CH
 330     330     2.5     5.5     5.5
 ```
 
-One tree a line, the numbers separated by tabs, commas or spaces, one kind a line: with tabs or
-commas an empty cell is an error, not skipped, and a cell may hold spaces (a species name), and one
-in double quotes commas too, as spreadsheets and R's `write.csv` write them. The first line names
-the columns, `x y z CD CH` in any order, with other columns left alone (a tree height `H` beside
-the crown's `CH`, say); `D`/`H` or `diameter`/`height` stand for the crown's when there is no
-`CD`/`CH`. Without that line a tree is exactly five numbers, in that order. A line with more cells
-than the header has names (R's row names) is refused, and so is a space-separated line with fewer:
-spaces can't mark an empty cell. Lines starting with `#` or `//` are skipped. At most 80 000 trees,
-which keeps the surface within the case's file size limit; a crown much smaller than its
-coordinates (beyond the seven digits STL holds) is refused. The surface has one region, `trees` (or
-`solid`); a binary `.stlb` has no region names, so `solid` is refused with one. Only the crowns are
-made, no trunks: the solver's vegetation model works on the leaf area density of the tree zone,
-which the crowns bound.
+One tree a line, the numbers separated by tabs, commas or spaces, one kind for the whole table (the
+first line's): with tabs or commas an empty cell is an error, not skipped, and a cell may hold
+spaces (a species name), and one in double quotes commas too, as spreadsheets and R's `write.csv`
+write them. The first line names the columns, `x y z CD CH` in any order, with other columns left
+alone (a tree height `H` beside the crown's `CH`, say); `D`/`H` or `diameter`/`height` stand for
+the crown's when there is no `CD`/`CH`. Without that line a tree is exactly five numbers, in that
+order. A line with more cells than the header has names (R's row names) is refused, and so is a
+space-separated line with fewer: spaces can't mark an empty cell. Lines starting with `#` or `//`
+are skipped. At most 80 000 trees, which keeps the surface within the case's file size limit; a
+crown much smaller than its coordinates (beyond the seven digits STL holds) is refused. The surface
+has one region, `trees` (or `solid`, in printable ASCII); a binary `.stlb` has no region names, so
+`solid` is refused with one. Only the crowns are made, no trunks: the solver's vegetation model
+works on the leaf area density of the tree zone, which the crowns bound.
 
 The shape is the one the vegetation workflow's tree script (`tree_shape_simple.py`) makes. That
 script writes the eight triangular faces as squares with a corner twice (16 triangles without

@@ -56,9 +56,9 @@ impl Tree {
     }
 }
 
-/// The trees of a table: one tree a line, the numbers separated by tabs, commas or spaces (one
-/// kind a line; with tabs or commas an empty cell is an error, not skipped). A
-/// first line of column names (`x y z CD CH` in any order, case ignored; `D`/`H` and
+/// The trees of a table: one tree a line, the numbers separated by tabs, commas or spaces (one kind
+/// for the whole table, the first line's; with tabs or commas an empty cell is an error, not
+/// skipped). A first line of column names (`x y z CD CH` in any order, case ignored; `D`/`H` and
 /// `diameter`/`height` stand for the crown's when there is no `CD`/`CH`; other columns are left
 /// alone), or none: then a tree is exactly five numbers, x, y, z, CD, CH. A leading byte-order
 /// mark, blank lines and lines starting with `#` or `//` are skipped.
