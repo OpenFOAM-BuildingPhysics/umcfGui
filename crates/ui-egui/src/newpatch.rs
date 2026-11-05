@@ -1,5 +1,5 @@
-//! The new patch card: `patch.create` from the faces of the selected patches in a box or near a
-//! surface, as a form. The engine checks and runs it.
+//! The new patch card: `patch.create` from the faces picked in the view, or from the faces of
+//! the selected patches in a box or near a surface, as a form. The engine checks and runs it.
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui, vec2};
 use serde_json::{Map, Value, json};
@@ -14,6 +14,20 @@ pub enum Source {
     #[default]
     Box,
     Surface,
+    /// The faces picked in the view.
+    Picked,
+}
+
+/// The picked faces: (region, face).
+fn picked(session: &umcf_engine::Session) -> Vec<(String, u32)> {
+    session
+        .selection()
+        .iter()
+        .filter_map(|s| match s {
+            umcf_engine::Sel::Face { region, face } => Some((region.clone(), *face)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What the card holds while it is open.
@@ -32,6 +46,8 @@ pub struct NewPatchForm {
     pub solid: String,
     pub distance: String,
     pub error: Option<String>,
+    /// A source was chosen by hand: picking faces doesn't switch to `Picked` any more.
+    pub(crate) chose: bool,
 }
 
 impl Default for NewPatchForm {
@@ -47,6 +63,7 @@ impl Default for NewPatchForm {
             solid: String::new(),
             distance: String::new(),
             error: None,
+            chose: false,
         }
     }
 }
@@ -97,6 +114,8 @@ impl NewPatchForm {
                 s.insert("distance".into(), json!(number("Distance", &self.distance)?));
                 p.insert("surface".into(), Value::Object(s));
             }
+            // patch.create takes the selected faces.
+            Source::Picked => {}
         }
         Ok(Value::Object(p))
     }
@@ -107,8 +126,13 @@ impl App {
     pub(crate) fn new_patch_card(&mut self, ui: &mut Ui, width: f32, room: f32) -> (bool, bool) {
         let t = self.tokens.clone();
         let patches = selected(&self.session);
+        let faces = picked(&self.session);
         let (mut ok, mut close) = (false, false);
         let Some(form) = &mut self.new_patch else { return (false, false) };
+        // Faces picked: those; none: a box. Unless a source was chosen by hand.
+        if !form.chose {
+            form.source = if faces.is_empty() { Source::Box } else { Source::Picked };
+        }
         let muted = Ink { line: t.text_muted, fill: t.accent };
         let card_top = ui.cursor().top();
         t.card_frame().show(ui, |ui| {
@@ -122,7 +146,14 @@ impl App {
                 });
             });
             ui.separator();
-            let from = if patches.is_empty() {
+            let from = if form.source == Source::Picked {
+                let n = faces.len();
+                if n == 0 {
+                    "Pick faces in the view (the Pick faces button under it; Ctrl+click for more).".to_string()
+                } else {
+                    format!("The {} picked in the view.", if n == 1 { "face".to_string() } else { format!("{n} faces") })
+                }
+            } else if patches.is_empty() {
                 "Select the patches to take faces from, in the view or the browser (Ctrl+click for more).".to_string()
             } else {
                 let names: Vec<&str> = patches.iter().map(|(_, p)| p.as_str()).take(6).collect();
@@ -147,10 +178,14 @@ impl App {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Faces");
+                    let before = form.source;
+                    ui.radio_value(&mut form.source, Source::Picked, "Picked");
                     ui.radio_value(&mut form.source, Source::Box, "In a box");
                     ui.radio_value(&mut form.source, Source::Surface, "Near a surface");
+                    form.chose |= form.source != before;
                 });
                 match form.source {
+                    Source::Picked => {}
                     Source::Box => {
                         ui.label(RichText::new("Faces whose centre is inside, x y z").size(12.0).color(t.text_muted));
                         egui::Grid::new("new-patch-box").num_columns(4).spacing(vec2(6.0, 6.0)).show(ui, |ui| {
@@ -205,14 +240,20 @@ impl App {
     /// Runs `patch.create` with the card's parameters; the card closes when it works, and stays
     /// open with the error when it doesn't.
     pub(crate) fn create_patch(&mut self) {
-        let mut regions: Vec<String> = selected(&self.session).into_iter().map(|(r, _)| r).collect();
+        let Some(form) = self.new_patch.clone() else { return };
+        let mut regions: Vec<String> = if form.source == Source::Picked {
+            picked(&self.session).into_iter().map(|(r, _)| r).collect()
+        } else {
+            selected(&self.session).into_iter().map(|(r, _)| r).collect()
+        };
         regions.sort();
         regions.dedup();
-        let Some(form) = self.new_patch.clone() else { return };
+        let what = if form.source == Source::Picked { "faces" } else { "patches" };
         let result = match regions.as_slice() {
             [r] => form.params(Some(r)).and_then(|p| self.run("patch.create", p).map(|_| ())),
+            [] if form.source == Source::Picked => Err("Pick the faces in the view first.".to_string()),
             [] => Err("Select the patches to take faces from.".to_string()),
-            _ => Err("Select patches of one region.".to_string()),
+            _ => Err(format!("Select {what} of one region.")),
         };
         match (result, &mut self.new_patch) {
             (Ok(()), _) => self.new_patch = None,

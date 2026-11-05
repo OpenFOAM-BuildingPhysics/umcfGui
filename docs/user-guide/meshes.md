@@ -210,7 +210,10 @@ umcf-cli run --case my-case \
 ## New patches
 
 `patch.create` prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's
-`createPatch` to make. The faces are given as labels (`faces`), as the ones whose centre is in a
+`createPatch` to make. The faces are the ones selected (picked in the view, `select.pick` with
+`faces: true`, or `select.set`) when nothing else is given (all of one region; they leave the
+selection once prepared, and an undo doesn't bring them back: the selection isn't part of the
+undo history), or are given as labels (`faces`), as the ones whose centre is in a
 box (`box`), or as the ones whose centre is within a distance of an STL surface of the case, or
 of one solid of it (`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its
 triangles. A box or a surface takes faces from the patches named in `from`, else from the
@@ -257,7 +260,9 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   patch that gives faces (`patch.resized`), whose size is wrong once `createPatch` has run, about
   `0.orig` (`patch.orig`), a patch that gives all its faces (`patch.emptied`: `createPatch`
   removes it, except OpenFOAM-12's, which keeps a constraint type without faces), and the
-  `processor*` directories (`patch.decomposed`).
+  `processor*` directories (`patch.decomposed`). Faces taken from a constraint patch (`empty`,
+  `symmetry`, …) for another type are pointed out (`patch.constraint`): they are no longer treated
+  as such, which is seldom meant (the front and back of a 2D mesh, picked in the view).
 - **Refused**: a name already used (a patch, a group, a field entry, a prepared patch, a face
   set), a number, a face that isn't a boundary face, a face prepared for another patch already (from a face set, or from whole patches by a
   `constructFrom patches` entry of the dictionary, which may name patches and groups but no

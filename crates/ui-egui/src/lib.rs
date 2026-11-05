@@ -1057,11 +1057,14 @@ impl App {
             }
         }
         match action {
-            Some(Action::Pick { ray, mode }) => {
+            Some(Action::Pick { ray, mode, faces }) => {
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
                     o.insert("ray".into(), json!({ "origin": ray.origin, "direction": ray.direction }));
                     o.insert("mode".into(), json!(mode));
+                    if faces {
+                        o.insert("faces".into(), json!(true));
+                    }
                 }
                 let _ = self.run("select.pick", p);
             }
@@ -1402,6 +1405,8 @@ impl App {
                     });
                     ui.separator();
                     egui::ScrollArea::vertical().id_salt("properties").max_height(320.0).show(ui, |ui| {
+                        // Faces in one line per region.
+                        let mut faces: Vec<(&str, usize)> = Vec::new();
                         for sel in self.session.selection() {
                             match sel {
                                 Sel::Patch { region, patch } => self.patch_details(ui, region, patch),
@@ -1409,7 +1414,27 @@ impl App {
                                     ui.label(RichText::new(solid).font(theme::strong(13.5)));
                                     ui.label(RichText::new(format!("surface region of {file}")).color(t.text_muted));
                                 }
+                                Sel::Face { region, .. } => {
+                                    match faces.iter_mut().find(|(r, _)| r == region) {
+                                        Some((_, n)) => *n += 1,
+                                        None => faces.push((region.as_str(), 1)),
+                                    }
+                                    continue;
+                                }
                             }
+                            ui.add_space(6.0);
+                        }
+                        for (region, n) in faces {
+                            let what = if n == 1 { "1 face".to_string() } else { format!("{n} faces") };
+                            ui.label(RichText::new(what).font(theme::strong(13.5)));
+                            let of = if region.is_empty() {
+                                "of the mesh".to_string()
+                            } else {
+                                format!("of region {region}")
+                            };
+                            ui.label(
+                                RichText::new(format!("{of}: New patch makes a patch of them")).color(t.text_muted),
+                            );
                             ui.add_space(6.0);
                         }
                     });
@@ -1583,6 +1608,16 @@ impl App {
                     let edges = self.viewport.edges;
                     if b(ui, Icon::Edges, edges, "Edges", "Draw the faces' edges") {
                         self.viewport.edges = !edges;
+                    }
+                    let faces = self.viewport.faces;
+                    if b(
+                        ui,
+                        Icon::Faces,
+                        faces,
+                        "Pick faces",
+                        "A click picks the mesh face under it, not its patch (Ctrl+click adds or takes away one)",
+                    ) {
+                        self.viewport.faces = !faces;
                     }
                 });
             });

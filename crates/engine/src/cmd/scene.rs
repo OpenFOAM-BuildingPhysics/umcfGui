@@ -30,6 +30,8 @@ pub enum Sel {
     Patch { region: String, patch: String },
     /// A region of an STL surface (`file` case-relative), as OpenFOAM names it.
     Solid { file: String, solid: String },
+    /// A boundary face of a region's mesh, by its label.
+    Face { region: String, face: u32 },
 }
 
 impl Sel {
@@ -37,6 +39,15 @@ impl Sel {
         match self {
             Sel::Patch { region, patch } => json!({ "region": region, "patch": patch }),
             Sel::Solid { file, solid } => json!({ "surface": file, "solid": solid }),
+            Sel::Face { region, face } => json!({ "region": region, "face": face }),
+        }
+    }
+
+    /// The selection of face `index` of `object`: a mesh face (an STL triangle is not one).
+    fn face_of(object: &Object, index: u32) -> Option<Sel> {
+        match &object.source {
+            Source::Mesh { region } => Some(Sel::Face { region: region.clone(), face: index }),
+            Source::Surface { .. } => None,
         }
     }
 
@@ -65,6 +76,8 @@ const WHICH: [&str; 3] = ["regions", "surfaces", "reload"];
 /// The parameters that place the camera.
 const CAMERA: [&str; 6] = ["view", "azimuth", "elevation", "zoom", "width", "height"];
 const DEFAULT_SIZE: (u32, u32) = (1280, 800);
+/// The most items one `select.set` takes.
+const MAX_ITEMS: usize = 50_000_000;
 /// Most hits a pick lists.
 const MAX_HITS: usize = 64;
 
@@ -199,6 +212,11 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         for (f, stl) in &stls {
             scene.objects.push(Object::from_stl(f, stl, scene.origin));
         }
+        // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
+        // the faces picked on it go.
+        if reload {
+            s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
+        }
         s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene });
     }
     Ok(())
@@ -286,7 +304,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -317,8 +335,10 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
         }
     }
-    let n_selected = selected.len();
-    let image = draw(scene, &cam, &Style { width, height, edges, selected, colour_by, ..Style::default() });
+    let selected_faces = selected_faces(scene, &selection);
+    let n_selected = selected.len() + selected_faces.len();
+    let image =
+        draw(scene, &cam, &Style { width, height, edges, selected, selected_faces, colour_by, ..Style::default() });
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();
     let mut message = format!("{width} × {height} of {} ({})", labels.join(", "), count(scene.triangles(), "triangle"));
@@ -402,6 +422,20 @@ fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
     }
 }
 
+/// The selected faces as the renderer takes them: (object index, face label), for mesh objects.
+pub fn selected_faces(scene: &Scene, selection: &[Sel]) -> std::collections::HashSet<(usize, u32)> {
+    let mut out = std::collections::HashSet::new();
+    for sel in selection {
+        let Sel::Face { region, face } = sel else { continue };
+        for (k, o) in scene.objects.iter().enumerate() {
+            if matches!(&o.source, Source::Mesh { region: r } if r == region) {
+                out.insert((k, *face));
+            }
+        }
+    }
+    out
+}
+
 fn selection_json(s: &[Sel]) -> Value {
     s.iter().map(Sel::to_json).collect()
 }
@@ -418,7 +452,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     label: "Pick",
     menu: "",
     shortcut: None,
-    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, width, height).",
+    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). faces: true selects the mesh face under it instead ({\"region\", \"face\"}), and lists one entry per face. depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, width, height).",
     enabled: needs_case,
     run: pick,
     journal: true,
@@ -429,8 +463,9 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = PICK.id;
     let mut allowed = WHICH.to_vec();
     allowed.extend(CAMERA);
-    allowed.extend(["pixel", "ray", "depth", "mode"]);
+    allowed.extend(["pixel", "ray", "depth", "mode", "faces"]);
     let p = Params::new(id, p, &allowed)?;
+    let faces = p.bool("faces")?.unwrap_or(false);
     let mode = mode(
         id,
         &p,
@@ -466,11 +501,24 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         _ => return Err(Error::Params(format!("{id}: give `pixel` or `ray` (one of them)"))),
     };
-    // One entry per patch or region, at its nearest hit.
-    let hits: Vec<Pick> = scene.pick_classes(&ray);
+    // One entry per patch or region at its nearest hit; with `faces`, per mesh face.
+    // Surfaces have no faces to pick: their triangles are passed over before the limit.
+    let hits: Vec<Pick> = if faces {
+        scene
+            .pick(&ray, usize::MAX)
+            .into_iter()
+            .filter(|h| scene.objects.get(h.object).is_some_and(|o| matches!(o.source, Source::Mesh { .. })))
+            .collect()
+    } else {
+        scene.pick_classes(&ray)
+    };
     let mut under: Vec<(Sel, &Pick)> = Vec::new();
     for h in &hits {
-        let Some(sel) = scene.objects.get(h.object).and_then(|o| Sel::of(o, h.class)) else { continue };
+        let sel = scene
+            .objects
+            .get(h.object)
+            .and_then(|o| if faces { Sel::face_of(o, h.index) } else { Sel::of(o, h.class) });
+        let Some(sel) = sel else { continue };
         if !under.iter().any(|(x, _)| *x == sel) && under.len() < MAX_HITS {
             under.push((sel, h));
         }
@@ -479,9 +527,12 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .iter()
         .map(|(sel, h)| {
             let mut j = sel.to_json();
-            let index = if matches!(sel, Sel::Patch { .. }) { "face" } else { "triangle" };
+            let index = if matches!(sel, Sel::Solid { .. }) { "triangle" } else { "face" };
             if let Some(o) = j.as_object_mut() {
                 o.insert(index.to_string(), json!(h.index));
+                if faces && let Some(name) = scene.objects.get(h.object).and_then(|o| o.classes.get(h.class as usize)) {
+                    o.insert("patch".to_string(), json!(name));
+                }
                 o.insert("distance".to_string(), json!(h.distance));
                 o.insert("point".to_string(), json!([h.point.x, h.point.y, h.point.z]));
             }
@@ -500,6 +551,8 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         Sel::Patch { region, patch } if region.is_empty() => format!("patch {patch}"),
         Sel::Patch { region, patch } => format!("patch {patch} of region {region}"),
         Sel::Solid { file, solid } => format!("region {solid} of {file}"),
+        Sel::Face { region, face } if region.is_empty() => format!("face {face}"),
+        Sel::Face { region, face } => format!("face {face} of region {region}"),
     };
     let message = match &picked {
         Some(x) => format!("{} ({} under the cursor); {} selected", what(x), n_under, s.selection.len()),
@@ -520,7 +573,7 @@ pub(super) const SELECT: CommandSpec = CommandSpec {
     label: "Select",
     menu: "",
     shortcut: None,
-    params: "items: a list of patches ({\"region\": \"air\", \"patch\": \"inlet\"}; region \"\" in a single-region case) and surface regions ({\"surface\": \"walls.stl\", \"solid\": \"roofs\"}, the region as OpenFOAM names it). mode: replace (default), add or remove. Each must exist.",
+    params: "items: a list of patches ({\"region\": \"air\", \"patch\": \"inlet\"}; region \"\" in a single-region case) and surface regions ({\"surface\": \"walls.stl\", \"solid\": \"roofs\"}, the region as OpenFOAM names it) and boundary faces of a mesh ({\"region\": \"air\", \"face\": 75548}, by label). mode: replace (default), add or remove. Each must exist.",
     enabled: needs_case,
     run: select,
     journal: true,
@@ -532,6 +585,9 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(id, p, &["items", "mode"])?;
     let mode = mode(id, &p, &[("replace", Mode::Replace), ("add", Mode::Add), ("remove", Mode::Remove)])?;
     let list = p.required("items")?.as_array().ok_or_else(|| Error::Params(format!("{id}: `items` is a list")))?;
+    if list.len() > MAX_ITEMS {
+        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items")));
+    }
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let mut items = Vec::new();
     // Each surface's regions, read once.
@@ -554,6 +610,28 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 }
                 Sel::Patch { region: region.to_string(), patch: patch.to_string() }
             }
+            (Some(region), None, None, None) if keys.len() == 2 && o.contains_key("face") => {
+                let face =
+                    o.get("face").and_then(Value::as_u64).and_then(|f| u32::try_from(f).ok()).ok_or_else(|| {
+                        Error::Params(format!(
+                            "{id}: `face` is a face label, not {}",
+                            o.get("face").unwrap_or(&Value::Null)
+                        ))
+                    })?;
+                let r = case
+                    .regions
+                    .iter()
+                    .find(|r| r.name == region)
+                    .ok_or_else(|| Error::Params(format!("{id}: no region `{region}`")))?;
+                let patches =
+                    r.patches.as_ref().ok_or_else(|| Error::Params(format!("{id}: region `{region}` has no mesh")))?;
+                if !patches.iter().any(|x| x.faces().contains(&(face as usize))) {
+                    return Err(Error::Params(format!(
+                        "{id}: face {face} is not a boundary face of region `{region}`"
+                    )));
+                }
+                Sel::Face { region: region.to_string(), face }
+            }
             (None, None, Some(file), Some(solid)) if keys.len() == 2 => {
                 let rel = surface_path(id, file, false)?;
                 if !regions.contains_key(&rel) {
@@ -570,7 +648,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
             _ => {
                 return Err(Error::Params(format!(
-                    "{id}: an item is {{\"region\", \"patch\"}} or {{\"surface\", \"solid\"}}, not {v}"
+                    "{id}: an item is {{\"region\", \"patch\"}}, {{\"region\", \"face\"}} or {{\"surface\", \"solid\"}}, not {v}"
                 )));
             }
         };

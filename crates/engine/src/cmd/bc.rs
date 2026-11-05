@@ -260,7 +260,7 @@ fn patches(s: &Session, p: &Params) -> Result<Vec<(String, String)>, Error> {
             .iter()
             .filter_map(|x| match x {
                 Sel::Patch { region, patch } => Some((region.clone(), patch.clone())),
-                Sel::Solid { .. } => None,
+                Sel::Solid { .. } | Sel::Face { .. } => None,
             })
             .collect(),
     };
