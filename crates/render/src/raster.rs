@@ -230,19 +230,9 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                 }
             })
             .collect();
-        // The selected faces of this object, by label.
-        let mut picked: Vec<bool> = Vec::new();
-        for (o, f) in &style.selected_faces {
-            if *o == k {
-                let f = *f as usize;
-                if picked.len() <= f {
-                    picked.resize(f + 1, false);
-                }
-                if let Some(x) = picked.get_mut(f) {
-                    *x = true;
-                }
-            }
-        }
+        // The selected faces of this object, by label, in order.
+        let mut picked: Vec<u32> = style.selected_faces.iter().filter(|(o, _)| *o == k).map(|(_, f)| *f).collect();
+        picked.sort_unstable();
         let base = next_id;
         next_id = next_id.saturating_add(u32::try_from(obj.classes.len()).unwrap_or(u32::MAX));
         for (n, tri) in obj.triangles.iter().enumerate() {
@@ -250,7 +240,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             let [Some(a), Some(b), Some(c)] = p else { continue };
             let class = obj.class.get(n).copied().unwrap_or(0);
             let face_selected =
-                !picked.is_empty() && obj.origin_index.get(n).is_some_and(|f| picked.get(*f as usize) == Some(&true));
+                !picked.is_empty() && obj.origin_index.get(n).is_some_and(|f| picked.binary_search(f).is_ok());
             let Some(colour) = (if face_selected { Some(&SELECTED) } else { colours.get(class as usize) }) else {
                 continue;
             };
