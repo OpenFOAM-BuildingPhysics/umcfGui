@@ -47,13 +47,17 @@ impl Tree {
         // would come out with corners in the same place.
         let scale = self.x.abs().max(self.y.abs()).max(self.z.abs()).max(1.0);
         if self.diameter.min(self.height) < 1e-6 * scale {
-            return Some("the crown is too small for its coordinates in single precision (STL)".into());
+            return Some(
+                "the crown is too small for its coordinates in single precision (STL): move the coordinates to a local origin"
+                    .into(),
+            );
         }
         None
     }
 }
 
-/// The trees of a table: one tree a line, the numbers separated by tabs, spaces or commas. A
+/// The trees of a table: one tree a line, the numbers separated by tabs, commas or spaces (one
+/// kind a line; with tabs or commas an empty cell is an error, not skipped). A
 /// first line of column names (`x y z CD CH` in any order, case ignored; `D`/`H` and
 /// `diameter`/`height` stand for the crown's when there is no `CD`/`CH`; other columns are left
 /// alone), or none: then a tree is exactly five numbers, x, y, z, CD, CH. A leading byte-order
@@ -61,20 +65,47 @@ impl Tree {
 pub fn read_table(text: &str) -> Result<Vec<Tree>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut cols: Option<[usize; 5]> = None;
+    let mut width = 5;
+    let mut sep: Option<Sep> = None;
     let mut out = Vec::new();
     let mut first = true;
     for (k, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+        let bare = raw.trim();
+        if bare.is_empty() || bare.starts_with('#') || bare.starts_with("//") {
             continue;
         }
-        let words: Vec<&str> = line.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()).collect();
+        // Spaces and a carriage return off the ends, not tabs: a leading tab is an empty first
+        // cell, and trimming it would move every value one column left.
+        let line = raw.trim_matches(|c| c == ' ' || c == '\r');
+        // The separator is the first line's, for the whole table.
+        let sep = *sep.get_or_insert_with(|| separator(line));
+        let words = fields(line, sep).map_err(|e| format!("line {}: {e}", k + 1))?;
         if first {
             first = false;
-            if words.iter().any(|w| w.parse::<f64>().is_err()) {
+            // A header has a cell that is a word; an empty cell is a missing number.
+            if words.iter().any(|w| !w.is_empty() && w.parse::<f64>().is_err()) {
                 cols = Some(header(&words).map_err(|e| format!("line {}: {e}", k + 1))?);
+                width = words.len();
                 continue;
             }
+        }
+        // A line wider than the header would shift its values (R writes row names this way).
+        // Empty cells at the end (a separator closing each line) don't count.
+        let used = words.iter().rposition(|w| !w.is_empty()).map_or(0, |i| i + 1);
+        if cols.is_some() && used > width {
+            return Err(format!(
+                "line {}: {used} cells but {width} column names (row names? write the table without them, e.g. R's row.names = FALSE)",
+                k + 1
+            ));
+        }
+        // Space-separated cells can't be empty: a shorter line has left one out, and the ones
+        // after it would shift.
+        if sep == Sep::Space && cols.is_some() && words.len() < width {
+            return Err(format!(
+                "line {}: {} cells but {width} column names (a value left out? a space-separated table can't leave a cell empty: use tabs or commas)",
+                k + 1,
+                words.len()
+            ));
         }
         if cols.is_none() && words.len() != 5 {
             return Err(format!(
@@ -89,7 +120,7 @@ pub fn read_table(text: &str) -> Result<Vec<Tree>, String> {
             w.parse::<f64>()
                 .ok()
                 .filter(|v| v.is_finite())
-                .ok_or_else(|| format!("line {}: the {what} `{w}` is not a number", k + 1))
+                .ok_or_else(|| format!("line {}: the {what} `{}` is not a number", k + 1, short(w)))
         };
         let t = Tree {
             x: num(cx, "x")?,
@@ -109,11 +140,159 @@ pub fn read_table(text: &str) -> Result<Vec<Tree>, String> {
     Ok(out)
 }
 
+/// The most columns a line may have.
+const MAX_COLUMNS: usize = 1024;
+
+/// `s` for an error message: at most 80 characters.
+fn short(s: &str) -> String {
+    match s.char_indices().nth(80) {
+        Some((i, _)) => format!("{}…", s.get(..i).unwrap_or_default()),
+        None => s.to_string(),
+    }
+}
+
+/// How a table's cells are separated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sep {
+    Tab,
+    Comma,
+    /// One or more spaces (or tabs) between cells, none before the first.
+    Space,
+}
+
+/// The separator of a line, by what is outside quoted cells: tabs if any, else commas, else
+/// spaces.
+fn separator(line: &str) -> Sep {
+    // A quote opens a quoted cell only at a cell's start, as in `fields`.
+    let mut quoted = false;
+    let mut start = true;
+    let (mut tab, mut comma) = (false, false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                } else {
+                    quoted = false;
+                }
+            }
+            continue;
+        }
+        match c {
+            '"' if start => quoted = true,
+            '\t' => tab = true,
+            ',' => comma = true,
+            _ => {}
+        }
+        start = matches!(c, '\t' | ',' | ' ');
+    }
+    if tab {
+        Sep::Tab
+    } else if comma {
+        Sep::Comma
+    } else {
+        Sep::Space
+    }
+}
+
+/// The cells of a line, separated by `sep`. With tabs or commas an empty cell is kept (as an
+/// empty word, which is no number), so a missing value doesn't shift the ones after it. A cell
+/// that starts with a double quote runs to the closing one, whatever it holds (`""` inside is a
+/// quote), as spreadsheets and R write them, and loses its quotes; a quote elsewhere is text.
+fn fields(line: &str, sep: Sep) -> Result<Vec<String>, String> {
+    let is_sep = |c: char| match sep {
+        Sep::Tab => c == '\t',
+        Sep::Comma => c == ',',
+        Sep::Space => c == ' ',
+    };
+    if sep == Sep::Space && line.contains('\t') && separator(line) == Sep::Tab {
+        return Err("the first line is separated by spaces, this one by tabs: use one kind in the whole table".into());
+    }
+    let mut cells: Vec<String> = Vec::new();
+    let push = |cells: &mut Vec<String>, cell: String| -> Result<(), String> {
+        if cells.len() >= MAX_COLUMNS {
+            return Err(format!("more than {MAX_COLUMNS} columns"));
+        }
+        cells.push(cell);
+        Ok(())
+    };
+    let mut chars = line.chars().peekable();
+    loop {
+        // Space-separated: any run of separators is one, and there is none before the first cell.
+        if sep == Sep::Space {
+            while chars.peek().is_some_and(|c| is_sep(*c)) {
+                chars.next();
+            }
+            if chars.peek().is_none() {
+                break;
+            }
+        } else {
+            while chars.peek().is_some_and(|c| *c == ' ') {
+                chars.next();
+            }
+        }
+        let mut cell = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            let mut closed = false;
+            while let Some(c) = chars.next() {
+                if c == '"' {
+                    if chars.peek() == Some(&'"') {
+                        cell.push('"');
+                        chars.next();
+                    } else {
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    cell.push(c);
+                }
+            }
+            if !closed {
+                return Err("a quote that isn't closed".into());
+            }
+            // Up to the separator after it (spaces only).
+            while let Some(c) = chars.peek().copied() {
+                if is_sep(c) {
+                    break;
+                }
+                if c != ' ' {
+                    return Err(format!("text after the quoted cell \"{}\"", short(&cell)));
+                }
+                chars.next();
+            }
+        } else {
+            while let Some(c) = chars.peek().copied() {
+                if is_sep(c) {
+                    break;
+                }
+                cell.push(c);
+                chars.next();
+            }
+            cell = cell.trim().to_string();
+        }
+        push(&mut cells, cell)?;
+        match chars.next() {
+            Some(_) if sep != Sep::Space => {
+                // A separator at the end of the line leaves an empty last cell.
+                if chars.peek().is_none() {
+                    push(&mut cells, String::new())?;
+                    break;
+                }
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    Ok(cells)
+}
+
 /// The columns of x, y, z, the crown diameter and height in a line of column names. `CD` and
 /// `CH` win over `D`/`diameter` and `H`/`height` (a table may give the tree's height as `H`
 /// beside the crown's); two columns of the same kind otherwise are an error. Other columns are
 /// left alone.
-fn header(words: &[&str]) -> Result<[usize; 5], String> {
+fn header(words: &[String]) -> Result<[usize; 5], String> {
     let fields: [(&str, &[&str], &[&str]); 5] = [
         ("x", &["x"], &[]),
         ("y", &["y"], &[]),
@@ -138,10 +317,10 @@ fn header(words: &[&str]) -> Result<[usize; 5], String> {
             [] => {
                 return Err(format!(
                     "no column for the {what}: the column names are x, y, z, CD and CH (separated by tabs, spaces or commas), not `{}`",
-                    words.join(" ")
+                    short(&words.join(" "))
                 ));
             }
-            _ => return Err(format!("two columns for the {what} in `{}`", words.join(" "))),
+            _ => return Err(format!("two columns for the {what} in `{}`", short(&words.join(" ")))),
         };
     }
     Ok(out)
@@ -330,6 +509,58 @@ mod tests {
         // A byte-order mark (spreadsheet exports) is not a column name.
         assert_eq!(read_table("\u{feff}x y z CD CH\n1 2 3 4 5\n").unwrap().len(), 1);
         assert!(read_table("x;y;z;CD;CH\n").unwrap_err().contains("tabs, spaces or commas"));
+        // An empty cell is no number, and doesn't shift the cells after it.
+        assert!(
+            read_table("x,y,z,CD,CH,H\n1,2,3,,5,20\n").unwrap_err().contains("the crown diameter `` is not a number")
+        );
+        assert!(read_table("x\ty\tz\tCD\tCH\tH\n1\t2\t3\t\t5\t20\n").unwrap_err().contains("is not a number"));
+        // A cell with a space, with tabs between the cells, is one cell.
+        let t = read_table("species\tx\ty\tz\tCD\tCH\nQuercus robur\t1\t2\t3\t4\t5\n").unwrap();
+        assert_eq!(t[0], Tree { x: 1.0, y: 2.0, z: 3.0, diameter: 4.0, height: 5.0 });
+        // A line of endless columns stops early.
+        // R's write.table: spaces between cells, quoted strings with spaces.
+        let t = read_table("\"species\" \"n\" \"x\" \"y\" \"z\" \"CD\" \"CH\"\n\"Quercus robur\" 7 10 20 30 4 5\n")
+            .unwrap();
+        assert_eq!(t[0], Tree { x: 10.0, y: 20.0, z: 30.0, diameter: 4.0, height: 5.0 });
+        // R's row names: a cell more than the header has names.
+        let e = read_table("\"x\" \"y\" \"z\" \"CD\" \"CH\"\n\"1\" 10 20 30 4 5\n").unwrap_err();
+        assert!(e.contains("6 cells but 5 column names"), "{e}");
+        // write.csv's empty name over the row names is a column like any other.
+        assert_eq!(read_table("\"\",\"x\",\"y\",\"z\",\"CD\",\"CH\"\n\"1\",10,20,30,4,5\n").unwrap()[0].x, 10.0);
+        // A quote inside a cell is text; a comma inside quotes doesn't make a space table CSV.
+        let t = read_table("pot\tx\ty\tz\tCD\tCH\n12\" pot\t1\t2\t3\t4\t5\n").unwrap();
+        assert_eq!(t[0].x, 1.0);
+        let t = read_table("\"a, b\" x y z CD CH\nq 1 2 3 4 5\n").unwrap();
+        assert_eq!(t[0].height, 5.0);
+        let e = read_table("x y z CD CH n\n1 3 4 5 6\n").unwrap_err();
+        assert!(e.contains("5 cells but 6 column names"), "{e}");
+        // A separator closing each line is no extra column.
+        assert_eq!(read_table("x\ty\tz\tCD\tCH\n1\t2\t3\t4\t5\t\n").unwrap().len(), 1);
+        assert_eq!(read_table("x,y,z,CD,CH\n1,2,3,4,5,\n").unwrap().len(), 1);
+        // A space header over tab data would collapse empty cells: refused.
+        let e = read_table("x y z CD CH n\n1\t\t3\t4\t5\t6\n").unwrap_err();
+        assert!(e.contains("separated by spaces, this one by tabs"), "{e}");
+        // A quote inside a header word doesn't hide the separator.
+        assert_eq!(read_table("a\"b,x,y,z,CD,CH\nq,1,2,3,4,5\n").unwrap()[0].x, 1.0);
+        // Long cells are cut in messages.
+        let e = read_table(&format!("x y z CD CH\n1 2 3 {} 5\n", "a".repeat(10_000))).unwrap_err();
+        assert!(e.len() < 300 && e.ends_with("…` is not a number"), "{e}");
+        let long = format!("{}\n", "1 ".repeat(100_000));
+        assert!(read_table(&long).unwrap_err().contains("more than 1024 columns"));
+        // An empty first cell (a GIS export's empty id) stays a cell: nothing shifts.
+        let t = read_table("id\tx\ty\tz\tCD\tCH\n\t1\t2\t3\t4\t5\r\n").unwrap();
+        assert_eq!(t[0], Tree { x: 1.0, y: 2.0, z: 3.0, diameter: 4.0, height: 5.0 });
+        assert!(read_table("x\ty\tz\tCD\tCH\tn\n\t1\t2\t3\t4\t5\n").unwrap_err().contains("the x `` is not a number"));
+        // Without a header, an empty cell is a missing number, not a header.
+        assert!(read_table("1\t\t3\t4\t5\n").unwrap_err().contains("the y `` is not a number"));
+        // Quoted cells: a comma inside is part of the cell, and the quotes come off.
+        let t = read_table("note,n,x,y,z,CD,CH,m\n\"a, b\",7,10,20,30,4,5,6\n").unwrap();
+        assert_eq!(t[0], Tree { x: 10.0, y: 20.0, z: 30.0, diameter: 4.0, height: 5.0 });
+        let t = read_table("\"x\",\"y\",\"z\",\"CD\",\"CH\"\n\"1\",2,3,4,5\n").unwrap();
+        assert_eq!(t[0].x, 1.0);
+        let t = read_table("\"x\" \"y\" \"z\" \"CD\" \"CH\"\n1 2 3 4 5\n").unwrap();
+        assert_eq!(t.len(), 1);
+        assert!(read_table("x,y,z,CD,CH\n\"1,2,3,4,5\n").unwrap_err().contains("quote that isn't closed"));
         assert!(read_table("1e39 2 3 4 5\n").unwrap_err().contains("beyond"));
         assert!(read_table("1e8 2 3 1 5\n").unwrap_err().contains("too small"));
         assert!(read_table("1 2 3 1e-300 5\n").unwrap_err().contains("too small"));

@@ -1540,6 +1540,15 @@ fn geometry_trees_from_a_table_a_file_or_a_list() {
     let out = s.execute("geometry.trees", &json!({ "path": path.to_str().unwrap(), "name": "more.stl" })).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(out.data["trees"], 2);
+    // Binary: no region name, and none claimed.
+    let out = s
+        .execute(
+            "geometry.trees",
+            &json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "name": "bin.stlb" }),
+        )
+        .unwrap();
+    assert_eq!(out.data["solid"], Value::Null);
+    assert!(out.message.contains("binary: no region name"), "{}", out.message);
 
     for (p, says) in [
         (json!({}), "one way"),
@@ -1547,6 +1556,10 @@ fn geometry_trees_from_a_table_a_file_or_a_list() {
         (json!({ "trees": [] }), "no trees"),
         (json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 0, "height": 6 }] }), "positive"),
         (json!({ "trees": [{ "x": 1e39, "y": 2, "z": 0, "diameter": 4, "height": 6 }] }), "beyond"),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "name": "b.stlb", "solid": "oaks" }),
+            "no region names",
+        ),
         (json!({ "trees": [{ "x": 1, "y": 2, "diameter": 4, "height": 6 }] }), "`z` is a number"),
         (json!({ "table": "constant/triSurface/none.txt" }), "no such file"),
         (

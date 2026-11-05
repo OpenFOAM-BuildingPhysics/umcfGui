@@ -353,7 +353,7 @@ pub(super) const TREES: CommandSpec = CommandSpec {
     label: "Tree crowns",
     menu: "Geometry/Tree crowns…",
     shortcut: None,
-    params: "The trees, one of: table: a file of the case, one tree a line (x y z CD CH: the crown's base, diameter and height; a first line of these column names in any order, or none; tabs, spaces or commas); path: such a file outside the case; trees: [{\"x\": …, \"y\": …, \"z\": …, \"diameter\": …, \"height\": …}]. name: the surface in constant/triSurface (default trees.stl). solid: the surface's one region (default trees). replace: true to replace a surface of that name. Each crown is a rhombicuboctahedron of the tree's crown diameter and height standing on its z, closed and wound outward (44 triangles). case.save writes it. Reports what geometry.check reports.",
+    params: "The trees, one of: table: a file of the case, one tree a line (x y z CD CH: the crown's base, diameter and height; a first line of these column names in any order, or none; tabs, spaces or commas); path: such a file outside the case; trees: [{\"x\": …, \"y\": …, \"z\": …, \"diameter\": …, \"height\": …}]. name: the surface in constant/triSurface (default trees.stl). solid: the surface's one region (default trees; a binary .stlb has none, and refuses it). replace: true to replace a surface of that name. Each crown is a rhombicuboctahedron of the tree's crown diameter and height standing on its z, closed and wound outward (44 triangles). case.save writes it. Reports what geometry.check reports.",
     enabled: needs_case,
     run: trees,
     journal: true,
@@ -364,6 +364,13 @@ fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(TREES.id, p, &["table", "path", "trees", "name", "solid", "replace"])?;
     let rel = surface_path(TREES.id, p.str("name")?.unwrap_or("trees.stl"), false)?;
     let solid = stl::foam_name(p.str("solid")?.unwrap_or("trees"));
+    // Binary STL has no region names: the region would be OpenFOAM's `patch0`.
+    if is_stlb(&rel) && p.value("solid").is_some_and(|v| !v.is_null()) {
+        return Err(Error::Params(format!(
+            "{}: a binary surface ({rel}) has no region names: give it an .stl name to keep `solid`",
+            TREES.id
+        )));
+    }
     let replace = p.bool("replace")?.unwrap_or(false);
     let given = |k: &str| p.value(k).is_some_and(|v| !v.is_null());
     if ["table", "path", "trees"].iter().filter(|k| given(k)).count() != 1 {
@@ -427,7 +434,11 @@ fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         return Err(Error::Failed(format!("{}: {}", TREES.id, left_out(dropped))));
     }
     let (surface, diags) = store(s, &rel, out, None)?;
-    let message = format!("{rel}: {} as crowns ({solid})", count(list.len(), "tree"));
+    let (message, solid) = if is_stlb(&rel) {
+        (format!("{rel}: {} as crowns (binary: no region name)", count(list.len(), "tree")), Value::Null)
+    } else {
+        (format!("{rel}: {} as crowns ({solid})", count(list.len(), "tree")), json!(solid))
+    };
     Ok(result(message, json!({ "file": rel, "trees": list.len(), "solid": solid, "surface": surface }), &diags))
 }
 
