@@ -74,8 +74,28 @@ fn has_time(dir: &Path, time: &str) -> bool {
     })
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
+/// Which of `needles` (non-empty) the file at `path` contains, read as a stream in fixed-size
+/// chunks: a solver's log can be gigabytes. A match across two chunks is found: the last bytes
+/// of one are kept for the next.
+fn scan(path: &Path, needles: &[&[u8]]) -> std::io::Result<Vec<bool>> {
+    use std::io::Read;
+    let keep = needles.iter().map(|n| n.len()).max().unwrap_or(1).saturating_sub(1);
+    let mut found = vec![false; needles.len()];
+    let mut file = std::fs::File::open(path)?;
+    let mut window: Vec<u8> = Vec::with_capacity(keep + (64 << 10));
+    let mut chunk = vec![0u8; 64 << 10];
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(found);
+        }
+        window.extend_from_slice(chunk.get(..n).unwrap_or_default());
+        for (f, needle) in found.iter_mut().zip(needles) {
+            *f = *f || (!needle.is_empty() && window.windows(needle.len()).any(|w| w == *needle));
+        }
+        let cut = window.len().saturating_sub(keep);
+        window.drain(..cut);
+    }
 }
 
 /// Runs the copy at `dir` with `env`; what went wrong, if anything.
@@ -126,11 +146,14 @@ sh ./Allrun > log.Allrun 2>&1 || { echo "Allrun failed: see log.Allrun"; exit 1;
         return Err(if said.trim().is_empty() { format!("failed ({status})") } else { said.trim().to_string() });
     }
     let mut fatal = Vec::new();
-    for e in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+    for e in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        // An entry that can't be read is an error: a skipped log could hide a fatal one.
+        let e = e.map_err(|err| format!("{}: {err}", dir.display()))?;
         let name = e.file_name().to_string_lossy().to_string();
         if name.starts_with("log.") {
-            let bytes = std::fs::read(e.path()).map_err(|err| format!("{name}: {err}"))?;
-            if contains(&bytes, b"FOAM FATAL") || contains(&bytes, b"Floating point exception") {
+            let hits = scan(&e.path(), &[b"FOAM FATAL", b"Floating point exception"])
+                .map_err(|err| format!("{name}: {err}"))?;
+            if hits.contains(&true) {
                 fatal.push(name);
             }
         }
@@ -138,9 +161,10 @@ sh ./Allrun > log.Allrun 2>&1 || { echo "Allrun failed: see log.Allrun"; exit 1;
     if !fatal.is_empty() {
         return Err(format!("fatal error in {}", fatal.join(", ")));
     }
-    let log =
-        std::fs::read(dir.join("log.urbanMicroclimateFoam")).map_err(|e| format!("log.urbanMicroclimateFoam: {e}"))?;
-    if !String::from_utf8_lossy(&log).lines().any(|l| l.trim() == "End") {
+    // OpenFOAM ends its log with a line `End`.
+    let end_line = scan(&dir.join("log.urbanMicroclimateFoam"), &[b"\nEnd\n"])
+        .map_err(|e| format!("log.urbanMicroclimateFoam: {e}"))?;
+    if !end_line.contains(&true) {
         return Err("the solver did not reach `End`: see log.urbanMicroclimateFoam".into());
     }
     let control_dict = std::fs::read_to_string(dir.join("system/controlDict")).map_err(|e| e.to_string())?;
@@ -260,4 +284,34 @@ pub fn cmd_examples(filter: Option<&str>) -> Result<(), String> {
     std::fs::remove_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
     println!("examples: {} ran", jobs.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{picks, scan};
+
+    #[test]
+    fn scans_across_chunks() {
+        let dir = std::env::temp_dir().join(format!("umcf-xtask-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log.x");
+        // The needle straddles the 64 KiB boundary.
+        let mut bytes = vec![b'.'; (64 << 10) - 4];
+        bytes.extend_from_slice(b"FOAM FATAL\nEnd\n");
+        std::fs::write(&path, &bytes).unwrap();
+        let found = scan(&path, &[b"FOAM FATAL", b"\nEnd\n", b"missing"]).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, [true, true, false]);
+    }
+
+    #[test]
+    fn filters_pick_names_not_parts() {
+        assert!(picks("of12/streetCanyon_CFDHAM", "of12/streetCanyon_CFDHAM"));
+        assert!(!picks("of12/streetCanyon_CFDHAM", "of12/streetCanyon_CFDHAM_veg"));
+        assert!(picks("of12", "of12/streetCanyon_CFD"));
+        assert!(picks("of12/", "of12/streetCanyon_CFD"));
+        assert!(!picks("of1", "of12/streetCanyon_CFD"));
+        assert!(picks("streetCanyon_CFD", "of8/streetCanyon_CFD"));
+        assert!(!picks("streetCanyon", "of8/streetCanyon_CFD"));
+    }
 }

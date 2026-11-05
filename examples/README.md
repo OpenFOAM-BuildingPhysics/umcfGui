@@ -12,13 +12,17 @@ that run in seconds: to try umcfGui without cases of your own, and to test it an
 
 ## Running one
 
-Copy it first: the scripts write the mesh, logs and results into the case.
+Copy it into a new directory first: the scripts write the mesh, logs and results into the case,
+and `Allrun` skips a step whose log is already there.
 
 ```sh
-cp -r examples/of12/streetCanyon_CFDHAM /tmp/ && cd /tmp/streetCanyon_CFDHAM
+run=$(mktemp -d) && cp -r examples/of12/streetCanyon_CFDHAM "$run/" && cd "$run/streetCanyon_CFDHAM"
 . ~/OpenFOAM-12/etc/bashrc
 sh ./Allprepare && sh ./Allrun
 ```
+
+`streetCanyon_CFD` has no `Allprepare`: its `Allrun` makes the mesh too. To run a case again in
+the same place, `sh ./Allclean` first.
 
 Each runs serially for two hourly time steps (11:00 to 13:00, sun up), at most 30 fluid
 iterations each. `cargo xtask examples` runs them all on temporary copies and checks that each
