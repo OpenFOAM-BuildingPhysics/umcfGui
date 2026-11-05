@@ -1,14 +1,14 @@
 # The common workflow
 
-A design, not yet built: what the gaps from [row 4 on](gaps.md) build towards. It is the
-answer to one question: how does a case stay consistent when its patches, regions or surfaces
-change?
+A design, not yet built: what [gaps](gaps.md) rows 4–9 and 12 build towards. It answers one
+question: how does a case stay consistent when its patches, regions or surfaces change?
 
 Today every case carries hand-written meshing dictionaries and scripts, copied from case to case
 and edited. A patch name is written in a dozen places (the blockMesh or snappyHexMesh dictionary,
 `createPatchDict`, each region's `changeDictionaryDict`, every field file, the vegetation patch of
-the same name, the view factor dictionary, the partner's `neighbourPatch`, `topoSetDict`). Renaming
-it means finding all of them, and the case's scripts make the mesh again from the old ones.
+the same name, the view factor dictionary, the partner's `neighbourPatch`), a material's in the
+`topoSetDict` and the material properties. Renaming one means finding all of them, and the case's
+scripts make the mesh again from the old ones.
 
 The common workflow turns this around. One file in the case, `system/umcfWorkflow`, describes the
 case: its regions, how each is meshed, its patches with their roles, its solids and materials,
@@ -19,64 +19,63 @@ description; the generated files follow.
 
 ## What the known cases do
 
-The design covers the chains of the cases at hand (OpenFOAM-8 and -12 mixed):
+The design covers the chains of the cases at hand, OpenFOAM-8 and -12 mixed:
 
-| Cases | Fluid regions (`air`, `vegetation`) | Solids | Sets |
+| Cases | Fluid regions (`air`, `vegetation`) | Solids | Sets and zones |
 |---|---|---|---|
-| 3×3 reference cases (`Mesh_3x3*`, the test cases) | a multi-block `blockMeshDict.<r>` with the buildings as missing blocks; root `createPatch` (`defaultFaces` → `buildings`); `snappyHexMesh` that only cuts (`castellatedMesh`); `changeDictionary` | `blockMesh -region` each, `createPatch`, `changeDictionary` | `topoSet` (12) or `setSet -batch` (8) |
-| `streetCanyon_CFD*` tutorials | `blockMesh -region air`, `createPatch`, `changeDictionary`; vegetation split from the air by `splitMeshRegions` | `blockMesh -region` each, `changeDictionary` | `topoSet` |
-| `windAroundBuildings_CFDHAM[_veg]` tutorials | one background `blockMesh`, kept; `snappyHexMesh` per region from it (buildings cut out with layers, trees cut out of the vegetation); `createPatch` (trees → `air_to_vegetation`); `changeDictionary` | `extrudeMesh` in two layers from the building and ground surfaces, `createPatch` (`originalPatch` → `buildings_to_air`, `otherSide` → `interior`), `changeDictionary` | `topoSet` |
-| Hong Kong project | as the STL tutorial, each step in a case directory of its own (`0b` terrain, `0c` snappyHexMesh, `0d_*` extrusions), the meshes copied into the run case | | |
+| 3×3 reference cases (`Mesh_3x3*`, the test cases; 12, one 8) | per region a multi-block `blockMeshDict.air` / `.veg` with the buildings as missing blocks (the same layout, other cell counts); a root `createPatch` (`defaultFaces` → `buildings`); `snappyHexMesh` from `snappyHexMeshDict.air` / `.veg`: for `air` refinement around `air_to_vegetation` only, for `vegetation` castellated and snapped, the tree cut out as `air_to_vegetation`; `changeDictionary` | `blockMesh -region` each, `createPatch`, `changeDictionary` | `topoSet` |
+| `streetCanyon_CFDHAM*` tutorials (12; 8 on their OpenFOAM-8 branch) | `blockMesh -region air`, `createPatch`, `changeDictionary`; `_veg`: the vegetation split from a copy of the air mesh (`topoSet` a zone, `splitMeshRegions -cellZones`, its mesh taken from the time directory it writes, then `createPatch`, `changeDictionary`) | `blockMesh -region` each, `changeDictionary` | `topoSet`; `setSet -batch` on the 8 branch |
+| `streetCanyon_CFD` | `blockMesh -region air`, `createPatch` (its `Allrun`; no solids) | | |
+| `windAroundBuildings_CFDHAM[_veg]` (8) | one background `blockMesh`, kept; `snappyHexMesh` per region from it (buildings cut out with layers; trees cut out of the vegetation); `changeDictionary`; vegetation also `createPatch` (trees → `air_to_vegetation`) | `extrudeMesh` in two layers: from the building or ground surface (`constructFrom surface`), then from the first layer's `otherSide` (`constructFrom mesh`); `createPatch` (`originalPatch` → `buildings_to_air`, `otherSide` → `interior`); `changeDictionary` | `topoSet` |
+| Hong Kong project (8) | each step a case directory of its own: `terrainBlockMesher`, `snappyHexMesh -parallel` under SLURM with `refineMesh` and the domain sides extruded, solids extruded with patches made from face sets; the meshes copied into the run case | | `setSet` |
 
-Where the names are written, the same in both versions:
+The Hong Kong chain is out of scope: its run case is read as it is, without a workflow.
 
-| Dictionary | The patch name |
+Where the names are written:
+
+| Dictionary | Names |
 |---|---|
-| `blockMeshDict` | `boundary ( <patch> { type …; faces …; } )` |
-| `snappyHexMeshDict` | the surface's key in `geometry`, `refinementSurfaces` and `addLayersControls/layers` (a patch per surface, or `<surface>_<region>` per STL region) |
-| `createPatchDict` | `{ name <patch>; constructFrom patches; patches (<sources>); }` |
-| `changeDictionaryDict` | `boundary { <patch> { type …; neighbourRegion <r>; neighbourPatch <p>; } }` (no case uses `dictionaryReplacement` or field entries) |
-| `topoSetDict` | `patchToFace` with `sourceInfo { name <patch>; }` (OpenFOAM-12 also `patch <patch>;`) |
-| `extrudeMeshDict` | `sourcePatches`, `exposedPatchName`: the extrusion's own `originalPatch`, `otherSide` |
-| fields, `viewFactorsDict` | the patch's own entry |
+| `blockMeshDict` | the patch: `boundary ( <patch> { type …; faces …; } )` |
+| `snappyHexMeshDict` | the patch: a surface's key in `geometry`, `refinementSurfaces` and `addLayersControls/layers` (a patch per surface, or `<surface>_<region>` per STL region) |
+| `createPatchDict` | the patch: `{ name <patch>; constructFrom patches; patches (<sources>); }`, or `constructFrom set; set <faceSet>;` |
+| `changeDictionaryDict` | the patch's own entry, `boundary { <patch> { type …; … } }`, and its partner: `neighbourRegion`, `neighbourPatch` in OpenFOAM-12, `sampleMode nearestPatchFace; sampleRegion; samplePatch;` in OpenFOAM-8. No case uses `dictionaryReplacement` or field entries |
+| `topoSetDict`, `setSet` batch | the cell zones: materials (`setToCellZone`), the tree zone (`boxToCell`, `surfaceToCell`); patches only in the Hong Kong cases (`patchToFace`) |
+| `extrudeMeshDict` | the extrusion's own `originalPatch`, `otherSide` (`sourcePatches`, `exposedPatchName`) |
+| fields, `viewFactorsDict` | the patch's own entry. The 3×3 cases also copy `system/vegetation/viewFactorsDict` to `system/viewFactorsDict` |
+| function objects | patches (`patchAverage`, `surfaces`), in `controlDict` or `system/<r>/` |
+| `constant/<r>/boundaryData/<patch>` | mapped boundary data, by the patch's name |
 
 ## `system/umcfWorkflow`
 
 An OpenFOAM-style dictionary, so it travels with the case, reads with the same tools and can be
-edited by hand. A sketch of what it holds (the keys will settle as the pieces are built):
+edited by hand. A sketch (the keys settle as the pieces are built):
 
 ```c++
 FoamFile { format ascii; class dictionary; object umcfWorkflow; }
 
 version     12;                 // the OpenFOAM version the scripts and dictionaries are for
 
-background                      // the box every snappyHexMesh region starts from
-{
-    margin      (50 50 0 60);   // around the surfaces: sides, ground, top
-    cellSize    2;
-    patches { west inlet; east outlet; north side; south side; ground ground; top top; }
-}
-
 regions
 {
     air
     {
         kind        fluid;
-        mesh        snappyHexMesh;          // blockMesh | snappyHexMesh | extrude
-        surfaces    { buildings { level (3 5); layers 3; role wall; couple buildings; } }
-        patches     { buildings { role coupled; } }
+        // From a box around the surfaces (the STL cases), or from blocks (the 3×3 cases,
+        // the street canyon: the buildings as missing blocks), per region.
+        mesh        { from box; margin (50 50 0 60); cellSize 2; }
+        surfaces    { buildings { level (3 5); layers 3; role coupled; partner buildings; } }
+        patches     { west inlet; east outlet; north side; south side; ground ground; top top; }
     }
     vegetation
     {
         kind        vegetation;
-        mesh        snappyHexMesh;
-        surfaces    { buildings { role wall; } trees { role canopy; } }
+        mesh        { from box; }           // or `from split; of air; zone trees;` (street canyon)
+        surfaces    { buildings { role coupled; } trees { role canopy; } }
     }
     buildings
     {
         kind        solid;
-        mesh        extrude;
-        from        { surface buildings; inward yes; }
+        mesh        { from extrude; surface buildings; inward yes; }    // or from blocks
         layers      ( { material brick; thickness 0.10; cells 10; grading 1.2; }
                       { material insulation; thickness 0.08; cells 4; } );
     }
@@ -85,11 +84,16 @@ regions
 radiation   { region vegetation; viewFactors yes; solarRayTracing yes; lai air; }
 ```
 
-Roles (inlet, outlet, side, top, ground, coupled wall, canopy, interior, bottom, sky) decide a
-patch's type, its partner and its boundary conditions, by the rules in
+Each region is meshed one of four ways: blocks (`blockMesh`), a box and surfaces
+(`blockMesh` then `snappyHexMesh`, from a background kept between regions), extrusion
+(`extrudeMesh` in layers), or split from another region by a cell zone (`splitMeshRegions`).
+
+A patch's role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) decides
+its type, its partner and its boundary conditions, by the rules in
 [What a case needs](case-requirements.md#coupling-rules): an air patch coupled to a solid is a
 `mappedWall` pair, with a vegetation patch of the same name; the canopy becomes
-`air_to_vegetation`; the radiation region's sky patches are `patch` or `mapped`.
+`air_to_vegetation`; the radiation region's sky patches are `patch` or `mapped`. Cell zones are
+named by the description too: a solid's materials, the tree zone.
 
 ## What is generated, and what is edited
 
@@ -98,72 +102,94 @@ patch's type, its partner and its boundary conditions, by the rules in
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
 | `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` |
-| `0.orig/<region>/<field>`: the initial fields with a `boundaryField` entry per patch, by role | generated, then edited by `bc.set` |
+| `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields generated, then edited by `bc.set`; the tables from the site and weather data (row 10) or the user |
 | `Allprepare`, `Allrun`, `Allclean` | generated, for the version in `umcfWorkflow` |
 | Solver dictionaries (`fvSchemes`, `fvSolution`, physical properties, run controls) | the user, as now (templates for a new case) |
 
-A generated file says so in its header (`// Generated by umcfGui from system/umcfWorkflow: edits
-here are replaced`) and is written again whenever the description changes. One edited by hand
-since it was generated is kept in the backup before it is replaced, and the change says which.
+A generated file says so in its header, as the scripts umcfGui writes already do (`Written by
+umcfGui from the case workflow; edit the workflow, not this file.`), and is written again
+whenever the description changes. One edited by hand since it was generated is kept in the backup
+before it is replaced, and the change says which.
 
 ## The fields
 
-`0.orig` is where the initial fields live. `Allprepare` builds the meshes, copies `0.orig` to `0`
-(today's cases do this by hand from `0/<region>.bckp`), then runs `setFields` (leaf area density
-in the tree zone). A field that has to match the mesh (per-face values) is made after meshing,
-not kept. So after `Allprepare` every region has every field the solver and its chosen models
-read ([fields per region](case-requirements.md#fields)), with an entry for every patch.
+`0.orig` holds the initial fields and the tables beside them. `Allprepare` builds the meshes,
+copies `0.orig` to `0`, then runs `setFields` (leaf area density in the tree zone). Today's cases
+keep some of this aside by hand while meshing: the 3×3 cases restore only `0/air.bckp/LAD`, the
+STL tutorials the vegetation fields from `0/vegetation.bckp`. A field that has to match the mesh
+(values per face) is made after meshing, not kept. So after `Allprepare` every region has every
+field the solver and its chosen models read ([fields per region](case-requirements.md#fields)),
+with an entry for every patch.
 
 ## Renaming and the other edits
 
 With the description the source, a rename is: change the name in `umcfWorkflow`, generate again,
 and rename the patch in the mesh as it is (`patch.set` already does the mesh, the fields of the
-start time and `0.orig`, the partner patches and the view factor dictionary). The vegetation
-twin and the shared background follow because they are generated from the same entry. What
-`patch.set` lists today (the meshing dictionaries) is then generated, not listed.
+start time and `0.orig`, the partner patches and the region's view factor dictionary). The
+vegetation twin and the shared background follow because they are generated from the same entry.
+What `patch.set` lists today (the meshing dictionaries) is then generated, not listed. New
+regions, solids and materials are edits of the description in the same way.
 
 ## Existing cases
 
 An import reads a case into a `umcfWorkflow`:
 
-- the 3×3 pattern is read already ([the workflow](user-guide/workflow.md)); its block layout
-  becomes block settings;
-- the STL chain needs the reading extended to the kept background, `extrudeMesh` and the moves
-  between `constant/polyMesh` and the regions;
+- the 3×3 pattern's scripts are read already ([the workflow](user-guide/workflow.md)); the
+  import also reads its blocks and patches into block settings;
+- the STL chain and the split vegetation need the reading extended: the kept background,
+  `extrudeMesh`, `splitMeshRegions`, the moves between `constant/polyMesh` and the regions;
 - what doesn't fit is listed (as today), and the case keeps its own scripts until the user
   takes the generated ones. Writing them keeps the old ones as backups.
-
-Chains spread over several case directories (the Hong Kong project) are out of scope: their run
-case is read as it is, without a workflow.
 
 ## Running anywhere
 
 OpenFOAM runs on Linux. umcfGui runs on Linux, Windows and macOS, so the runner reaches OpenFOAM
-in one of four ways, set once per machine (not in the case):
+where it is, set once per machine (not in the case): for each OpenFOAM version, how to get its
+environment (its `etc/bashrc`, or a `module load` on a cluster) and where.
 
 | Where OpenFOAM is | How umcfGui runs a step |
 |---|---|
-| Linux, natively | `sh -c '. <OpenFOAM>/etc/bashrc && cd <case> && sh Allprepare'` |
-| Windows: WSL | `wsl.exe -d <distribution> -- sh -c '…'`, the case path mapped (`C:\cases\x` → `/mnt/c/cases/x`); a case inside the distribution's own file system (`\\wsl$\…`) is faster for big meshes |
-| macOS (or anywhere): a virtual machine or a container | the case directory shared with it (a mount), and the same command run in it (`docker exec`, `ssh` to the VM) |
-| A remote machine or cluster | `ssh`, the case synchronised to and from it (`rsync`), the steps run directly or as a SLURM/PBS job |
+| Linux, natively | `bash -c '. <bashrc> && cd <case> && sh ./Allprepare'` |
+| Windows: WSL | `wsl.exe -d <distribution> --exec bash -c '…'`, the case path mapped with `wslpath` (by default `C:\cases\x` is `/mnt/c/cases/x`) |
+| macOS (or anywhere): a virtual machine or a container | the case directory shared with it and mapped like a WSL path, the same command run in it (`docker run --rm -v <case>:<path> --user <uid> …`, `ssh` to a VM) |
+| A remote machine or cluster | `ssh`, the case synchronised to it and the results back, the steps run directly or as a SLURM/PBS job |
 
-So the scripts and dictionaries umcfGui writes are plain POSIX `sh` with LF line endings, run as
-`sh Allprepare` (an executable bit doesn't survive every file system), with paths relative to the
-case. The runner streams the logs back, can cancel a step, and finds OpenFOAM where it is
-installed (the distribution's `/opt/openfoam*`, a user's `~/OpenFOAM/OpenFOAM-*`). Reading, editing,
-checking and viewing a case never need OpenFOAM; only running the steps does.
+What this asks of each part:
+
+- **The environment** is sourced by `bash`: OpenFOAM's `etc/bashrc` finds its installation
+  through `BASH_SOURCE`, so `sh` (dash on Debian and Ubuntu) fails to source it. The scripts
+  themselves stay POSIX `sh`. `urbanMicroclimateFoam` and its utilities (`calcLAI`,
+  `viewFactorsGen`, `solarRayTracingGen`, …) must be built in that environment
+  (`$FOAM_USER_APPBIN`): a stock OpenFOAM installation or container image doesn't have them. A
+  machine often has several versions (`~/OpenFOAM-8` and `~/OpenFOAM-12`); `umcfWorkflow` says
+  which the case needs.
+- **The scripts** are run as `sh ./Allprepare`: they start with `cd "${0%/*}"`, which needs a
+  path, and an executable bit doesn't survive every file system. They are written with LF line
+  endings, and a case with CRLF (`core.autocrlf` in git on Windows) is pointed out.
+- **WSL**: a case on the Windows drive (`/mnt/c`) is fast for umcfGui and slow for OpenFOAM; one
+  inside the distribution (`\\wsl.localhost\<distribution>\…`) the other way round. umcfGui says
+  which, for big meshes. Files held open on Windows (an editor, a virus scanner) can make the
+  scripts' `rm` and `mv` fail; the step's log says so.
+- **Names that differ only by case** (two fields, patches or files) can't live together on NTFS
+  or default APFS; umcfGui refuses them before writing.
+- **Containers and VMs**: shared directories are slow for big meshes (keep the case inside, or
+  synchronise); files written as root need the user mapped (`--user`); an image built for
+  another processor (amd64 on Apple Silicon) runs emulated, slowly.
+- **Remote runs**: the job script sets up the environment itself (a batch job doesn't inherit
+  it); the synchronisation is umcfGui's own where `rsync` isn't there (Windows), and brings back
+  only what is asked for (logs, the times and fields wanted), not whole `processor*` trees.
+
+The runner streams the logs back and can cancel a step. Reading, editing, checking and viewing a
+case never need OpenFOAM; only running the steps does.
 
 ## The steps to build it
 
-The [gaps](gaps.md) list the work in order; for the common workflow:
+In the order of the [gaps](gaps.md):
 
-1. `umcfWorkflow`: the format, read and written losslessly; an import from the 3×3 pattern.
-2. The scripts from it (today's generator, from the description instead of the read scripts),
-   with the fields: `0.orig` copied after meshing, `setFields`.
-3. The generated dictionaries from the roles and the coupling rules: `createPatchDict`,
-   `changeDictionaryDict`, `topoSetDict`, `viewFactorsDict`, and `0.orig` by patch role.
-4. The geometry settings: background and blocks, snappyHexMesh surfaces, extrusion layers.
-5. The STL chain read into it (the tutorials).
-6. The runner: native, WSL, a VM or container, ssh and batch jobs.
-7. Renames, new regions and new solids as edits of the description.
+| Row | |
+|---|---|
+| 4 | `umcfWorkflow`: the format, read and written losslessly; the import from the 3×3 pattern; commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`) |
+| 5 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
+| 6–8 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
+| 9 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
+| 12 | The runner: native, WSL, a VM or container, ssh and batch jobs |
