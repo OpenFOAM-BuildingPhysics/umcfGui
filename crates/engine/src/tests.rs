@@ -1038,6 +1038,71 @@ fn patches_are_set_renamed_and_undone() {
 }
 
 #[test]
+fn a_rename_follows_into_0_orig_and_view_factors_and_says_where_else_the_name_is() {
+    let field = |entries: &str| {
+        format!(
+            "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}}\ninternalField uniform 0;\nboundaryField\n{{\n{entries}}}\n"
+        )
+    };
+    let mut fs = fs();
+    fs.insert("0.orig/air/T", field("    inlet { type fixedValue; value uniform 290; } // the west side\n"));
+    fs.insert("0.orig/air/p", field("    \"(inlet|outlet)\" { type zeroGradient; }\n"));
+    fs.insert("0.orig/air/notes.txt", "not a dictionary: inlet");
+    fs.insert(
+        "system/air/viewFactorsDict",
+        format!("{HEADER}inlet\n{{\n    nFacesInCoarsestLevel 15;\n}}\ninletSide 1;\n"),
+    );
+    fs.insert(
+        "system/air/createPatchDict",
+        format!("{HEADER}patches\n(\n    {{ name roof; constructFrom patches; patches (inlet); }}\n);\n"),
+    );
+    fs.insert("3600/air/T", field("    inlet { type fixedValue; value uniform 291; }\n"));
+    fs.insert("7200/air/T", field("    inlet { type fixedValue; value uniform 292; }\n"));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let o = s.execute("patch.set", &json!({"name": "west", "patches": [{"region": "air", "patch": "inlet"}]})).unwrap();
+    let renamed: Vec<&str> = o.data["renamed_in"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(renamed.contains(&"0.orig/air/T") && renamed.contains(&"system/air/viewFactorsDict"), "{renamed:?}");
+    let put = |s: &Session, f: &str| String::from_utf8(s.case().unwrap().put_bytes(f).unwrap().to_vec()).unwrap();
+    // Only the entry's name changes, comment and all.
+    assert!(put(&s, "0.orig/air/T").contains("    west { type fixedValue; value uniform 290; } // the west side\n"));
+    let vf = s.case().unwrap().dict("system/air/viewFactorsDict").unwrap().to_string();
+    assert!(vf.contains("west\n{\n    nFacesInCoarsestLevel 15;") && vf.contains("inletSide 1;"), "{vf}");
+    // The pattern in 0.orig, the createPatchDict and the results are only named.
+    assert!(s.case().unwrap().put_bytes("0.orig/air/p").is_none());
+    let codes: Vec<(String, String, String)> = o.data["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_string(),
+                d["path"].as_str().unwrap().to_string(),
+                d["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let has = |code: &str, path: &str| codes.iter().find(|(c, p, _)| c == code && p == path).map(|(_, _, m)| m.clone());
+    assert_eq!(
+        has("patch.mention", "system/air/createPatchDict").as_deref(),
+        Some("line 9 names `inlet`: rename it there if that is the patch")
+    );
+    assert!(has("patch.mention", "0.orig/air/p").is_some(), "{codes:?}");
+    assert!(has("patch.mention", "0.orig/air/notes.txt").is_some(), "{codes:?}");
+    assert!(has("patch.mention", "system/air/viewFactorsDict").is_none(), "{codes:?}");
+    let times = has("patch.times", "3600, 7200").unwrap();
+    assert!(times.contains("results in 3600, 7200 still name the patch `inlet`"), "{times}");
+    assert!(!codes.iter().any(|(c, _, _)| c == "patch.orig" || c == "patch.elsewhere"));
+    // The results are not touched.
+    assert!(s.case().unwrap().put_bytes("3600/air/T").is_none());
+    // Undone: 0.orig and the view factors as they were.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.case().unwrap().put_bytes("0.orig/air/T").is_none());
+    let vf = s.case().unwrap().dict("system/air/viewFactorsDict").unwrap().to_string();
+    assert!(vf.contains("inlet\n{") && !vf.contains("west"), "{vf}");
+}
+
+#[test]
 fn patch_entries_are_written_as_given() {
     let mut s = session();
     s.execute(

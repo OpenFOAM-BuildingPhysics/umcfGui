@@ -188,14 +188,23 @@ umcf-cli run --case my-case \
 
 - Only those entries change, byte for byte: the other patches, the comments, the layout. A
   gzipped `boundary.gz` is compressed again.
-- **A new name follows the patch**: into its own `boundaryField` entry in each field file of the
-  region at the start time, and into the patches that name it as their partner
-  (`neighbourPatch`, `samplePatch`, `originalPatch`): a mapped patch of another region, the other
-  half of a `cyclic` in the same region. The command says what it couldn't follow: a field file
-  too big to be read here (`patch.unread`), one whose pattern entry or included text may name the
-  old name (`patch.pattern`), and `0.orig`, which preparing the case copies to `0`
-  (`patch.orig`). Other time directories, function objects, the view factor dictionary and the
-  meshing dictionaries aren't searched (`patch.elsewhere`).
+- **A new name follows the patch**:
+  - into its own `boundaryField` entry in each field file of the region at the start time and in
+    `0.orig` (which preparing the case copies to `0`);
+  - into its entry in the region's `viewFactorsDict` (`system/<region>` and
+    `constant/<region>`);
+  - into the patches that name it as their partner (`neighbourPatch`, `samplePatch`,
+    `originalPatch`): a mapped patch of another region, the other half of a `cyclic` in the
+    same region.
+- **The command says what it didn't change**:
+  - a field file too big to be read here (`patch.unread`);
+  - one whose pattern entry or included text may name the old name (`patch.pattern`);
+  - the results in other time directories (`patch.times`), which aren't read: a run started from
+    one of them needs the name changed there;
+  - each file and line under `system`, `constant` and `0.orig` that still has the old name as a
+    word (`patch.mention`): function objects in `controlDict`, the meshing dictionaries
+    (`createPatchDict`, `changeDictionaryDict`, `topoSetDict`, `snappyHexMeshDict`, …), a pattern
+    in a field. A region or a field with the same name is listed too; the first 200 are named.
 - **A name already used is refused**: another patch's, a patch group's, or an entry of a field
   file (a group or pattern entry would take the renamed patch's entry over). So is a number.
 - Entries are written as given: `"entries": {"offset": [0, 0, 1], "distance": 0.5}` is

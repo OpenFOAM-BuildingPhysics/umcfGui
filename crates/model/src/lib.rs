@@ -273,7 +273,32 @@ pub struct PatchReport {
     /// Field files with a pattern entry or text from elsewhere, which may name the patch by its
     /// old name: not changed there.
     pub indirect: Vec<String>,
+    /// Field files of `0.orig` whose entry for the patch was renamed.
+    pub orig: Vec<String>,
+    /// Other files whose entry for the patch was renamed (a `viewFactorsDict`).
+    pub others: Vec<String>,
+    /// Time directories other than the start with the region's fields (results): not read, and
+    /// not changed.
+    pub times: Vec<String>,
+    /// Where the old name is still written, as a word, in the case's dictionaries (`system`,
+    /// `constant`, `0.orig`) once the rest is renamed: (file, line), the first [`MAX_MENTIONS`].
+    pub mentions: Vec<(String, usize)>,
 }
+
+/// What [`Case::rename_entry`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Renamed {
+    Yes,
+    /// The file has no such entry, or is not a dictionary that can be edited here.
+    No,
+    /// Too large to be edited here.
+    TooLarge,
+}
+
+/// The most places [`PatchReport::mentions`] lists.
+pub const MAX_MENTIONS: usize = 200;
+/// The largest dictionary searched for mentions of a renamed patch.
+const MENTION_BYTES: u64 = 4 << 20;
 
 /// A patch [`Case::create_patch`] prepares.
 #[derive(Debug, Clone, Copy)]
@@ -1086,8 +1111,10 @@ impl Case {
     /// Changes a patch of a region's mesh (`constant/<region>/polyMesh/boundary`): its type,
     /// its groups, other entries (`neighbourRegion`, …), or its name. Only those entries
     /// change, byte for byte. A new name goes into the region's field files at the start time
-    /// (the patch's own `boundaryField` entry) and into the mapped patches of other regions that
-    /// name it. [`Case::save`] writes it all.
+    /// and in `0.orig` (the patch's own `boundaryField` entry), its entry in the region's
+    /// `viewFactorsDict`, and the mapped patches of other regions that name it; the report lists
+    /// the other time directories and where the old name is still written. [`Case::save`] writes
+    /// it all.
     pub fn set_patch(
         &mut self,
         fs: &dyn CaseFs,
@@ -1243,7 +1270,130 @@ impl Case {
             }
             report.partners.push(format!("{oname}/{other}"));
         }
+        // 0.orig: the region's field files there, as at the start time (preparing the case
+        // copies them to it).
+        let orig = if region.is_empty() { "0.orig".to_string() } else { format!("0.orig/{region}") };
+        for name in fs.list(&orig).unwrap_or_default() {
+            let path = format!("{orig}/{name}");
+            if !fs.is_file(&path) {
+                continue;
+            }
+            match self.rename_entry(fs, &path, Some("boundaryField"), patch, to) {
+                Renamed::Yes => report.orig.push(path),
+                Renamed::TooLarge => report.unread.push(path),
+                Renamed::No => {}
+            }
+        }
+        // The view factor dictionary: an entry per patch.
+        let vf = |dir: &str| {
+            if region.is_empty() { format!("{dir}/viewFactorsDict") } else { format!("{dir}/{region}/viewFactorsDict") }
+        };
+        for path in [vf("system"), vf("constant")] {
+            if fs.is_file(&path) && self.rename_entry(fs, &path, None, patch, to) == Renamed::Yes {
+                report.others.push(path);
+            }
+        }
+        // Results in other time directories are not read: they can be large, and each edit is
+        // kept whole for undo.
+        let start = self.start.as_ref().map(|t| t.name.clone());
+        for t in umcf_foam_field::times::time_dirs(fs, "").unwrap_or_default() {
+            let dir = if region.is_empty() { t.name.clone() } else { format!("{}/{region}", t.name) };
+            if Some(&t.name) != start.as_ref() && fs.is_dir(&dir) {
+                report.times.push(t.name);
+            }
+        }
+        report.mentions = self.mentions(fs, patch);
         Ok(report)
+    }
+
+    /// Renames the entry `from` to `to` in the dictionary `inside` of the file at `path` (the
+    /// file's top level when `None`), keeping every other byte, and puts it when it had one.
+    fn rename_entry(&mut self, fs: &dyn CaseFs, path: &str, inside: Option<&str>, from: &str, to: &str) -> Renamed {
+        // One of the case's dictionaries: edited where it is held.
+        if self.dict(path).is_some() {
+            let Ok(doc) = self.dict_mut(path) else { return Renamed::No };
+            let dict = match inside {
+                Some(k) => doc.root.get_mut(k).and_then(umcf_foam_dict::Entry::dict_mut),
+                None => Some(&mut doc.root),
+            };
+            if !dict.is_some_and(|d| d.rename(from, to)) {
+                return Renamed::No;
+            }
+            self.edited(path);
+            return Renamed::Yes;
+        }
+        let Ok((Some(bytes), base)) = self.edit_base(fs, path) else { return Renamed::No };
+        let limits = umcf_foam_field::Limits { max_bytes: self.edit_cap(), ..Default::default() };
+        if bytes.len() as u64 > self.edit_cap() {
+            return Renamed::TooLarge;
+        }
+        let mut changed = false;
+        let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
+            let dict = match inside {
+                Some(k) => doc.root.get_mut(k).and_then(umcf_foam_dict::Entry::dict_mut),
+                None => Some(&mut doc.root),
+            };
+            changed = dict.is_some_and(|d| d.rename(from, to));
+            Ok(())
+        });
+        match out {
+            Ok(out) if changed => match self.put_based(path, out, base) {
+                Ok(()) => Renamed::Yes,
+                Err(_) => Renamed::No,
+            },
+            Err(umcf_foam_field::Error::TooLarge { .. }) => Renamed::TooLarge,
+            _ => Renamed::No,
+        }
+    }
+
+    /// Where `word` is written, as a whole word, in the case's dictionaries under `system`,
+    /// `constant` (not the meshes nor the surfaces) and `0.orig`: (file, line), sorted, at most
+    /// [`MAX_MENTIONS`]. Compressed, binary and very large files are passed over.
+    pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        if word.is_empty() {
+            return out;
+        }
+        // The files there when the case was opened, and those commands made since.
+        let mut files: Vec<String> = self
+            .paths
+            .iter()
+            .chain(self.raw.keys())
+            .filter(|p| !p.contains('\u{1}') && !self.is_dir(p))
+            .filter(|p| ["system/", "constant/", "0.orig/"].iter().any(|d| p.starts_with(d)))
+            .filter(|p| !p.split('/').any(|c| c == "polyMesh" || c == "triSurface") && !p.ends_with(".gz"))
+            .cloned()
+            .collect();
+        files.sort();
+        files.dedup();
+        let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        for path in files {
+            // A dictionary the case holds as it is now; another file as put or on disk.
+            let bytes = match self.dict(&path) {
+                Some(doc) => Arc::new(doc.to_string().into_bytes()),
+                None => match self.file(fs, &path) {
+                    Ok(Some(b)) => b,
+                    _ => continue,
+                },
+            };
+            if bytes.len() as u64 > MENTION_BYTES || bytes.contains(&0) {
+                continue;
+            }
+            for (n, line) in bytes.split(|b| *b == b'\n').enumerate() {
+                let found = line.windows(word.len()).enumerate().any(|(i, w)| {
+                    w == word.as_bytes()
+                        && (i == 0 || !line.get(i - 1).copied().is_some_and(is_word))
+                        && !line.get(i + word.len()).copied().is_some_and(is_word)
+                });
+                if found {
+                    if out.len() == MAX_MENTIONS {
+                        return out;
+                    }
+                    out.push((path.clone(), n + 1));
+                }
+            }
+        }
+        out
     }
 
     /// Whether `to` can be a new patch name in region `r` (with `patches`): not a patch, a
