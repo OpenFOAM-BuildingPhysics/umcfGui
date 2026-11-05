@@ -181,7 +181,7 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("The mesh gets the patch when createPatch -overwrite runs.")
+                    RichText::new("The mesh gets the patch when createPatch runs, once, with the dictionary of the patches prepared on this mesh (the result says how).")
                         .size(12.0)
                         .color(t.text_muted),
                 );

@@ -1071,7 +1071,8 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
     assert_eq!(o.data["set"], "constant/air/polyMesh/sets/roof");
     assert_eq!(o.data["fields"].as_array().unwrap().len(), 6, "{}", o.data);
     assert_eq!(codes(&o), ["patch.run"]);
-    assert!(o.data["diagnostics"][0]["message"].as_str().unwrap().contains("run it by hand"));
+    let run = o.data["diagnostics"][0]["message"].as_str().unwrap();
+    assert!(run.contains("createPatch -region air -dict system/air/createPatchDict.umcf -overwrite"), "{run}");
     assert!(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").is_some());
     assert_eq!(bc_of(&s, "T", "roof"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
     let set =
@@ -1080,23 +1081,19 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
     // Face labels.
     let o = s.execute("patch.create", &json!({"name": "floor", "faces": [0], "region": "air"})).unwrap();
     assert_eq!(o.data["faces"], json!(1));
-    // A surface: every face of the cube is on it, so `inlet` goes.
-    let o = s
-        .execute(
-            "patch.create",
-            &json!({"name": "skin", "surface": {"file": "box.stl", "solid": "box", "distance": 0.01}}),
-        )
-        .unwrap();
+    // A surface: every face of the cube is on it, two of them prepared already.
+    let skin = json!({"name": "skin", "surface": {"file": "box.stl", "solid": "box", "distance": 0.01}});
+    let e = s.execute("patch.create", &skin).unwrap_err().to_string();
+    assert!(e.contains("prepared in system/air/createPatchDict.umcf already"), "{e}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.case().unwrap().dict("system/air/createPatchDict.umcf").is_none());
+    assert!(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").is_none());
+    // On its own it takes them all, so `inlet` goes.
+    let o = s.execute("patch.create", &skin).unwrap();
     assert_eq!(o.data["faces"], json!(6));
     assert!(codes(&o).contains(&"patch.emptied".to_string()), "{:?}", codes(&o));
-    let dict = s.case().unwrap().dict("system/air/createPatchDict").unwrap().to_string();
-    assert_eq!(dict.matches("constructFrom   set;").count(), 3, "{dict}");
-    // Undone: the dictionary and the set are gone again.
-    for _ in 0..3 {
-        s.execute("edit.undo", &json!({})).unwrap();
-    }
-    assert!(s.case().unwrap().dict("system/air/createPatchDict").is_none());
-    assert!(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").is_none());
+    s.execute("edit.undo", &json!({})).unwrap();
     // Refused.
     for bad in [
         json!({"faces": [0]}),

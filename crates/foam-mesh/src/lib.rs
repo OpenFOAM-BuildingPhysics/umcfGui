@@ -131,12 +131,25 @@ pub fn list_sets(fs: &dyn CaseFs, dir: &str) -> Result<Vec<String>> {
 /// written label by label), so they are always read as text.
 pub fn read_set(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<Option<Set>> {
     let Some((path, bytes)) = read_file(fs, &format!("{dir}/sets"), name, limits)? else { return Ok(None) };
-    let (mut header, end) = umcf_foam_field::read_header_end(&bytes)?;
+    parse_set_text(&path, &bytes, limits).map(Some)
+}
+
+/// A set file's bytes (plain or gzip-compressed), as [`read_set`] reads them; `path` names it in
+/// errors.
+pub fn parse_set(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return parse_set_text(path, &umcf_foam_field::gunzip(bytes, limits.max_bytes)?, limits);
+    }
+    parse_set_text(path, bytes, limits)
+}
+
+fn parse_set_text(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
+    let (mut header, end) = umcf_foam_field::read_header_end(bytes)?;
     header.format = umcf_foam_field::Format::Ascii;
-    let mut r = Reader::new(&path, &bytes, end.unwrap_or(0), &header);
+    let mut r = Reader::new(path, bytes, end.unwrap_or(0), &header);
     r.skip_trivia();
     let class = header.class.clone().unwrap_or_default();
-    Ok(Some(Set { class, labels: r.labels(limits)? }))
+    Ok(Set { class, labels: r.labels(limits)? })
 }
 
 /// The mesh directory of a region (`""` for a single-region case).

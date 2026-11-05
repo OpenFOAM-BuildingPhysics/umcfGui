@@ -696,7 +696,7 @@ fn a_new_patch_is_prepared_from_its_card() {
     let case = h.state().session().case().unwrap();
     let set = String::from_utf8(case.put_bytes("constant/polyMesh/sets/west").unwrap().to_vec()).unwrap();
     assert!(set.ends_with("\n1\n(\n4\n)\n"), "{set}");
-    assert!(case.dict("system/createPatchDict").is_some());
+    assert!(case.dict("system/createPatchDict.umcf").is_some());
 }
 
 #[test]

@@ -4,7 +4,6 @@
 use serde_json::{Value, json};
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_geom::{Vec3, near::near, stl};
-use umcf_model::workflow::RegionStep;
 use umcf_model::{NewPatch, PatchChange};
 
 use super::bc::entry_text;
@@ -343,8 +342,6 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let warn = |code: &str, path: &str, message: String| json!({ "level": "warning", "code": code, "path": path, "region": region, "patch": name, "field": null, "message": message });
     let mut found: Vec<Value> = Vec::new();
     let flag = if region.is_empty() { String::new() } else { format!(" -region {region}") };
-    let runs =
-        o.case.workflow().meshes.iter().any(|m| m.region == region && m.steps.contains(&RegionStep::CreatePatch));
     found.push(json!({
         "level": "info",
         "code": "patch.run",
@@ -352,18 +349,27 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         "region": region,
         "patch": name,
         "field": null,
-        "message": if runs {
-            format!("the mesh gets the patch when `createPatch{flag} -overwrite` runs: Allprepare runs it")
-        } else {
-            format!("the mesh gets the patch when `createPatch{flag} -overwrite` runs: the case's scripts don't run it for this region, so run it by hand")
-        },
+        "message": format!(
+            "the mesh gets the patch when `createPatch{flag} -dict {} -overwrite` runs, once, on this mesh (with the other patches prepared there); then delete that dictionary: its face sets hold face labels of this mesh only",
+            report.dict
+        ),
     }));
+    if o.case.workflow().meshes.iter().any(|m| m.region == region) {
+        found.push(warn("patch.remesh", &report.dict, "the case's scripts make this region's mesh again, which makes it without the patch: run createPatch with that dictionary only on the mesh it was prepared on".to_string()));
+    }
     for q in &report.emptied {
-        found.push(warn(
-            "patch.emptied",
-            &report.dict,
-            format!("all faces of `{q}` move: createPatch removes it, and its conditions no longer apply"),
-        ));
+        let constraint = patches
+            .iter()
+            .any(|x| x.name == *q && matches!(x.kind.as_str(), "empty" | "symmetry" | "symmetryPlane" | "wedge"));
+        let what = if constraint {
+            "OpenFOAM-12's createPatch keeps it without faces, OpenFOAM-8's removes it"
+        } else {
+            "createPatch removes it, and its conditions no longer apply"
+        };
+        found.push(warn("patch.emptied", &report.dict, format!("all faces of `{q}` move: {what}")));
+    }
+    for f in &report.maybe {
+        found.push(json!({ "level": "info", "code": "patch.maybe", "path": f, "region": region, "patch": name, "field": null, "message": format!("a pattern entry or text from elsewhere (an #include) may give `{name}` a condition: check it has one before a run") }));
     }
     for f in &report.resized {
         found.push(warn("patch.resized", f, "has values per face on a patch the faces come from: their number is wrong once createPatch has run, so make this field again (from 0.orig, by setFields, …)".to_string()));
@@ -479,19 +485,51 @@ fn centres(
     for q in patches.iter().filter(|q| from.contains(&q.name)) {
         for f in q.faces() {
             let (Some(points), Ok(label)) = (mesh.face(f), u32::try_from(f)) else { continue };
-            let mut c = Vec3::ZERO;
-            let mut n = 0.0;
-            for x in points.iter().filter_map(|&pt| mesh.points.get(pt as usize)) {
-                c = c + Vec3::new(x[0], x[1], x[2]);
-                n += 1.0;
-            }
-            if n > 0.0 {
+            let points: Vec<Vec3> = points
+                .iter()
+                .filter_map(|&pt| mesh.points.get(pt as usize))
+                .map(|x| Vec3::new(x[0], x[1], x[2]))
+                .collect();
+            if let Some(c) = face_centre(&points) {
                 labels.push(label);
-                centres.push(c * (1.0 / n));
+                centres.push(c);
             }
         }
     }
     Ok((labels, centres))
+}
+
+/// A face's centre as OpenFOAM computes it (`face::areaAndCentre`): the centres of the
+/// triangles from each edge to the mean of the points, weighted by their area along the face's
+/// normal; the mean itself for a triangle or a face without area.
+fn face_centre(points: &[Vec3]) -> Option<Vec3> {
+    let n = points.len();
+    if n == 0 {
+        return None;
+    }
+    let mean = points.iter().fold(Vec3::ZERO, |a, p| a + *p) * (1.0 / n as f64);
+    if n == 3 {
+        return Some(mean);
+    }
+    let edge = |i: usize| (points.get(i).copied().unwrap_or(mean), points.get((i + 1) % n).copied().unwrap_or(mean));
+    let area = |i: usize| {
+        let (p, q) = edge(i);
+        (q - p).cross(mean - p)
+    };
+    let normal = (0..n).fold(Vec3::ZERO, |a, i| a + area(i));
+    let len = normal.length();
+    if !(len > 0.0 && len.is_finite()) {
+        return Some(mean);
+    }
+    let unit = normal * (1.0 / len);
+    let (mut sum, mut weight) = (Vec3::ZERO, 0.0);
+    for i in 0..n {
+        let (p, q) = edge(i);
+        let w = area(i).dot(unit);
+        sum = sum + (p + q + mean) * w;
+        weight += w;
+    }
+    Some(if weight > f64::MIN_POSITIVE { sum * (1.0 / (3.0 * weight)) } else { mean })
 }
 
 /// `box`: which centres are inside it.
@@ -560,4 +598,22 @@ fn surface(
         .map(|t| t.points())
         .collect();
     Ok((tris, distance))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn face_centres_are_area_weighted() {
+        let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
+        let c = face_centre(&[v(0.0, 0.0), v(4.0, 0.0), v(1.0, 1.0), v(0.0, 1.0)]).unwrap();
+        assert!((c.x - 1.4).abs() < 1e-12 && (c.y - 0.4).abs() < 1e-12, "{c:?}");
+        let c = face_centre(&[v(0.0, 0.0), v(3.0, 0.0), v(0.0, 3.0)]).unwrap();
+        assert!((c.x - 1.0).abs() < 1e-12 && (c.y - 1.0).abs() < 1e-12, "{c:?}");
+        // Without area: the mean.
+        let c = face_centre(&[v(0.0, 0.0), v(2.0, 0.0), v(4.0, 0.0), v(2.0, 0.0)]).unwrap();
+        assert!((c.x - 2.0).abs() < 1e-12, "{c:?}");
+        assert!(face_centre(&[]).is_none());
+    }
 }

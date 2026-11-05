@@ -70,8 +70,9 @@ patch stays selected, and its field files follow.
 *New patch* (on the *Mesh* tab) opens a card that prepares a patch from faces of the selected
 patches, as [`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the
 faces, either those whose centre is in a box (from x y z, to x y z) or those within a distance of
-a surface of the case (one of its solids, or all of it). *Prepare* writes the face set and the
-`createPatchDict` entry; the mesh gets the patch when `createPatch -overwrite` runs.
+a surface of the case (one of its solids, or all of it). *Prepare* writes the face set and adds the
+patch to the dictionary of the patches prepared on this mesh; the mesh gets them when
+`createPatch` runs once with that dictionary.
 
 ## Boundary conditions
 
