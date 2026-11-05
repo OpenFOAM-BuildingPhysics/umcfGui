@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 cd ${0%/*} || exit 1    # run from this directory
 
 # Source tutorial run functions
@@ -24,7 +25,7 @@ splitMeshRegions -region vegetation -cellZones
 rm -r constant/vegetation/polyMesh
 cp -r 3600/region1/polyMesh constant/vegetation/
 rm -r 3600
-rm -r system/vegetation/trees system/vegetation/region*
+rm -rf system/vegetation/trees system/vegetation/region*
 rm 0/vegetation/cellToRegion*
 createPatch -region vegetation -overwrite
 changeDictionary -region vegetation

@@ -32,16 +32,23 @@ They are the street canyon cases of the
 made small:
 
 - **Meshes:** the air's blocks have 3 to 6 uniform cells (about 2600 cells); the walls and the
-  street keep their graded resolution through the material (at most 20 cells) and have 4 to 5
-  cells along it.
+  street keep their graded resolution through the material (at most 20 cells) and have the air's
+  cells along it, so that each coupled face has one partner.
 - **Runs:** serial (`Allrun` without `decomposePar` and `reconstructPar`, `runApplication` for
   `runParallel`), `endTime 7200` with `maxFluidIteration 30`, and lower relaxation for the air
-  (`p_rgh` 0.3, `U` 0.5, `h` 0.5) so the coarse mesh's first iterations stay stable.
+  (`p_rgh` 0.3, `U` 0.5, `h` 0.5) so the coarse mesh's first iterations stay stable. The probes
+  write at every step.
+- **Scripts:** `Allprepare` and `Allrun` stop at the first failing step (`set -e`); the
+  vegetation case's removal of what splitMeshRegions may not write is `rm -rf`.
 - **Inputs:** the weather tables (`Tambient`, `wambient`) and the solar ones (`IDN`, `Idif`,
-  `sunPosVector`) start at 11:00, so that the short run has the sun up.
-- **Clean-up:** the OpenFOAM-12 cases lose `constant/regionProperties`, which OpenFOAM-12 doesn't
-  read (their regions are in `system/controlDict`); all of them lose `reconstructScript` (no
-  parallel run).
+  `sunPosVector`) start at 11:00, so that the short run has the sun up. Each wall's `Tamb` reads
+  its own region's `T_room.dat` (the tutorials cross them; the two tables are the same).
+- **OpenFOAM-12:** `faceAgglomerate` is given the region's `viewFactorsDict` (without `-dict` it
+  reads `system/viewFactorsDict`); the copies nothing reads are gone (`system/viewFactorsDict`,
+  `constant/<region>/viewFactorsDict`, the `setset.batch` files of setSet, which OpenFOAM-12 doesn't
+  have, and `constant/regionProperties`: the regions are in `system/controlDict`).
+- **Both:** `reconstructScript` is gone (no parallel run).
 
-The `blockMeshDict`s and the weather tables are written again with LF line endings, and all five
-tables with spaces instead of tabs; everything else is as in the tutorials, byte for byte.
+The files these change are written again: the `blockMeshDict`s and the weather tables with LF
+line endings, and all five tables with spaces instead of tabs. Everything else is as in the
+tutorials, byte for byte.

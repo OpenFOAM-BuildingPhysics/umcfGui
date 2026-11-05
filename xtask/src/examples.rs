@@ -151,6 +151,14 @@ sh ./Allrun > log.Allrun 2>&1 || { echo "Allrun failed: see log.Allrun"; exit 1;
     Ok(())
 }
 
+/// Whether `filter` picks the case `job` (`of12/streetCanyon_CFDHAM`): the whole name, a version
+/// (`of12`), or a case name in either (`streetCanyon_CFDHAM`), never a part of a name.
+fn picks(filter: &str, job: &str) -> bool {
+    let f = filter.trim_end_matches('/');
+    let (version, name) = job.split_once('/').unwrap_or(("", job));
+    f == job || f == version || f == name
+}
+
 /// The cases to run: (name, environment, copy). Copies everything first.
 fn prepare(base: &Path, filter: Option<&str>) -> Result<Vec<(String, PathBuf, PathBuf)>, String> {
     let mut jobs = Vec::new();
@@ -164,7 +172,10 @@ fn prepare(base: &Path, filter: Option<&str>) -> Result<Vec<(String, PathBuf, Pa
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.join("system/controlDict").is_file())
-            .filter(|p| filter.is_none_or(|f| p.to_string_lossy().contains(f.trim_end_matches('/'))))
+            .filter(|p| {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                filter.is_none_or(|f| picks(f, &format!("of{version}/{name}")))
+            })
             .collect();
         cases.sort();
         if cases.is_empty() {
@@ -186,7 +197,10 @@ fn prepare(base: &Path, filter: Option<&str>) -> Result<Vec<(String, PathBuf, Pa
 
 pub fn cmd_examples(filter: Option<&str>) -> Result<(), String> {
     println!("==> examples");
-    let base = std::env::temp_dir().join(format!("umcf-examples-{}", std::process::id()));
+    // A directory of its own: made here, so that no earlier run's logs or times are in it.
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let base = std::env::temp_dir().join(format!("umcf-examples-{}-{stamp}", std::process::id()));
+    std::fs::create_dir(&base).map_err(|e| format!("{}: {e}", base.display()))?;
     let jobs = match prepare(&base, filter) {
         Ok(j) if !j.is_empty() => j,
         other => {

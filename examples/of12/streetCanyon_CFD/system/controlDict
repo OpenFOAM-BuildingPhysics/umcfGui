@@ -75,7 +75,7 @@ functions
 
         // Write at same frequency as fields
         writeControl    timeStep;
-        writeInterval   10;  
+        writeInterval   1;  
 
         // Fields to be probed
         fields          (T U); 

@@ -33,7 +33,8 @@ commands:
   deny      cargo deny check licenses (skipped with a notice if cargo-deny is not installed)
   examples [<filter>]
             run every example case (examples/of8, examples/of12) with OpenFOAM and
-            urbanMicroclimateFoam, each on a temporary copy; <filter> picks cases by path. The
+            urbanMicroclimateFoam, each on a temporary copy; <filter> picks a case
+            (of12/streetCanyon_CFD), a version (of12) or a case name in each. The
             environments are UMCF_OF8_BASHRC and UMCF_OF12_BASHRC, else ~/OpenFOAM-<v>/etc/bashrc
 ";
 

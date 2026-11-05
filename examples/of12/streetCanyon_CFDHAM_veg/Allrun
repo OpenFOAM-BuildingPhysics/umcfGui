@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 cd ${0%/*} || exit 1    # run from this directory
 
 # Source tutorial run functions
@@ -7,7 +8,7 @@ cd ${0%/*} || exit 1    # run from this directory
 
 
 echo "Initializing radiation models"
-runApplication faceAgglomerate -region vegetation
+runApplication faceAgglomerate -region vegetation -dict system/vegetation/viewFactorsDict
 runApplication calcLAI -region air
 runApplication viewFactorsGen -region vegetation
 runApplication solarRayTracingGen -region vegetation

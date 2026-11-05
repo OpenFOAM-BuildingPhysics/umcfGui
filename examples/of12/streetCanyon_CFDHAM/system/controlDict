@@ -53,7 +53,7 @@ functions
         type            probes;
         name            probes;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   1;
         fields          ( T U );
         region          air;
         probeLocations  ( ( 65 125 5 ) );
