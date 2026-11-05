@@ -1311,9 +1311,23 @@ impl Case {
             if region.is_empty() { format!("{dir}/viewFactorsDict") } else { format!("{dir}/{region}/viewFactorsDict") }
         };
         for plain in [vf("system"), vf("constant")] {
-            // Stored compressed, it is renamed as `viewFactorsDict.gz`.
+            // Plain or compressed, put by a command and not saved yet, or on disk. A directory
+            // that can't be listed is said so, not taken as having none.
             let gz = format!("{plain}.gz");
-            let Some(path) = [plain, gz].into_iter().find(|p| fs.is_file(p)) else { continue };
+            let dir = plain.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+            let listed = match fs.list(&dir) {
+                Ok(names) => names,
+                Err(e) => {
+                    report.not_renamed.push((dir, format!("it can't be listed ({e})")));
+                    continue;
+                }
+            };
+            let there = |p: &str| {
+                self.raw.contains_key(p)
+                    || self.dict(p).is_some()
+                    || (p.rsplit_once('/').is_some_and(|(_, n)| listed.iter().any(|l| l == n)) && fs.is_file(p))
+            };
+            let Some(path) = [plain, gz].into_iter().find(|p| there(p)) else { continue };
             match self.rename_entry(fs, &path, None, patch, to) {
                 Renamed::Yes => report.others.push(path),
                 Renamed::No => {}
@@ -1451,6 +1465,10 @@ impl Case {
         let searched =
             |p: &str| ["system", "constant", "0.orig"].iter().any(|d| p == *d || p.starts_with(&format!("{d}/")));
         // Directories under those whose listing failed when the case was opened: not searched.
+        // The case root itself: none of them was searched.
+        if self.paths.contains("\u{2}") {
+            unread.extend(["system", "constant", "0.orig"].map(String::from));
+        }
         for p in &self.paths {
             if let Some(dir) = p.strip_suffix("/\u{2}")
                 && searched(dir)

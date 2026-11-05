@@ -1372,13 +1372,22 @@ fn a_rename_follows_into_a_compressed_view_factor_dictionary_and_searches_held_o
     gz.write_all(vf.as_bytes()).unwrap();
     let fs = case().with("constant/air/viewFactorsDict.gz", gz.finish().unwrap());
     let mut c = Case::open(&fs).unwrap();
-    // A file a command made since the case was opened.
-    let held =
-        format!("{}patches\n(\n    {{ name roof; patches (ground); }}\n);\n", header("dictionary", "createPatchDict"));
-    c.put_file(&fs, "system/air/createPatchDict.umcf", held.into_bytes()).unwrap();
+    // A dictionary the case holds since a command made it: the pending createPatch dictionary,
+    // given an entry naming the patch.
+    let ground =
+        c.region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "ground").cloned().unwrap();
+    let faces = [ground.start_face as u32];
+    c.create_patch(&fs, "air", &NewPatch { name: "lid", kind: "patch", groups: &[], entries: &[], faces: &faces })
+        .unwrap();
+    c.set("system/air/createPatchDict.umcf", &["note"], "ground").unwrap();
+    assert!(c.put_bytes("system/air/createPatchDict.umcf").is_none(), "held, not put");
+    // A view factor dictionary put by a command and not saved yet.
+    c.put_file(&fs, "system/air/viewFactorsDict", vf.clone().into_bytes()).unwrap();
     let report =
         c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
-    assert_eq!(report.others, ["constant/air/viewFactorsDict.gz"]);
+    assert_eq!(report.others, ["system/air/viewFactorsDict", "constant/air/viewFactorsDict.gz"]);
+    let put = String::from_utf8(c.put_bytes("system/air/viewFactorsDict").unwrap().to_vec()).unwrap();
+    assert!(put.contains("terrain\n{"), "{put}");
     let bytes = c.put_bytes("constant/air/viewFactorsDict.gz").unwrap();
     let mut text = String::new();
     std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text).unwrap();
