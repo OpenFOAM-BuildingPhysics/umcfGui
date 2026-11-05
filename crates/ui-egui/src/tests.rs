@@ -762,9 +762,12 @@ fn open_asks_for_the_folder_in_the_systems_dialog() {
     app.folder_picked(Picked::Unavailable);
     let d = app.dialog.take().unwrap();
     assert!(d.error.unwrap().contains("type the case's path"));
-    // A case: opened.
+    // A case: opened, and the card from the folder before goes.
+    app.folder_picked(Picked::Folder("/nonexistent/umcf-case".to_string()));
+    assert!(app.dialog.is_some());
     app.folder_picked(Picked::Folder(path.clone()));
     assert_eq!(app.session().location(), Some(path.as_str()));
+    assert!(app.dialog.is_none());
     assert_eq!(app.log.last().unwrap().command, "case.open");
     // Without a dialog at all, Open is the card.
     let mut app = App::new(Session::new());

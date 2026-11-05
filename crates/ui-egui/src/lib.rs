@@ -442,7 +442,12 @@ impl App {
     /// Opens the case in `path`. When that doesn't work (unsaved changes, not a case), the
     /// *Open* card shows the path and why, to change or confirm (`discard`).
     pub fn open_folder(&mut self, path: &str) {
-        if let Err(e) = self.run("case.open", json!({ "path": path })) {
+        let result = self.run("case.open", json!({ "path": path }));
+        // An Open card from an earlier folder that didn't open goes once one does.
+        if result.is_ok() && self.dialog.as_ref().is_some_and(|d| d.id == "case.open") {
+            self.dialog = None;
+        }
+        if let Err(e) = result {
             self.bc = None;
             self.patch_form = None;
             self.new_patch = None;
