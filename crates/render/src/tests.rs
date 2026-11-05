@@ -7,7 +7,7 @@ use umcf_geom::stl::{Format, Stl, Triangle};
 use umcf_geom::{BBox, Vec3};
 
 use crate::camera::{Camera, View};
-use crate::raster::{SELECTED, Style, draw, palette};
+use crate::raster::{Rect, SELECTED, Style, covered, draw, palette};
 use crate::{Object, Scene, Source, png};
 
 /// A unit cube mesh at `at`, its bottom face patch `ground`, top `sky`, the sides `walls`.
@@ -286,4 +286,110 @@ fn picks_list_each_patch_once() {
     assert_eq!(s.pick(&ray, 100).len(), 4);
     let classes: Vec<u32> = s.pick_classes(&ray).iter().map(|p| p.class).collect();
     assert_eq!(classes, [1, 0]);
+}
+
+/// The faces of `covered`'s triangles, by object.
+fn faces_of(s: &Scene, hits: &[(usize, u32)]) -> Vec<(usize, u32)> {
+    let mut f: Vec<(usize, u32)> = hits.iter().map(|(k, t)| (*k, s.objects[*k].origin_index[*t as usize])).collect();
+    f.dedup();
+    f
+}
+
+#[test]
+fn a_rectangle_covers_what_is_seen_in_it_or_everything_through_it() {
+    // Two cubes side by side, seen from above: the left one in the left half of the image.
+    let mut s = scene_of(&cube([0.0; 3]));
+    let right = cube([2.0, 0.0, 0.0]);
+    s.objects.push(Object::from_mesh("veg", &right, s.origin));
+    let b = BBox { min: Vec3::ZERO, max: Vec3::new(3.0, 1.0, 1.0) };
+    let cam = Camera::fit(View::Top, &b, 2.0);
+    let st = Style { width: 200, height: 100, ..Style::default() };
+    let all = Rect { a: [0.0, 0.0], b: [200.0, 100.0] };
+    // Seen: the two skies (face 1) with both their triangles, and the walls perspective shows
+    // from above, not the grounds (face 0) under them.
+    let seen = covered(&s, &cam, &st, all, false, &|_, _| true);
+    for k in 0..2 {
+        assert!(seen.contains(&(k, 2)) && seen.contains(&(k, 3)), "{seen:?}");
+        assert!(!seen.contains(&(k, 0)) && !seen.contains(&(k, 1)), "{seen:?}");
+    }
+    assert!(seen.windows(2).all(|p| p[0] < p[1]));
+    // Through: every face of both (their middles are all inside the image), by its first
+    // triangle.
+    let through = covered(&s, &cam, &st, all, true, &|_, _| true);
+    assert_eq!(faces_of(&s, &through), (0..2).flat_map(|k| (0..6).map(move |f| (k, f))).collect::<Vec<_>>());
+    assert_eq!(through.len(), 12);
+    assert!(through.iter().all(|(_, t)| t % 2 == 0));
+    // The left half, corners in either order: the left cube only.
+    let left = Rect { a: [100.0, 100.0], b: [0.0, 0.0] };
+    assert!(faces_of(&s, &covered(&s, &cam, &st, left, false, &|_, _| true)).iter().all(|(k, f)| *k == 0 && *f != 0));
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, left, true, &|_, _| true)).len(), 6);
+    // A small one in the left cube's middle: through it, the sky and the ground (the walls'
+    // middles are outside).
+    // (The left cube's middle is seen at about (69, 50).)
+    let mid = Rect { a: [64.0, 45.0], b: [74.0, 55.0] };
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, true, &|_, _| true)), [(0, 0), (0, 1)]);
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), [(0, 1)]);
+    // No pixel's middle inside, outside the image, or not finite: nothing.
+    for r in [
+        Rect { a: [10.2, 10.0], b: [10.4, 20.0] },
+        Rect { a: [300.0, 0.0], b: [400.0, 100.0] },
+        Rect { a: [f64::NAN, 0.0], b: [10.0, 10.0] },
+    ] {
+        assert!(covered(&s, &cam, &st, r, false, &|_, _| true).is_empty(), "{r:?}");
+        if r.a[0].is_nan() {
+            assert!(covered(&s, &cam, &st, r, true, &|_, _| true).is_empty(), "{r:?}");
+        }
+    }
+    // Through a rectangle past the image's edge: only the middles on the image. Four times as
+    // close, the right cube's middle (seen at x 131) is at 224, off the image 200 wide.
+    let mut close = cam;
+    close.distance /= 4.0;
+    let past = Rect { a: [150.0, -50.0], b: [400.0, 150.0] };
+    let off = faces_of(&s, &covered(&s, &close, &st, past, true, &|_, _| true));
+    // Its wall at x 2, nearer the middle, is on the image and taken; its sky is not.
+    assert!(off.contains(&(1, 4)) && !off.contains(&(1, 1)), "{off:?}");
+    // A rectangle narrower than a pixel holds no pixel's middle: nothing is seen in it, but
+    // through it the middles inside it count. Seen from above, the cube's middle is the image's.
+    let one = scene_of(&cube([0.0; 3]));
+    let above = Camera::fit(View::Top, &one.bbox().unwrap(), 1.0);
+    let square = Style { width: 100, height: 100, ..Style::default() };
+    let thin = Rect { a: [49.9, 49.9], b: [50.1, 50.1] };
+    assert!(covered(&one, &above, &square, thin, false, &|_, _| true).is_empty());
+    assert_eq!(faces_of(&one, &covered(&one, &above, &square, thin, true, &|_, _| true)), [(0, 0), (0, 1)]);
+    // Above both, looking up: everything is behind the camera.
+    let mut inside = cam;
+    inside.distance = 0.0;
+    inside.target = Vec3::new(1.5, 0.5, 2.0);
+    inside.elevation = -90.0;
+    assert!(covered(&s, &inside, &st, all, true, &|_, _| true).is_empty());
+    // Only what `keep` takes counts, and hides: without the skies, the ground is seen in the
+    // middle.
+    let no_left = |k: usize, _: u32| k == 1;
+    assert!(faces_of(&s, &covered(&s, &cam, &st, left, false, &no_left)).is_empty());
+    let no_sky = |_: usize, c: u32| c != 1;
+    let seen = faces_of(&s, &covered(&s, &cam, &st, mid, false, &no_sky));
+    assert_eq!(seen, [(0, 0)]);
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, true, &no_sky)), [(0, 0)]);
+    // An empty scene, an empty image.
+    assert!(covered(&Scene::new(Vec3::ZERO), &cam, &st, all, false, &|_, _| true).is_empty());
+    // A size of 0 draws 1 × 1: its one pixel looks down between the two cubes.
+    assert!(covered(&s, &cam, &Style::default(), all, false, &|_, _| true).is_empty());
+}
+
+/// Where two regions' patches lie on each other, the selected one is what a rectangle sees, as
+/// it is what is drawn.
+#[test]
+fn a_rectangle_sees_the_selection_where_two_regions_meet() {
+    let mesh = cube([0.0; 3]);
+    let mut s = scene_of(&mesh);
+    s.objects.push(Object::from_mesh("veg", &mesh, s.origin));
+    let cam = Camera::fit(View::Top, &s.bbox().unwrap(), 1.0);
+    let mid = Rect { a: [15.0, 15.0], b: [25.0, 25.0] };
+    for k in 0..2 {
+        let st = Style { width: 40, height: 40, selected: vec![(k, 1)], ..Style::default() };
+        assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), [(k, 1)]);
+        let mut st = Style { width: 40, height: 40, ..Style::default() };
+        st.selected_faces.insert((k, 1));
+        assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), [(k, 1)]);
+    }
 }

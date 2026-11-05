@@ -39,6 +39,10 @@ pub enum Icon {
     Patch,
     /// Picking single faces: a grid with one cell taken.
     Faces,
+    /// Dragging a rectangle selects: a dashed box with a pointer.
+    BoxSelect,
+    /// A rectangle takes hidden things too: two boxes, one behind the other, and a ray.
+    Through,
     /// A boundary condition: a patch with what flows in through it.
     Condition,
     Surface,
@@ -304,6 +308,25 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, ink: Ink) {
                 line(&[(k, -0.4), (k, 0.4)]);
                 line(&[(-0.4, k), (0.4, k)]);
             }
+        }
+        Icon::BoxSelect => {
+            // Dashes along the box's sides.
+            for (a, b) in [((-0.42, -0.42), (0.3, -0.42)), ((-0.42, -0.42), (-0.42, 0.3))] {
+                for k in 0..3 {
+                    let (s0, s1) = (k as f32 * 0.27, k as f32 * 0.27 + 0.16);
+                    let lerp = |s: f32| (a.0 + (b.0 - a.0) * s / 0.72, a.1 + (b.1 - a.1) * s / 0.72);
+                    line(&[lerp(s0), lerp(s1)]);
+                }
+            }
+            line(&[(0.3, -0.42), (0.3, -0.1)]);
+            line(&[(-0.42, 0.3), (-0.1, 0.3)]);
+            fill(&[(0.0, 0.0), (0.46, 0.18), (0.22, 0.24), (0.16, 0.46)], ink.fill);
+        }
+        Icon::Through => {
+            closed(&[(-0.1, -0.42), (0.42, -0.42), (0.42, 0.1), (-0.1, 0.1)], soft);
+            closed(&[(-0.42, -0.1), (0.1, -0.1), (0.1, 0.42), (-0.42, 0.42)], soft);
+            line(&[(-0.5, 0.5), (0.5, -0.5)]);
+            circle(0.5, -0.5, 0.07, ink.fill, Stroke::NONE);
         }
         Icon::Condition => {
             closed(&[(-0.4, 0.06), (0.16, -0.06), (0.4, 0.22), (-0.16, 0.36)], soft);
