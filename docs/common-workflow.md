@@ -6,9 +6,9 @@ question: how does a case stay consistent when its patches, regions or surfaces 
 Today every case carries hand-written meshing dictionaries and scripts, copied from case to case
 and edited. A patch name is written in a dozen places (the blockMesh or snappyHexMesh dictionary,
 `createPatchDict`, each region's `changeDictionaryDict`, every field file, the vegetation patch of
-the same name (with trees), the view factor dictionary, the partner's `neighbourPatch`), a material's in the
-`topoSetDict` and the material properties. Renaming one means finding all of them, and the case's
-scripts make the mesh again from the old ones.
+the same name (with trees), the view factor dictionary, the partner's `neighbourPatch`), a
+material's name in the `topoSetDict` and the material properties. Renaming one means finding all of
+them, and the case's scripts make the mesh again from the old ones.
 
 The common workflow turns this around. One file in the case, `system/umcfWorkflow`, describes the
 case: its regions, how each is meshed, its patches with their roles, its solids and materials,
@@ -132,14 +132,17 @@ it in `0.orig` too. A missing field is made from its role's defaults.
 
 ## Renaming and the other edits
 
-With the description the source, a rename is one command: it changes the name in
-`umcfWorkflow`, generates the dictionaries again, and renames the patch in the meshes as they are,
-in every region the description names it in, so the case runs without meshing again. For an air
-patch coupled to a solid that is the air patch and, in a case with trees, its vegetation twin
-(`patch.set` already does a region's mesh, the fields of the start time and `0.orig`, the partner
-patches and the region's view factor dictionary). The shared background follows because it is
-generated from the same entry. What `patch.set` lists today (the meshing dictionaries) is then
-generated, not listed.
+With the description the source, a rename is one command: it changes the name in `umcfWorkflow`,
+generates the dictionaries again, and renames the patch in the meshes as they are, in every region
+the description names it in, so the case runs without meshing again. For an air patch coupled to a
+solid that is the air patch and, in a case with trees, its vegetation twin (`patch.set` already
+does a region's mesh, the fields of the start time and `0.orig`, the partner patches and the
+region's view factor dictionary). The shared background follows because it is generated from the
+same entry. What `patch.set` lists today (the meshing dictionaries) is then generated, not listed.
+The rename covers the start time, not what was written from it: other time directories,
+`processor*` decompositions and `boundaryData/<patch>` keep the old name. `patch.set` names them
+(`patch.times`, `patch.decomposed`, `patch.mention`); the case starts again from the start time and
+is decomposed again, and `boundaryData` is renamed by hand or written again.
 
 New regions, solids and materials are edits of the description in the same way. A new material
 takes its `buildingMaterials` entry and coefficients from a library of materials (the reference
