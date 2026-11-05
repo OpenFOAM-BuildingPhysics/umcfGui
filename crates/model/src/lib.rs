@@ -316,6 +316,22 @@ pub struct CreateReport {
     pub maybe: Vec<String>,
 }
 
+/// Whether trivia `text` (one line) leaves a `/* … */` comment open at its end: read left to
+/// right, a `//` ends the line and a `/*` runs to its `*/`.
+fn opens_block_comment(text: &str) -> bool {
+    let mut rest = text;
+    loop {
+        match (rest.find("//"), rest.find("/*")) {
+            (_, None) => return false,
+            (Some(l), Some(b)) if l < b => return false,
+            (_, Some(b)) => match rest.get(b + 2..).and_then(|r| r.find("*/").map(|e| (r, e))) {
+                Some((r, e)) => rest = r.get(e + 2..).unwrap_or(""),
+                None => return true,
+            },
+        }
+    }
+}
+
 /// How [`pending_dict`] says the mesh it was prepared on: its number of faces.
 const STAMP: &str = "// prepared on a mesh of ";
 
@@ -351,7 +367,7 @@ pub fn create_patch_command(region: &str, version: Option<umcf_core::OfVersion>)
 fn condition_kind(kind: &str) -> &str {
     match kind {
         "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall" => "wall",
-        "patch" | "mapped" | "mappedPatch" => "patch",
+        "patch" | "mapped" | "mappedPatch" | "mappedExtrudedPatch" => "patch",
         k => k,
     }
 }
@@ -1328,6 +1344,14 @@ impl Case {
                     if get("name").as_deref() == Some(new.name) {
                         return Err(Error::Bc(format!("{dict} prepares a patch `{}` already", new.name)));
                     }
+                    // The mesh has it: the dictionary has run already.
+                    if let Some(name) = get("name")
+                        && patches.iter().any(|p| p.name == name)
+                    {
+                        return Err(Error::Bc(format!(
+                            "{dict} prepares `{name}`, which the mesh has already: it has run, so delete it (and its face sets) first"
+                        )));
+                    }
                     let (Some(name), Some("set"), Some(set_name)) =
                         (get("name"), get("constructFrom").as_deref(), get("set"))
                     else {
@@ -1503,17 +1527,14 @@ impl Case {
                     Some((_, last)) => last.chars().take_while(|c| *c == ' ' || *c == '\t').collect(),
                     None => "    ".to_string(),
                 };
-                // On a line of its own after the source, without the comments before that one;
-                // a comment on the source's last line stays with it (unless it is a block comment
-                // that goes on).
+                // On a line of its own after the source, without the comments before that one. A
+                // comment on the rest of the source's last line stays with the source, unless a
+                // block comment goes on from there: then the copy goes before it.
                 let next = match bf.items.get_mut(at + 1) {
                     Some(item) => &mut item.key_tok_mut().lead,
                     None => &mut close.lead,
                 };
-                let split = next.find('\n').filter(|&i| {
-                    let same = next.get(..i).unwrap_or("");
-                    same.matches("/*").count() == same.matches("*/").count()
-                });
+                let split = next.find('\n').filter(|&i| !opens_block_comment(next.get(..i).unwrap_or("")));
                 e.key.lead = match split {
                     Some(i) => {
                         let same = next.get(..i).unwrap_or("").to_string();

@@ -1150,6 +1150,13 @@ fn a_new_patch_is_prepared_for_create_patch() {
         e(c4.create_patch(&other, "air", &new("y", &[16])))
             .contains("prepared on a mesh of 16 faces, and this one has 17")
     );
+    // A dictionary that has run already (the mesh has its patch) stops it too.
+    let ran = fs.clone().with(
+        "constant/air/polyMesh/boundary",
+        format!("{}{}", header("polyBoundaryMesh", "boundary"), BOUNDARY.replace("    top\n", "    terrain\n")),
+    );
+    let mut c5 = Case::open(&ran).unwrap();
+    assert!(e(c5.create_patch(&ran, "air", &new("y", &[15]))).contains("which the mesh has already"));
     // A prepared set that has gone stops it.
     let fs3 = fs.clone().with(
         "system/air/createPatchDict.umcf",
@@ -1263,4 +1270,22 @@ fn faces_of_coupled_patches_stay() {
     let e = c.create_patch(&fs, "air", &new("sky", &[12])).unwrap_err().to_string();
     assert!(e.contains("group"), "{e}");
     assert!(c.changed().is_empty());
+}
+
+#[test]
+fn block_comments_left_open_are_told_apart() {
+    for (text, open) in [
+        (" // a note", false),
+        (" // files /*.stl", false),
+        (" /* see http://x */", false),
+        (" /* a // b */ // c", false),
+        (" /* a note", true),
+        (" /* a */ /* b", true),
+        ("", false),
+        (" /*/", true),
+        (" //*", false),
+        (" /**/", false),
+    ] {
+        assert_eq!(opens_block_comment(text), open, "{text:?}");
+    }
 }

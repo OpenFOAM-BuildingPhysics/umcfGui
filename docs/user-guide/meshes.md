@@ -235,8 +235,10 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   … -overwrite` runs, once, on this mesh; delete the dictionary then. The command says the line
   for the case's OpenFOAM version (`patch.run`): OpenFOAM-12 takes the path from the case
   (`-dict system/<region>/createPatchDict.umcf`), OpenFOAM-8 below `system/<region>/` already
-  (`-dict system/createPatchDict.umcf`). The dictionary notes the number of faces of the mesh it
-  was prepared on, and adding to it on a mesh of another size is refused. Until then, the patch isn't in the mesh, the view or the
+  (`-dict system/createPatchDict.umcf`). Adding to the dictionary is refused when it can't be for this
+  mesh: it notes the number of faces of the mesh it was prepared on, and the mesh must have that
+  many and none of the patches it prepares. A mesh made again with as many faces, before the
+  dictionary has run, isn't caught. Until then, the patch isn't in the mesh, the view or the
   browser. When the case's scripts make the region's mesh again, the mesh they make doesn't have
   it (`patch.remesh`).
 - **The fields follow when they can.** When all the faces come from one patch of the same kind,
