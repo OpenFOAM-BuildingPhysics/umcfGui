@@ -39,7 +39,7 @@ use umcf_core::{CaseFs, CaseWrite, FsError};
 use umcf_foam_dict::Document;
 use umcf_foam_field::times::{self, TimeDir};
 use umcf_foam_field::{Field, Value};
-use umcf_foam_mesh::Patch;
+pub use umcf_foam_mesh::Patch;
 use umcf_schema::{CaseKind, Layout, Note, Severity};
 
 mod controls;
@@ -220,6 +220,13 @@ struct RawFile {
     base: Option<Fingerprint>,
 }
 
+/// The bytes a command edits a file from, and the fingerprint of the file they came from.
+type EditBase = (Option<Arc<Vec<u8>>>, Option<Fingerprint>);
+
+/// A mapped patch of another region that names a renamed patch: the region's index, the
+/// patch, and the entries to set in it.
+type Partner = (usize, String, Vec<(String, String)>);
+
 /// A file as it was before this session's first save over it.
 #[derive(Debug, Clone)]
 struct Original {
@@ -235,6 +242,33 @@ pub struct Condition<'a> {
     pub kind: &'a str,
     pub entries: &'a [(&'a str, &'a str)],
     pub defaults: &'a [(&'a str, &'a str)],
+}
+
+/// A change to a mesh patch for [`Case::set_patch`]; `None` and empty leave things as they are.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PatchChange<'a> {
+    /// A new name.
+    pub name: Option<&'a str>,
+    /// `patch`, `wall`, `mappedWall`, `symmetry`, `empty`, …
+    pub kind: Option<&'a str>,
+    /// The groups, replacing `inGroups`.
+    pub groups: Option<&'a [&'a str]>,
+    /// Other entries set in the patch (`neighbourRegion air`, …).
+    pub entries: &'a [(&'a str, &'a str)],
+}
+
+/// What [`Case::set_patch`] changed besides the mesh, and what it couldn't.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatchReport {
+    /// Field files whose entry for the patch was renamed.
+    pub fields: Vec<String>,
+    /// Mapped patches of other regions (`region/patch`) that now name the new name.
+    pub partners: Vec<String>,
+    /// Field files too large to be read here: not renamed.
+    pub unread: Vec<String>,
+    /// Field files with a pattern entry or text from elsewhere, which may name the patch by its
+    /// old name: not changed there.
+    pub indirect: Vec<String>,
 }
 
 /// What [`Case::set_bc`] couldn't do as asked, by patch.
@@ -811,15 +845,7 @@ impl Case {
         body.push_str(" }");
         let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
         // Read once: the bytes edited are the ones the save will check the disk against.
-        let (bytes, base) = match (self.raw.get(&path), self.saved_over(&path)) {
-            (Some(f), _) => (Some(Arc::clone(&f.bytes)), f.base),
-            (None, Some((b, f))) => (Some(b), Some(f)),
-            (None, None) => {
-                let b = fs.read(&path, MAX_FILE_BYTES)?.map(Arc::new);
-                let f = b.as_deref().map(|b| fingerprint(b));
-                (b, f)
-            }
-        };
+        let (bytes, base) = self.edit_base(fs, &path)?;
         let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
         // Patches whose replaced entry brought in text from elsewhere (`#include`, `$macro`).
         let mut dropped = Vec::new();
@@ -876,6 +902,242 @@ impl Case {
             *f = summary;
         }
         Ok(BcReport { replaced: dropped, unfilled })
+    }
+
+    /// The bytes a command edits a file from, read once, and the fingerprint of the file they
+    /// were read from (what [`Case::save`] checks the disk against).
+    fn edit_base(&self, fs: &dyn CaseFs, path: &str) -> Result<EditBase> {
+        Ok(match (self.raw.get(path), self.saved_over(path)) {
+            (Some(f), _) => (Some(Arc::clone(&f.bytes)), f.base),
+            (None, Some((b, f))) => (Some(b), Some(f)),
+            (None, None) => {
+                let b = fs.read(path, MAX_FILE_BYTES)?.map(Arc::new);
+                let f = b.as_deref().map(|b| fingerprint(b));
+                (b, f)
+            }
+        })
+    }
+
+    /// The size a file a command edits may have, decompressed: [`Case::rewrite_file`]'s cap, so
+    /// that what it wrote can be read back.
+    fn edit_cap(&self) -> u64 {
+        self.options.field_bytes.max(1 << 20)
+    }
+
+    /// The patches of `boundary` bytes [`Case::rewrite_file`] returned.
+    fn reparse_boundary(&self, path: &str, bytes: &[u8]) -> Result<Vec<Patch>> {
+        let limits = umcf_foam_mesh::Limits { max_bytes: self.edit_cap(), ..Default::default() };
+        umcf_foam_mesh::parse_boundary_bytes(bytes, &limits).map_err(|e| Error::Bc(format!("{path}: {e}")))
+    }
+
+    /// Rewrites one file a command edits (a field, a mesh's `boundary`) with `edit`, keeping
+    /// every byte it doesn't touch, and puts it; returns the new bytes.
+    fn rewrite_file(
+        &mut self,
+        fs: &dyn CaseFs,
+        path: &str,
+        edit: impl FnOnce(&mut umcf_foam_dict::Document) -> umcf_foam_field::Result<()>,
+    ) -> Result<Vec<u8>> {
+        let limits = umcf_foam_field::Limits { max_bytes: self.edit_cap(), ..Default::default() };
+        let (bytes, base) = self.edit_base(fs, path)?;
+        let bytes = bytes.ok_or_else(|| Error::Bc(format!("{path} is not there any more")))?;
+        let out = umcf_foam_field::rewrite(&bytes, &limits, edit)
+            .map_err(|source| Error::Field { path: path.to_string(), source })?;
+        self.put_based(path, out.clone(), base)?;
+        Ok(out)
+    }
+
+    /// Changes a patch of a region's mesh (`constant/<region>/polyMesh/boundary`): its type,
+    /// its groups, other entries (`neighbourRegion`, …), or its name. Only those entries
+    /// change, byte for byte. A new name goes into the region's field files at the start time
+    /// (the patch's own `boundaryField` entry) and into the mapped patches of other regions that
+    /// name it. [`Case::save`] writes it all.
+    pub fn set_patch(
+        &mut self,
+        fs: &dyn CaseFs,
+        region: &str,
+        patch: &str,
+        change: &PatchChange,
+    ) -> Result<PatchReport> {
+        let r = self
+            .regions
+            .iter()
+            .position(|r| r.name == region)
+            .ok_or_else(|| Error::Bc(format!("the case has no region `{region}`")))?;
+        let patches = self
+            .regions
+            .get(r)
+            .and_then(|r| r.patches.clone())
+            .ok_or_else(|| Error::Bc(format!("region `{region}` has no mesh")))?;
+        if !patches.iter().any(|p| p.name == patch) {
+            return Err(Error::Bc(format!("region `{region}` has no patch `{patch}`")));
+        }
+        let words = [change.name, change.kind]
+            .into_iter()
+            .flatten()
+            .chain(change.groups.unwrap_or(&[]).iter().copied())
+            .chain(change.entries.iter().flat_map(|(k, v)| [*k, *v]));
+        if let Some(w) = words.into_iter().find(|w| w.contains(umcf_foam_field::PLACEHOLDER)) {
+            return Err(Error::Bc(format!("`{w}` can't be written into a mesh file")));
+        }
+        if let Some(to) = change.name
+            && to != patch
+        {
+            if patches.iter().any(|p| p.name == to) {
+                return Err(Error::Bc(format!("region `{region}` has a patch `{to}` already")));
+            }
+            if patches.iter().any(|p| p.groups.iter().any(|g| g == to)) {
+                return Err(Error::Bc(format!("`{to}` is a patch group of region `{region}`")));
+            }
+            if to.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Error::Bc(format!("`{to}` is a number, not a patch name")));
+            }
+            // A field entry by that name (a group, a pattern, a leftover) would take the
+            // renamed patch's entry over, or merge with it.
+            let taken = self
+                .regions
+                .get(r)
+                .into_iter()
+                .flat_map(|reg| &reg.fields)
+                .find(|f| f.bcs.iter().flatten().any(|b| b.patch == to));
+            if let Some(f) = taken {
+                return Err(Error::Bc(format!("{} has an entry `{to}` already", f.path)));
+            }
+            let twice = self
+                .regions
+                .get(r)
+                .into_iter()
+                .flat_map(|reg| &reg.fields)
+                .find(|f| f.bcs.iter().flatten().filter(|b| b.patch == patch).count() > 1);
+            if let Some(f) = twice {
+                return Err(Error::Bc(format!("{} has two entries `{patch}`: keep one first", f.path)));
+            }
+        }
+        let mut report = PatchReport::default();
+        let dir = umcf_foam_mesh::mesh_dir(region);
+        let path = self.mesh_file(fs, &dir, "boundary");
+        let out = self.rewrite_file(fs, &path, |doc| {
+            let (name, dict) = umcf_foam_mesh::boundary_patch_mut(doc, patch)
+                .ok_or_else(|| umcf_foam_field::Error::Unsupported(format!("no patch `{patch}` in the file")))?;
+            if let Some(kind) = change.kind {
+                dict.set(&["type"], kind)?;
+            }
+            if let Some(groups) = change.groups {
+                dict.set(&["inGroups"], &format!("List<word> {}({})", groups.len(), groups.join(" ")))?;
+            }
+            for (k, v) in change.entries {
+                dict.set(&[k], v)?;
+            }
+            if let Some(to) = change.name {
+                name.text = to.to_string();
+            }
+            Ok(())
+        })?;
+        let parsed = self.reparse_boundary(&path, &out)?;
+        if let Some(reg) = self.regions.get_mut(r) {
+            reg.patches = Some(parsed);
+        }
+        let Some(to) = change.name.filter(|to| *to != patch) else { return Ok(report) };
+        // The region's fields: the patch's own entry gets the new name.
+        let fields: Vec<(String, String, bool)> = self.regions.get(r).map_or(Vec::new(), |reg| {
+            reg.fields
+                .iter()
+                .map(|f| {
+                    let own = f.bcs.as_ref().is_some_and(|b| b.iter().any(|b| b.patch == patch));
+                    // Without an entry of its own, a pattern or text from elsewhere may give it
+                    // its condition by the old name: not changed there.
+                    let maybe = f.indirect || f.bcs.iter().flatten().any(|b| b.pattern);
+                    if maybe && !own && f.bcs.is_some() {
+                        report.indirect.push(f.path.clone());
+                    }
+                    (f.name.clone(), f.path.clone(), f.bcs.is_some() && own)
+                })
+                .collect()
+        });
+        let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
+        for (name, fpath, own) in fields {
+            let unread = self.regions.get(r).and_then(|reg| reg.field(&name)).is_some_and(|f| f.bcs.is_none());
+            if unread {
+                report.unread.push(fpath);
+                continue;
+            }
+            if !own {
+                continue;
+            }
+            let out = self.rewrite_file(fs, &fpath, |doc| {
+                if let Some(bf) = doc.root.get_mut("boundaryField").and_then(umcf_foam_dict::Entry::dict_mut) {
+                    bf.rename(patch, to);
+                }
+                Ok(())
+            })?;
+            let parsed =
+                Field::parse_with(&out, &limits).map_err(|source| Error::Field { path: fpath.clone(), source })?;
+            let summary = summarise(name, fpath.clone(), &parsed);
+            if let Some(f) = self.regions.get_mut(r).and_then(|reg| reg.fields.iter_mut().find(|f| f.path == fpath)) {
+                *f = summary;
+            }
+            report.fields.push(fpath);
+        }
+        // Mapped patches of other regions that name it.
+        let others: Vec<Partner> = self
+            .regions
+            .iter()
+            .enumerate()
+            .flat_map(|(i, reg)| {
+                let own = reg.name.clone();
+                reg.patches.iter().flatten().filter_map(move |p| {
+                    let get =
+                        |k: &str| p.params.iter().find(|(x, _)| x == k).map(|(_, v)| v.trim_matches('"').to_string());
+                    // Without a region the partner is in the patch's own region (cyclic,
+                    // nonConformal, a mapped patch within one region).
+                    let nbr_region = get("neighbourRegion").or_else(|| get("sampleRegion")).unwrap_or(own.clone());
+                    let mut keys: Vec<(String, String)> = Vec::new();
+                    if nbr_region == region {
+                        keys.extend(
+                            ["neighbourPatch", "samplePatch"]
+                                .iter()
+                                .filter(|k| get(k).as_deref() == Some(patch))
+                                .map(|k| (k.to_string(), to.to_string())),
+                        );
+                    }
+                    // A non-conformal patch's original patch is in its own region.
+                    if i == r && get("originalPatch").as_deref() == Some(patch) {
+                        keys.push(("originalPatch".to_string(), to.to_string()));
+                    }
+                    let itself = i == r && p.name == patch;
+                    (!keys.is_empty() && !itself).then(|| (i, p.name.clone(), keys))
+                })
+            })
+            .collect();
+        for (i, other, keys) in others {
+            let Some(oname) = self.regions.get(i).map(|x| x.name.clone()) else { continue };
+            let opath = self.mesh_file(fs, &umcf_foam_mesh::mesh_dir(&oname), "boundary");
+            let out = self.rewrite_file(fs, &opath, |doc| {
+                if let Some((_, dict)) = umcf_foam_mesh::boundary_patch_mut(doc, &other) {
+                    for (k, v) in &keys {
+                        dict.set(&[k.as_str()], v)?;
+                    }
+                }
+                Ok(())
+            })?;
+            let parsed = self.reparse_boundary(&opath, &out)?;
+            if let Some(reg) = self.regions.get_mut(i) {
+                reg.patches = Some(parsed);
+            }
+            report.partners.push(format!("{oname}/{other}"));
+        }
+        Ok(report)
+    }
+
+    /// `dir/name`, or `dir/name.gz` when only that one is there.
+    fn mesh_file(&self, fs: &dyn CaseFs, dir: &str, name: &str) -> String {
+        let plain = format!("{dir}/{name}");
+        let gz = format!("{plain}.gz");
+        if self.raw.contains_key(&plain) || fs.is_file(&plain) || !(self.raw.contains_key(&gz) || fs.is_file(&gz)) {
+            plain
+        } else {
+            gz
+        }
     }
 
     /// Writes the changed dictionaries and returns their paths.

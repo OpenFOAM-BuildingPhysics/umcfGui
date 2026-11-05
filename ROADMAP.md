@@ -46,3 +46,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-04 — M0.23 boundary conditions by picking: `bc.set` (a patch's entry set, every other byte of the field file kept, binary and gzip too), the condition card in the desktop app, `umcf-gui --open`.
 - 2026-11-04 — M0.24 `bc.set` `defaults`: the condition card no longer writes the first patch's value over patches that keep their own.
 - 2026-11-04 — M0.25 what a case needs (`docs/case-requirements.md`), from the solver, the tutorials and the reference cases; the gaps ordered towards building a case from STL surfaces.
+- 2026-11-04 — M0.26 patch editing: `patch.set` (a patch's type, groups and entries set and its name changed in the mesh, the start-time fields and the partner patches, every other byte kept), the patch card in the desktop app.

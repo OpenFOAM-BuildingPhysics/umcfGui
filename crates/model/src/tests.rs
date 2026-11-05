@@ -946,3 +946,107 @@ fn an_undo_never_writes_an_original_older_than_an_outside_change() {
     back.save(&mut fs, None).unwrap();
     assert_eq!(fs.read("0/air/T", 1 << 20).unwrap().unwrap(), outside.as_bytes());
 }
+
+#[test]
+fn a_patch_is_retyped_regrouped_and_renamed_everywhere_it_is_named() {
+    let street = "1\n(\n    street_to_air\n    {\n        type            mappedWall;\n        inGroups        List<word> 1(wall);\n        nFaces          4;\n        startFace       10;\n        neighbourRegion air;\n        neighbourPatch  ground;\n    }\n)\n";
+    let fs =
+        case().with("constant/street/polyMesh/boundary", format!("{}{street}", header("polyBoundaryMesh", "boundary")));
+    let mut c = Case::open(&fs).unwrap();
+    let before = String::from_utf8(fs.read("constant/air/polyMesh/boundary", 1 << 20).unwrap().unwrap()).unwrap();
+    // Type and groups.
+    let report = c
+        .set_patch(
+            &fs,
+            "air",
+            "top",
+            &PatchChange { kind: Some("symmetry"), groups: Some(&["sky"]), ..Default::default() },
+        )
+        .unwrap();
+    assert_eq!(report, PatchReport::default());
+    let top = c.region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "top").cloned().unwrap();
+    assert_eq!((top.kind.as_str(), top.groups.as_slice()), ("symmetry", &["sky".to_string()][..]));
+    let after = String::from_utf8(c.file(&fs, "constant/air/polyMesh/boundary").unwrap().unwrap().to_vec()).unwrap();
+    let head = before.split("    top").next().unwrap();
+    assert!(after.starts_with(head), "{after}");
+    // A new name, in the mesh, the field files and the street's mapped patch.
+    let report =
+        c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
+    assert_eq!(report.fields, ["0/air/T"]);
+    assert_eq!(report.partners, ["street/street_to_air"]);
+    let air = c.region("air").unwrap();
+    assert!(air.patches.as_ref().unwrap().iter().any(|p| p.name == "terrain"));
+    assert!(air.field("T").unwrap().bcs.as_ref().unwrap().iter().any(|b| b.patch == "terrain"));
+    let st = c.region("street").unwrap().patches.as_ref().unwrap().first().cloned().unwrap();
+    assert!(st.params.iter().any(|(k, v)| k == "neighbourPatch" && v == "terrain"), "{:?}", st.params);
+    let mut changed = c.changed();
+    changed.sort();
+    assert_eq!(changed, ["0/air/T", "constant/air/polyMesh/boundary", "constant/street/polyMesh/boundary"]);
+    // What can't be done says why.
+    let e = |r: Result<PatchReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("terrain"), ..Default::default() }))
+            .contains("already")
+    );
+    assert!(e(c.set_patch(&fs, "air", "nowhere", &PatchChange::default())).contains("no patch"));
+    assert!(
+        e(c.set_patch(
+            &fs,
+            "street",
+            "street_to_air",
+            &PatchChange { kind: Some("__umcfListA0"), ..Default::default() }
+        ))
+        .contains("can't be written")
+    );
+}
+
+#[test]
+fn renames_keep_cyclic_partners_gzip_and_refuse_taken_names() {
+    use std::io::Write;
+    let b = "3\n(\n    left\n    {\n        type            cyclic;\n        inGroups        List<word> 1(periodic);\n        nFaces          1;\n        startFace       10;\n        neighbourPatch  right;\n    }\n    right\n    {\n        type            cyclic;\n        nFaces          1;\n        startFace       11;\n        neighbourPatch  left;\n    }\n    top\n    {\n        type            patch;\n        nFaces          2;\n        startFace       12;\n    }\n)\n";
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(format!("{}{b}", header("polyBoundaryMesh", "boundary")).as_bytes()).unwrap();
+    let fs = MemFs::new()
+        .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
+        .with("constant/air/polyMesh/boundary.gz", gz.finish().unwrap())
+        .with(
+            "0/air/T",
+            format!(
+                "{}internalField uniform 300;\nboundaryField\n{{\n    left {{ type cyclic; }}\n    right {{ type cyclic; }}\n    top {{ type zeroGradient; }}\n    leftover {{ type zeroGradient; }}\n}}\n",
+                header("volScalarField", "T")
+            ),
+        );
+    let mut c = Case::open(&fs).unwrap();
+    assert_eq!(c.region("air").unwrap().patches.as_ref().unwrap().len(), 3);
+    // The partner in the same region follows; the gzip file stays gzip.
+    let report = c.set_patch(&fs, "air", "left", &PatchChange { name: Some("west"), ..Default::default() }).unwrap();
+    assert_eq!(report.partners, ["air/right"]);
+    let bytes = c.file(&fs, "constant/air/polyMesh/boundary.gz").unwrap().unwrap();
+    assert!(bytes.starts_with(&[0x1f, 0x8b]));
+    let right = c.region("air").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "right").cloned().unwrap();
+    assert!(right.params.iter().any(|(k, v)| k == "neighbourPatch" && v == "west"), "{:?}", right.params);
+    // Names already used by a group or a field entry are refused.
+    let e = |r: Result<PatchReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("periodic"), ..Default::default() }))
+            .contains("group")
+    );
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("leftover"), ..Default::default() }))
+            .contains("entry `leftover`")
+    );
+    assert!(
+        e(c.set_patch(&fs, "air", "top", &PatchChange { name: Some("42"), ..Default::default() })).contains("number")
+    );
+    // A non-conformal patch's original patch follows in its own region only.
+    let nc = "2\n(\n    wall_orig\n    {\n        type wall;\n        nFaces 1;\n        startFace 10;\n    }\n    nc_wall\n    {\n        type nonConformalMappedWall;\n        nFaces 0;\n        startFace 11;\n        neighbourRegion air;\n        neighbourPatch top;\n        originalPatch wall_orig;\n    }\n)\n";
+    let fs = fs.with("constant/street/polyMesh/boundary", format!("{}{nc}", header("polyBoundaryMesh", "boundary")));
+    let mut c = Case::open(&fs).unwrap();
+    let report =
+        c.set_patch(&fs, "street", "wall_orig", &PatchChange { name: Some("facade"), ..Default::default() }).unwrap();
+    assert_eq!(report.partners, ["street/nc_wall"]);
+    let ncw =
+        c.region("street").unwrap().patches.as_ref().unwrap().iter().find(|p| p.name == "nc_wall").cloned().unwrap();
+    assert!(ncw.params.contains(&("originalPatch".into(), "facade".into())), "{:?}", ncw.params);
+    assert!(ncw.params.contains(&("neighbourPatch".into(), "top".into())), "{:?}", ncw.params);
+}

@@ -338,6 +338,7 @@ impl Session {
         let result = catch_unwind(AssertUnwindSafe(|| (spec.run)(self, params)));
         match result {
             Ok(Ok(outcome)) => {
+                self.prune_selection();
                 if let Some(case) = before {
                     let edit = Edit { command: spec.id, label: spec.label, detail: detail(params) };
                     self.undo.push(Step { case, edit });
@@ -361,6 +362,18 @@ impl Session {
                 Err(Error::Panicked { id: spec.id.to_string(), message: panic_message(payload.as_ref()) })
             }
         }
+    }
+
+    /// Drops from the selection the patches the case no longer has (a rename undone, say).
+    fn prune_selection(&mut self) {
+        let Some(case) = self.opened.as_ref().map(|o| &o.case) else { return };
+        self.selection.retain(|sel| match sel {
+            // A region whose patch list the model couldn't read keeps its selection.
+            Sel::Patch { region, patch } => case
+                .region(region)
+                .is_some_and(|r| r.patches.as_ref().is_none_or(|ps| ps.iter().any(|p| p.name == *patch))),
+            Sel::Solid { .. } => true,
+        });
     }
 
     fn opened_mut(&mut self) -> Result<&mut Opened, Error> {
