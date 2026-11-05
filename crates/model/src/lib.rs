@@ -286,6 +286,8 @@ pub struct PatchReport {
     pub mentions: Vec<(String, usize)>,
     /// There are more than [`MAX_MENTIONS`].
     pub more_mentions: bool,
+    /// Files that could have been searched for the old name but couldn't be read.
+    pub unsearched: Vec<String>,
     /// Files of `0.orig` and view factor dictionaries that may have an entry for the patch but
     /// weren't changed, and why.
     pub not_renamed: Vec<(String, String)>,
@@ -1282,7 +1284,12 @@ impl Case {
         // 0.orig: the region's field files there, as at the start time (preparing the case
         // copies them to it).
         let orig = if region.is_empty() { "0.orig".to_string() } else { format!("0.orig/{region}") };
-        for name in fs.list(&orig).unwrap_or_default() {
+        // A directory that is missing lists as empty; one that can't be read is said so.
+        let listed = fs.list(&orig).unwrap_or_else(|e| {
+            report.not_renamed.push((orig.clone(), format!("it can't be listed ({e})")));
+            Vec::new()
+        });
+        for name in listed {
             let path = format!("{orig}/{name}");
             if !fs.is_file(&path) {
                 continue;
@@ -1318,7 +1325,7 @@ impl Case {
                 report.times.push(t.name);
             }
         }
-        (report.mentions, report.more_mentions) = self.mentions(fs, patch);
+        (report.mentions, report.more_mentions, report.unsearched) = self.mentions(fs, patch);
         Ok(report)
     }
 
@@ -1426,11 +1433,12 @@ impl Case {
     /// line), at most [`MAX_MENTIONS`], and whether there are more. The directory of the data
     /// mapped onto a patch of that name (`constant/<region>/boundaryData/<patch>`) is listed
     /// first, with line 0; then the lines, by file. Compressed, binary and files over 4 MB are
-    /// passed over.
-    pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> (Vec<(String, usize)>, bool) {
+    /// passed over; the files that couldn't be read are returned third.
+    pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> (Vec<(String, usize)>, bool, Vec<String>) {
         let mut out = Vec::new();
+        let mut unread = Vec::new();
         if word.is_empty() {
-            return (out, false);
+            return (out, false, unread);
         }
         // The files there when the case was opened, and those commands made since.
         let mut files: Vec<String> = self
@@ -1480,12 +1488,21 @@ impl Case {
                 None if self.raw.contains_key(&path) || self.saved_over(&path).is_some() => {
                     match self.file(fs, &path) {
                         Ok(Some(b)) => b,
-                        _ => continue,
+                        Ok(None) => continue,
+                        Err(_) => {
+                            unread.push(path);
+                            continue;
+                        }
                     }
                 }
                 None => match fs.read(&path, MENTION_BYTES) {
                     Ok(Some(b)) => Arc::new(b),
-                    _ => continue,
+                    // Gone since the case was opened, or larger than is searched.
+                    Ok(None) | Err(FsError::TooLarge { .. }) => continue,
+                    Err(_) => {
+                        unread.push(path);
+                        continue;
+                    }
                 },
             };
             if bytes.len() as u64 > MENTION_BYTES || bytes.contains(&0) {
@@ -1504,7 +1521,7 @@ impl Case {
         }
         let more = out.len() > MAX_MENTIONS;
         out.truncate(MAX_MENTIONS);
-        (out, more)
+        (out, more, unread)
     }
 
     /// Whether `to` can be a new patch name in region `r` (with `patches`): not a patch, a

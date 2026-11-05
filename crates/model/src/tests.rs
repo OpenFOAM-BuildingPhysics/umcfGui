@@ -1321,3 +1321,43 @@ fn block_comments_left_open_are_told_apart() {
         assert_eq!(opens_block_comment(text), open, "{text:?}");
     }
 }
+
+/// A case whose `0.orig/air` can't be listed and whose `0.orig/notes.txt` can't be read.
+struct Failing(MemFs);
+
+impl umcf_core::CaseFs for Failing {
+    fn read(&self, rel: &str, limit: u64) -> std::result::Result<Option<Vec<u8>>, FsError> {
+        if rel == "0.orig/notes.txt" {
+            return Err(FsError::Io { path: rel.to_string(), source: std::io::Error::other("denied") });
+        }
+        self.0.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.0.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.0.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> std::result::Result<Vec<String>, FsError> {
+        if rel == "0.orig/air" {
+            return Err(FsError::Io { path: rel.to_string(), source: std::io::Error::other("denied") });
+        }
+        self.0.list(rel)
+    }
+}
+
+#[test]
+fn a_rename_says_what_it_could_not_list_or_read() {
+    let mem = case()
+        .with("0.orig/air/T", "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\nboundaryField\n{\n    ground { type zeroGradient; }\n}\n")
+        .with("0.orig/notes.txt", "ground\n");
+    let mut c = Case::open(&mem).unwrap();
+    let fs = Failing(mem);
+    let report =
+        c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
+    assert!(report.orig.is_empty());
+    assert_eq!(report.not_renamed.len(), 1, "{:?}", report.not_renamed);
+    assert_eq!(report.not_renamed[0].0, "0.orig/air");
+    assert!(report.not_renamed[0].1.starts_with("it can't be listed"), "{:?}", report.not_renamed);
+    assert_eq!(report.unsearched, ["0.orig/notes.txt"]);
+}

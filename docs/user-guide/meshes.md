@@ -200,7 +200,8 @@ umcf-cli run --case my-case \
   - a field file too big to be read here (`patch.unread`);
   - one whose pattern entry or included text may name the old name (`patch.pattern`);
   - a file of `0.orig` or a `viewFactorsDict` that wasn't changed (`patch.unrenamed`): it has the
-    new name already, the old one twice, or can't be read or written back here;
+    new name already, the old one twice, or can't be read or written back here; or a `0.orig`
+    directory that can't be listed;
   - the other time directories (`patch.times`), which aren't read: a run started from one of
     them needs the name changed there;
   - a directory with the old name (`patch.mention`), such as the data a
@@ -211,7 +212,9 @@ umcf-cli run --case my-case \
     (`createPatchDict`, `changeDictionaryDict`, `topoSetDict`, `snappyHexMeshDict`, …), a pattern
     in a field. A region or a field with the same name is listed too; the first 200 are named.
     Compressed files, files over 4 MB, and the contents of `polyMesh`, `triSurface`, `geometry`
-    and `boundaryData` directories are not searched.
+    and `boundaryData` directories are not searched; a file that can't be read is named
+    (`patch.unsearched`), and so is a `0.orig` directory that can't be listed
+    (`patch.unrenamed`).
 - **A name already used is refused**: another patch's, a patch group's, or an entry of a field
   file (a group or pattern entry would take the renamed patch's entry over). So is a number.
 - Entries are written as given: `"entries": {"offset": [0, 0, 1], "distance": 0.5}` is

@@ -163,6 +163,15 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     &format!("the time directories {}{more} aren't read here and may still name the patch `{patch}`: a run started from one of them needs it renamed there", shown.join(", ")),
                 ));
             }
+            for f in &report.unsearched {
+                found.push(warn(
+                    "patch.unsearched",
+                    f,
+                    region,
+                    patch,
+                    &format!("can't be read: it wasn't searched for `{patch}`"),
+                ));
+            }
             for (f, why) in &report.not_renamed {
                 found.push(warn(
                     "patch.unrenamed",
