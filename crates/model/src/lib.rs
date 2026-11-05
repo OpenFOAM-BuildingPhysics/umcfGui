@@ -1290,7 +1290,7 @@ impl Case {
             match self.rename_entry(fs, &path, Some("boundaryField"), patch, to) {
                 Renamed::Yes => report.orig.push(path),
                 Renamed::No => {}
-                Renamed::TooLarge => report.not_renamed.push((path, "too large to be read here".to_string())),
+                Renamed::TooLarge => report.not_renamed.push((path, "it is too large to be read here".to_string())),
                 Renamed::Failed(why) => report.not_renamed.push((path, why)),
             }
         }
@@ -1305,7 +1305,7 @@ impl Case {
             match self.rename_entry(fs, &path, None, patch, to) {
                 Renamed::Yes => report.others.push(path),
                 Renamed::No => {}
-                Renamed::TooLarge => report.not_renamed.push((path, "too large to be read here".to_string())),
+                Renamed::TooLarge => report.not_renamed.push((path, "it is too large to be read here".to_string())),
                 Renamed::Failed(why) => report.not_renamed.push((path, why)),
             }
         }
@@ -1340,10 +1340,10 @@ impl Case {
                 return Ok(false);
             }
             if n > 1 {
-                return Err(format!("has two entries `{from}`: keep one first"));
+                return Err(format!("it has two entries `{from}`; keep one"));
             }
             if dict.keys().any(|k| k == to) {
-                return Err(format!("has an entry `{to}` already"));
+                return Err(format!("it has an entry `{to}` already"));
             }
             Ok(true)
         };
@@ -1410,9 +1410,9 @@ impl Case {
             (Err(_), _) => {
                 let text = String::from_utf8_lossy(&bytes);
                 if bytes.starts_with(&[0x1f, 0x8b]) {
-                    Renamed::Failed("compressed, and can't be read here".to_string())
-                } else if text.contains("boundaryField") && text.contains(from) {
-                    Renamed::Failed("can't be edited here".to_string())
+                    Renamed::Failed("it is compressed and can't be read here".to_string())
+                } else if (inside.is_none() || text.contains("boundaryField")) && text.contains(from) {
+                    Renamed::Failed("it can't be edited here".to_string())
                 } else {
                     Renamed::No
                 }
@@ -1423,9 +1423,10 @@ impl Case {
 
     /// Where `word` is written, as a whole word, in the case's dictionaries under `system`,
     /// `constant` (not the meshes, the surfaces nor mapped boundary data) and `0.orig`: (file,
-    /// line), sorted, at most [`MAX_MENTIONS`], and whether there are more. The directory of the
-    /// data mapped onto a patch of that name (`constant/<region>/boundaryData/<patch>`) is
-    /// listed with line 0. Compressed, binary and files over 4 MB are passed over.
+    /// line), at most [`MAX_MENTIONS`], and whether there are more. The directory of the data
+    /// mapped onto a patch of that name (`constant/<region>/boundaryData/<patch>`) is listed
+    /// first, with line 0; then the lines, by file. Compressed, binary and files over 4 MB are
+    /// passed over.
     pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> (Vec<(String, usize)>, bool) {
         let mut out = Vec::new();
         if word.is_empty() {
@@ -1452,14 +1453,22 @@ impl Case {
             true
         };
         let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        // First the data mapped onto the patch, found by its name: `boundaryData/<patch>/…`.
         let mut named_dirs = std::collections::BTreeSet::new();
-        for path in files {
-            // The data mapped onto the patch, found by its name: `boundaryData/<patch>/…`.
+        for path in &files {
             let parts: Vec<&str> = path.split('/').collect();
             if let Some(k) = parts.windows(2).position(|w| w == ["boundaryData", word]).map(|k| k + 1)
                 && k + 1 < parts.len()
             {
                 named_dirs.insert(parts.get(..=k).unwrap_or_default().join("/"));
+            }
+        }
+        for d in named_dirs {
+            push(&mut out, (d, 0));
+        }
+        for path in files {
+            if out.len() > MAX_MENTIONS {
+                break;
             }
             if self.is_dir(&path) || skipped(&path) || path.ends_with(".gz") {
                 continue;
@@ -1468,10 +1477,12 @@ impl Case {
             // no larger than is searched.
             let bytes = match self.dict(&path) {
                 Some(doc) => Arc::new(doc.to_string().into_bytes()),
-                None if self.raw.contains_key(&path) => match self.file(fs, &path) {
-                    Ok(Some(b)) => b,
-                    _ => continue,
-                },
+                None if self.raw.contains_key(&path) || self.saved_over(&path).is_some() => {
+                    match self.file(fs, &path) {
+                        Ok(Some(b)) => b,
+                        _ => continue,
+                    }
+                }
                 None => match fs.read(&path, MENTION_BYTES) {
                     Ok(Some(b)) => Arc::new(b),
                     _ => continue,
@@ -1490,9 +1501,6 @@ impl Case {
                     break;
                 }
             }
-        }
-        for d in named_dirs {
-            push(&mut out, (d, 0));
         }
         let more = out.len() > MAX_MENTIONS;
         out.truncate(MAX_MENTIONS);

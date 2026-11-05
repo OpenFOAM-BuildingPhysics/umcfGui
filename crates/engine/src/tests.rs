@@ -1095,7 +1095,7 @@ fn a_rename_follows_into_0_orig_and_view_factors_and_says_where_else_the_name_is
     assert!(has("patch.mention", "system/air/viewFactorsDict").is_none(), "{codes:?}");
     assert_eq!(
         has("patch.unrenamed", "0.orig/air/U").as_deref(),
-        Some("has an entry `west` already: it may still name the patch `inlet`; rename it there")
+        Some("not changed, as it has an entry `west` already: rename the patch `inlet` there by hand if it names it")
     );
     assert!(s.case().unwrap().put_bytes("0.orig/air/U").is_none());
     let times = has("patch.times", "").unwrap();

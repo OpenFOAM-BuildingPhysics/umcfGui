@@ -169,7 +169,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     f,
                     region,
                     patch,
-                    &format!("{why}: it may still name the patch `{patch}`; rename it there"),
+                    &format!("not changed, as {why}: rename the patch `{patch}` there by hand if it names it"),
                 ));
             }
             // Where the old name is still written: the meshing dictionaries, function objects, …

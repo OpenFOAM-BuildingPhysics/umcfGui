@@ -210,7 +210,8 @@ umcf-cli run --case my-case \
     word (`patch.mention`): function objects in `controlDict`, the meshing dictionaries
     (`createPatchDict`, `changeDictionaryDict`, `topoSetDict`, `snappyHexMeshDict`, …), a pattern
     in a field. A region or a field with the same name is listed too; the first 200 are named.
-    Compressed files and files over 4 MB are not searched.
+    Compressed files, files over 4 MB, and the contents of `polyMesh`, `triSurface`, `geometry`
+    and `boundaryData` directories are not searched.
 - **A name already used is refused**: another patch's, a patch group's, or an entry of a field
   file (a group or pattern entry would take the renamed patch's entry over). So is a number.
 - Entries are written as given: `"entries": {"offset": [0, 0, 1], "distance": 0.5}` is
