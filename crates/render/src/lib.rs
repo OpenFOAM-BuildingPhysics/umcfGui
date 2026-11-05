@@ -244,7 +244,8 @@ impl Object {
                 .map(|i| {
                     let i = u32::try_from(i).unwrap_or(u32::MAX);
                     match self.points.get(i as usize) {
-                        Some(p) if weld => *at.entry(p.map(f32::to_bits)).or_insert(i),
+                        // -0 and 0 are the same place.
+                        Some(p) if weld => *at.entry(p.map(|c| (c + 0.0).to_bits())).or_insert(i),
                         _ => i,
                     }
                 })

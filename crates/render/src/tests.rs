@@ -413,6 +413,11 @@ fn layers_are_drawn_as_surfaces_wireframes_points_or_not_at_all() {
     let glass = style(Display { mode: Mode::Surface, opacity: 0.5 });
     let half: [f32; 3] = [0, 1, 2].map(|k| (palette(1)[k] + palette(0)[k]) * 0.5);
     assert!(close(mid(&glass), half, 0.02), "{:?} vs {half:?}", mid(&glass));
+    // With the faces' edges, a transparent sky has them too: its sides are darker.
+    let mut edged = glass.clone();
+    edged.edges = true;
+    let (plain, with) = (draw(&s, &cam, &glass), draw(&s, &cam, &edged));
+    assert_ne!(plain.rgba, with.rgba);
     // A wireframe: the ground in the middle, the sky's edges along its sides.
     let wire = style(Display { mode: Mode::Wireframe, opacity: 1.0 });
     let img = draw(&s, &cam, &wire);
@@ -475,7 +480,7 @@ fn wireframes_draw_each_edge_and_point_once_per_class() {
         solids: vec!["a".to_string(), "b".to_string()],
         triangles: vec![
             tri([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], 0),
-            tri([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], 0),
+            tri([[-0.0, 0.0, -0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], 0),
             tri([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0]], 1),
         ],
         notes: Vec::new(),
@@ -485,7 +490,7 @@ fn wireframes_draw_each_edge_and_point_once_per_class() {
     let o = Object::from_stl("constant/triSurface/s.stl", &stl, Vec3::ZERO);
     let w = o.wire();
     // Region a: 5 edges (the diagonal is shared), 4 points; region b: 3 and 3, its edge on the
-    // square counted for it too.
+    // square counted for it too. A corner written -0 is the same as one written 0.
     assert_eq!(w.edges.len(), 8);
     assert_eq!(w.points.len(), 7);
     // A mesh: the cube's 12 edges; each patch has its own where they meet (ground 4, sky 4,

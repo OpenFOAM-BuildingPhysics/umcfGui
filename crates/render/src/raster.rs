@@ -223,18 +223,19 @@ impl Target {
                 if z <= *d {
                     continue;
                 }
+                // Edge k (v[k] → v[k+1]) is opposite vertex k+2.
+                let near_edge = [(0b001, w2 * scale[2]), (0b010, w0 * scale[0]), (0b100, w1 * scale[1])]
+                    .iter()
+                    .any(|(bit, dist)| edges & bit != 0 && *dist < 0.6);
                 if alpha < 1.0 {
-                    self.blend(i, colour, alpha);
+                    let k = if near_edge { EDGE } else { 1.0 };
+                    self.blend(i, colour.map(|ch| ch * k), alpha);
                     if let Some(h) = &mut self.hits {
                         h.insert(id);
                     }
                     continue;
                 }
                 *d = z;
-                // Edge k (v[k] → v[k+1]) is opposite vertex k+2.
-                let near_edge = [(0b001, w2 * scale[2]), (0b010, w0 * scale[0]), (0b100, w1 * scale[1])]
-                    .iter()
-                    .any(|(bit, dist)| edges & bit != 0 && *dist < 0.6);
                 let k = if near_edge { EDGE } else { 1.0 };
                 if let Some(col) = self.colour.get_mut(i) {
                     *col = bytes(colour.map(|ch| ch * k));
