@@ -283,7 +283,8 @@ impl Rect {
 /// - `through` false: the triangles seen in it, in front of everything else, at the middle of
 ///   one of its pixels or more (a triangle smaller than a pixel may be missed).
 /// - `through` true: the first triangle of each face (mesh face, STL triangle) whose middle (its
-///   area-weighted centre) is inside it and in front of the camera, seen or hidden.
+///   area-weighted centre) is inside it, on the image and in front of the camera, seen or
+///   hidden; a rectangle narrower than a pixel still takes the middles inside it.
 pub fn covered(
     scene: &Scene,
     camera: &Camera,
@@ -294,10 +295,15 @@ pub fn covered(
 ) -> Vec<(usize, u32)> {
     let (w, h) = size(style.width, style.height);
     let (wu, hu) = (w as usize, h as usize);
-    let Some((xs, ys)) = rect.pixels(wu, hu) else { return Vec::new() };
     let lens = Lens::new(scene, camera, wu, hu);
     let mut out = Vec::new();
     if through {
+        if !rect.a.iter().chain(&rect.b).all(|c| c.is_finite()) {
+            return out;
+        }
+        // In the rectangle and on the image (a middle on its far edge is off it).
+        let on_image =
+            |x: f64, y: f64| rect.contains(x, y) && (0.0..wu as f64).contains(&x) && (0.0..hu as f64).contains(&y);
         for (k, obj) in scene.objects.iter().enumerate() {
             let view = lens.view(obj);
             // The triangles of one face follow each other.
@@ -334,7 +340,7 @@ pub fn covered(
                 let centre = if area > 0.0 { sum.map(|v| v / area) } else { first };
                 if count > 0 && centre[2] >= lens.near {
                     let p = lens.project(centre);
-                    if let (true, Ok(t)) = (rect.contains(p.x, p.y), u32::try_from(n)) {
+                    if let (true, Ok(t)) = (on_image(p.x, p.y), u32::try_from(n)) {
                         out.push((k, t));
                     }
                 }
@@ -343,6 +349,7 @@ pub fn covered(
         }
         return out;
     }
+    let Some((xs, ys)) = rect.pixels(wu, hu) else { return out };
     let mut t = Target { w: wu, x: xs, y: ys, depth: vec![0.0; wu * hu], id: vec![NONE; wu * hu], colour: Vec::new() };
     // Each triangle's id: its object's first id plus its index.
     let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());

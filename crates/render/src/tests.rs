@@ -336,7 +336,26 @@ fn a_rectangle_covers_what_is_seen_in_it_or_everything_through_it() {
         Rect { a: [f64::NAN, 0.0], b: [10.0, 10.0] },
     ] {
         assert!(covered(&s, &cam, &st, r, false, &|_, _| true).is_empty(), "{r:?}");
+        if r.a[0].is_nan() {
+            assert!(covered(&s, &cam, &st, r, true, &|_, _| true).is_empty(), "{r:?}");
+        }
     }
+    // Through a rectangle past the image's edge: only the middles on the image. Four times as
+    // close, the right cube's middle (seen at x 131) is at 224, off the image 200 wide.
+    let mut close = cam;
+    close.distance /= 4.0;
+    let past = Rect { a: [150.0, -50.0], b: [400.0, 150.0] };
+    let off = faces_of(&s, &covered(&s, &close, &st, past, true, &|_, _| true));
+    // Its wall at x 2, nearer the middle, is on the image and taken; its sky is not.
+    assert!(off.contains(&(1, 4)) && !off.contains(&(1, 1)), "{off:?}");
+    // A rectangle narrower than a pixel holds no pixel's middle: nothing is seen in it, but
+    // through it the middles inside it count. Seen from above, the cube's middle is the image's.
+    let one = scene_of(&cube([0.0; 3]));
+    let above = Camera::fit(View::Top, &one.bbox().unwrap(), 1.0);
+    let square = Style { width: 100, height: 100, ..Style::default() };
+    let thin = Rect { a: [49.9, 49.9], b: [50.1, 50.1] };
+    assert!(covered(&one, &above, &square, thin, false, &|_, _| true).is_empty());
+    assert_eq!(faces_of(&one, &covered(&one, &above, &square, thin, true, &|_, _| true)), [(0, 0), (0, 1)]);
     // Above both, looking up: everything is behind the camera.
     let mut inside = cam;
     inside.distance = 0.0;
