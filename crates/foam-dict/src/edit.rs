@@ -75,7 +75,7 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
     }
     // What is before the `)` (`( a /* note */ )`, `( a // note` and a new line) stays after the
     // items it follows: in front of the new one. The `)` keeps its own line, or gets one.
-    let (kept, rest) = match close.lead.rfind('\n') {
+    let (kept, rest) = match last_free_newline(&close.lead) {
         Some(i) => (close.lead.get(..i).unwrap_or("").to_string(), close.lead.get(i..).unwrap_or("").to_string()),
         None => (close.lead.clone(), format!("\n{key_indent}")),
     };
@@ -86,6 +86,34 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
     close.lead = rest;
     items.push(node);
     Ok(())
+}
+
+/// The last line break of trivia `t` that isn't inside a `/* … */` comment (the one ending a
+/// `//` comment counts).
+fn last_free_newline(t: &str) -> Option<usize> {
+    let b = t.as_bytes();
+    let at = |i: usize| b.get(i).copied();
+    let (mut i, mut last, mut block, mut line) = (0, None, false, false);
+    while let Some(c) = at(i) {
+        let next = at(i + 1);
+        if block {
+            if c == b'*' && next == Some(b'/') {
+                block = false;
+                i += 1;
+            }
+        } else if c == b'\n' {
+            line = false;
+            last = Some(i);
+        } else if !line && c == b'/' && next == Some(b'*') {
+            block = true;
+            i += 1;
+        } else if !line && c == b'/' && next == Some(b'/') {
+            line = true;
+            i += 1;
+        }
+        i += 1;
+    }
+    last
 }
 
 /// Removes every entry with the key at the end of `path`. The second flag tells the caller that

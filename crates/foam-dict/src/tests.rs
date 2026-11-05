@@ -333,6 +333,17 @@ fn append_adds_a_list_item_like_the_ones_before() {
     let mut doc = Document::parse("patches ( a // note\n);\n").unwrap();
     doc.append(&["patches"], "b").unwrap();
     assert_eq!(doc.to_string(), "patches ( a // note\n    b\n);\n");
+    // A block comment over lines before the `)`: the item goes after it, not into it.
+    let mut doc = Document::parse("patches ( a /* x\n   y */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    let out = doc.to_string();
+    assert_eq!(out, "patches ( a /* x\n   y */ \n    b\n);\n");
+    let again = Document::parse(&out).unwrap();
+    let Some([Node::List { items, .. }]) = again.get(&["patches"]).map(|e| e.value.as_slice()) else { panic!("{out}") };
+    assert_eq!(items.len(), 2, "{out}");
+    let mut doc = Document::parse("patches\n(\n    a\n    /* one\n       two */\n);\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches\n(\n    a\n    /* one\n       two */\n    b\n);\n");
     let mut doc = Document::parse("patches\n(\n    a\n    // the end\n);\n").unwrap();
     doc.append(&["patches"], "b").unwrap();
     assert_eq!(doc.to_string(), "patches\n(\n    a\n    // the end\n    b\n);\n");
