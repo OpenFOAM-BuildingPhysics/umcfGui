@@ -37,6 +37,7 @@ use umcf_render::Source;
 use umcf_render::camera::{Camera, View};
 
 pub mod bc;
+pub mod display;
 pub mod icons;
 pub mod newpatch;
 pub mod patch;
@@ -50,6 +51,8 @@ mod tests;
 use icons::{Icon, Ink};
 use ribbon::{Item, Workspace};
 use theme::Tokens;
+use umcf_engine::Layer;
+use umcf_render::raster::Display;
 use viewport::{Action, Drag, Viewport};
 
 pub use serde_json::Value;
@@ -79,6 +82,8 @@ pub struct App {
     /// Mesh regions and surfaces the 3D view shows.
     pub shown_regions: Vec<String>,
     pub shown_surfaces: Vec<String>,
+    /// How the 3D view draws each layer, as `scene.snapshot`'s `display` takes it.
+    pub display: Vec<umcf_engine::DisplayEntry>,
     pub workspace: Workspace,
     pub tab: usize,
     pub workspace_menu: bool,
@@ -210,6 +215,7 @@ impl App {
             viewport: Viewport::default(),
             shown_regions: Vec::new(),
             shown_surfaces: Vec::new(),
+            display: Vec::new(),
             workspace: Workspace::Setup,
             tab: 0,
             workspace_menu: false,
@@ -256,6 +262,7 @@ impl App {
         self.surfaces = listed.unwrap_or_default();
         self.viewport.camera = None;
         self.expanded.clear();
+        self.display.clear();
         let Some(case) = self.session.case() else {
             self.shown_regions.clear();
             self.shown_surfaces.clear();
@@ -377,6 +384,7 @@ impl App {
             self.reset_shown();
         } else {
             self.prune_shown();
+            self.prune_display();
         }
         result.map_err(|e| e.to_string())
     }
@@ -1038,12 +1046,14 @@ impl App {
             let params = self.shown();
             let selection = self.session.selection().to_vec();
             let revision = self.revision;
+            let entries = self.display.clone();
             let failed = self.scene_error.as_ref().filter(|(r, _)| *r == revision).map(|(_, e)| e.clone());
             let error = match failed {
                 Some(e) => Some(e),
                 None => match self.session.scene(&params) {
                     Ok(scene) => {
-                        action = self.viewport.show(ui, rect, scene, &selection, revision, &t);
+                        let display = umcf_engine::display_style(scene, &entries);
+                        action = self.viewport.show(ui, rect, scene, &selection, &display, revision, &t);
                         None
                     }
                     Err(e) => {
@@ -1058,9 +1068,13 @@ impl App {
         }
         match action {
             Some(Action::Pick { ray, mode, faces }) => {
+                let display = self.display_json();
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
                     o.insert("ray".into(), json!({ "origin": ray.origin, "direction": ray.direction }));
+                    if !display.as_array().is_none_or(Vec::is_empty) {
+                        o.insert("display".into(), display.clone());
+                    }
                     o.insert("mode".into(), json!(mode));
                     if faces {
                         o.insert("faces".into(), json!(true));
@@ -1069,12 +1083,16 @@ impl App {
                 let _ = self.run("select.pick", p);
             }
             Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
+                let display = self.display_json();
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
                     o.insert("camera".into(), umcf_engine::camera_json(&camera));
                     o.insert("width".into(), json!(size[0]));
                     o.insert("height".into(), json!(size[1]));
                     o.insert("rect".into(), json!(rect));
+                    if !display.as_array().is_none_or(Vec::is_empty) {
+                        o.insert("display".into(), display.clone());
+                    }
                     o.insert("mode".into(), json!(mode));
                     if faces {
                         o.insert("faces".into(), json!(true));
@@ -1093,7 +1111,8 @@ impl App {
         self.navigation_bar(ui.ctx(), rect);
     }
 
-    /// A row of the browser tree. Returns (row clicked, chevron clicked, eye clicked).
+    /// A row of the browser tree. Returns (row clicked, chevron clicked, eye clicked, the row's
+    /// response: for its context menu).
     #[allow(clippy::too_many_arguments)]
     fn tree_row(
         &self,
@@ -1105,7 +1124,7 @@ impl App {
         label: &str,
         detail: &str,
         selected: bool,
-    ) -> (bool, bool, bool) {
+    ) -> (bool, bool, bool, egui::Response) {
         let t = &self.tokens;
         let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 25.0), Sense::click());
         if selected {
@@ -1149,7 +1168,7 @@ impl App {
         let clip = Rect::from_min_max(pos2(x, rect.top()), pos2(right.left() - 4.0, rect.bottom()));
         ui.painter().with_clip_rect(clip).galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, t.text);
         r.widget_info(|| egui::WidgetInfo::selected(egui::Role::TreeItem, true, selected, label));
-        (r.clicked() && !chevron && !eye_hit, chevron, eye_hit)
+        (r.clicked() && !chevron && !eye_hit, chevron, eye_hit, r)
     }
 
     /// The browser card: the case's regions and patches, its surfaces and their regions.
@@ -1173,6 +1192,7 @@ impl App {
             })
         };
         let mut select: Option<(Sel, bool)> = None;
+        let mut change: Option<(Layer, display::Change)> = None;
         let mut toggle: Option<String> = None;
         let mut show_region: Option<String> = None;
         let mut show_surface: Option<String> = None;
@@ -1229,10 +1249,10 @@ impl App {
                             .location()
                             .map_or("case", |l| l.trim_end_matches('/').rsplit('/').next().unwrap_or(l));
                         let version = case.layout.version.map_or("", |v| v.label());
-                        self.tree_row(ui, 0, None, None, Icon::Case, name, version, false);
+                        let _ = self.tree_row(ui, 0, None, None, Icon::Case, name, version, false);
                         let open = self.expanded.contains("regions");
                         let label = format!("Regions ({})", case.regions.len());
-                        let (row, c, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
+                        let (row, c, _, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
                         if c || row {
                             toggle = Some("regions".into());
                         }
@@ -1242,13 +1262,26 @@ impl App {
                                 let ropen = self.expanded.contains(&key);
                                 let shown = r.patches.as_ref().map(|_| self.shown_regions.contains(&r.name));
                                 let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
-                                let detail = match &r.patches {
-                                    Some(p) => format!("{} patches", p.len()),
-                                    None => "no mesh".to_string(),
+                                let layer = Layer::Region(r.name.clone());
+                                let entry = self.layer_entry(&layer);
+                                let detail = match (&r.patches, entry.map(display::note).filter(|n| !n.is_empty())) {
+                                    (Some(p), None) => format!("{} patches", p.len()),
+                                    (Some(p), Some(n)) => format!("{} patches · {n}", p.len()),
+                                    (None, _) => "no mesh".to_string(),
                                 };
                                 let chevron = r.patches.as_ref().map(|_| ropen);
-                                let (row, c, e) =
+                                let (row, c, e, resp) =
                                     self.tree_row(ui, 1, chevron, shown, Icon::Region, label, &detail, false);
+                                if r.patches.is_some() {
+                                    let current = self.layer_display(&layer, &[]);
+                                    let set = entry.is_some();
+                                    resp.context_menu(|ui| {
+                                        let title = format!("Region {label}");
+                                        if let Some(c) = display::menu(ui, &title, current, set) {
+                                            change = Some((layer.clone(), c));
+                                        }
+                                    });
+                                }
                                 if c || row {
                                     toggle = Some(key.clone());
                                 }
@@ -1259,9 +1292,43 @@ impl App {
                                     for p in patches {
                                         let sel = Sel::Patch { region: r.name.clone(), patch: p.name.clone() };
                                         let on = selection.contains(&sel);
-                                        let detail = format!("{} · {}", p.kind, p.n_faces);
-                                        let (row, _, _) =
+                                        let layer = Layer::Patch { region: r.name.clone(), patch: p.name.clone() };
+                                        let entry = self.layer_entry(&layer);
+                                        let note = entry.map(display::note).filter(|n| !n.is_empty());
+                                        let detail = match note {
+                                            None => format!("{} · {}", p.kind, p.n_faces),
+                                            Some(n) => format!("{} · {} · {n}", p.kind, p.n_faces),
+                                        };
+                                        let (row, _, _, resp) =
                                             self.tree_row(ui, 2, None, None, Icon::Patch, &p.name, &detail, on);
+                                        let current = self.layer_display(&layer, &p.groups);
+                                        let set = entry.is_some();
+                                        let groups: Vec<(Layer, Display, bool)> = p
+                                            .groups
+                                            .iter()
+                                            .map(|g| {
+                                                let l = Layer::Group { region: r.name.clone(), group: g.clone() };
+                                                let d = self.layer_display(&l, &[]);
+                                                let set = self.layer_entry(&l).is_some();
+                                                (l, d, set)
+                                            })
+                                            .collect();
+                                        resp.context_menu(|ui| {
+                                            let title = format!("Patch {}", p.name);
+                                            if let Some(c) = display::menu(ui, &title, current, set) {
+                                                change = Some((layer.clone(), c));
+                                            }
+                                            for (l, d, set) in &groups {
+                                                let Layer::Group { group, .. } = l else { continue };
+                                                ui.separator();
+                                                ui.menu_button(format!("Group {group}"), |ui| {
+                                                    let title = format!("The patches of group {group}");
+                                                    if let Some(c) = display::menu(ui, &title, *d, *set) {
+                                                        change = Some((l.clone(), c));
+                                                    }
+                                                });
+                                            }
+                                        });
                                         if row {
                                             select = Some((sel, ui.input(|i| i.modifiers.command)));
                                         }
@@ -1271,7 +1338,7 @@ impl App {
                         }
                         let open = self.expanded.contains("surfaces");
                         let label = format!("Surfaces ({})", surfaces.len());
-                        let (row, c, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
+                        let (row, c, _, _) = self.tree_row(ui, 0, Some(open), None, Icon::Folder, &label, "", false);
                         if c || row {
                             toggle = Some("surfaces".into());
                         }
@@ -1282,10 +1349,23 @@ impl App {
                                 let shown = self.shown_surfaces.contains(f);
                                 let short = f.rsplit('/').next().unwrap_or(f);
                                 let regions = classes.iter().find(|(g, _)| g == f).map(|(_, c)| c.clone());
-                                let detail = regions.as_ref().map_or(String::new(), |c| format!("{} regions", c.len()));
+                                let layer = Layer::Surface(f.clone());
+                                let entry = self.layer_entry(&layer);
+                                let mut detail =
+                                    regions.as_ref().map_or(String::new(), |c| format!("{} regions", c.len()));
+                                if let Some(n) = entry.map(display::note).filter(|n| !n.is_empty()) {
+                                    detail = if detail.is_empty() { n } else { format!("{detail} · {n}") };
+                                }
                                 let chevron = regions.as_ref().map(|_| sopen);
-                                let (row, c, e) =
+                                let (row, c, e, resp) =
                                     self.tree_row(ui, 1, chevron, Some(shown), Icon::Surface, short, &detail, false);
+                                let current = self.layer_display(&layer, &[]);
+                                let set = entry.is_some();
+                                resp.context_menu(|ui| {
+                                    if let Some(c) = display::menu(ui, &format!("Surface {short}"), current, set) {
+                                        change = Some((layer.clone(), c));
+                                    }
+                                });
                                 if c || (row && regions.is_some()) {
                                     toggle = Some(key.clone());
                                 }
@@ -1296,7 +1376,19 @@ impl App {
                                     for name in regions {
                                         let sel = Sel::Solid { file: f.clone(), solid: name.clone() };
                                         let on = selection.contains(&sel);
-                                        let (row, _, _) = self.tree_row(ui, 2, None, None, Icon::Patch, &name, "", on);
+                                        let layer = Layer::Solid { file: f.clone(), solid: name.clone() };
+                                        let entry = self.layer_entry(&layer);
+                                        let note = entry.map(display::note).unwrap_or_default();
+                                        let (row, _, _, resp) =
+                                            self.tree_row(ui, 2, None, None, Icon::Patch, &name, &note, on);
+                                        let current = self.layer_display(&layer, &[]);
+                                        let set = entry.is_some();
+                                        resp.context_menu(|ui| {
+                                            if let Some(c) = display::menu(ui, &format!("Region {name}"), current, set)
+                                            {
+                                                change = Some((layer.clone(), c));
+                                            }
+                                        });
                                         if row {
                                             select = Some((sel, ui.input(|i| i.modifiers.command)));
                                         }
@@ -1327,6 +1419,9 @@ impl App {
                 None => v.push(name),
             }
             self.revision += 1;
+        }
+        if let Some((layer, c)) = change {
+            self.set_display(layer, c);
         }
         if let Some((sel, add)) = select {
             let selected = self.session.selection().contains(&sel);

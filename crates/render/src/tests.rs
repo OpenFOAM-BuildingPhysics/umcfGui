@@ -393,3 +393,133 @@ fn a_rectangle_sees_the_selection_where_two_regions_meet() {
         assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), [(k, 1)]);
     }
 }
+
+#[test]
+fn layers_are_drawn_as_surfaces_wireframes_points_or_not_at_all() {
+    use crate::raster::{Display, Mode};
+    let s = scene_of(&cube([0.0; 3]));
+    let cam = Camera::fit(View::Top, &s.bbox().unwrap(), 1.0);
+    let style = |sky: Display| {
+        let mut st = Style { width: 100, height: 100, ..Style::default() };
+        st.display.insert((0, 1), sky);
+        st
+    };
+    let mid = |st: &Style| draw(&s, &cam, st).pixel(50, 50).unwrap();
+    // The sky as it is, then hidden: the ground under it is seen.
+    assert!(close(mid(&style(Display::default())), palette(1), 0.02));
+    let hidden = style(Display { mode: Mode::Hidden, opacity: 1.0 });
+    assert!(close(mid(&hidden), palette(0), 0.03), "{:?}", mid(&hidden));
+    // Half transparent: half of each.
+    let glass = style(Display { mode: Mode::Surface, opacity: 0.5 });
+    let half: [f32; 3] = [0, 1, 2].map(|k| (palette(1)[k] + palette(0)[k]) * 0.5);
+    assert!(close(mid(&glass), half, 0.02), "{:?} vs {half:?}", mid(&glass));
+    // With the faces' edges, a transparent sky has them too: its sides are darker.
+    let mut edged = glass.clone();
+    edged.edges = true;
+    let (plain, with) = (draw(&s, &cam, &glass), draw(&s, &cam, &edged));
+    assert_ne!(plain.rgba, with.rgba);
+    // A wireframe: the ground in the middle, the sky's edges along its sides.
+    let wire = style(Display { mode: Mode::Wireframe, opacity: 1.0 });
+    let img = draw(&s, &cam, &wire);
+    assert!(close(img.pixel(50, 50).unwrap(), palette(0), 0.03));
+    let line = palette(1).map(|c| c * 0.85);
+    let on_line = (0..100)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .filter(|(x, y)| close(img.pixel(*x, *y).unwrap(), line, 0.02))
+        .count();
+    assert!(on_line > 40, "{on_line} pixels of the sky's edges");
+    // Points: the sky's four corners, the ground between them.
+    let points = style(Display { mode: Mode::Points, opacity: 1.0 });
+    let img = draw(&s, &cam, &points);
+    let dots = (0..100)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .filter(|(x, y)| close(img.pixel(*x, *y).unwrap(), line, 0.02))
+        .count();
+    assert!((4..=64).contains(&dots), "{dots} pixels of the sky's four points");
+    assert!(close(img.pixel(50, 50).unwrap(), palette(0), 0.03));
+    // Everything hidden: the background.
+    let mut none = Style { width: 100, height: 100, ..Style::default() };
+    for c in 0..3 {
+        none.display.insert((0, c), Display { mode: Mode::Hidden, opacity: 1.0 });
+    }
+    let bg = draw(&Scene::new(Vec3::ZERO), &cam, &Style { width: 100, height: 100, ..Style::default() });
+    assert_eq!(draw(&s, &cam, &none).rgba, bg.rgba);
+}
+
+#[test]
+fn a_rectangle_sees_through_what_is_not_an_opaque_surface() {
+    use crate::raster::{Display, Mode};
+    let s = scene_of(&cube([0.0; 3]));
+    let cam = Camera::fit(View::Top, &s.bbox().unwrap(), 1.0);
+    let mid = Rect { a: [45.0, 45.0], b: [55.0, 55.0] };
+    for (mode, opacity, seen) in [
+        (Mode::Surface, 1.0, vec![(0, 1)]),
+        (Mode::Surface, 0.4, vec![(0, 0), (0, 1)]),
+        (Mode::Wireframe, 1.0, vec![(0, 0), (0, 1)]),
+        (Mode::Points, 1.0, vec![(0, 0), (0, 1)]),
+        (Mode::Hidden, 1.0, vec![(0, 0)]),
+    ] {
+        let mut st = Style { width: 100, height: 100, ..Style::default() };
+        st.display.insert((0, 1), Display { mode, opacity });
+        assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), seen, "{mode:?} {opacity}");
+    }
+    // Through: everything but what is hidden.
+    let mut st = Style { width: 100, height: 100, ..Style::default() };
+    st.display.insert((0, 1), Display { mode: Mode::Hidden, opacity: 1.0 });
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, true, &|_, _| true)), [(0, 0)]);
+}
+
+/// Edges and points are found once: an STL's corners welded, a mesh's patches each with their
+/// own edges where they meet.
+#[test]
+fn wireframes_draw_each_edge_and_point_once_per_class() {
+    let tri = |v: [[f32; 3]; 3], solid: u32| Triangle { vertices: v, normal: [0.0; 3], solid };
+    // A unit square of two triangles in one region, a third triangle on its edge in another.
+    let stl = Stl {
+        format: Format::Ascii,
+        solids: vec!["a".to_string(), "b".to_string()],
+        triangles: vec![
+            tri([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], 0),
+            tri([[-0.0, 0.0, -0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], 0),
+            tri([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0]], 1),
+        ],
+        notes: Vec::new(),
+        openfoam: None,
+        header_solid: false,
+    };
+    let o = Object::from_stl("constant/triSurface/s.stl", &stl, Vec3::ZERO);
+    let w = o.wire();
+    // Region a: 5 edges (the diagonal is shared), 4 points; region b: 3 and 3, its edge on the
+    // square counted for it too. A corner written -0 is the same as one written 0.
+    assert_eq!(w.edges.len(), 8);
+    assert_eq!(w.points.len(), 7);
+    // A mesh: the cube's 12 edges; each patch has its own where they meet (ground 4, sky 4,
+    // walls 4 × 4 less the 4 the sides share).
+    let s = scene_of(&cube([0.0; 3]));
+    let w = s.objects[0].wire();
+    assert_eq!(w.edges.len(), 4 + 4 + 12);
+    assert_eq!(w.points.len(), 4 + 4 + 8);
+}
+
+/// An edge that passes behind the camera is drawn where it is in front of it.
+#[test]
+fn an_edge_through_the_near_plane_is_still_drawn() {
+    use crate::raster::{Display, Mode};
+    let s = scene_of(&cube([0.0; 3]));
+    // Inside the cube, looking along +y at a wall: the walls' edges run past the eye.
+    let cam = Camera { target: Vec3::new(0.5, 0.5, 0.5), distance: 0.3, azimuth: 0.0, elevation: 0.0, fov: 90.0 };
+    let mut st = Style { width: 200, height: 200, ..Style::default() };
+    for c in 0..3 {
+        st.display.insert((0, c), Display { mode: Mode::Wireframe, opacity: 1.0 });
+    }
+    let img = draw(&s, &cam, &st);
+    let bg = draw(&Scene::new(Vec3::ZERO), &cam, &Style { width: 200, height: 200, ..Style::default() });
+    // The far wall is seen from (38, 38) to (162, 162): the corners of the image show only the
+    // four edges that run from it past the eye.
+    let corner = |x: u32, y: u32| x.min(199 - x) < 30 && y.min(199 - y) < 30;
+    let drawn = (0..200u32)
+        .flat_map(|y| (0..200u32).map(move |x| (x, y)))
+        .filter(|(x, y)| corner(*x, *y) && img.pixel(*x, *y) != bg.pixel(*x, *y))
+        .count();
+    assert!(drawn >= 4 * 25, "{drawn} pixels of edges in the corners");
+}

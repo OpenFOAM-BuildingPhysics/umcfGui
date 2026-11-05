@@ -39,6 +39,7 @@ mod cmd;
 mod params;
 
 pub use cmd::COMMANDS;
+pub use cmd::display::{DisplayEntry, Layer, parse as parse_display, style as display_style};
 pub use cmd::scene::{Sel, camera_json, selected_faces};
 
 /// The most undo steps kept; the oldest go first.

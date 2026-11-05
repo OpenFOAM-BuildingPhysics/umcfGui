@@ -41,10 +41,50 @@ the selection in orange (in front of a patch of another region in the same place
 | `colour_by` | `patch` | `patch` (each patch or region its own colour) or `object` (each mesh region or surface) |
 | `regions`, `surfaces` | see above | Which mesh regions and surfaces |
 | `reload` | `false` | Reads the files again (after OpenFOAM rewrote a mesh) |
+| `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
 
 The scene is built the first time it is needed and kept while the same things are shown, so a
 pick after a snapshot doesn't read the mesh again. It follows the surfaces commands change (a
 repair, an undo); a mesh rewritten on disk needs `reload`.
+
+## Display modes
+
+`display` (in `scene.snapshot`, `select.pick` and `select.rect`) says how each layer is drawn: a
+list of entries, each naming a layer and giving it a `mode`, an `opacity`, or both:
+
+| Layer | Entry |
+|---|---|
+| A region's mesh | `{"region": "air"}` |
+| One of its patches | `{"region": "air", "patch": "inlet"}` |
+| Its patches in a patch group (`inGroups`) | `{"region": "air", "group": "buildings"}` |
+| A surface | `{"surface": "walls.stl"}` |
+| One of its regions | `{"surface": "walls.stl", "solid": "roofs"}` |
+
+| `mode` | Draws |
+|---|---|
+| `surface` (default) | Filled, shaded faces |
+| `wireframe` | The faces' edges (not the diagonals that split a face into triangles) |
+| `points` | The faces' points |
+| `hidden` | Nothing; picking passes over it |
+
+`opacity` goes from 0 to 1 (default, opaque). Later entries win over earlier ones, mode and
+opacity each: `[{"region": "air", "mode": "wireframe"}, {"region": "air", "patch": "ground",
+"mode": "surface"}]` draws the air region as a wireframe and its ground as a surface. Each layer
+named must be in the case.
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'scene.snapshot={"display": [{"region": "air", "opacity": 0.3}, {"region": "buildings", "mode": "wireframe"}]}'
+```
+
+Opaque surfaces are drawn first. Edges and points go over them where nothing opaque is in front,
+and transparent surfaces last, the farthest first, each blended over what is behind it.
+
+What is hidden is not picked, and doesn't hide anything. Everything else is picked, nearest
+first: a click on a transparent surface picks it, and `depth` picks what is behind it. A
+wireframe or points layer is picked where its faces are, between the edges or points drawn. A
+rectangle (below) sees through what isn't an opaque surface. It takes a transparent surface, a
+wireframe or points where they are seen, and also what is seen through them.
 
 ## Picking
 
@@ -84,7 +124,7 @@ opposite corners in pixels from the top left; a pixel is in it when its middle i
 | `through` | Takes |
 |---|---|
 | `false` (default) | What is seen in it: the faces in front at one of its pixels or more. A face smaller than a pixel can be missed: zoom in, or go through |
-| `true` | Everything in it, hidden or not: the faces whose middle (their area-weighted centre) is inside it, on the image, and in front of the camera |
+| `true` | Everything in it, seen or behind something: the faces whose middle (their area-weighted centre) is inside it, on the image, and in front of the camera |
 
 Without `faces` it selects the patches and surface regions of those faces; with `faces: true`,
 the mesh faces themselves (surfaces are passed over and hide nothing, as for a click). `mode` is `replace` (default), `add`,
@@ -137,6 +177,7 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 - Drawing a mesh reads all of it, not only its boundary: the 2.8-million-cell air region of
   the 3×3 case takes about 5 s and 1.3 GB, almost all of it reading. Its 573 000 boundary
   triangles are drawn and picked in well under a second.
-- No level of detail and no transparency yet; the renderer draws every triangle on one core.
+- No level of detail; the renderer draws every triangle on one core, and sorts transparent
+  triangles one by one ([display modes](#display-modes)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
   by a rectangle (`select.rect`). A brush and picking cells are not there yet.

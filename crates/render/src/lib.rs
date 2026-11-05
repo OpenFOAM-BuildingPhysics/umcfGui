@@ -66,10 +66,24 @@ pub struct Object {
     /// What each class is: a patch's type (`wall`, `patch`, `empty`, …), `region` for a
     /// surface region.
     pub kinds: Vec<String>,
+    /// Each class's patch groups (`inGroups`); none for a surface region.
+    pub groups: Vec<Vec<String>>,
     /// Faces or triangles left out: a coordinate that is not finite, or so far from the
     /// scene's origin that it doesn't fit in single precision.
     pub dropped: usize,
     bvh: OnceLock<Bvh>,
+    wire: OnceLock<Wire>,
+}
+
+/// An object's edges and points as wireframes and points draw them: each edge of a face once
+/// per class (where two patches meet, each has it), each point once per class, an STL's corners
+/// welded by position; each with a triangle it belongs to.
+#[derive(Debug, Clone, Default)]
+pub struct Wire {
+    /// Two points and a triangle.
+    pub edges: Vec<[u32; 3]>,
+    /// A point and a triangle.
+    pub points: Vec<[u32; 2]>,
 }
 
 /// Something a ray passes through.
@@ -111,8 +125,10 @@ impl Object {
             edges: Vec::new(),
             classes: Vec::new(),
             kinds: Vec::new(),
+            groups: Vec::new(),
             dropped: 0,
             bvh: OnceLock::new(),
+            wire: OnceLock::new(),
         }
     }
 
@@ -126,6 +142,7 @@ impl Object {
             let Ok(class) = u32::try_from(k) else { break };
             o.classes.push(patch.name.clone());
             o.kinds.push(patch.kind.clone());
+            o.groups.push(patch.groups.clone());
             for f in patch.faces() {
                 let (Some(face), Ok(f32_index)) = (mesh.face(f), u32::try_from(f)) else { continue };
                 let mut ids: Vec<u32> = Vec::with_capacity(face.len());
@@ -168,6 +185,7 @@ impl Object {
         let mut o = Object::new(Source::Surface { file: file.to_string() });
         let (names, region) = stl.regions();
         o.kinds = vec!["region".to_string(); names.len()];
+        o.groups = vec![Vec::new(); names.len()];
         o.classes = names;
         for (k, (t, r)) in stl.triangles.iter().zip(&region).enumerate() {
             let (Ok(k), Ok(base)) = (u32::try_from(k), u32::try_from(o.points.len())) else { break };
@@ -213,6 +231,47 @@ impl Object {
     /// The box around the object's points, in world coordinates.
     pub fn bbox(&self, origin: Vec3) -> Option<BBox> {
         BBox::of(self.points.iter().map(|p| origin + Vec3::from_f32(*p)))
+    }
+
+    /// The object's edges and points (see [`Wire`]), found the first time they are asked for.
+    pub fn wire(&self) -> &Wire {
+        self.wire.get_or_init(|| {
+            use std::collections::{HashMap, HashSet};
+            // An STL's triangles have points of their own: the same corner is one point.
+            let weld = matches!(self.source, Source::Surface { .. });
+            let mut at: HashMap<[u32; 3], u32> = HashMap::new();
+            let canonical: Vec<u32> = (0..self.points.len())
+                .map(|i| {
+                    let i = u32::try_from(i).unwrap_or(u32::MAX);
+                    match self.points.get(i as usize) {
+                        // -0 and 0 are the same place.
+                        Some(p) if weld => *at.entry(p.map(|c| (c + 0.0).to_bits())).or_insert(i),
+                        _ => i,
+                    }
+                })
+                .collect();
+            let mut edges = HashSet::new();
+            let mut points = HashSet::new();
+            let mut wire = Wire::default();
+            for (n, tri) in self.triangles.iter().enumerate() {
+                let (Ok(t), Some(class)) = (u32::try_from(n), self.class.get(n)) else { continue };
+                let c = tri.map(|v| canonical.get(v as usize).copied().unwrap_or(v));
+                let bits = self.edges.get(n).copied().unwrap_or(0);
+                for (bit, (i, j)) in [(0b001u8, (0, 1)), (0b010, (1, 2)), (0b100, (2, 0))] {
+                    let (Some(p), Some(q)) = (c.get(i), c.get(j)) else { continue };
+                    let (a, b) = ((*p).min(*q), (*p).max(*q));
+                    if bits & bit != 0 && a != b && edges.insert((a, b, *class)) {
+                        wire.edges.push([a, b, t]);
+                    }
+                }
+                for p in c {
+                    if points.insert((p, *class)) {
+                        wire.points.push([p, t]);
+                    }
+                }
+            }
+            wire
+        })
     }
 
     /// The object's BVH, built the first time it is asked for.
