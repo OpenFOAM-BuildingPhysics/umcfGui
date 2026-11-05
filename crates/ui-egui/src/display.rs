@@ -6,6 +6,7 @@
 use eframe::egui::{self, Ui};
 use serde_json::Value;
 use umcf_engine::{DisplayEntry, Layer};
+use umcf_render::Source;
 use umcf_render::raster::{Display, Mode};
 
 use crate::App;
@@ -119,9 +120,26 @@ impl App {
         self.revision += 1;
     }
 
-    /// The entries as commands take them.
-    pub(crate) fn display_json(&self) -> Value {
-        self.display.iter().map(DisplayEntry::to_json).collect()
+    /// The entries as commands take them: those of what the view shows (an entry of a surface
+    /// region gone from its file, say, would have the command refused).
+    pub(crate) fn display_json(&mut self) -> Value {
+        let params = self.shown();
+        let Ok(scene) = self.session.scene(&params) else { return Value::Array(Vec::new()) };
+        let shown = |layer: &Layer| {
+            scene.objects.iter().any(|o| match (layer, &o.source) {
+                (Layer::Region(r), Source::Mesh { region }) => r == region,
+                (Layer::Patch { region, patch }, Source::Mesh { region: r }) => {
+                    region == r && o.classes.contains(patch)
+                }
+                (Layer::Group { region, group }, Source::Mesh { region: r }) => {
+                    region == r && o.groups.iter().any(|g| g.contains(group))
+                }
+                (Layer::Surface(f), Source::Surface { file }) => f == file,
+                (Layer::Solid { file, solid }, Source::Surface { file: f }) => file == f && o.classes.contains(solid),
+                _ => false,
+            })
+        };
+        self.display.iter().filter(|e| shown(&e.layer)).map(DisplayEntry::to_json).collect()
     }
 
     /// Drops the entries of what the case no longer has (a patch renamed, a surface an undo

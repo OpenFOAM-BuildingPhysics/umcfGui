@@ -1068,11 +1068,12 @@ impl App {
         }
         match action {
             Some(Action::Pick { ray, mode, faces }) => {
+                let display = self.display_json();
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
                     o.insert("ray".into(), json!({ "origin": ray.origin, "direction": ray.direction }));
-                    if !self.display.is_empty() {
-                        o.insert("display".into(), self.display_json());
+                    if !display.as_array().is_none_or(Vec::is_empty) {
+                        o.insert("display".into(), display.clone());
                     }
                     o.insert("mode".into(), json!(mode));
                     if faces {
@@ -1082,14 +1083,15 @@ impl App {
                 let _ = self.run("select.pick", p);
             }
             Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
+                let display = self.display_json();
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
                     o.insert("camera".into(), umcf_engine::camera_json(&camera));
                     o.insert("width".into(), json!(size[0]));
                     o.insert("height".into(), json!(size[1]));
                     o.insert("rect".into(), json!(rect));
-                    if !self.display.is_empty() {
-                        o.insert("display".into(), self.display_json());
+                    if !display.as_array().is_none_or(Vec::is_empty) {
+                        o.insert("display".into(), display.clone());
                     }
                     o.insert("mode".into(), json!(mode));
                     if faces {

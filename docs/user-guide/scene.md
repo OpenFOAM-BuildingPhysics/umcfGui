@@ -81,6 +81,7 @@ and transparent surfaces last, the farthest first, each blended over what is beh
 
 What is hidden is not picked, and doesn't hide anything. Everything else is picked, nearest
 first: a click on a transparent surface picks it, and `depth` picks what is behind it. A
+wireframe or points layer is picked where its faces are, between the edges or points drawn. A
 rectangle (below) sees through what isn't an opaque surface. It takes a transparent surface, a
 wireframe or points where they are seen, and also what is seen through them.
 

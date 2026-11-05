@@ -170,7 +170,7 @@ struct Target {
     id: Vec<u32>,
     colour: Vec<[u8; 3]>,
     /// When there: the ids of the blended triangles' pixels, as they are drawn.
-    hits: Option<Vec<u32>>,
+    hits: Option<std::collections::HashSet<u32>>,
 }
 
 fn bytes(c: [f32; 3]) -> [u8; 3] {
@@ -226,7 +226,7 @@ impl Target {
                 if alpha < 1.0 {
                     self.blend(i, colour, alpha);
                     if let Some(h) = &mut self.hits {
-                        h.push(id);
+                        h.insert(id);
                     }
                     continue;
                 }
@@ -274,10 +274,33 @@ impl Target {
 
     /// A line one pixel wide from `a` to `b`, blended with `alpha`, behind nothing nearer.
     fn line(&mut self, a: Screen, b: Screen, colour: [f32; 3], alpha: f32) {
+        // Only the part over the pixels drawn (Liang–Barsky), 1/depth cut with it.
+        let (lo, hi) = ((self.x.0 as f64, self.y.0 as f64), (self.x.1 as f64 + 1.0, self.y.1 as f64 + 1.0));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let (mut s0, mut s1) = (0.0f64, 1.0f64);
+        for (p, q) in [(-dx, a.x - lo.0), (dx, hi.0 - a.x), (-dy, a.y - lo.1), (dy, hi.1 - a.y)] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return;
+                }
+            } else {
+                let r = q / p;
+                if p < 0.0 {
+                    s0 = s0.max(r);
+                } else {
+                    s1 = s1.min(r);
+                }
+            }
+        }
+        if s0.is_nan() || s1.is_nan() || s0 > s1 {
+            return;
+        }
+        let at = |s: f64| Screen { x: a.x + dx * s, y: a.y + dy * s, inv_z: a.inv_z + (b.inv_z - a.inv_z) * s };
+        let (a, b) = (at(s0), at(s1));
         let (dx, dy) = (b.x - a.x, b.y - a.y);
         let steps = dx.abs().max(dy.abs()).ceil();
-        // Lines far off the image are not stepped through.
-        if !steps.is_finite() || steps > 1e5 {
+        // Within the image now: at most its diagonal.
+        if !steps.is_finite() || steps > 2e4 {
             return;
         }
         let n = steps.max(1.0) as usize;
@@ -314,8 +337,9 @@ impl Target {
     }
 }
 
-/// A transparent triangle: its points in view coordinates, colour, opacity and depth.
-type Glass = ([[f64; 3]; 3], [f32; 3], f32, f64);
+/// A transparent triangle: its points in view coordinates, colour, opacity, depth and the
+/// edges drawn on it.
+type Glass = ([[f64; 3]; 3], [f32; 3], f32, f64, u8);
 
 /// The camera as the rasteriser uses it: points into view coordinates (right, up, into the
 /// image, relative to the eye) and those onto the image.
@@ -530,7 +554,7 @@ pub fn covered(
         depth: vec![0.0; wu * hu],
         id: vec![NONE; wu * hu],
         colour: Vec::new(),
-        hits: Some(Vec::new()),
+        hits: Some(std::collections::HashSet::new()),
     };
     // Each triangle's id: its object's first id plus its index.
     let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());
@@ -572,7 +596,7 @@ pub fn covered(
     }
     // Each triangle seen once, as the pixels are read: as many as the rectangle has pixels at
     // most, whatever the size of the scene.
-    let mut seen: std::collections::HashSet<u32> = t.hits.take().unwrap_or_default().into_iter().collect();
+    let mut seen: std::collections::HashSet<u32> = t.hits.take().unwrap_or_default();
     for y in ys.0..=ys.1 {
         seen.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));
     }
@@ -620,8 +644,6 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
     let mut glass: Vec<Glass> = Vec::new();
     let mut lines: Vec<([[f64; 3]; 2], [f32; 3], f32)> = Vec::new();
     let mut dots: Vec<([f64; 3], [f32; 3], f32)> = Vec::new();
-    let mut wired: std::collections::HashSet<(usize, u32, u32)> = std::collections::HashSet::new();
-    let mut dotted: std::collections::HashSet<(usize, u32)> = std::collections::HashSet::new();
     for (k, obj) in scene.objects.iter().enumerate() {
         let view = lens.view(obj);
         let selected: Vec<bool> = (0..obj.classes.len())
@@ -675,31 +697,47 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                 }
                 Mode::Surface => {
                     let depth = (a[2] + b[2] + c[2]) / 3.0;
-                    glass.push(([a, b, c], colour, d.opacity, depth));
+                    let edges = if style.edges { face_edges } else { 0 };
+                    glass.push(([a, b, c], colour, d.opacity, depth, edges));
                 }
-                Mode::Wireframe => {
-                    // Each edge of a face once, also where two faces share it.
-                    let flat = if face_selected { SELECTED } else { colour.map(|ch| ch / shade.max(0.3)) };
-                    for (bit, (i, j)) in [(0b001, (0, 1)), (0b010, (1, 2)), (0b100, (2, 0))] {
-                        let (Some(p), Some(q)) = (tri.get(i), tri.get(j)) else { continue };
-                        if face_edges & bit != 0 && wired.insert((k, (*p).min(*q), (*p).max(*q))) {
-                            lines.push((
-                                [p, q].map(|v| view.get(*v as usize).copied().unwrap_or([0.0; 3])),
-                                flat,
-                                d.opacity,
-                            ));
-                        }
-                    }
+                // Drawn from the object's edges and points, below.
+                Mode::Wireframe | Mode::Points => {}
+            }
+        }
+        // Wireframes and points, from the object's edges and points (found once per object),
+        // in the class's colour or the selection's.
+        let shows = |m: Mode| {
+            (0..obj.classes.len()).any(|c| {
+                let d = style.display_of(k, u32::try_from(c).unwrap_or(u32::MAX));
+                d.mode == m && d.opacity > 0.0
+            })
+        };
+        let (wire, points) = (shows(Mode::Wireframe), shows(Mode::Points));
+        if wire || points {
+            let w = obj.wire();
+            // The colour and display of what triangle `t` belongs to.
+            let of = |t: u32| -> Option<([f32; 3], Display)> {
+                let class = *obj.class.get(t as usize)?;
+                let face_selected = !picked.is_empty()
+                    && obj.origin_index.get(t as usize).is_some_and(|f| picked.binary_search(f).is_ok());
+                let colour = if face_selected { SELECTED } else { *colours.get(class as usize)? };
+                Some((colour, style.display_of(k, class)))
+            };
+            let at = |p: u32| view.get(p as usize).copied();
+            for [a, b, tri] in w.edges.iter().filter(|_| wire) {
+                if let (Some((colour, d)), Some(a), Some(b)) = (of(*tri), at(*a), at(*b))
+                    && d.mode == Mode::Wireframe
+                    && d.opacity > 0.0
+                {
+                    lines.push(([a, b], colour, d.opacity));
                 }
-                Mode::Points => {
-                    let flat = if face_selected { SELECTED } else { colour.map(|ch| ch / shade.max(0.3)) };
-                    for v in tri {
-                        if dotted.insert((k, *v))
-                            && let Some(p) = view.get(*v as usize)
-                        {
-                            dots.push((*p, flat, d.opacity));
-                        }
-                    }
+            }
+            for [p, tri] in w.points.iter().filter(|_| points) {
+                if let (Some((colour, d)), Some(p)) = (of(*tri), at(*p))
+                    && d.mode == Mode::Points
+                    && d.opacity > 0.0
+                {
+                    dots.push((p, colour, d.opacity));
                 }
             }
         }
@@ -718,8 +756,8 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
     }
     // Transparent surfaces last, the farthest first.
     glass.sort_by(|a, b| b.3.total_cmp(&a.3));
-    for (verts, colour, alpha, _) in glass {
-        lens.fill(&mut t, verts, colour, NONE, 0, false, alpha);
+    for (verts, colour, alpha, _, edges) in glass {
+        lens.fill(&mut t, verts, colour, NONE, edges, false, alpha);
     }
     // Outlines where one class meets another or the background.
     let mut rgba = Vec::with_capacity(wu * hu * 4);

@@ -45,7 +45,7 @@ pub struct DisplayEntry {
 }
 
 /// The most entries a `display` takes.
-const MAX_ENTRIES: usize = 10_000;
+const MAX_ENTRIES: usize = 1000;
 
 impl DisplayEntry {
     pub fn to_json(&self) -> Value {
@@ -143,8 +143,8 @@ pub fn parse(id: &str, v: &Value) -> Result<Vec<DisplayEntry>, Error> {
 }
 
 /// Whether what `entries` name is in the open case: each region with a mesh, patch, patch group,
-/// surface and surface region.
-pub(super) fn check(s: &Session, id: &str, entries: &[DisplayEntry]) -> Result<(), Error> {
+/// surface and surface region. A surface `scene` shows is checked against it; another is read.
+pub(super) fn check(s: &Session, id: &str, entries: &[DisplayEntry], scene: &Scene) -> Result<(), Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let patches = |region: &str| {
         let r = case
@@ -171,6 +171,12 @@ pub(super) fn check(s: &Session, id: &str, entries: &[DisplayEntry]) -> Result<(
                 }
             }
             Layer::Surface(f) | Layer::Solid { file: f, .. } => {
+                let shown = scene.objects.iter().find(|o| matches!(&o.source, Source::Surface { file } if file == f));
+                if let Some(o) = shown
+                    && !solids.contains_key(f)
+                {
+                    solids.insert(f.clone(), o.classes.clone());
+                }
                 if !solids.contains_key(f) {
                     let bytes =
                         case.file(fs, f)?.ok_or_else(|| Error::Params(format!("{id}: there is no surface {f}")))?;

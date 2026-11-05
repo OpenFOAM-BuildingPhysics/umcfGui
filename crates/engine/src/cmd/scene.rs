@@ -94,12 +94,6 @@ fn optional<'a>(p: &Params<'a>, key: &str) -> Result<Option<&'a Value>, Error> {
     }
 }
 
-/// The scene the parameters ask for, built or as cached.
-fn scene<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<&'s Scene, Error> {
-    build(s, id, p)?;
-    cached(s, id)
-}
-
 /// The scene last built.
 fn cached<'s>(s: &'s Session, id: &str) -> Result<&'s Scene, Error> {
     s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
@@ -270,11 +264,17 @@ fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Err
 }
 
 /// The `display` entries in `p`, checked against the open case.
-fn entries(s: &Session, id: &str, p: &Params) -> Result<Vec<display::DisplayEntry>, Error> {
-    let Some(v) = optional(p, "display")? else { return Ok(Vec::new()) };
-    let entries = display::parse(id, v)?;
-    display::check(s, id, &entries)?;
-    Ok(entries)
+/// The `display` entries in `p` and the scene they apply to, built (or as cached), with what the
+/// entries name checked against the case and the scene.
+fn displayed<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<(Vec<display::DisplayEntry>, &'s Scene), Error> {
+    let entries = match optional(p, "display")? {
+        Some(v) => display::parse(id, v)?,
+        None => Vec::new(),
+    };
+    build(s, id, p)?;
+    let s: &'s Session = s;
+    display::check(s, id, &entries, cached(s, id)?)?;
+    Ok((entries, cached(s, id)?))
 }
 
 /// A camera as `camera_json` writes it (`fov` may be left out).
@@ -361,7 +361,6 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     allowed.extend(CAMERA);
     allowed.extend(["edges", "colour_by", "display"]);
     let p = Params::new(id, p, &allowed)?;
-    let entries = entries(s, id, &p)?;
     let edges = p.bool("edges")?.unwrap_or(false);
     let colour_by = match p.str("colour_by")? {
         None | Some("patch") => ColourBy::Class,
@@ -369,7 +368,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         Some(o) => return Err(Error::Params(format!("{id}: `colour_by` is patch or object, not `{o}`"))),
     };
     let selection = s.selection.clone();
-    let scene = scene(s, id, &p)?;
+    let (entries, scene) = displayed(s, id, &p)?;
     let (cam, width, height) = camera(id, &p, scene)?;
     let selected = selected_classes(scene, &selection);
     let selected_faces = selected_faces(scene, &selection);
@@ -521,7 +520,6 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     allowed.extend(CAMERA);
     allowed.extend(["pixel", "ray", "depth", "mode", "faces", "display"]);
     let p = Params::new(id, p, &allowed)?;
-    let entries = entries(s, id, &p)?;
     let faces = p.bool("faces")?.unwrap_or(false);
     let mode = mode(
         id,
@@ -534,7 +532,7 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         Some(_) => return Err(Error::Params(format!("{id}: `depth` is a whole number from 0 to {}", MAX_HITS - 1))),
     };
     let (pixel, ray) = (optional(&p, "pixel")?, optional(&p, "ray")?);
-    let scene = scene(s, id, &p)?;
+    let (entries, scene) = displayed(s, id, &p)?;
     let ray = match (pixel, ray) {
         (Some(px), None) => {
             let bad = || Error::Params(format!("{id}: `pixel` is [x, y], two finite numbers"));
@@ -654,7 +652,6 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     allowed.extend(CAMERA);
     allowed.extend(["rect", "through", "mode", "faces", "display"]);
     let p = Params::new(id, p, &allowed)?;
-    let entries = entries(s, id, &p)?;
     let faces = p.bool("faces")?.unwrap_or(false);
     let through = p.bool("through")?.unwrap_or(false);
     let mode = mode(
@@ -667,7 +664,7 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let c = |i: usize| r.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
     let area = umcf_render::raster::Rect { a: [c(0)?, c(1)?], b: [c(2)?, c(3)?] };
     let selection = s.selection.clone();
-    let scene = scene(s, id, &p)?;
+    let (entries, scene) = displayed(s, id, &p)?;
     let (cam, width, height) = camera(id, &p, scene)?;
     let style = Style {
         width,
