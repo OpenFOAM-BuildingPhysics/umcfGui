@@ -1058,6 +1058,9 @@ fn a_rename_follows_into_0_orig_and_view_factors_and_says_where_else_the_name_is
     );
     fs.insert("3600/air/T", field("    inlet { type fixedValue; value uniform 291; }\n"));
     fs.insert("7200/air/T", field("    inlet { type fixedValue; value uniform 292; }\n"));
+    fs.insert("constant/air/boundaryData/inlet/points", "((0 0 0))\n");
+    // In 0.orig the new name is taken already: that file is left as it is, and said so.
+    fs.insert("0.orig/air/U", field("    inlet { type zeroGradient; }\n    west { type slip; }\n"));
     let mut s = Session::with_backup(".umcfgui/backup/test");
     s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
     let o = s.execute("patch.set", &json!({"name": "west", "patches": [{"region": "air", "patch": "inlet"}]})).unwrap();
@@ -1090,8 +1093,21 @@ fn a_rename_follows_into_0_orig_and_view_factors_and_says_where_else_the_name_is
     assert!(has("patch.mention", "0.orig/air/p").is_some(), "{codes:?}");
     assert!(has("patch.mention", "0.orig/air/notes.txt").is_some(), "{codes:?}");
     assert!(has("patch.mention", "system/air/viewFactorsDict").is_none(), "{codes:?}");
-    let times = has("patch.times", "3600, 7200").unwrap();
-    assert!(times.contains("results in 3600, 7200 still name the patch `inlet`"), "{times}");
+    assert_eq!(
+        has("patch.unrenamed", "0.orig/air/U").as_deref(),
+        Some("has an entry `west` already: it may still name the patch `inlet`; rename it there")
+    );
+    assert!(s.case().unwrap().put_bytes("0.orig/air/U").is_none());
+    let times = has("patch.times", "").unwrap();
+    assert!(
+        times.contains("time directories 3600, 7200 aren't read here and may still name the patch `inlet`"),
+        "{times}"
+    );
+    // The data mapped onto the patch by its name.
+    assert!(
+        has("patch.mention", "constant/air/boundaryData/inlet").unwrap().contains("this directory is named `inlet`"),
+        "{codes:?}"
+    );
     assert!(!codes.iter().any(|(c, _, _)| c == "patch.orig" || c == "patch.elsewhere"));
     // The results are not touched.
     assert!(s.case().unwrap().put_bytes("3600/air/T").is_none());

@@ -281,18 +281,27 @@ pub struct PatchReport {
     /// not changed.
     pub times: Vec<String>,
     /// Where the old name is still written, as a word, in the case's dictionaries (`system`,
-    /// `constant`, `0.orig`) once the rest is renamed: (file, line), the first [`MAX_MENTIONS`].
+    /// `constant`, `0.orig`) once the rest is renamed: (file, line), the first [`MAX_MENTIONS`];
+    /// line 0 for a directory of that name (`constant/<region>/boundaryData/<patch>`).
     pub mentions: Vec<(String, usize)>,
+    /// There are more than [`MAX_MENTIONS`].
+    pub more_mentions: bool,
+    /// Files of `0.orig` and view factor dictionaries that may have an entry for the patch but
+    /// weren't changed, and why.
+    pub not_renamed: Vec<(String, String)>,
 }
 
 /// What [`Case::rename_entry`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Renamed {
     Yes,
-    /// The file has no such entry, or is not a dictionary that can be edited here.
+    /// The file has no such entry, or is not a dictionary.
     No,
     /// Too large to be edited here.
     TooLarge,
+    /// It has the entry but it can't be renamed (the new name is there already, the entry is
+    /// there twice, the file can't be written back unchanged, …).
+    Failed(String),
 }
 
 /// The most places [`PatchReport::mentions`] lists.
@@ -1280,8 +1289,9 @@ impl Case {
             }
             match self.rename_entry(fs, &path, Some("boundaryField"), patch, to) {
                 Renamed::Yes => report.orig.push(path),
-                Renamed::TooLarge => report.unread.push(path),
                 Renamed::No => {}
+                Renamed::TooLarge => report.not_renamed.push((path, "too large to be read here".to_string())),
+                Renamed::Failed(why) => report.not_renamed.push((path, why)),
             }
         }
         // The view factor dictionary: an entry per patch.
@@ -1289,8 +1299,14 @@ impl Case {
             if region.is_empty() { format!("{dir}/viewFactorsDict") } else { format!("{dir}/{region}/viewFactorsDict") }
         };
         for path in [vf("system"), vf("constant")] {
-            if fs.is_file(&path) && self.rename_entry(fs, &path, None, patch, to) == Renamed::Yes {
-                report.others.push(path);
+            if !fs.is_file(&path) {
+                continue;
+            }
+            match self.rename_entry(fs, &path, None, patch, to) {
+                Renamed::Yes => report.others.push(path),
+                Renamed::No => {}
+                Renamed::TooLarge => report.not_renamed.push((path, "too large to be read here".to_string())),
+                Renamed::Failed(why) => report.not_renamed.push((path, why)),
             }
         }
         // Results in other time directories are not read: they can be large, and each edit is
@@ -1302,77 +1318,162 @@ impl Case {
                 report.times.push(t.name);
             }
         }
-        report.mentions = self.mentions(fs, patch);
+        (report.mentions, report.more_mentions) = self.mentions(fs, patch);
         Ok(report)
     }
 
     /// Renames the entry `from` to `to` in the dictionary `inside` of the file at `path` (the
-    /// file's top level when `None`), keeping every other byte, and puts it when it had one.
+    /// file's top level when `None`, where the entry must be a dictionary), keeping every other
+    /// byte, and puts it when it had one. Refused when `to` is there already or `from` twice.
     fn rename_entry(&mut self, fs: &dyn CaseFs, path: &str, inside: Option<&str>, from: &str, to: &str) -> Renamed {
-        // One of the case's dictionaries: edited where it is held.
-        if self.dict(path).is_some() {
-            let Ok(doc) = self.dict_mut(path) else { return Renamed::No };
+        // Whether the dictionary has `from` once (as a dictionary at the top level) and no `to`.
+        let check = |doc: &umcf_foam_dict::Document| -> std::result::Result<bool, String> {
+            let dict = match inside {
+                Some(k) => match doc.root.get(k).and_then(umcf_foam_dict::Entry::dict) {
+                    Some(d) => d,
+                    None => return Ok(false),
+                },
+                None => &doc.root,
+            };
+            let n = dict.keys().filter(|k| *k == from).count();
+            if n == 0 || (inside.is_none() && dict.get(from).and_then(umcf_foam_dict::Entry::dict).is_none()) {
+                return Ok(false);
+            }
+            if n > 1 {
+                return Err(format!("has two entries `{from}`: keep one first"));
+            }
+            if dict.keys().any(|k| k == to) {
+                return Err(format!("has an entry `{to}` already"));
+            }
+            Ok(true)
+        };
+        let rename = |doc: &mut umcf_foam_dict::Document| {
             let dict = match inside {
                 Some(k) => doc.root.get_mut(k).and_then(umcf_foam_dict::Entry::dict_mut),
                 None => Some(&mut doc.root),
             };
-            if !dict.is_some_and(|d| d.rename(from, to)) {
+            dict.is_some_and(|d| d.rename(from, to))
+        };
+        // One of the case's dictionaries: edited where it is held.
+        if let Some(doc) = self.dict(path) {
+            match check(doc) {
+                Ok(false) => return Renamed::No,
+                Err(why) => return Renamed::Failed(why),
+                Ok(true) => {}
+            }
+            let Ok(doc) = self.dict_mut(path) else { return Renamed::No };
+            if !rename(doc) {
                 return Renamed::No;
             }
             self.edited(path);
             return Renamed::Yes;
         }
-        let Ok((Some(bytes), base)) = self.edit_base(fs, path) else { return Renamed::No };
-        let limits = umcf_foam_field::Limits { max_bytes: self.edit_cap(), ..Default::default() };
-        if bytes.len() as u64 > self.edit_cap() {
+        // Another file: read no more than can be edited.
+        let cap = self.edit_cap();
+        let (bytes, base) = if self.raw.contains_key(path) || self.saved_over(path).is_some() {
+            match self.edit_base(fs, path) {
+                Ok((Some(b), base)) => (b, base),
+                Ok((None, _)) => return Renamed::No,
+                Err(e) => return Renamed::Failed(e.to_string()),
+            }
+        } else {
+            match fs.read(path, cap) {
+                Ok(Some(b)) => {
+                    let f = fingerprint(&b);
+                    (Arc::new(b), Some(f))
+                }
+                Ok(None) => return Renamed::No,
+                Err(FsError::TooLarge { .. }) => return Renamed::TooLarge,
+                Err(e) => return Renamed::Failed(e.to_string()),
+            }
+        };
+        if bytes.len() as u64 > cap {
             return Renamed::TooLarge;
         }
-        let mut changed = false;
+        let limits = umcf_foam_field::Limits { max_bytes: cap, ..Default::default() };
+        let mut verdict = Ok(false);
         let out = umcf_foam_field::rewrite(&bytes, &limits, |doc| {
-            let dict = match inside {
-                Some(k) => doc.root.get_mut(k).and_then(umcf_foam_dict::Entry::dict_mut),
-                None => Some(&mut doc.root),
-            };
-            changed = dict.is_some_and(|d| d.rename(from, to));
+            verdict = check(doc);
+            if verdict == Ok(true) && !rename(doc) {
+                verdict = Ok(false);
+            }
             Ok(())
         });
-        match out {
-            Ok(out) if changed => match self.put_based(path, out, base) {
+        match (out, verdict) {
+            (Ok(out), Ok(true)) => match self.put_based(path, out, base) {
                 Ok(()) => Renamed::Yes,
-                Err(_) => Renamed::No,
+                Err(e) => Renamed::Failed(e.to_string()),
             },
-            Err(umcf_foam_field::Error::TooLarge { .. }) => Renamed::TooLarge,
-            _ => Renamed::No,
+            (_, Err(why)) => Renamed::Failed(why),
+            (Err(umcf_foam_field::Error::TooLarge { .. }), _) => Renamed::TooLarge,
+            // Not a dictionary this can read (a note, a binary file): it is not a field.
+            (Err(_), _) => {
+                let text = String::from_utf8_lossy(&bytes);
+                if bytes.starts_with(&[0x1f, 0x8b]) {
+                    Renamed::Failed("compressed, and can't be read here".to_string())
+                } else if text.contains("boundaryField") && text.contains(from) {
+                    Renamed::Failed("can't be edited here".to_string())
+                } else {
+                    Renamed::No
+                }
+            }
+            (Ok(_), Ok(false)) => Renamed::No,
         }
     }
 
     /// Where `word` is written, as a whole word, in the case's dictionaries under `system`,
-    /// `constant` (not the meshes nor the surfaces) and `0.orig`: (file, line), sorted, at most
-    /// [`MAX_MENTIONS`]. Compressed, binary and very large files are passed over.
-    pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> Vec<(String, usize)> {
+    /// `constant` (not the meshes, the surfaces nor mapped boundary data) and `0.orig`: (file,
+    /// line), sorted, at most [`MAX_MENTIONS`], and whether there are more. The directory of the
+    /// data mapped onto a patch of that name (`constant/<region>/boundaryData/<patch>`) is
+    /// listed with line 0. Compressed, binary and files over 4 MB are passed over.
+    pub fn mentions(&self, fs: &dyn CaseFs, word: &str) -> (Vec<(String, usize)>, bool) {
         let mut out = Vec::new();
         if word.is_empty() {
-            return out;
+            return (out, false);
         }
         // The files there when the case was opened, and those commands made since.
         let mut files: Vec<String> = self
             .paths
             .iter()
             .chain(self.raw.keys())
-            .filter(|p| !p.contains('\u{1}') && !self.is_dir(p))
+            .filter(|p| !p.contains('\u{1}'))
             .filter(|p| ["system/", "constant/", "0.orig/"].iter().any(|d| p.starts_with(d)))
-            .filter(|p| !p.split('/').any(|c| c == "polyMesh" || c == "triSurface") && !p.ends_with(".gz"))
             .cloned()
             .collect();
         files.sort();
         files.dedup();
+        let skipped =
+            |p: &str| p.split('/').any(|c| matches!(c, "polyMesh" | "triSurface" | "geometry" | "boundaryData"));
+        let push = |out: &mut Vec<(String, usize)>, at: (String, usize)| {
+            if out.len() > MAX_MENTIONS {
+                return false;
+            }
+            out.push(at);
+            true
+        };
         let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut named_dirs = std::collections::BTreeSet::new();
         for path in files {
-            // A dictionary the case holds as it is now; another file as put or on disk.
+            // The data mapped onto the patch, found by its name: `boundaryData/<patch>/…`.
+            let parts: Vec<&str> = path.split('/').collect();
+            if let Some(k) = parts.windows(2).position(|w| w == ["boundaryData", word]).map(|k| k + 1)
+                && k + 1 < parts.len()
+            {
+                named_dirs.insert(parts.get(..=k).unwrap_or_default().join("/"));
+            }
+            if self.is_dir(&path) || skipped(&path) || path.ends_with(".gz") {
+                continue;
+            }
+            // A dictionary the case holds as it is now; another file as put, or from the disk
+            // no larger than is searched.
             let bytes = match self.dict(&path) {
                 Some(doc) => Arc::new(doc.to_string().into_bytes()),
-                None => match self.file(fs, &path) {
+                None if self.raw.contains_key(&path) => match self.file(fs, &path) {
                     Ok(Some(b)) => b,
+                    _ => continue,
+                },
+                None => match fs.read(&path, MENTION_BYTES) {
+                    Ok(Some(b)) => Arc::new(b),
                     _ => continue,
                 },
             };
@@ -1385,15 +1486,17 @@ impl Case {
                         && (i == 0 || !line.get(i - 1).copied().is_some_and(is_word))
                         && !line.get(i + word.len()).copied().is_some_and(is_word)
                 });
-                if found {
-                    if out.len() == MAX_MENTIONS {
-                        return out;
-                    }
-                    out.push((path.clone(), n + 1));
+                if found && !push(&mut out, (path.clone(), n + 1)) {
+                    break;
                 }
             }
         }
-        out
+        for d in named_dirs {
+            push(&mut out, (d, 0));
+        }
+        let more = out.len() > MAX_MENTIONS;
+        out.truncate(MAX_MENTIONS);
+        (out, more)
     }
 
     /// Whether `to` can be a new patch name in region `r` (with `patches`): not a patch, a

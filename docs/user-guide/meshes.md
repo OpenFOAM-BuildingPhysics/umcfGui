@@ -199,12 +199,18 @@ umcf-cli run --case my-case \
 - **The command says what it didn't change**:
   - a field file too big to be read here (`patch.unread`);
   - one whose pattern entry or included text may name the old name (`patch.pattern`);
-  - the results in other time directories (`patch.times`), which aren't read: a run started from
-    one of them needs the name changed there;
+  - a file of `0.orig` or a `viewFactorsDict` that wasn't changed (`patch.unrenamed`): it has the
+    new name already, the old one twice, or can't be read or written back here;
+  - the other time directories (`patch.times`), which aren't read: a run started from one of
+    them needs the name changed there;
+  - a directory with the old name (`patch.mention`), such as the data a
+    `timeVaryingMappedFixedValue` condition finds by the patch's name in
+    `constant/<region>/boundaryData/<patch>`;
   - each file and line under `system`, `constant` and `0.orig` that still has the old name as a
     word (`patch.mention`): function objects in `controlDict`, the meshing dictionaries
     (`createPatchDict`, `changeDictionaryDict`, `topoSetDict`, `snappyHexMeshDict`, …), a pattern
     in a field. A region or a field with the same name is listed too; the first 200 are named.
+    Compressed files and files over 4 MB are not searched.
 - **A name already used is refused**: another patch's, a patch group's, or an entry of a field
   file (a group or pattern entry would take the renamed patch's entry over). So is a number.
 - Entries are written as given: `"entries": {"offset": [0, 0, 1], "distance": 0.5}` is

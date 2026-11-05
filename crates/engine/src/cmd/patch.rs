@@ -157,10 +157,19 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 let more = if n > 5 { format!(" … {last} ({n} time directories)") } else { String::new() };
                 found.push(warn(
                     "patch.times",
-                    &shown.join(", "),
+                    "",
                     region,
                     patch,
-                    &format!("the results in {}{more} still name the patch `{patch}`: a run started from one of them needs it renamed there", shown.join(", ")),
+                    &format!("the time directories {}{more} aren't read here and may still name the patch `{patch}`: a run started from one of them needs it renamed there", shown.join(", ")),
+                ));
+            }
+            for (f, why) in &report.not_renamed {
+                found.push(warn(
+                    "patch.unrenamed",
+                    f,
+                    region,
+                    patch,
+                    &format!("{why}: it may still name the patch `{patch}`; rename it there"),
                 ));
             }
             // Where the old name is still written: the meshing dictionaries, function objects, …
@@ -172,6 +181,10 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 }
             }
             for (f, lines) in by_file {
+                if lines == [0] {
+                    found.push(warn("patch.mention", &f, region, patch, &format!("this directory is named `{patch}`: data found by the patch's name (boundaryData) needs the new name")));
+                    continue;
+                }
                 let at: Vec<String> = lines.iter().map(usize::to_string).collect();
                 let (what, verb) = if lines.len() == 1 { ("line", "names") } else { ("lines", "name") };
                 found.push(warn(
@@ -182,7 +195,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     &format!("{what} {} {verb} `{patch}`: rename it there if that is the patch", at.join(", ")),
                 ));
             }
-            if report.mentions.len() >= umcf_model::MAX_MENTIONS {
+            if report.more_mentions {
                 found.push(warn(
                     "patch.mention",
                     "",
