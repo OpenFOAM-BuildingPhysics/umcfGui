@@ -44,6 +44,7 @@ pub use umcf_foam_mesh::Patch;
 use umcf_schema::{CaseKind, Layout, Note, Severity};
 
 mod controls;
+pub mod description;
 pub mod script;
 pub mod workflow;
 
@@ -67,6 +68,10 @@ pub enum Error {
     BadFile(String),
     #[error("{0} is one of the case's dictionaries: it is edited entry by entry, not replaced")]
     IsDict(String),
+    #[error("{0} is a link to another file: writing it would change that file")]
+    IsLink(String),
+    #[error("{0} is there already: give replace to write over it")]
+    Exists(String),
     #[error("{0} already has 1000 backups")]
     BackupsFull(String),
     #[error("{path}: {source}")]
@@ -777,6 +782,48 @@ impl Case {
             wf.constant_files.push((r.clone(), files));
         }
         wf
+    }
+
+    /// The size limits the case was opened with.
+    pub fn options(&self) -> OpenOptions {
+        self.options
+    }
+
+    /// The case's workflow description (`system/umcfWorkflow`), read, with its problems; `None`
+    /// when the case has none (or it isn't a dictionary: see the open notes).
+    pub fn description(&self) -> Option<(description::Description, Vec<description::Problem>)> {
+        self.dict(description::PATH).map(description::Description::read)
+    }
+
+    /// Puts `text` as the workflow description, a new dictionary or one replacing the case's
+    /// (`replace`). Refused when there is one and `replace` is false, and when the file is on
+    /// disk but didn't load as a dictionary (whatever `replace`).
+    pub fn put_description(&mut self, fs: &dyn CaseFs, text: &str, replace: bool) -> Result<()> {
+        let rel = description::PATH;
+        // The same file as another dictionary (a link, either way): writing it would change
+        // what that one reads.
+        if self.resolve(rel) != rel || self.aliases.values().any(|p| p == rel) {
+            return Err(Error::IsDict(rel.to_string()));
+        }
+        // A link to a file that isn't one of the loaded dictionaries (a field, a script): the
+        // save would write through it. Only the file at its own path is written.
+        let own = std::path::Path::new(rel).parent().zip(std::path::Path::new(rel).file_name());
+        if let Some(id) = fs.identity(rel)
+            && own.and_then(|(dir, name)| fs.identity(&dir.to_string_lossy()).map(|d| d.join(name))) != Some(id)
+        {
+            return Err(Error::IsLink(rel.to_string()));
+        }
+        if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel) || fs.is_dir(rel)) {
+            // On disk but not loaded (not a dictionary): not written over, with or without
+            // `replace`; the file is mended or removed by hand.
+            return Err(Error::NotLoaded { path: rel.to_string() });
+        }
+        if self.dict(rel).is_some() && !replace {
+            return Err(Error::Exists(rel.to_string()));
+        }
+        let doc = Document::parse(text).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
+        self.files.insert(rel.to_string(), Arc::new(doc));
+        Ok(())
     }
 
     pub fn region(&self, name: &str) -> Option<&Region> {

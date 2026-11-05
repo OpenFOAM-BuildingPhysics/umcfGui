@@ -41,6 +41,7 @@ pub mod display;
 pub mod icons;
 pub mod newpatch;
 pub mod patch;
+pub mod results;
 pub mod ribbon;
 pub mod theme;
 pub mod viewport;
@@ -389,9 +390,13 @@ impl App {
         result.map_err(|e| e.to_string())
     }
 
-    /// Logs an entry, opening the results card when it failed or has diagnostics.
+    /// Logs an entry, opening the results card when it failed, has diagnostics, or returned a
+    /// workflow description (with its problems and notes).
     fn log_entry(&mut self, entry: Entry) {
-        if entry.data.get("diagnostics").and_then(Value::as_array).is_some_and(|d| !d.is_empty()) || !entry.ok {
+        if entry.data.get("diagnostics").and_then(Value::as_array).is_some_and(|d| !d.is_empty())
+            || !entry.ok
+            || !results::lines(&entry.data).is_empty()
+        {
             self.results_open = true;
         }
         self.log.push(entry);
@@ -1586,6 +1591,15 @@ impl App {
                             ui.label(
                                 RichText::new(format!("… and {} more", diagnostics.len() - 500)).color(t.text_muted),
                             );
+                        }
+                        // Limited part by part already (results::MESSAGES, results::DESCRIPTION).
+                        for (kind, line) in results::lines(&e.data) {
+                            let colour = match kind {
+                                results::Kind::Text => t.text,
+                                results::Kind::Warning => t.warning,
+                                results::Kind::Info => t.info,
+                            };
+                            ui.label(RichText::new(line).size(12.5).color(colour));
                         }
                     });
                 });

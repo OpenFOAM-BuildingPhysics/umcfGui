@@ -48,7 +48,10 @@ Where the names are written:
 ## `system/umcfWorkflow`
 
 An OpenFOAM-style dictionary, so it travels with the case, reads with the same tools and can be
-edited by hand. A sketch (the keys settle as the pieces are built):
+edited by hand. What is built so far (regions, their kinds, the meshing steps as the scripts run
+them, patches with roles and partners, radiation and the solver) is described in [the case
+workflow](user-guide/workflow.md#the-workflow-description). A sketch of where it goes (the
+meshing keys settle as rows 6–8 are built):
 
 ```c++
 FoamFile { format ascii; class dictionary; object umcfWorkflow; }

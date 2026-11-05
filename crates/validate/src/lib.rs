@@ -31,6 +31,7 @@
     clippy::unreachable
 )]
 
+mod description;
 mod fields;
 mod keywords;
 pub mod mesh;
@@ -101,6 +102,7 @@ pub fn check(case: &Case) -> Vec<Diagnostic> {
     fields::check(case, &mut out);
     keywords::check(case, &mut out);
     workflow::check(case, &mut out);
+    description::check(case, &mut out);
     out.sort_by(|a, b| a.level.cmp(&b.level).then_with(|| a.path.cmp(&b.path)));
     out
 }
