@@ -154,7 +154,10 @@ from another (the street canyon's vegetation) is not described yet: its steps ar
 `workflow.show` returns the description, read from the file or, when the case has none, as the
 import would write it; it also says when a file is there that doesn't load (not a dictionary, or
 over the size limit), or one the open case doesn't hold (written or undone since it was opened).
-`workflow.import` writes over neither. The case check reads the file against the case
-(`workflow.description`): what can't be read in it, regions and patches the case doesn't have or it
-leaves out, other kinds, partners that aren't there, and another OpenFOAM version.
+`workflow.import` writes over neither, nor a file that is a link to another (a dictionary, a
+field: the save would change that file). In the window, both show the regions, their meshes,
+steps and patch roles in the results card, with the problems and the import's notes. The case
+check reads the file against the case (`workflow.description`): what can't be read in it, regions
+and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, and
+another OpenFOAM version.
 

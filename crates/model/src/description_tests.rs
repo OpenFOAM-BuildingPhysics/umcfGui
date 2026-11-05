@@ -392,4 +392,18 @@ fn a_description_linked_to_another_dictionary_is_not_written() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(matches!(r, Err(crate::Error::IsDict(_))), "{r:?}");
     assert!(c.changed().is_empty());
+
+    // A link to a case file that isn't a loaded dictionary (a field): not written through.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write("0/air/U", format!("{}dimensions [0 1 -1 0 0 0 0];\n", header("volVectorField", "U")).as_bytes()).unwrap();
+    std::os::unix::fs::symlink("../0/air/U", root.join(PATH)).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    let r = c.put_description(&fs, "regions { }\n", true);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(r, Err(crate::Error::IsLink(_))), "{r:?}");
+    assert!(c.changed().is_empty());
 }

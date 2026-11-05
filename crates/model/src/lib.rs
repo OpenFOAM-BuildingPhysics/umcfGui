@@ -68,6 +68,8 @@ pub enum Error {
     BadFile(String),
     #[error("{0} is one of the case's dictionaries: it is edited entry by entry, not replaced")]
     IsDict(String),
+    #[error("{0} is a link to another file: writing it would change that file")]
+    IsLink(String),
     #[error("{0} is there already: give replace to write over it")]
     Exists(String),
     #[error("{0} already has 1000 backups")]
@@ -803,7 +805,15 @@ impl Case {
         if self.resolve(rel) != rel || self.aliases.values().any(|p| p == rel) {
             return Err(Error::IsDict(rel.to_string()));
         }
-        if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel)) {
+        // A link to a file that isn't one of the loaded dictionaries (a field, a script): the
+        // save would write through it. Only the file at its own path is written.
+        let own = std::path::Path::new(rel).parent().zip(std::path::Path::new(rel).file_name());
+        if let Some(id) = fs.identity(rel)
+            && own.and_then(|(dir, name)| fs.identity(&dir.to_string_lossy()).map(|d| d.join(name))) != Some(id)
+        {
+            return Err(Error::IsLink(rel.to_string()));
+        }
+        if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel) || fs.is_dir(rel)) {
             // On disk but not loaded (not a dictionary): not written over, with or without
             // `replace`; the file is mended or removed by hand.
             return Err(Error::NotLoaded { path: rel.to_string() });
