@@ -1504,3 +1504,78 @@ fn picked_faces_make_a_patch_of_one_region() {
     assert_eq!(o.data["region"], "wall");
     assert!(codes(&o).contains(&"patch.constraint".to_string()), "{:?}", codes(&o));
 }
+
+#[test]
+fn geometry_trees_from_a_table_a_file_or_a_list() {
+    let table = "x\ty\tz\tCD\tCH\n260\t260\t2.5\t5.5\t5.5\n330\t330\t2.5\t5.5\t5.5\n";
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs().with("constant/triSurface/trees.txt", table)), "mem", OpenOptions::default(), false).unwrap();
+    let out = s.execute("geometry.trees", &json!({ "table": "constant/triSurface/trees.txt" })).unwrap();
+    assert!(out.message.starts_with("constant/triSurface/trees.stl: 2 trees as crowns (trees)"), "{}", out.message);
+    // Closed, outward and without empty triangles: only the summary.
+    assert_eq!(codes(&out), ["surface.summary"]);
+    assert_eq!(out.data["surface"]["triangles"], 88);
+    assert_eq!(s.case().unwrap().changed(), ["constant/triSurface/trees.stl"]);
+    let e = s.execute("geometry.trees", &json!({ "table": "constant/triSurface/trees.txt" })).unwrap_err();
+    assert!(e.to_string().contains("already there"), "{e}");
+    // Undone, it is gone.
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert!(s.case().unwrap().changed().is_empty());
+
+    // A list, its own name and region.
+    let out = s
+        .execute(
+            "geometry.trees",
+            &json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "table": null, "name": "oaks.stl", "solid": "oaks" }),
+        )
+        .unwrap();
+    assert_eq!(out.data["surface"]["triangles"], 44);
+    assert_eq!(out.data["solid"], "oaks");
+
+    // A file outside the case.
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-trees", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("trees.txt");
+    std::fs::write(&path, table).unwrap();
+    let out = s.execute("geometry.trees", &json!({ "path": path.to_str().unwrap(), "name": "more.stl" })).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(out.data["trees"], 2);
+    // Binary: no region name, and none claimed.
+    let out = s
+        .execute(
+            "geometry.trees",
+            &json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "name": "bin.stlb" }),
+        )
+        .unwrap();
+    assert_eq!(out.data["solid"], Value::Null);
+    assert!(out.message.contains("binary: no region name"), "{}", out.message);
+
+    for (p, says) in [
+        (json!({}), "one way"),
+        (json!({ "table": "a", "trees": [] }), "one way"),
+        (json!({ "trees": [] }), "no trees"),
+        (json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 0, "height": 6 }] }), "positive"),
+        (json!({ "trees": [{ "x": 1e39, "y": 2, "z": 0, "diameter": 4, "height": 6 }] }), "beyond"),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "name": "b.stlb", "solid": "oaks" }),
+            "no region names",
+        ),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "solid": "Bäume" }),
+            "printable ASCII only",
+        ),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "solid": "ä".repeat(100_000) }),
+            "at most 255 characters",
+        ),
+        (json!({ "trees": [{ "x": 1, "y": 2, "diameter": 4, "height": 6 }] }), "`z` is a number"),
+        (json!({ "table": "constant/triSurface/none.txt" }), "no such file"),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "name": "../x.stl" }),
+            "not a surface",
+        ),
+    ] {
+        let e = s.execute("geometry.trees", &p).unwrap_err();
+        assert!(e.to_string().contains(says), "{p}: {e}");
+    }
+}
