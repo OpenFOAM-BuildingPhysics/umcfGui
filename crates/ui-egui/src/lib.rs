@@ -91,6 +91,9 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// The folder dialog *Open* uses (see [`Options::pick_folder`]).
     pub pick_folder: Option<PickFolder>,
+    /// *Open* asked for the folder dialog: the window shows it after this frame, over itself
+    /// (see [`App::folder_picked`]).
+    pub folder_requested: bool,
     /// The boundary-condition card, while it is open.
     pub bc: Option<bc::BcForm>,
     /// The patch card, while it is open.
@@ -215,6 +218,7 @@ impl App {
             search_open: false,
             dialog: None,
             pick_folder: None,
+            folder_requested: false,
             bc: None,
             patch_form: None,
             new_patch: None,
@@ -392,17 +396,12 @@ impl App {
     /// card for one with.
     pub fn invoke(&mut self, id: &'static str) {
         let Some(spec) = Session::command(id) else { return };
-        // Setting a condition has a form of its own.
         // Opening a case asks for its folder in the system's dialog, when there is one.
-        if id == "case.open"
-            && let Some(pick) = self.pick_folder
-        {
-            let start = self.session.location().map(String::from);
-            if let Some(path) = pick(start.as_deref()) {
-                self.open_folder(&path);
-            }
+        if id == "case.open" && self.pick_folder.is_some() {
+            self.folder_requested = true;
             return;
         }
+        // Setting a condition and editing patches have forms of their own.
         if matches!(id, "bc.set" | "patch.set" | "patch.create") {
             self.dialog = None;
             self.bc = (id == "bc.set").then(bc::BcForm::default);
@@ -417,6 +416,26 @@ impl App {
             self.patch_form = None;
             self.new_patch = None;
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+        }
+    }
+
+    /// What the folder dialog gave: the case opens, nothing happens, or (no dialog) the *Open*
+    /// card asks for the path.
+    pub fn folder_picked(&mut self, picked: Picked) {
+        match picked {
+            Picked::Folder(path) => self.open_folder(&path),
+            Picked::Cancelled => {}
+            Picked::Unavailable => {
+                self.bc = None;
+                self.patch_form = None;
+                self.new_patch = None;
+                let error = "No folder dialog on this system (a desktop portal or zenity): type the case's path.";
+                self.dialog = Some(Dialog {
+                    id: "case.open",
+                    params: "{\n  \"path\": \"\"\n}".to_string(),
+                    error: Some(error.to_string()),
+                });
+            }
         }
     }
 
@@ -1684,9 +1703,20 @@ impl App {
     }
 }
 
-/// Asks for a folder (the system's own dialog), starting in the given one; `None` when the
-/// person cancels or there is no dialog.
-pub type PickFolder = fn(start: Option<&str>) -> Option<String>;
+/// What the folder dialog gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Picked {
+    Folder(String),
+    Cancelled,
+    /// There is no dialog to show (Linux without a desktop portal or `zenity`).
+    Unavailable,
+}
+
+/// The window the desktop app runs in: the folder dialog's parent.
+pub use eframe::Frame;
+
+/// Asks for a folder in the system's own dialog, over `parent`, starting in `start`.
+pub type PickFolder = fn(start: Option<&str>, parent: &Frame) -> Picked;
 
 /// Where the desktop app starts.
 #[derive(Debug, Clone, Default)]
@@ -1721,8 +1751,17 @@ struct Desktop {
 }
 
 impl eframe::App for Desktop {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.app.show(ui);
+        // The folder dialog, over this window (modal to it), once the frame is drawn.
+        if std::mem::take(&mut self.app.folder_requested)
+            && let Some(pick) = self.app.pick_folder
+        {
+            let start = self.app.session.location().map(String::from);
+            let picked = pick(start.as_deref(), frame);
+            self.app.folder_picked(picked);
+            ui.ctx().request_repaint();
+        }
         if self.done.load(std::sync::atomic::Ordering::SeqCst) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
