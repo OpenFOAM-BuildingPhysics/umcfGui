@@ -76,8 +76,9 @@ either on the `PATH` or in `.venv/`. Every page under `docs/` must be in the `na
 
 ## Tests against real cases
 
-Real case files are never committed. Tests that read them are opt-in through environment
-variables, and report a skip when they are unset:
+Real case files are never committed (the small [example cases](#example-cases) are made for the
+repository). Tests that read them are opt-in through environment variables, and report a skip
+when they are unset:
 
 | Variable | Test |
 |---|---|
@@ -92,6 +93,23 @@ variables, and report a skip when they are unset:
 ```sh
 UMCF_DICT_TREES=$HOME/OpenFOAM-8/tutorials:$HOME/OpenFOAM-12/tutorials cargo test -p umcf-foam-dict --test corpus
 ```
+
+## Example cases
+
+`examples/of12` (and `examples/of8`, to follow) hold small cases of the solver's features (the
+street canyon with air only, with walls and street, with grass, with a tree), made from the
+urbanMicroclimateFoam tutorials ([`examples/README.md`](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md)).
+Every test run checks them: each is a case of its directory's version, the check finds no error
+and no warning about the scripts, every dictionary round-trips. That they run needs OpenFOAM and urbanMicroclimateFoam:
+
+```sh
+cargo xtask examples                      # all of them, each on a temporary copy, about 20 s
+cargo xtask examples of12/streetCanyon_CFDHAM
+```
+
+It uses `UMCF_OF8_BASHRC` and `UMCF_OF12_BASHRC`, else `~/OpenFOAM-8/etc/bashrc` and
+`~/OpenFOAM-12/etc/bashrc`, and skips a version without one. Run it before merging a change to
+the examples, and after building a new solver version.
 
 ## Commits
 
