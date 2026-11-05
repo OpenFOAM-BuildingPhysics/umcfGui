@@ -614,7 +614,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
     label: "Select in a rectangle",
     menu: "",
     shortcut: None,
-    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height). Returns how many were in it and up to 1000 of them (items).",
+    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height). Returns how many were in it and up to 1000 of them (items).",
     enabled: needs_case,
     run: rect,
     journal: true,
@@ -654,11 +654,11 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     // (object, class or face) once each, then what they select.
     let mut keys: Vec<(usize, u32)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (k, t) in umcf_render::raster::covered(scene, &cam, &style, area, through) {
+    // Picking faces, surfaces are passed over: they don't hide the mesh behind them.
+    let keep =
+        |k: usize, _: u32| !faces || scene.objects.get(k).is_some_and(|o| matches!(o.source, Source::Mesh { .. }));
+    for (k, t) in umcf_render::raster::covered(scene, &cam, &style, area, through, &keep) {
         let Some(o) = scene.objects.get(k) else { continue };
-        if faces && !matches!(o.source, Source::Mesh { .. }) {
-            continue;
-        }
         let key = if faces { o.origin_index.get(t as usize) } else { o.class.get(t as usize) };
         if let Some(key) = key
             && seen.insert((k, *key))

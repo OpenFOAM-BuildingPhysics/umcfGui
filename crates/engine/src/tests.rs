@@ -1249,6 +1249,10 @@ fn a_rectangle_selects_what_is_seen_in_it_or_everything_through_it() {
     let mut faces = surface.clone();
     faces["faces"] = json!(true);
     assert_eq!(s.execute("select.rect", &faces).unwrap().data["in"], 0);
+    // Picking faces, a surface in front doesn't hide the mesh (as a click passes over it).
+    faces["regions"] = json!(["air"]);
+    let out = s.execute("select.rect", &faces).unwrap();
+    assert_eq!(out.data["items"], json!([{ "region": "air", "face": 1 }]));
 
     // The camera as scene.snapshot returns it places the view exactly.
     let shot = s.execute("scene.snapshot", &json!({ "view": "top", "width": 100, "height": 100, "zoom": 3 })).unwrap();

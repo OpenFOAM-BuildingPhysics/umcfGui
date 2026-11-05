@@ -87,7 +87,7 @@ opposite corners in pixels from the top left; a pixel is in it when its middle i
 | `true` | Everything in it, hidden or not: the faces whose middle (their area-weighted centre) is inside it and in front of the camera |
 
 Without `faces` it selects the patches and surface regions of those faces; with `faces: true`,
-the mesh faces themselves (surfaces are passed over). `mode` is `replace` (default), `add`,
+the mesh faces themselves (surfaces are passed over and hide nothing, as for a click). `mode` is `replace` (default), `add`,
 `remove` or `none` (only count). It returns how many were in the rectangle (`in`), up to 1000 of
 them (`items`), and the size of the selection (`selected`).
 
