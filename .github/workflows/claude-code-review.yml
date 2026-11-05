@@ -384,6 +384,24 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
+      # A failed review says why in the log: the action keeps Claude's output
+      # out of it, so a refused API key or an empty credit balance otherwise
+      # shows only as `is_error: true`. Prints the error turns' text (cut short),
+      # never posts it.
+      - name: Show why the review failed
+        if: ${{ failure() && steps.claude-review.outcome == 'failure' }}
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          file="${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}"
+          if [ ! -f "$file" ]; then
+            echo "::warning::No execution file at $file; nothing to show"
+            exit 0
+          fi
+          jq -r '.[] | select(.type == "result" and .is_error == true) | (.result // .subtype // "no message") | tostring | .[0:1000]' \
+            "$file" | while IFS= read -r line; do echo "::error::Claude: $line"; done
+
       # Publish Claude's final message as the summary comment. The token lives
       # here, in a plain workflow step, never in the agent's environment.
       # `execution_file` is a JSON array of SDK turns; the last `result` turn
