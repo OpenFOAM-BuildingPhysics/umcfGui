@@ -326,6 +326,10 @@ fn append_adds_a_list_item_like_the_ones_before() {
     let mut doc = Document::parse("patches ();\n").unwrap();
     doc.append(&["patches"], "b").unwrap();
     assert_eq!(doc.to_string(), "patches (\n    b\n);\n");
+    // A comment before the `)` stays after the item before it.
+    let mut doc = Document::parse("patches ( a /* note */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches ( a /* note */\n    b\n);\n");
 
     assert_eq!(doc.append(&["pointSync"], "b"), Err(Error::NotFound("pointSync".into())));
     let mut doc = Document::parse("pointSync false;\n").unwrap();

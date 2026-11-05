@@ -64,15 +64,23 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
     let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
         return Err(Error::NotAList(key.to_string()));
     };
-    let indent = match items.last() {
-        Some(last) => trailing_indent(first_lead(last)).to_string(),
-        None => format!("{key_indent}{STEP}"),
+    // Like the items before, when they are on lines of their own; one step in otherwise.
+    let indent = match items.last().map(first_lead) {
+        Some(lead) if lead.contains('\n') => trailing_indent(lead).to_string(),
+        _ => format!("{key_indent}{STEP}"),
     };
     match &mut node {
         Node::Dict { .. } => layout_dict(&mut node, &indent),
         other => other.first_tok_mut().lead = format!("\n{indent}"),
     }
     if !close.lead.contains('\n') {
+        // A comment before the `)` on that line (`( a /* note */ )`) stays after the item it
+        // follows: in front of the new one.
+        let kept = close.lead.trim_end();
+        if !kept.is_empty() {
+            let lead = &mut node.first_tok_mut().lead;
+            *lead = format!("{kept}{lead}");
+        }
         close.lead = format!("\n{key_indent}");
     }
     items.push(node);
