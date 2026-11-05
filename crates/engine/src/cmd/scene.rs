@@ -294,7 +294,8 @@ fn given_camera(id: &str, c: &Value) -> Result<Camera, Error> {
     })
 }
 
-fn camera_json(c: &Camera) -> Value {
+/// A camera as `scene.snapshot` returns it and `camera` parameters take it.
+pub fn camera_json(c: &Camera) -> Value {
     json!({
         "target": [c.target.x, c.target.y, c.target.z],
         "distance": c.distance,

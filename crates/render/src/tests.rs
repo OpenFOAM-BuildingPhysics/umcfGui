@@ -372,7 +372,8 @@ fn a_rectangle_covers_what_is_seen_in_it_or_everything_through_it() {
     assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, true, &no_sky)), [(0, 0)]);
     // An empty scene, an empty image.
     assert!(covered(&Scene::new(Vec3::ZERO), &cam, &st, all, false, &|_, _| true).is_empty());
-    assert!(covered(&s, &cam, &Style::default(), all, false, &|_, _| true).len() <= 4);
+    // A size of 0 draws 1 × 1: its one pixel looks down between the two cubes.
+    assert!(covered(&s, &cam, &Style::default(), all, false, &|_, _| true).is_empty());
 }
 
 /// Where two regions' patches lie on each other, the selected one is what a rectangle sees, as

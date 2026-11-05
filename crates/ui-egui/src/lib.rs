@@ -1071,14 +1071,7 @@ impl App {
             Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
                 let mut p = self.shown();
                 if let Some(o) = p.as_object_mut() {
-                    let c = json!({
-                        "target": [camera.target.x, camera.target.y, camera.target.z],
-                        "distance": camera.distance,
-                        "azimuth": camera.azimuth,
-                        "elevation": camera.elevation,
-                        "fov": camera.fov,
-                    });
-                    o.insert("camera".into(), c);
+                    o.insert("camera".into(), umcf_engine::camera_json(&camera));
                     o.insert("width".into(), json!(size[0]));
                     o.insert("height".into(), json!(size[1]));
                     o.insert("rect".into(), json!(rect));

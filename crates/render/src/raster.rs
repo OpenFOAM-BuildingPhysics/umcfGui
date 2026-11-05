@@ -378,12 +378,16 @@ pub fn covered(
         }
         next = next.saturating_add(u32::try_from(obj.triangles.len()).unwrap_or(u32::MAX));
     }
-    let mut ids: Vec<u32> = Vec::new();
+    // A flag per triangle seen (ids are dense from 0; `NONE` is past them), read in order.
+    let mut seen = vec![false; next as usize];
     for y in ys.0..=ys.1 {
-        ids.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));
+        for i in t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]) {
+            if let Some(s) = seen.get_mut(*i as usize) {
+                *s = true;
+            }
+        }
     }
-    ids.sort_unstable();
-    ids.dedup();
+    let ids = seen.iter().enumerate().filter(|(_, s)| **s).filter_map(|(i, _)| u32::try_from(i).ok());
     for id in ids {
         // The last object starting at or before it.
         let k = first.partition_point(|f| *f <= id).saturating_sub(1);
