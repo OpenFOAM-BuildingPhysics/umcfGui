@@ -1592,17 +1592,14 @@ impl App {
                                 RichText::new(format!("… and {} more", diagnostics.len() - 500)).color(t.text_muted),
                             );
                         }
-                        let lines = results::lines(&e.data);
-                        for (kind, line) in lines.iter().take(500) {
+                        // Limited part by part already (results::MESSAGES, results::DESCRIPTION).
+                        for (kind, line) in results::lines(&e.data) {
                             let colour = match kind {
                                 results::Kind::Text => t.text,
                                 results::Kind::Warning => t.warning,
                                 results::Kind::Info => t.info,
                             };
                             ui.label(RichText::new(line).size(12.5).color(colour));
-                        }
-                        if lines.len() > 500 {
-                            ui.label(RichText::new(format!("… and {} more", lines.len() - 500)).color(t.text_muted));
                         }
                     });
                 });

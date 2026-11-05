@@ -1,8 +1,24 @@
 //! What the results card shows besides diagnostics: a workflow description (`workflow.show`,
-//! `workflow.import`): the problems in it and the notes of its import first (so a long
-//! description can't push them past the card's limit), then its settings, then region by region.
+//! `workflow.import`): the problems in it and the notes of its import first, then its settings,
+//! then region by region. Each part has a limit of its own, so neither can hide the other.
 
 use serde_json::Value;
+
+/// The most problem and note lines shown, and the most description lines.
+pub const MESSAGES: usize = 200;
+pub const DESCRIPTION: usize = 300;
+/// The most steps listed for one region, and restored fields for one `setFields`.
+const ITEMS: usize = 20;
+
+/// The first [`ITEMS`] of `items`, then how many more there are.
+fn some(items: impl ExactSizeIterator<Item = String>) -> Vec<String> {
+    let more = items.len().saturating_sub(ITEMS);
+    let mut out: Vec<String> = items.take(ITEMS).collect();
+    if more > 0 {
+        out.push(format!("… and {more} more"));
+    }
+    out
+}
 
 /// How a line is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,24 +44,37 @@ fn step(st: &Value) -> String {
     if let Some(a) = arg {
         return format!("{name}({a})");
     }
-    let restore: Vec<String> =
-        list(st, "restore").iter().map(|r| format!("{}→{}", s(r, "backup"), s(r, "field"))).collect();
+    let restore = some(list(st, "restore").iter().map(|r| format!("{}→{}", s(r, "backup"), s(r, "field"))));
     if restore.is_empty() { name } else { format!("{name}(restore {})", restore.join(", ")) }
 }
 
-/// The lines of a command's workflow `description` with its `problems` and `notes`; empty when it
-/// returned no description (other commands' notes and problems are theirs to show).
+/// Keeps the first `limit` lines of `part`, and says how many more there are.
+fn capped(out: &mut Vec<(Kind, String)>, part: Vec<(Kind, String)>, limit: usize) {
+    let more = part.len().saturating_sub(limit);
+    out.extend(part.into_iter().take(limit));
+    if more > 0 {
+        out.push((Kind::Info, format!("… and {more} more")));
+    }
+}
+
+/// The lines of a command's workflow `description` with its `problems` and `notes` (at most
+/// [`MESSAGES`] of these and [`DESCRIPTION`] of the description, each with a line saying how many
+/// more); empty when it returned no description (other commands' notes and problems are theirs
+/// to show).
 pub fn lines(data: &Value) -> Vec<(Kind, String)> {
     let mut out = Vec::new();
     let Some(d) = data.get("description").filter(|d| d.is_object()) else { return out };
+    let mut messages = Vec::new();
     for p in list(data, "problems") {
-        out.push((Kind::Warning, format!("{}: {}", s(&p, "at"), s(&p, "message"))));
+        messages.push((Kind::Warning, format!("{}: {}", s(&p, "at"), s(&p, "message"))));
     }
     for n in list(data, "notes") {
         if let Some(n) = n.as_str() {
-            out.push((Kind::Info, n.to_string()));
+            messages.push((Kind::Info, n.to_string()));
         }
     }
+    capped(&mut out, messages, MESSAGES);
+    let mut desc = Vec::new();
     let mut settings = Vec::new();
     if let Some(v) = d.get("version").and_then(Value::as_str) {
         settings.push(format!("for {v}"));
@@ -74,18 +103,18 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
     if d.get("reconstruct").and_then(Value::as_bool) == Some(true) {
         settings.push("reconstructed".to_string());
     }
-    out.push((Kind::Text, settings.join(", ")));
+    desc.push((Kind::Text, settings.join(", ")));
     for r in list(d, "regions") {
         let mesh = match r.get("mesh") {
             Some(Value::String(m)) => format!(", mesh {m}"),
             Some(Value::Array(steps)) => {
-                format!(", mesh {}", steps.iter().map(step).collect::<Vec<_>>().join(" "))
+                format!(", mesh {}", some(steps.iter().map(step)).join(" "))
             }
             _ => String::new(),
         };
-        let steps: Vec<String> = list(&r, "steps").iter().map(step).collect();
+        let steps = some(list(&r, "steps").iter().map(step));
         let steps = if steps.is_empty() { String::new() } else { format!(", steps {}", steps.join(" ")) };
-        out.push((Kind::Text, format!("{} ({}){mesh}{steps}", s(&r, "name"), s(&r, "kind"))));
+        desc.push((Kind::Text, format!("{} ({}){mesh}{steps}", s(&r, "name"), s(&r, "kind"))));
         for p in list(&r, "patches") {
             let role = p.get("role").and_then(Value::as_str).unwrap_or("no role");
             let partner = p
@@ -93,9 +122,10 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
                 .filter(|q| q.is_object())
                 .map(|q| format!(" → {}/{}", s(q, "region"), s(q, "patch")))
                 .unwrap_or_default();
-            out.push((Kind::Text, format!("    {}: {role}{partner}", s(&p, "name"))));
+            desc.push((Kind::Text, format!("    {}: {role}{partner}", s(&p, "name"))));
         }
     }
+    capped(&mut out, desc, DESCRIPTION);
     out
 }
 
@@ -156,6 +186,34 @@ mod tests {
     fn an_empty_description_still_shows() {
         let data = json!({ "description": { "regions": [], "solver": null }, "problems": [], "notes": [] });
         assert_eq!(lines(&data), vec![(Kind::Text, "no solver run".to_string())]);
+    }
+
+    #[test]
+    fn many_notes_dont_hide_the_description() {
+        let notes: Vec<String> = (0..600).map(|i| format!("note {i}")).collect();
+        let restore: Vec<Value> = (0..30).map(|i| json!({ "backup": format!("b{i}"), "field": "T" })).collect();
+        let data = json!({
+            "description": { "solver": null, "regions": [
+                { "name": "air", "kind": "fluid", "steps": [{ "step": "setFields", "restore": restore }], "patches": [] },
+            ] },
+            "notes": notes,
+        });
+        let l = lines(&data);
+        assert_eq!(l[MESSAGES], (Kind::Info, "… and 400 more".to_string()));
+        assert_eq!(l[MESSAGES + 1], (Kind::Text, "no solver run".to_string()));
+        assert!(l[MESSAGES + 2].1.ends_with("b19→T, … and 10 more)"), "{:?}", l[MESSAGES + 2]);
+        assert_eq!(l.len(), MESSAGES + 3);
+    }
+
+    #[test]
+    fn many_steps_are_cut_short() {
+        let steps: Vec<Value> = (0..25).map(|_| json!({ "step": "topoSet" })).collect();
+        let data = json!({ "description": { "solver": null, "regions": [
+            { "name": "air", "kind": "fluid", "mesh": steps, "steps": steps, "patches": [] },
+        ] } });
+        let l = lines(&data);
+        let twenty = vec!["topoSet"; 20].join(" ");
+        assert_eq!(l[1].1, format!("air (fluid), mesh {twenty} … and 5 more, steps {twenty} … and 5 more"));
     }
 
     #[test]
