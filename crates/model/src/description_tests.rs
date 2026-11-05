@@ -105,6 +105,8 @@ fn canyon() -> MemFs {
                 ("top", "mapped", "        sampleRegion air;\n        samplePatch top;\n"),
                 ("air_to_street", "mappedWall", &coupled("air", "air_to_street")),
                 ("air_to_vegetation", "mappedInternal", "        neighbourRegion air;\n"),
+                // OpenFOAM-8's canopy: a mapped wall sampling the air's cells.
+                ("canopy8", "mappedWall", "        sampleMode nearestCell;\n        sampleRegion air;\n"),
             ]),
         )
         .with("Allprepare", PREPARE)
@@ -181,7 +183,9 @@ fn import_tells_kinds_meshes_steps_and_roles() {
             ("west".into(), Some("sky"), pair("air", "west")),
             ("top".into(), Some("sky"), pair("air", "top")),
             ("air_to_street".into(), Some("coupled"), pair("air", "air_to_street")),
-            ("air_to_vegetation".into(), Some("canopy"), pair("air", "air_to_vegetation")),
+            // Mapped to the air's cells: no partner patch.
+            ("air_to_vegetation".into(), Some("canopy"), None),
+            ("canopy8".into(), Some("canopy"), None),
         ]
     );
     let rad = d.radiation.as_ref().unwrap();
@@ -221,6 +225,45 @@ fn written_and_read_back_it_is_the_same() {
 }
 
 #[test]
+fn odd_names_come_back_as_they_were() {
+    for odd in ["q\"x", "b\\s", "end\\", "\\\"", "with space", "a;b", "{x}", "$v", "#i", "1st", "-x"] {
+        let d = Description {
+            version: Some(OfVersion::V12),
+            regions: vec![RegionDesc {
+                name: odd.into(),
+                kind: RegionKind::Solid,
+                mesh: Some(MeshBuild::Block),
+                steps: vec![RegionStep::SetFields { restore: vec![(format!("0/{odd}.bak"), odd.into())] }],
+                patches: vec![PatchDesc {
+                    name: odd.into(),
+                    role: Some(Role::Coupled),
+                    partner: Some((odd.into(), odd.into())),
+                }],
+            }],
+            features: false,
+            radiation: Some(Radiation {
+                region: odd.into(),
+                lai_region: Some(odd.into()),
+                view_factors: true,
+                solar_ray_tracing: false,
+            }),
+            solver: Some(odd.into()),
+            reconstruct: true,
+        };
+        let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
+        assert_eq!((back, problems), (d, vec![]), "{odd}");
+    }
+    let text = format!(
+        "{}regions {{ \"\" {{ kind solid; patches {{ \"\" {{ role side; }} }} }} ok {{ kind solid; patches {{ \"\" {{ }} }} }} }}\nsolver a;\nsolver b;\n",
+        header("dictionary", "umcfWorkflow")
+    );
+    let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(at, ["regions/\"\"", "regions/ok/patches/\"\"", "solver"], "{problems:#?}");
+    assert_eq!(d.solver.as_deref(), Some("a"));
+}
+
+#[test]
 fn the_scripts_from_it_are_the_scripts_from_the_case() {
     let c = Case::open(&canyon()).unwrap();
     let (d, _) = Description::import(&c);
@@ -229,7 +272,9 @@ fn the_scripts_from_it_are_the_scripts_from_the_case() {
     let from_case = c.workflow();
     from_file.constant_files = from_case.constant_files.clone();
     // The description lists the regions in the order their meshes are built: Allrun decomposes
-    // them in that order, the case's scripts in the case's. Nothing else differs.
+    // them in that order, the case's scripts in the case's (and OpenFOAM-8's Allrun reads the
+    // process count from the first region's decomposeParDict: here air in both). Nothing else
+    // differs.
     let same = |scripts: Vec<(&'static str, String)>| -> Vec<(&'static str, String)> {
         scripts
             .into_iter()

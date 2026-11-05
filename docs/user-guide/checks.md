@@ -185,6 +185,7 @@ OpenFOAM version. Each problem names the script and line.
 | `workflow.shebang` | Warning | The first line is a broken `#!` line (`$#!/bin/sh`): the script runs only because a shell runs it itself |
 | `workflow.custom` | Info | A step that doesn't fit the [workflow](workflow.md) |
 | `workflow.not-needed` | Info | A step that fits but isn't needed |
+| `workflow.description` | Warning | The [workflow description](workflow.md#the-workflow-description) (`system/umcfWorkflow`) has a key it doesn't know or a value it can't read, names a region the case doesn't have or leaves one out, gives a region another kind, names a patch its mesh doesn't have or a partner that isn't there, couples a patch to no partner, or is for another OpenFOAM version. Info for a mesh patch it leaves out, and for a patch without a role |
 
 ## Finite-volume constraints and pressure limits (OpenFOAM-12)
 

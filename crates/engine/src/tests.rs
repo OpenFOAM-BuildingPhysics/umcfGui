@@ -1579,3 +1579,63 @@ fn geometry_trees_from_a_table_a_file_or_a_list() {
         assert!(e.to_string().contains(says), "{p}: {e}");
     }
 }
+
+fn workflow_show_and_import() {
+    let mut s = session();
+    // No description yet: as the case's scripts and meshes have it.
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "scripts");
+    assert!(out.message.starts_with("no system/umcfWorkflow: as the scripts and meshes have it"), "{}", out.message);
+    let regions = out.data["description"]["regions"].as_array().unwrap().clone();
+    assert!(regions.iter().any(|r| r["name"] == "air" && r["kind"] == "fluid"), "{regions:?}");
+
+    let out = s.execute("workflow.import", &Value::Null).unwrap();
+    assert!(out.message.starts_with("system/umcfWorkflow: written from the case"), "{}", out.message);
+    assert_eq!(s.case().unwrap().changed(), ["system/umcfWorkflow"]);
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "file");
+    assert_eq!(out.data["problems"], json!([]));
+    assert_eq!(out.data["description"]["regions"].as_array().unwrap().len(), regions.len());
+
+    let e = s.execute("workflow.import", &Value::Null).unwrap_err();
+    assert!(e.to_string().contains("pass \"replace\": true"), "{e}");
+    s.execute("workflow.import", &json!({ "replace": true })).unwrap();
+    // Undone twice, the case has none again.
+    s.execute("edit.undo", &Value::Null).unwrap();
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert!(s.case().unwrap().changed().is_empty());
+    assert_eq!(s.execute("workflow.show", &Value::Null).unwrap().data["source"], "scripts");
+
+    s.execute("workflow.import", &Value::Null).unwrap();
+    s.execute("case.save", &Value::Null).unwrap();
+    assert!(text(&s, "system/umcfWorkflow").contains("object      umcfWorkflow;"));
+    assert!(s.execute("workflow.import", &json!({ "replace": "yes" })).is_err());
+}
+
+#[test]
+fn workflow_show_says_when_the_file_is_there_but_unreadable() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs().with("system/umcfWorkflow", "not { a dictionary")), "mem", OpenOptions::default(), false)
+        .unwrap();
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "unreadable");
+    assert!(out.message.contains("doesn't read as a dictionary"), "{}", out.message);
+    for p in [Value::Null, json!({ "replace": true })] {
+        let e = s.execute("workflow.import", &p).unwrap_err();
+        assert!(e.to_string().contains("mend or remove it first"), "{e}");
+    }
+}
+
+#[test]
+fn workflow_show_after_an_undo_past_a_save() {
+    let mut s = session();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    s.execute("case.save", &Value::Null).unwrap();
+    s.execute("edit.undo", &Value::Null).unwrap();
+    // The saved file is still on disk, a good dictionary the open case doesn't hold.
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "disk");
+    assert!(out.message.contains("an undo took it back"), "{}", out.message);
+    let e = s.execute("workflow.import", &json!({ "replace": true })).unwrap_err();
+    assert!(e.to_string().contains("open the case again first"), "{e}");
+}

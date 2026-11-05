@@ -165,7 +165,10 @@ impl Description {
         let air_roles = air_roles(case);
         let mut regions = Vec::new();
         for name in order {
-            let Some(region) = case.region(name) else { continue };
+            let Some(region) = case.region(name) else {
+                notes.push(format!("region {name}: the scripts mesh it, but the case doesn't list it: left out"));
+                continue;
+            };
             if region.kind == RegionKind::Single {
                 continue;
             }
@@ -312,8 +315,14 @@ impl Description {
         let mut d = Description::default();
         let mut problems = Vec::new();
         let mut problem = |at: &str, message: String| problems.push(Problem { at: at.to_string(), message });
+        let mut seen: Vec<String> = Vec::new();
         for e in doc.root.entries() {
             let key = e.key();
+            if key != "FoamFile" && seen.iter().any(|k| k == key) {
+                problem(key, "is given twice: the first is read".into());
+                continue;
+            }
+            seen.push(key.to_string());
             match key {
                 "FoamFile" => {}
                 "version" => match single(e).as_deref() {
@@ -341,14 +350,20 @@ impl Description {
                 "regions" => match e.dict() {
                     Some(body) => {
                         for r in body.entries() {
-                            let at = format!("regions/{}", r.key());
-                            if d.regions.iter().any(|x| x.name == r.key()) {
+                            let rname = entry_name(r);
+                            let at =
+                                if rname.is_empty() { "regions/\"\"".to_string() } else { format!("regions/{rname}") };
+                            if rname.is_empty() {
+                                problem(&at, "is not a name".into());
+                                continue;
+                            }
+                            if d.regions.iter().any(|x| x.name == rname) {
                                 problem(&at, "is given twice: the first is read".into());
                                 continue;
                             }
                             match r.dict() {
                                 Some(rb) => {
-                                    if let Some(region) = read_region(r.key(), rb, &at, &mut problem) {
+                                    if let Some(region) = read_region(&rname, rb, &at, &mut problem) {
                                         d.regions.push(region);
                                     }
                                 }
@@ -431,10 +446,37 @@ fn region_steps(steps: &[RegionStep]) -> String {
     out.join(" ")
 }
 
-/// The one word of `e`'s value (unquoted).
+/// A word or a quoted string as the name it stands for: a quoted one without its quotes and
+/// with the escapes [`quote`] writes undone (a backslash before a backslash or a quote).
+fn unescaped(t: &str) -> String {
+    match t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(inner) if t.len() >= 2 => {
+            let mut out = String::with_capacity(inner.len());
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                match (c, chars.peek()) {
+                    ('\\', Some(&n)) if n == '\\' || n == '"' => {
+                        out.push(n);
+                        chars.next();
+                    }
+                    _ => out.push(c),
+                }
+            }
+            out
+        }
+        _ => t.to_string(),
+    }
+}
+
+/// An entry's key as the name it stands for.
+fn entry_name(e: &Entry) -> String {
+    unescaped(&e.key.text)
+}
+
+/// The one word of `e`'s value, as a name.
 fn single(e: &Entry) -> Option<String> {
     match e.words()?.as_slice() {
-        [w] => Some(unquote(w).to_string()),
+        [w] => Some(unescaped(w)),
         _ => None,
     }
 }
@@ -454,11 +496,10 @@ fn atom(n: &Node) -> Option<&str> {
     }
 }
 
-/// A quoted string atom, unquoted.
+/// A quoted string atom, as the text it stands for.
 fn string(n: &Node) -> Option<String> {
     let t = atom(n)?;
-    (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
-        .then(|| unquote(t).replace("\\\"", "\"").replace("\\\\", "\\"))
+    (t.starts_with('"') && t.ends_with('"') && t.len() >= 2).then(|| unescaped(t))
 }
 
 /// The items of `e`'s value when it is one list.
@@ -539,13 +580,18 @@ fn read_region(
             "patches" => match e.dict() {
                 Some(pb) => {
                     for p in pb.entries() {
-                        let pat = format!("{here}/{}", p.key());
-                        if r.patches.iter().any(|x| x.name == p.key()) {
+                        let pname = entry_name(p);
+                        let pat = if pname.is_empty() { format!("{here}/\"\"") } else { format!("{here}/{pname}") };
+                        if pname.is_empty() {
+                            problem(&pat, "is not a name".into());
+                            continue;
+                        }
+                        if r.patches.iter().any(|x| x.name == pname) {
                             problem(&pat, "is given twice: the first is read".into());
                             continue;
                         }
                         match p.dict() {
-                            Some(b) => r.patches.push(read_patch(p.key(), b, &pat, problem)),
+                            Some(b) => r.patches.push(read_patch(&pname, b, &pat, problem)),
                             None => problem(&pat, "is a dictionary: { role …; [partner ( region patch );] }".into()),
                         }
                     }
@@ -581,7 +627,7 @@ fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut i
             },
             "partner" => match list(e) {
                 Some([a, b]) => match (atom(a), atom(b)) {
-                    (Some(a), Some(b)) => p.partner = Some((unquote(a).to_string(), unquote(b).to_string())),
+                    (Some(a), Some(b)) => p.partner = Some((unescaped(a), unescaped(b))),
                     _ => problem(&here, "is ( region patch )".into()),
                 },
                 _ => problem(&here, "is ( region patch )".into()),
@@ -639,7 +685,7 @@ fn read_steps(items: &[Node]) -> Result<Vec<RegionStep>, String> {
                     for pair in pairs.iter() {
                         let ok = match pair {
                             Node::List { items: two, .. } => match two.as_slice() {
-                                [b, f] => string(b).zip(atom(f).map(|f| unquote(f).to_string())),
+                                [b, f] => string(b).zip(atom(f).map(unescaped)),
                                 _ => None,
                             },
                             _ => None,
@@ -695,6 +741,10 @@ fn infer(
     air_roles: &[(String, Role)],
 ) -> (Option<Role>, Option<(String, String)>) {
     let partner_region = p.param("neighbourRegion").or_else(|| p.param("sampleRegion")).map(|s| unquote(s).to_string());
+    // The canopy maps to the neighbour's cells, not to a patch of it: OpenFOAM-12's
+    // mappedInternal, OpenFOAM-8's mapped patches with `sampleMode nearestCell`.
+    let to_cells = p.kind == "mappedInternal" || p.param("sampleMode").map(unquote) == Some("nearestCell");
+    let partner_region = partner_region.filter(|_| !to_cells);
     let partner = partner_region.map(|r| {
         let patch = p.param("neighbourPatch").or_else(|| p.param("samplePatch")).map_or(p.name.as_str(), unquote);
         (r, patch.to_string())
@@ -703,7 +753,7 @@ fn infer(
     let name = p.name.to_ascii_lowercase();
     let role = match kind {
         RegionKind::Vegetation => {
-            if p.kind == "mappedInternal" || name == "air_to_vegetation" {
+            if to_cells || name == "air_to_vegetation" {
                 Some(Role::Canopy)
             } else {
                 match air_roles.iter().find(|(n, _)| *n == p.name).map(|(_, r)| *r) {

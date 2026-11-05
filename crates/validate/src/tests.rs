@@ -1308,3 +1308,53 @@ fn keywords_the_selected_models_read() {
         ["constant/vegetation/solarLoadProperties constantAlbedo", "constant/vegetation/solarLoadProperties smoothing"]
     );
 }
+
+#[test]
+fn the_workflow_description_against_the_case() {
+    use umcf_model::description::{Description, PATH};
+    let messages = |fs: &MemFs| -> Vec<(Level, String)> {
+        let c = Case::open(&complete(fs)).unwrap();
+        check(&c).into_iter().filter(|d| d.code == "workflow.description").map(|d| (d.level, d.message)).collect()
+    };
+    // As the import writes it from the case: nothing to say but the patches it couldn't tell.
+    let mut fs = case();
+    let c = Case::open(&complete(&fs)).unwrap();
+    let (d, _) = Description::import(&c);
+    fs.insert(PATH, d.write());
+    let m = messages(&fs);
+    assert!(m.iter().all(|(l, _)| *l == Level::Info), "{m:#?}");
+
+    // Edited by hand: wrong kinds, regions, patches and partners, and a key it doesn't know.
+    let text = d
+        .write()
+        .replace("kind        solid;", "kind        fluid;")
+        .replace("air_to_street   {", "air_to_road     {")
+        .replace("partner ( street street_to_air )", "partner ( road street_to_air )")
+        .replace("regions\n{\n", "colour blue;\nregions\n{\n    garden { kind solid; }\n");
+    fs.insert(PATH, text);
+    let m: Vec<String> = messages(&fs).into_iter().filter(|(l, _)| *l == Level::Warning).map(|(_, m)| m).collect();
+    let has = |s: &str| m.iter().any(|x| x.contains(s));
+    assert!(has("colour: is not a key of the description"), "{m:#?}");
+    assert!(has("region garden is not one of the case's"), "{m:#?}");
+    assert!(has("region street is fluid, the case has it solid"), "{m:#?}");
+    assert!(has("patch air_to_road of region air is not in its mesh"), "{m:#?}");
+    assert!(has("its partner road/street_to_air is not in the case"), "{m:#?}");
+    // Not in the description: the mesh's air_to_street (Info), not a warning.
+    let infos: Vec<String> = messages(&fs).into_iter().filter(|(l, _)| *l == Level::Info).map(|(_, m)| m).collect();
+    assert!(
+        infos.iter().any(|x| x.contains("patch air_to_street of region air is not in the description")),
+        "{infos:#?}"
+    );
+
+    // A region of the case the description leaves out, and another version.
+    let text = d.write().replace("version     12;", "version     8;");
+    let cut = text.find("    vegetation\n    {").and_then(|a| text[a..].find("    }\n").map(|b| (a, a + b + 6)));
+    let text = match cut {
+        Some((a, b)) => format!("{}{}", &text[..a], &text[b..]),
+        None => text,
+    };
+    fs.insert(PATH, text);
+    let m: Vec<String> = messages(&fs).into_iter().map(|(_, m)| m).collect();
+    assert!(m.iter().any(|x| x.contains("region vegetation is not in the description")), "{m:#?}");
+    assert!(m.iter().any(|x| x.contains("it is for OpenFOAM-8, the case is OpenFOAM-12")), "{m:#?}");
+}

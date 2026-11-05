@@ -87,3 +87,74 @@ For now this is the `workflow` example of the `umcf-model` crate:
 `cargo run -p umcf-model --example workflow -- <case> [--write]` prints the scripts, or with
 `--write` replaces the case's, writing each atomically; the old ones are kept as `<name>.bak`, then
 `<name>.1.bak`, `<name>.2.bak`, … (a backup is never overwritten).
+
+## The workflow description
+
+The workflow is also kept in the case itself, as `system/umcfWorkflow`: an OpenFOAM-style
+dictionary that names each region with its kind, how its mesh is built and the steps after it,
+each patch with its role and partner, the radiation pre-processing and the solver. It is the
+first piece of [the common workflow](../common-workflow.md); the scripts and dictionaries are
+to be written from it.
+
+```c++
+version     12;
+
+regions
+{
+    air
+    {
+        kind        fluid;
+        mesh        ( blockMesh "system/blockMeshDict.air" createPatch snappyHexMesh "system/snappyHexMeshDict.air" );
+        steps       ( changeDictionary topoSet setFields ( ( "0/air.bckp/LAD" LAD ) ) );
+        patches
+        {
+            west            { role inlet; }
+            street          { role coupled; partner ( street street ); }
+        }
+    }
+    street
+    {
+        kind        solid;
+        mesh        blocks;
+        steps       ( createPatch changeDictionary topoSet );
+        patches
+        {
+            street          { role coupled; partner ( air street ); }
+            interior        { role interior; }
+        }
+    }
+}
+
+features    no;
+radiation   { region vegetation; lai air; viewFactors yes; solarRayTracing yes; }
+solver      urbanMicroclimateFoam;
+reconstruct yes;
+```
+
+| Key | What |
+|---|---|
+| `version` | `8` or `12`: the OpenFOAM version the scripts are for |
+| `kind` | `fluid`, `solid` or `vegetation` |
+| `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
+| `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
+| `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
+| `partner` | the region and patch a coupled patch is mapped to |
+| `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
+
+`workflow.import` writes it from the case: the scripts read as above, the region kinds, and
+each patch's role. Coupled patches and their partners come from the mesh
+(`neighbourRegion`/`neighbourPatch`, or `sampleRegion`/`samplePatch` in OpenFOAM-8); the canopy
+is the vegetation patch that maps to the air's cells; the air's inlet, outlet and sides come
+from the patch's own velocity condition (not one given by a group or a pattern) (`atmBoundaryLayerInletVelocity`, `inletOutlet`, `slip`); `top`,
+`ground`, `interior`, `bottom` and `sides` from their names; the vegetation region's patches
+take their air twin's role, the open sides and the top becoming `sky`. What it can't tell is
+listed and left without a role. On the 3×3 test case every patch gets its role. A region split
+from another (the street canyon's vegetation) is not described yet: its steps are listed.
+
+`workflow.show` returns the description, read from the file or, when the case has none, as the
+import would write it; it also says when a file is there that isn't a dictionary, or one the open
+case doesn't hold (an undo took it back after it was saved). `workflow.import` writes over
+neither. The case check reads the file against the case (`workflow.description`):
+what can't be read in it, regions and patches the case doesn't have or it leaves out, other
+kinds, partners that aren't there, and another OpenFOAM version.
+

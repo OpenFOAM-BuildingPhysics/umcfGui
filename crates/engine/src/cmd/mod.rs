@@ -10,12 +10,15 @@ mod geometry;
 mod mesh;
 mod patch;
 pub(crate) mod scene;
+mod workflow;
 
 /// Every command, in menu order.
 pub static COMMANDS: &[CommandSpec] = &[
     case::OPEN,
     case::SAVE,
     case::INFO,
+    workflow::SHOW,
+    workflow::IMPORT,
     case::CHECK,
     geometry::IMPORT,
     geometry::TREES,

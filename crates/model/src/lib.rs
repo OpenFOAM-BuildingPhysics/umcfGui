@@ -789,17 +789,17 @@ impl Case {
     }
 
     /// Puts `text` as the workflow description, a new dictionary or one replacing the case's
-    /// (`replace`). Refused when there is one and `replace` is false, also when the file is on
-    /// disk but didn't load as a dictionary.
+    /// (`replace`). Refused when there is one and `replace` is false, and when the file is on
+    /// disk but didn't load as a dictionary (whatever `replace`).
     pub fn put_description(&mut self, fs: &dyn CaseFs, text: &str, replace: bool) -> Result<()> {
         let rel = description::PATH;
-        let there = self.dict(rel).is_some() || self.raw.contains_key(rel) || fs.is_file(rel);
-        if there && !replace {
-            return Err(Error::Exists(rel.to_string()));
-        }
         if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel)) {
-            // On disk but not loaded (not a dictionary): replacing it is writing it whole.
+            // On disk but not loaded (not a dictionary): not written over, with or without
+            // `replace`; the file is mended or removed by hand.
             return Err(Error::NotLoaded { path: rel.to_string() });
+        }
+        if self.dict(rel).is_some() && !replace {
+            return Err(Error::Exists(rel.to_string()));
         }
         let doc = Document::parse(text).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
         self.files.insert(rel.to_string(), Arc::new(doc));
