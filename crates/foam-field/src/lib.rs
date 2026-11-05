@@ -231,10 +231,19 @@ pub struct Header {
 }
 
 impl Header {
-    /// A `name:value` count in the note, e.g. `count("nCells")`.
+    /// A `name:value` count in the note, e.g. `count("nCells")`. blockMesh writes
+    /// `nCells:400`; topoSet and changeDictionary write the mesh again as `nCells: 400`.
     pub fn count(&self, name: &str) -> Option<u64> {
         let note = self.note.as_deref()?;
-        note.split_whitespace().find_map(|kv| kv.strip_prefix(name)?.strip_prefix(':')?.parse().ok())
+        let mut words = note.split_whitespace();
+        while let Some(w) = words.next() {
+            let Some(rest) = w.strip_prefix(name).and_then(|r| r.strip_prefix(':')) else { continue };
+            let value = if rest.is_empty() { words.next() } else { Some(rest) };
+            if let Some(n) = value.and_then(|v| v.parse().ok()) {
+                return Some(n);
+            }
+        }
+        None
     }
 }
 

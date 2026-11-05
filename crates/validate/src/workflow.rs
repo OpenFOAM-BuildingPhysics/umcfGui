@@ -268,11 +268,28 @@ fn all_regions(case: &Case, s: &Script, st: &Step, r: &Run, version: Option<OfVe
 // ---------------------------------------------------------------------------------------------
 // Files at each step
 
+/// `p` with `.` and `dir/..` taken out, as the file system resolves it.
+pub(crate) fn collapse(p: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." if out.last().is_some_and(|l| *l != "..") => {
+                out.pop();
+            }
+            ".." if p.starts_with('/') => {}
+            _ => out.push(c),
+        }
+    }
+    let joined = out.join("/");
+    if p.starts_with('/') { format!("/{joined}") } else { joined }
+}
+
 /// The dictionary `app` reads, in `version`, for `region`: the places it looks, in order (it
 /// uses the first that is there). Verified in the OpenFOAM-8 and 12 sources (systemDictIO,
 /// setSystemMeshDictionaryIO.H, setConstantMeshDictionaryIO.H, blockMesh.C, decomposePar.C) and
 /// the solver (`solarRayTracingGen`). Empty when the application reads none this knows.
-fn dictionary(r: &Run, version: OfVersion, exists: impl Fn(&str) -> bool) -> Vec<String> {
+fn dictionary(r: &Run, version: OfVersion, is_dir: impl Fn(&str) -> bool) -> Vec<String> {
     let reg = r.region.as_deref();
     let name = match r.app.as_str() {
         "blockMesh" => "blockMeshDict",
@@ -296,8 +313,37 @@ fn dictionary(r: &Run, version: OfVersion, exists: impl Fn(&str) -> bool) -> Vec
         return Vec::new();
     }
     if let Some(d) = &r.dict {
-        let inside = format!("{}/{name}", d.trim_end_matches('/'));
-        return vec![if exists(&inside) { inside } else { d.trim_end_matches('/').to_string() }];
+        // A directory names the dictionary in it (both versions test `isDir`, from the case).
+        let d = d.trim_end_matches('/');
+        let dir = collapse(d);
+        let path = if dir.is_empty() || is_dir(&dir) { format!("{d}/{name}") } else { d.to_string() };
+        if path.starts_with('/') {
+            return vec![path];
+        }
+        // OpenFOAM-8 reads `-dict` through the region's mesh (setSystemMeshDictionaryIO.H,
+        // setConstantMeshDictionaryIO.H): IOobject takes a relative path's first component as
+        // the instance and puts the region's directory after it, so `system/../air/topoSetDict`
+        // with `-region vegetation` is system/vegetation/../air/topoSetDict, and a bare name is
+        // <region>/<name>. Applications that read it through the Time take it from the case.
+        // OpenFOAM-12 (systemDictIO) takes a path from the case, a bare name from
+        // system/[<region>/].
+        let mesh_io = ["snappyHexMesh", "createPatch", "changeDictionary", "topoSet", "setFields", "faceAgglomerate"];
+        let resolved = match (version, reg, path.split_once('/')) {
+            (OfVersion::V8, Some(g), Some((instance, rest))) if mesh_io.contains(&r.app.as_str()) => {
+                format!("{instance}/{g}/{rest}")
+            }
+            (OfVersion::V8, Some(g), None) if mesh_io.contains(&r.app.as_str()) => format!("{g}/{path}"),
+            // Those given the region's mesh (and blockMesh, given the region's name) look in its
+            // system directory; faceAgglomerate, extrudeMesh and surfaceFeatures in the case's.
+            (OfVersion::V12, Some(g), None)
+                if mesh_io.contains(&r.app.as_str()) && r.app != "faceAgglomerate" || r.app == "blockMesh" =>
+            {
+                format!("system/{g}/{path}")
+            }
+            (OfVersion::V12, _, None) => format!("system/{path}"),
+            _ => path,
+        };
+        return vec![collapse(&resolved)];
     }
     let sys = |reg: Option<&str>| match reg {
         Some(g) => format!("system/{g}/{name}"),
@@ -524,7 +570,7 @@ fn follow(sim: &mut Sim, s: &Script, version: OfVersion, solver: &str, out: &mut
                 if !known_app(&r.app, solver) {
                     return false;
                 }
-                let places = dictionary(r, version, |p| sim.exists(p) == Some(true));
+                let places = dictionary(r, version, |p| sim.is_dir(p));
                 if check
                     && let Some(d) = places.last()
                     && places.iter().all(|p| sim.exists(p) == Some(false))

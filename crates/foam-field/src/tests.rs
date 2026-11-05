@@ -274,6 +274,13 @@ fn note_counts() {
     assert_eq!(h.count("nCells"), Some(25588));
     assert_eq!(h.count("nInternalFaces"), Some(72072));
     assert_eq!(h.count("nEdges"), None);
+    // As topoSet and changeDictionary write it: a space after each colon.
+    let src = "FoamFile\n{\n    class labelList;\n    note \"nPoints: 630 nCells: 400 nFaces: 1400 nInternalFaces: 1000\";\n}\n";
+    let h = read_header(src.as_bytes()).unwrap();
+    assert_eq!(h.count("nPoints"), Some(630));
+    assert_eq!(h.count("nCells"), Some(400));
+    assert_eq!(h.count("nInternalFaces"), Some(1000));
+    assert_eq!(h.count("nEdges"), None);
 }
 
 #[test]
