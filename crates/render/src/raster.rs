@@ -559,7 +559,8 @@ pub fn covered(
     };
     // Each triangle's id: its object's first id plus its index.
     let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());
-    let mut see_through: Vec<([[f64; 3]; 3], u32)> = Vec::new();
+    // The objects with layers that don't hide what is behind them: drawn in a second pass.
+    let mut see_through: Vec<usize> = Vec::new();
     let mut next: u32 = 0;
     for (k, obj) in scene.objects.iter().enumerate() {
         first.push(next);
@@ -587,16 +588,35 @@ pub fn covered(
             match d.mode {
                 Mode::Hidden => {}
                 _ if d.solid() => lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, front, 1.0),
-                _ => see_through.push(([a, b, c], id)),
+                _ => {
+                    if see_through.last() != Some(&k) {
+                        see_through.push(k);
+                    }
+                }
             }
         }
         next = next.saturating_add(u32::try_from(obj.triangles.len()).unwrap_or(u32::MAX));
     }
-    for (verts, id) in see_through {
-        lens.fill(&mut t, verts, [0.0; 3], id, 0, false, 0.0);
+    // Then those layers, behind nothing opaque, each triangle recorded where it reaches one of
+    // the rectangle's pixels.
+    for k in see_through {
+        let (Some(obj), Some(base)) = (scene.objects.get(k), first.get(k).copied()) else { continue };
+        let view = lens.view(obj);
+        for (n, tri) in obj.triangles.iter().enumerate() {
+            let class = obj.class.get(n).copied().unwrap_or(0);
+            let d = style.display_of(k, class);
+            if !keep(k, class) || d.mode == Mode::Hidden || d.solid() {
+                continue;
+            }
+            let [Some(a), Some(b), Some(c)] = tri.map(|i| view.get(i as usize).copied()) else { continue };
+            let Some(id) = u32::try_from(n).ok().and_then(|n| base.checked_add(n)).filter(|id| *id != NONE) else {
+                break;
+            };
+            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, false, 0.0);
+        }
     }
-    // Each triangle seen once, as the pixels are read: as many as the rectangle has pixels at
-    // most, whatever the size of the scene.
+    // Each triangle seen once: those reaching the rectangle's pixels (one per pixel for the
+    // opaque surfaces, one per layer behind nothing opaque for the others), not the whole scene.
     let mut seen: std::collections::HashSet<u32> = t.hits.take().unwrap_or_default();
     for y in ys.0..=ys.1 {
         seen.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));

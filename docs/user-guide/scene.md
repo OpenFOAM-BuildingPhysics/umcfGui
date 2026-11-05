@@ -41,6 +41,7 @@ the selection in orange (in front of a patch of another region in the same place
 | `colour_by` | `patch` | `patch` (each patch or region its own colour) or `object` (each mesh region or surface) |
 | `regions`, `surfaces` | see above | Which mesh regions and surfaces |
 | `reload` | `false` | Reads the files again (after OpenFOAM rewrote a mesh) |
+| `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
 
 The scene is built the first time it is needed and kept while the same things are shown, so a
 pick after a snapshot doesn't read the mesh again. It follows the surfaces commands change (a
@@ -123,7 +124,7 @@ opposite corners in pixels from the top left; a pixel is in it when its middle i
 | `through` | Takes |
 |---|---|
 | `false` (default) | What is seen in it: the faces in front at one of its pixels or more. A face smaller than a pixel can be missed: zoom in, or go through |
-| `true` | Everything in it, hidden or not: the faces whose middle (their area-weighted centre) is inside it, on the image, and in front of the camera |
+| `true` | Everything in it, seen or behind something: the faces whose middle (their area-weighted centre) is inside it, on the image, and in front of the camera |
 
 Without `faces` it selects the patches and surface regions of those faces; with `faces: true`,
 the mesh faces themselves (surfaces are passed over and hide nothing, as for a click). `mode` is `replace` (default), `add`,

@@ -263,7 +263,6 @@ fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Err
     Ok((cam, w, h))
 }
 
-/// The `display` entries in `p`, checked against the open case.
 /// The `display` entries in `p` and the scene they apply to, built (or as cached), with what the
 /// entries name checked against the case and the scene.
 fn displayed<'s>(s: &'s mut Session, id: &str, p: &Params) -> Result<(Vec<display::DisplayEntry>, &'s Scene), Error> {
@@ -636,7 +635,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
     label: "Select in a rectangle",
     menu: "",
     shortcut: None,
-    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height); display as scene.snapshot's: hidden layers are passed over. Returns how many were in it and up to 1000 of them (items).",
+    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, seen or behind something: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height); display as scene.snapshot's: hidden layers are passed over. Returns how many were in it and up to 1000 of them (items).",
     enabled: needs_case,
     run: rect,
     journal: true,
