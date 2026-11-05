@@ -39,7 +39,11 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   that can run.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and
   its STL surfaces and their regions. The eye says whether the 3D view shows a region or a
-  surface. A click selects a patch or a surface region; Ctrl+click adds it or takes it out.
+  surface. A click selects a patch or a surface region; Ctrl+click adds it or takes it out. A
+  right click on a region, a patch, a surface or a surface region shows it as surfaces,
+  wireframe or points, or hides it, and sets its opacity ([display modes](scene.md#display-modes)).
+  A patch's menu has its patch groups too. The row says how it is drawn when that isn't the
+  default, and *Reset* draws it as what it is part of again. What is hidden is not picked.
 - **The 3D view**: the meshes' boundary patches or the surfaces, each patch in its own colour,
   the selection in orange (see [3D scene and selection](scene.md)). Drag to turn the view (or
   pan, with the navigation bar's *Pan*); a right or middle drag pans; the wheel zooms. A click

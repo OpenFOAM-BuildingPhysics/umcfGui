@@ -866,3 +866,51 @@ fn a_rectangle_dragged_in_box_select_selects_what_is_in_it() {
     assert!(h.state().viewport.camera.unwrap().azimuth < camera.azimuth - 5.0);
     assert_eq!(h.state().log.len(), n);
 }
+
+#[test]
+fn a_layer_is_shown_as_its_context_menu_says() {
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    let mut h = harness(app());
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    let rect = h.state().viewport.rect.unwrap();
+    // The sky hidden from its row's menu: the row says so, and a click picks the ground.
+    tree_item(&h, "sky").click_secondary();
+    h.run();
+    h.get_by_label("Hidden").click();
+    h.run();
+    let sky = Layer::Patch { region: String::new(), patch: "sky".into() };
+    assert_eq!(h.state().layer_entry(&sky).and_then(|e| e.mode), Some(Mode::Hidden));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    click_at(&mut h, rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "ground".into() }]);
+    assert!(h.state().log.last().unwrap().command == "select.pick");
+    assert_eq!(h.state().viewport.hover.as_deref(), Some("patch ground"));
+    // The region as a wireframe: the sky keeps its own entry, after it.
+    tree_item(&h, "(single region)").click_secondary();
+    h.run();
+    h.get_by_label("Wireframe").click();
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let region = Layer::Region(String::new());
+    let order: Vec<&Layer> = h.state().display.iter().map(|e| &e.layer).collect();
+    assert_eq!(order, [&sky, &region]);
+    // Reset takes the sky's entry away.
+    tree_item(&h, "sky").click_secondary();
+    h.run();
+    h.get_by_label("Reset").click();
+    h.run();
+    assert!(h.state().layer_entry(&sky).is_none());
+    // A patch renamed: its entry goes (a pick with it would be refused), the region's stays.
+    h.state_mut().set_display(sky.clone(), crate::display::Change::Mode(Mode::Points));
+    h.state_mut().run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    h.state_mut().run("patch.set", json!({ "name": "lid" })).unwrap();
+    h.run();
+    let order: Vec<&Layer> = h.state().display.iter().map(|e| &e.layer).collect();
+    assert_eq!(order, [&region]);
+    click_at(&mut h, rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().log.last().unwrap().command, "select.pick");
+}

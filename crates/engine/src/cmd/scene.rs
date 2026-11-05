@@ -15,10 +15,11 @@ use umcf_geom::BBox;
 use umcf_geom::bvh::Ray;
 use umcf_geom::stl;
 use umcf_render::camera::{Camera, View};
-use umcf_render::raster::{ColourBy, MAX_PIXELS, MAX_SIDE, Style, draw};
+use umcf_render::raster::{self, ColourBy, MAX_PIXELS, MAX_SIDE, Style, draw};
 use umcf_render::{Object, Pick, Scene, Source, png};
 
 use super::case::count;
+use super::display;
 use super::geometry::{SURFACE_DIR, limits, surface_files, surface_path};
 use crate::params::Params;
 use crate::{CommandSpec, Error, Outcome, Session, needs_case};
@@ -268,6 +269,14 @@ fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Err
     Ok((cam, w, h))
 }
 
+/// The `display` entries in `p`, checked against the open case.
+fn entries(s: &Session, id: &str, p: &Params) -> Result<Vec<display::DisplayEntry>, Error> {
+    let Some(v) = optional(p, "display")? else { return Ok(Vec::new()) };
+    let entries = display::parse(id, v)?;
+    display::check(s, id, &entries)?;
+    Ok(entries)
+}
+
 /// A camera as `camera_json` writes it (`fov` may be left out).
 fn given_camera(id: &str, c: &Value) -> Result<Camera, Error> {
     const KEYS: [&str; 5] = ["target", "distance", "azimuth", "elevation", "fov"];
@@ -339,7 +348,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -350,8 +359,9 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SNAPSHOT.id;
     let mut allowed = WHICH.to_vec();
     allowed.extend(CAMERA);
-    allowed.extend(["edges", "colour_by"]);
+    allowed.extend(["edges", "colour_by", "display"]);
     let p = Params::new(id, p, &allowed)?;
+    let entries = entries(s, id, &p)?;
     let edges = p.bool("edges")?.unwrap_or(false);
     let colour_by = match p.str("colour_by")? {
         None | Some("patch") => ColourBy::Class,
@@ -364,8 +374,12 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let selected = selected_classes(scene, &selection);
     let selected_faces = selected_faces(scene, &selection);
     let n_selected = selected.len() + selected_faces.len();
-    let image =
-        draw(scene, &cam, &Style { width, height, edges, selected, selected_faces, colour_by, ..Style::default() });
+    let display = display::style(scene, &entries);
+    let image = draw(
+        scene,
+        &cam,
+        &Style { width, height, edges, selected, selected_faces, colour_by, display, ..Style::default() },
+    );
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();
     let mut message = format!("{width} × {height} of {} ({})", labels.join(", "), count(scene.triangles(), "triangle"));
@@ -494,7 +508,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     label: "Pick",
     menu: "",
     shortcut: None,
-    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). faces: true selects the mesh face under it instead ({\"region\", \"face\"}), and lists one entry per face. depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height).",
+    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). faces: true selects the mesh face under it instead ({\"region\", \"face\"}), and lists one entry per face. depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height); display as scene.snapshot's: hidden layers are passed over.",
     enabled: needs_case,
     run: pick,
     journal: true,
@@ -505,8 +519,9 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = PICK.id;
     let mut allowed = WHICH.to_vec();
     allowed.extend(CAMERA);
-    allowed.extend(["pixel", "ray", "depth", "mode", "faces"]);
+    allowed.extend(["pixel", "ray", "depth", "mode", "faces", "display"]);
     let p = Params::new(id, p, &allowed)?;
+    let entries = entries(s, id, &p)?;
     let faces = p.bool("faces")?.unwrap_or(false);
     let mode = mode(
         id,
@@ -545,15 +560,23 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     };
     // One entry per patch or region at its nearest hit; with `faces`, per mesh face.
     // Surfaces have no faces to pick: their triangles are passed over before the limit.
-    let hits: Vec<Pick> = if faces {
-        scene
-            .pick(&ray, usize::MAX)
-            .into_iter()
-            .filter(|h| scene.objects.get(h.object).is_some_and(|o| matches!(o.source, Source::Mesh { .. })))
-            .collect()
-    } else {
-        scene.pick_classes(&ray)
-    };
+    // Hidden layers are passed over; one entry per patch or region at its nearest hit, or with
+    // `faces` per mesh face.
+    let display = display::style(scene, &entries);
+    let shown = |h: &Pick| display.get(&(h.object, h.class)).is_none_or(|d| d.mode != raster::Mode::Hidden);
+    let mut classes = std::collections::HashSet::new();
+    let hits: Vec<Pick> = scene
+        .pick(&ray, usize::MAX)
+        .into_iter()
+        .filter(shown)
+        .filter(|h| {
+            if faces {
+                scene.objects.get(h.object).is_some_and(|o| matches!(o.source, Source::Mesh { .. }))
+            } else {
+                classes.insert((h.object, h.class))
+            }
+        })
+        .collect();
     let mut under: Vec<(Sel, &Pick)> = Vec::new();
     for h in &hits {
         let sel = scene
@@ -615,7 +638,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
     label: "Select in a rectangle",
     menu: "",
     shortcut: None,
-    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height). Returns how many were in it and up to 1000 of them (items).",
+    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height); display as scene.snapshot's: hidden layers are passed over. Returns how many were in it and up to 1000 of them (items).",
     enabled: needs_case,
     run: rect,
     journal: true,
@@ -629,8 +652,9 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = RECT.id;
     let mut allowed = WHICH.to_vec();
     allowed.extend(CAMERA);
-    allowed.extend(["rect", "through", "mode", "faces"]);
+    allowed.extend(["rect", "through", "mode", "faces", "display"]);
     let p = Params::new(id, p, &allowed)?;
+    let entries = entries(s, id, &p)?;
     let faces = p.bool("faces")?.unwrap_or(false);
     let through = p.bool("through")?.unwrap_or(false);
     let mode = mode(
@@ -650,6 +674,7 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         height,
         selected: selected_classes(scene, &selection),
         selected_faces: selected_faces(scene, &selection),
+        display: display::style(scene, &entries),
         ..Style::default()
     };
     // (object, class or face) once each, then what they select.

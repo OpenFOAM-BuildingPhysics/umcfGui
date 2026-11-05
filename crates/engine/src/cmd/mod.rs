@@ -4,6 +4,7 @@ use crate::CommandSpec;
 
 mod bc;
 mod case;
+pub(crate) mod display;
 mod edit;
 mod geometry;
 mod mesh;

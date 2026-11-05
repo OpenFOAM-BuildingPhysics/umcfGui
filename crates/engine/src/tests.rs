@@ -1303,6 +1303,101 @@ fn a_rectangle_selects_what_is_seen_in_it_or_everything_through_it() {
 }
 
 #[test]
+fn layers_are_shown_as_surfaces_wireframes_points_or_hidden() {
+    let mut s = scene_session();
+    let top = json!({ "view": "top", "width": 100, "height": 100, "pixel": [50, 50] });
+    // The sky hidden: a click picks the ground under it, and nothing lists the sky.
+    let mut p = top.clone();
+    p["display"] = json!([{ "region": "air", "patch": "sky", "mode": "hidden" }]);
+    let out = s.execute("select.pick", &p).unwrap();
+    assert_eq!(out.data["picked"]["patch"], "ground");
+    assert_eq!(out.data["hits"].as_array().unwrap().len(), 1);
+    // A wireframe or a transparent sky is still picked, nearest first.
+    for d in [json!({ "mode": "wireframe" }), json!({ "opacity": 0.3 }), json!({ "mode": "points", "opacity": 0 })] {
+        let mut e = json!({ "region": "air", "patch": "sky" });
+        e.as_object_mut().unwrap().extend(d.as_object().unwrap().clone());
+        p["display"] = json!([e]);
+        assert_eq!(s.execute("select.pick", &p).unwrap().data["picked"]["patch"], "sky", "{e}");
+    }
+    // Later entries win, field by field: the region hidden, then its ground shown again.
+    p["display"] = json!([
+        { "region": "air", "mode": "hidden", "opacity": 0.5 },
+        { "region": "air", "patch": "ground", "mode": "surface" }
+    ]);
+    let out = s.execute("select.pick", &p).unwrap();
+    assert_eq!(out.data["picked"]["patch"], "ground");
+    // A rectangle sees through what isn't an opaque surface, and never what is hidden.
+    let rect = |d: Value| json!({ "view": "top", "width": 100, "height": 100, "rect": [45, 45, 55, 55], "mode": "none", "display": d });
+    let items = |s: &mut Session, d: Value| -> Vec<String> {
+        let out = s.execute("select.rect", &rect(d)).unwrap();
+        out.data["items"].as_array().unwrap().iter().map(|i| i["patch"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(items(&mut s, json!([])), ["sky"]);
+    assert_eq!(items(&mut s, json!([{ "region": "air", "patch": "sky", "mode": "wireframe" }])), ["ground", "sky"]);
+    assert_eq!(items(&mut s, json!([{ "region": "air", "patch": "sky", "mode": "hidden" }])), ["ground"]);
+    // The snapshot draws them so: the sky hidden shows the ground in the middle.
+    let shot = |s: &mut Session, d: Value| {
+        let out =
+            s.execute("scene.snapshot", &json!({ "view": "top", "width": 40, "height": 40, "display": d })).unwrap();
+        out.data["png"].as_str().unwrap().to_string()
+    };
+    let plain = shot(&mut s, json!([]));
+    let hidden = shot(&mut s, json!([{ "region": "air", "patch": "sky", "mode": "hidden" }]));
+    let wire = shot(&mut s, json!([{ "region": "air", "mode": "wireframe" }]));
+    assert!(plain != hidden && plain != wire && hidden != wire);
+    // A surface and its region.
+    let both =
+        json!([{ "surface": "box.stl", "mode": "points" }, { "surface": "box.stl", "solid": "box", "opacity": 0.5 }]);
+    let out = s
+        .execute("scene.snapshot", &json!({ "surfaces": ["box.stl"], "width": 8, "height": 8, "display": both }))
+        .unwrap();
+    assert!(out.data["png"].is_string());
+    // What doesn't exist, or isn't one, is refused.
+    for (d, says) in [
+        (json!({ "region": "water", "mode": "hidden" }), "no region `water`"),
+        (json!({ "region": "air", "patch": "roof", "mode": "hidden" }), "no patch `roof`"),
+        (json!({ "region": "air", "group": "buildings", "mode": "hidden" }), "no patch in group `buildings`"),
+        (json!({ "surface": "none.stl", "mode": "hidden" }), "there is no surface"),
+        (json!({ "surface": "box.stl", "solid": "lid", "mode": "hidden" }), "has no region `lid`"),
+        (json!({ "region": "air", "mode": "solid" }), "a `display` entry is"),
+        (json!({ "region": "air", "opacity": 2 }), "a `display` entry is"),
+        (json!({ "region": "air" }), "a `display` entry is"),
+        (json!({ "region": "air", "surface": "box.stl", "mode": "hidden" }), "a `display` entry is"),
+        (json!({ "region": "air", "colour": "red", "mode": "hidden" }), "a `display` entry is"),
+    ] {
+        let e = s.execute("scene.snapshot", &json!({ "display": [d] })).unwrap_err().to_string();
+        assert!(e.contains(says), "{d}: {e}");
+    }
+    let e = s.execute("scene.snapshot", &json!({ "display": { "region": "air" } })).unwrap_err().to_string();
+    assert!(e.contains("`display` is a list"), "{e}");
+}
+
+#[test]
+fn a_patch_group_is_shown_as_one_layer() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    let h = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class polyBoundaryMesh;\n}\n";
+    let patch = |n: &str, g: &str, count: u32, start: u32| {
+        format!(
+            "    {n}\n    {{\n        type wall;\n        inGroups List<word> 1({g});\n        nFaces {count};\n        startFace {start};\n    }}\n"
+        )
+    };
+    fs.insert(
+        "constant/air/polyMesh/boundary",
+        format!(
+            "{h}3\n(\n{}{}{})\n",
+            patch("ground", "floor", 1, 0),
+            patch("sky", "lid", 1, 1),
+            patch("walls", "lid", 4, 2)
+        ),
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let p = json!({ "view": "top", "width": 100, "height": 100, "pixel": [50, 50], "display": [{ "region": "air", "group": "lid", "mode": "hidden" }] });
+    assert_eq!(s.execute("select.pick", &p).unwrap().data["picked"]["patch"], "ground");
+}
+
+#[test]
 fn picked_faces_make_a_patch_of_one_region() {
     let mut fs = fs();
     fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));

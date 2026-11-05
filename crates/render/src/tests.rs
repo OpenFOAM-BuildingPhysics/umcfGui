@@ -393,3 +393,73 @@ fn a_rectangle_sees_the_selection_where_two_regions_meet() {
         assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), [(k, 1)]);
     }
 }
+
+#[test]
+fn layers_are_drawn_as_surfaces_wireframes_points_or_not_at_all() {
+    use crate::raster::{Display, Mode};
+    let s = scene_of(&cube([0.0; 3]));
+    let cam = Camera::fit(View::Top, &s.bbox().unwrap(), 1.0);
+    let style = |sky: Display| {
+        let mut st = Style { width: 100, height: 100, ..Style::default() };
+        st.display.insert((0, 1), sky);
+        st
+    };
+    let mid = |st: &Style| draw(&s, &cam, st).pixel(50, 50).unwrap();
+    // The sky as it is, then hidden: the ground under it is seen.
+    assert!(close(mid(&style(Display::default())), palette(1), 0.02));
+    let hidden = style(Display { mode: Mode::Hidden, opacity: 1.0 });
+    assert!(close(mid(&hidden), palette(0), 0.03), "{:?}", mid(&hidden));
+    // Half transparent: half of each.
+    let glass = style(Display { mode: Mode::Surface, opacity: 0.5 });
+    let half: [f32; 3] = [0, 1, 2].map(|k| (palette(1)[k] + palette(0)[k]) * 0.5);
+    assert!(close(mid(&glass), half, 0.02), "{:?} vs {half:?}", mid(&glass));
+    // A wireframe: the ground in the middle, the sky's edges along its sides.
+    let wire = style(Display { mode: Mode::Wireframe, opacity: 1.0 });
+    let img = draw(&s, &cam, &wire);
+    assert!(close(img.pixel(50, 50).unwrap(), palette(0), 0.03));
+    let line = palette(1).map(|c| c * 0.85);
+    let on_line = (0..100)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .filter(|(x, y)| close(img.pixel(*x, *y).unwrap(), line, 0.02))
+        .count();
+    assert!(on_line > 40, "{on_line} pixels of the sky's edges");
+    // Points: the sky's four corners, the ground between them.
+    let points = style(Display { mode: Mode::Points, opacity: 1.0 });
+    let img = draw(&s, &cam, &points);
+    let dots = (0..100)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .filter(|(x, y)| close(img.pixel(*x, *y).unwrap(), line, 0.02))
+        .count();
+    assert!((4..=64).contains(&dots), "{dots} pixels of the sky's four points");
+    assert!(close(img.pixel(50, 50).unwrap(), palette(0), 0.03));
+    // Everything hidden: the background.
+    let mut none = Style { width: 100, height: 100, ..Style::default() };
+    for c in 0..3 {
+        none.display.insert((0, c), Display { mode: Mode::Hidden, opacity: 1.0 });
+    }
+    let bg = draw(&Scene::new(Vec3::ZERO), &cam, &Style { width: 100, height: 100, ..Style::default() });
+    assert_eq!(draw(&s, &cam, &none).rgba, bg.rgba);
+}
+
+#[test]
+fn a_rectangle_sees_through_what_is_not_an_opaque_surface() {
+    use crate::raster::{Display, Mode};
+    let s = scene_of(&cube([0.0; 3]));
+    let cam = Camera::fit(View::Top, &s.bbox().unwrap(), 1.0);
+    let mid = Rect { a: [45.0, 45.0], b: [55.0, 55.0] };
+    for (mode, opacity, seen) in [
+        (Mode::Surface, 1.0, vec![(0, 1)]),
+        (Mode::Surface, 0.4, vec![(0, 0), (0, 1)]),
+        (Mode::Wireframe, 1.0, vec![(0, 0), (0, 1)]),
+        (Mode::Points, 1.0, vec![(0, 0), (0, 1)]),
+        (Mode::Hidden, 1.0, vec![(0, 0)]),
+    ] {
+        let mut st = Style { width: 100, height: 100, ..Style::default() };
+        st.display.insert((0, 1), Display { mode, opacity });
+        assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, false, &|_, _| true)), seen, "{mode:?} {opacity}");
+    }
+    // Through: everything but what is hidden.
+    let mut st = Style { width: 100, height: 100, ..Style::default() };
+    st.display.insert((0, 1), Display { mode: Mode::Hidden, opacity: 1.0 });
+    assert_eq!(faces_of(&s, &covered(&s, &cam, &st, mid, true, &|_, _| true)), [(0, 0)]);
+}

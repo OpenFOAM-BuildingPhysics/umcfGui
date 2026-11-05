@@ -10,7 +10,7 @@ use eframe::egui::{
 use umcf_engine::Sel;
 use umcf_geom::bvh::Ray;
 use umcf_render::camera::{Camera, View};
-use umcf_render::raster::{ColourBy, Style, draw};
+use umcf_render::raster::{ColourBy, Display, Mode, Style, draw};
 use umcf_render::{Object, Scene, Source};
 
 use crate::theme::Tokens;
@@ -142,12 +142,14 @@ impl Viewport {
     }
 
     /// Shows `scene` in the rest of `ui`; returns what the user asked for.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         scene: &Scene,
         selection: &[Sel],
+        display: &std::collections::HashMap<(usize, u32), Display>,
         revision: u64,
         tokens: &Tokens,
     ) -> Option<Action> {
@@ -227,6 +229,7 @@ impl Viewport {
                 selected,
                 selected_faces: umcf_engine::selected_faces(scene, selection),
                 colour_by: ColourBy::Class,
+                display: display.clone(),
                 background: Some(tokens.view_background()),
             };
             let image = draw(scene, &cam, &style);
@@ -248,19 +251,20 @@ impl Viewport {
                 self.last_hover = Some(p);
                 self.hover_faces = self.faces;
                 let ray = ray_at(&cam, rect, p, shown);
-                self.hover = if self.faces {
-                    // What a click picks: the nearest mesh face, surfaces passed over.
-                    scene.pick(&ray, usize::MAX).into_iter().find_map(|h| {
-                        let o = scene.objects.get(h.object)?;
-                        matches!(o.source, Source::Mesh { .. })
-                            .then(|| format!("face {} of {}", h.index, class_label(o, h.class)))
-                    })
-                } else {
-                    scene
-                        .pick_classes(&ray)
-                        .first()
-                        .and_then(|h| scene.objects.get(h.object).map(|o| class_label(o, h.class)))
-                };
+                // What a click picks: the nearest that isn't hidden; picking faces, the nearest
+                // mesh face, surfaces passed over.
+                let hidden = |o: usize, c: u32| display.get(&(o, c)).is_some_and(|d| d.mode == Mode::Hidden);
+                self.hover = scene.pick(&ray, usize::MAX).into_iter().find_map(|h| {
+                    let o = scene.objects.get(h.object)?;
+                    if hidden(h.object, h.class) {
+                        return None;
+                    }
+                    match (self.faces, &o.source) {
+                        (true, Source::Mesh { .. }) => Some(format!("face {} of {}", h.index, class_label(o, h.class))),
+                        (true, Source::Surface { .. }) => None,
+                        (false, _) => Some(class_label(o, h.class)),
+                    }
+                });
             }
             Some(_) => {}
             None => {

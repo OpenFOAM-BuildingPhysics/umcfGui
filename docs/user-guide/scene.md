@@ -46,6 +46,44 @@ The scene is built the first time it is needed and kept while the same things ar
 pick after a snapshot doesn't read the mesh again. It follows the surfaces commands change (a
 repair, an undo); a mesh rewritten on disk needs `reload`.
 
+## Display modes
+
+`display` (in `scene.snapshot`, `select.pick` and `select.rect`) says how each layer is drawn: a
+list of entries, each naming a layer and giving it a `mode`, an `opacity`, or both:
+
+| Layer | Entry |
+|---|---|
+| A region's mesh | `{"region": "air"}` |
+| One of its patches | `{"region": "air", "patch": "inlet"}` |
+| Its patches in a patch group (`inGroups`) | `{"region": "air", "group": "buildings"}` |
+| A surface | `{"surface": "walls.stl"}` |
+| One of its regions | `{"surface": "walls.stl", "solid": "roofs"}` |
+
+| `mode` | Draws |
+|---|---|
+| `surface` (default) | Filled, shaded faces |
+| `wireframe` | The faces' edges (not the diagonals that split a face into triangles) |
+| `points` | The faces' points |
+| `hidden` | Nothing; picking passes over it |
+
+`opacity` goes from 0 to 1 (default, opaque). Later entries win over earlier ones, mode and
+opacity each: `[{"region": "air", "mode": "wireframe"}, {"region": "air", "patch": "ground",
+"mode": "surface"}]` draws the air region as a wireframe and its ground as a surface. Each layer
+named must be in the case.
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'scene.snapshot={"display": [{"region": "air", "opacity": 0.3}, {"region": "buildings", "mode": "wireframe"}]}'
+```
+
+Opaque surfaces are drawn first. Edges and points go over them where nothing opaque is in front,
+and transparent surfaces last, the farthest first, each blended over what is behind it.
+
+What is hidden is not picked, and doesn't hide anything. Everything else is picked, nearest
+first: a click on a transparent surface picks it, and `depth` picks what is behind it. A
+rectangle (below) sees through what isn't an opaque surface. It takes a transparent surface, a
+wireframe or points where they are seen, and also what is seen through them.
+
 ## Picking
 
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same

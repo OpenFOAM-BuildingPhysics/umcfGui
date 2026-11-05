@@ -66,6 +66,8 @@ pub struct Object {
     /// What each class is: a patch's type (`wall`, `patch`, `empty`, …), `region` for a
     /// surface region.
     pub kinds: Vec<String>,
+    /// Each class's patch groups (`inGroups`); none for a surface region.
+    pub groups: Vec<Vec<String>>,
     /// Faces or triangles left out: a coordinate that is not finite, or so far from the
     /// scene's origin that it doesn't fit in single precision.
     pub dropped: usize,
@@ -111,6 +113,7 @@ impl Object {
             edges: Vec::new(),
             classes: Vec::new(),
             kinds: Vec::new(),
+            groups: Vec::new(),
             dropped: 0,
             bvh: OnceLock::new(),
         }
@@ -126,6 +129,7 @@ impl Object {
             let Ok(class) = u32::try_from(k) else { break };
             o.classes.push(patch.name.clone());
             o.kinds.push(patch.kind.clone());
+            o.groups.push(patch.groups.clone());
             for f in patch.faces() {
                 let (Some(face), Ok(f32_index)) = (mesh.face(f), u32::try_from(f)) else { continue };
                 let mut ids: Vec<u32> = Vec::with_capacity(face.len());
@@ -168,6 +172,7 @@ impl Object {
         let mut o = Object::new(Source::Surface { file: file.to_string() });
         let (names, region) = stl.regions();
         o.kinds = vec!["region".to_string(); names.len()];
+        o.groups = vec![Vec::new(); names.len()];
         o.classes = names;
         for (k, (t, r)) in stl.triangles.iter().zip(&region).enumerate() {
             let (Ok(k), Ok(base)) = (u32::try_from(k), u32::try_from(o.points.len())) else { break };
