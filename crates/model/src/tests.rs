@@ -1351,13 +1351,37 @@ fn a_rename_says_what_it_could_not_list_or_read() {
     let mem = case()
         .with("0.orig/air/T", "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\nboundaryField\n{\n    ground { type zeroGradient; }\n}\n")
         .with("0.orig/notes.txt", "ground\n");
-    let mut c = Case::open(&mem).unwrap();
+    // Opened with the failures: `0.orig/air` couldn't be listed then either.
     let fs = Failing(mem);
+    let mut c = Case::open(&fs).unwrap();
+    assert_eq!(c.exists("0.orig/air/T"), None);
     let report =
         c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
     assert!(report.orig.is_empty());
     assert_eq!(report.not_renamed.len(), 1, "{:?}", report.not_renamed);
     assert_eq!(report.not_renamed[0].0, "0.orig/air");
     assert!(report.not_renamed[0].1.starts_with("it can't be listed"), "{:?}", report.not_renamed);
-    assert_eq!(report.unsearched, ["0.orig/notes.txt"]);
+    assert_eq!(report.unsearched, ["0.orig/air", "0.orig/notes.txt"]);
+}
+
+#[test]
+fn a_rename_follows_into_a_compressed_view_factor_dictionary_and_searches_held_ones() {
+    use std::io::Write;
+    let vf = format!("{}ground\n{{\n    nFacesInCoarsestLevel 15;\n}}\n", header("dictionary", "viewFactorsDict"));
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(vf.as_bytes()).unwrap();
+    let fs = case().with("constant/air/viewFactorsDict.gz", gz.finish().unwrap());
+    let mut c = Case::open(&fs).unwrap();
+    // A file a command made since the case was opened.
+    let held =
+        format!("{}patches\n(\n    {{ name roof; patches (ground); }}\n);\n", header("dictionary", "createPatchDict"));
+    c.put_file(&fs, "system/air/createPatchDict.umcf", held.into_bytes()).unwrap();
+    let report =
+        c.set_patch(&fs, "air", "ground", &PatchChange { name: Some("terrain"), ..Default::default() }).unwrap();
+    assert_eq!(report.others, ["constant/air/viewFactorsDict.gz"]);
+    let bytes = c.put_bytes("constant/air/viewFactorsDict.gz").unwrap();
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text).unwrap();
+    assert!(text.contains("terrain\n{\n    nFacesInCoarsestLevel 15;"), "{text}");
+    assert!(report.mentions.iter().any(|(f, _)| f == "system/air/createPatchDict.umcf"), "{:?}", report.mentions);
 }
