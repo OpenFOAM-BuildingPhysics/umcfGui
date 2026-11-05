@@ -27,6 +27,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     scene::CLEAR,
     bc::SET,
     patch::SET,
+    patch::CREATE,
     edit::CONTROL_SET,
     edit::DICT_SET,
     edit::DICT_REMOVE,

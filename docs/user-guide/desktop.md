@@ -67,6 +67,12 @@ suggestions under it, the groups, other entries (`neighbourRegion air`), and wha
 now. *Set* sends only what was changed, as [`patch.set`](meshes.md#editing-patches): a renamed
 patch stays selected, and its field files follow.
 
+*New patch* (on the *Mesh* tab) opens a card that prepares a patch from faces of the selected
+patches, as [`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the
+faces, either those whose centre is in a box (from x y z, to x y z) or those within a distance of
+a surface of the case (one of its solids, or all of it). *Prepare* writes the face set and the
+`createPatchDict` entry; the mesh gets the patch when `createPatch -overwrite` runs.
+
 ## Boundary conditions
 
 Select the patches in the view or the browser (Ctrl+click adds one), then *Set condition* on the

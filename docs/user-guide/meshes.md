@@ -207,6 +207,51 @@ umcf-cli run --case my-case \
 - The meshing dictionaries are not changed: meshing again makes the patches as they say.
 - One step in the undo history, written by `case.save` after a backup.
 
+## New patches
+
+`patch.create` prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's
+`createPatch` to make. The faces are given as labels (`faces`), as the ones whose centre is in a
+box (`box`), or as the ones whose centre is within a distance of an STL surface of the case, or
+of one solid of it (`surface`). A box or a surface takes faces from the patches named in `from`,
+else from the selected patches of the region, else from every patch of the region that isn't
+coupled.
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'patch.create={"region": "air", "name": "skyWest", "box": {"min": [-1, -1, -1], "max": [295, 1e9, 1e9]}, "from": ["sky"]}' \
+  --cmd 'patch.create={"region": "air", "name": "roofs", "type": "wall", "surface": {"file": "buildings.stl", "solid": "roof", "distance": 0.5}}' \
+  --cmd 'case.save={}'
+```
+
+- The faces go into a face set, `constant/<region>/polyMesh/sets/<name>`, and the patch into
+  `system/<region>/createPatchDict` (`system/createPatchDict` for a single-region case) as
+  `{ name …; patchInfo { type …; inGroups …; … } constructFrom set; set …; }`, after the patches
+  there. A case without the dictionary gets one, with `pointSync false;` (OpenFOAM-8 needs the
+  entry). Nothing else in an existing dictionary changes.
+- **The mesh doesn't change yet**: the patch is made when `createPatch -region <region>
+  -overwrite` runs, by hand or by the case's `Allprepare`; the command says which
+  (`patch.run`). Until then, the patch isn't in the mesh, the view or the browser.
+- **The fields follow when they can.** When all the faces come from one patch, each field file of
+  the region at the start time gets a copy of that patch's own entry for the new patch: OpenFOAM
+  reads an entry for a patch the mesh doesn't have yet without a word. The command warns about
+  the fields that still need one (`patch.unfilled`): faces from several patches, or no entry of
+  its own to copy, and no entry for one of the new patch's groups (the ones given, `wall` for a
+  wall type, the type for a constraint type such as `empty`). It also warns about field files with
+  values per face (`nonuniform`) on a patch that gives faces (`patch.resized`), whose size is
+  wrong once `createPatch` has run, about `0.orig` (`patch.orig`), a patch that gives all its
+  faces and that `createPatch` removes (`patch.emptied`), and the `processor*` directories
+  (`patch.decomposed`).
+- **Refused**: a name already used (a patch, a group, a field entry, an entry of
+  `createPatchDict`, a face set), a number, a face that isn't a boundary face, and faces of a
+  coupled patch (`processor`, `cyclic`, `cyclicAMI`, the non-conformal ones), whose faces
+  `createPatch` keeps paired.
+- One step in the undo history, written by `case.save` after a backup. An undo after the save
+  doesn't take the new files away again (a new `createPatchDict`, the face set): delete them by
+  hand.
+- Checked on copies of an OpenFOAM-12 case of the solver (1458 of the 2916 `sky` faces of `air`,
+  added to its own `createPatchDict`) and an OpenFOAM-8 single-region case: `createPatch` read
+  the set and made the patch, `checkMesh` passed, and the fields read with the new mesh.
+
 ## Tested on
 
 Every region of six projects, from 25,000 to 16 million cells, reads and passes these checks:

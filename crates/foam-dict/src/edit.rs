@@ -52,6 +52,33 @@ pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str) -
     Ok(())
 }
 
+/// Appends `node` to the list that is the entry at the end of `path`, on a line of its own.
+pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
+    let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
+    let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
+    if !rest.is_empty() {
+        let sub = entry.dict_mut().ok_or_else(|| Error::NotADict(key.to_string()))?;
+        return append(sub, rest, node);
+    }
+    let key_indent = trailing_indent(&entry.key.lead).to_string();
+    let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
+        return Err(Error::NotAList(key.to_string()));
+    };
+    let indent = match items.last() {
+        Some(last) => trailing_indent(first_lead(last)).to_string(),
+        None => format!("{key_indent}{STEP}"),
+    };
+    match &mut node {
+        Node::Dict { .. } => layout_dict(&mut node, &indent),
+        other => other.first_tok_mut().lead = format!("\n{indent}"),
+    }
+    if !close.lead.contains('\n') {
+        close.lead = format!("\n{key_indent}");
+    }
+    items.push(node);
+    Ok(())
+}
+
 /// Removes every entry with the key at the end of `path`. The second flag tells the caller that
 /// the last item of `dict` went, so the trivia after the dictionary (its closing brace's lead or
 /// the document tail) starts with that entry's same-line comment, which should go too.

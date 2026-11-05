@@ -22,6 +22,7 @@
 
 pub mod bvh;
 pub mod check;
+pub mod near;
 pub mod repair;
 pub mod stl;
 

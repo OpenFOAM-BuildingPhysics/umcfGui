@@ -134,7 +134,13 @@ const SETUP: &[Tab] = &[
         menu: "Mesh",
         groups: &[
             Group { name: "Quality", items: &[Item::Command("mesh.check", "Check mesh", Icon::MeshCheck)] },
-            Group { name: "Patches", items: &[Item::Command("patch.set", "Edit patch", Icon::Patch)] },
+            Group {
+                name: "Patches",
+                items: &[
+                    Item::Command("patch.set", "Edit patch", Icon::Patch),
+                    Item::Command("patch.create", "New patch", Icon::Patch),
+                ],
+            },
         ],
         note: Some("Meshing set-up (blockMesh, snappyHexMesh) comes here"),
     },

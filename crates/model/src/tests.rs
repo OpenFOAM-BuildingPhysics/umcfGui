@@ -1050,3 +1050,123 @@ fn renames_keep_cyclic_partners_gzip_and_refuse_taken_names() {
     assert!(ncw.params.contains(&("originalPatch".into(), "facade".into())), "{:?}", ncw.params);
     assert!(ncw.params.contains(&("neighbourPatch".into(), "top".into())), "{:?}", ncw.params);
 }
+
+#[test]
+fn a_new_patch_is_prepared_for_create_patch() {
+    let fs = case();
+    let mut c = Case::open(&fs).unwrap();
+    let new = |name, faces| NewPatch { name, kind: "wall", groups: &["roofs"], entries: &[], faces };
+    // One face of `top`: its entry in T is copied for the new patch.
+    let report = c.create_patch(&fs, "air", &new("roof", &[15, 15])).unwrap();
+    assert_eq!(report.set, "constant/air/polyMesh/sets/roof");
+    assert_eq!((report.dict.as_str(), report.new_dict), ("system/air/createPatchDict", true));
+    assert_eq!(report.from, [("top".to_string(), 1)]);
+    assert!(report.emptied.is_empty() && report.resized.is_empty() && report.unfilled.is_empty());
+    assert_eq!(report.fields, ["0/air/T"]);
+    let set = String::from_utf8(c.file(&fs, "constant/air/polyMesh/sets/roof").unwrap().unwrap().to_vec()).unwrap();
+    assert!(set.contains("class       faceSet;") && set.ends_with("}\n\n1\n(\n15\n)\n"), "{set}");
+    let t = String::from_utf8(c.file(&fs, "0/air/T").unwrap().unwrap().to_vec()).unwrap();
+    assert!(t.contains("    top { type zeroGradient; }\n    roof { type zeroGradient; }\n    \"(wall"), "{t}");
+    assert!(c.region("air").unwrap().field("T").unwrap().bcs.as_ref().unwrap().iter().any(|b| b.patch == "roof"));
+    // The mesh is unchanged until createPatch has run.
+    assert!(!c.region("air").unwrap().patches.as_ref().unwrap().iter().any(|p| p.name == "roof"));
+
+    // All of `ground`, whose T entry holds a list: nothing to copy, and T must be made again.
+    let report = c.create_patch(&fs, "air", &new("terrain", &[10, 11, 12, 13])).unwrap();
+    assert!(!report.new_dict);
+    assert_eq!(report.emptied, ["ground"]);
+    assert_eq!(
+        (report.resized.as_slice(), report.unfilled.as_slice()),
+        (&["0/air/T".to_string()][..], &["0/air/T".to_string()][..])
+    );
+    assert!(report.fields.is_empty());
+    let dict = c.dict("system/air/createPatchDict").unwrap().to_string();
+    let again = Document::parse(&dict).unwrap();
+    assert!(again.root.problems().is_empty(), "{dict}");
+    assert_eq!(again.value(&["pointSync"]).as_deref(), Some("false"));
+    let Some([umcf_foam_dict::Node::List { items, .. }]) = again.get(&["patches"]).map(|e| e.value.as_slice()) else {
+        panic!("{dict}")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(dict.contains("        name            terrain;\n        patchInfo\n        {\n            type            wall;\n            inGroups        List<word> 1(roofs);\n        }\n        constructFrom   set;\n        set             terrain;\n"), "{dict}");
+
+    let mut changed = c.changed();
+    changed.sort();
+    assert_eq!(
+        changed,
+        [
+            "0/air/T",
+            "constant/air/polyMesh/sets/roof",
+            "constant/air/polyMesh/sets/terrain",
+            "system/air/createPatchDict"
+        ]
+    );
+
+    // What can't be done says why.
+    let e = |r: Result<CreateReport>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    // From two patches: no entry to copy, but a group entry covers a wall.
+    let report = c
+        .create_patch(
+            &fs,
+            "air",
+            &NewPatch { name: "edge", kind: "patch", groups: &[], entries: &[], faces: &[13, 14] },
+        )
+        .unwrap();
+    assert_eq!(report.unfilled, ["0/air/T"]);
+    let walls = "boundaryField\n{\n    wall { type zeroGradient; }\n}\n";
+    let fs3 = case().with("0/air/T", format!("{}internalField uniform 300;\n{walls}", header("volScalarField", "T")));
+    let mut c3 = Case::open(&fs3).unwrap();
+    let report = c3
+        .create_patch(
+            &fs3,
+            "air",
+            &NewPatch { name: "edge", kind: "wall", groups: &[], entries: &[], faces: &[13, 14] },
+        )
+        .unwrap();
+    assert!(report.unfilled.is_empty() && report.fields.is_empty(), "{report:?}");
+    let report = c3
+        .create_patch(&fs3, "air", &NewPatch { name: "edge2", kind: "patch", groups: &[], entries: &[], faces: &[12] })
+        .unwrap();
+    assert_eq!(report.unfilled, ["0/air/T"]);
+    assert!(e(c.create_patch(&fs, "air", &new("roof2", &[9]))).contains("not a boundary face"));
+    assert!(e(c.create_patch(&fs, "air", &new("roof2", &[]))).contains("needs faces"));
+    assert!(e(c.create_patch(&fs, "air", &new("top", &[14]))).contains("already"));
+    assert!(e(c.create_patch(&fs, "nowhere", &new("x", &[14]))).contains("no region"));
+    // A face set by that name, or a createPatchDict entry, is there already.
+    assert!(e(c.create_patch(&fs, "air", &new("terrain", &[14]))).contains("already"));
+    let fs2 = case().with("constant/air/polyMesh/sets/x", "1(14)");
+    let mut c2 = Case::open(&fs2).unwrap();
+    assert!(e(c2.create_patch(&fs2, "air", &new("x", &[14]))).contains("is there already"));
+
+    // Saving writes the new files.
+    let mut fs = fs;
+    c.save(&mut fs, None).unwrap();
+    assert!(fs.is_file("system/air/createPatchDict") && fs.is_file("constant/air/polyMesh/sets/terrain"));
+}
+
+#[test]
+fn faces_of_coupled_patches_stay_and_an_existing_dict_is_added_to() {
+    let b = "3\n(\n    left\n    {\n        type            cyclic;\n        nFaces          1;\n        startFace       10;\n        neighbourPatch  right;\n    }\n    right\n    {\n        type            cyclic;\n        nFaces          1;\n        startFace       11;\n        neighbourPatch  left;\n    }\n    top\n    {\n        type            patch;\n        inGroups        List<word> 1(sky);\n        nFaces          2;\n        startFace       12;\n    }\n)\n";
+    let dict = "// made by hand\npatches\n(\n    {\n        name in;\n        patchInfo { type patch; }\n        constructFrom patches;\n        patches (left);\n    }\n);\n";
+    let fs = MemFs::new()
+        .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
+        .with("system/air/createPatchDict", format!("{}{dict}", header("dictionary", "createPatchDict")))
+        .with("constant/air/polyMesh/boundary", format!("{}{b}", header("polyBoundaryMesh", "boundary")));
+    let mut c = Case::open(&fs).unwrap();
+    let new = |name, faces| NewPatch { name, kind: "patch", groups: &[], entries: &[], faces };
+    let e = c.create_patch(&fs, "air", &new("x", &[10])).unwrap_err().to_string();
+    assert!(e.contains("cyclic"), "{e}");
+    let e = c.create_patch(&fs, "air", &new("in", &[12])).unwrap_err().to_string();
+    assert!(e.contains("makes a patch `in` already"), "{e}");
+    let e = c.create_patch(&fs, "air", &new("sky", &[12])).unwrap_err().to_string();
+    assert!(e.contains("group"), "{e}");
+    assert!(c.changed().is_empty());
+    // The patch goes after the one there, with pointSync, and the rest stays as it was.
+    let report = c.create_patch(&fs, "air", &new("half", &[13])).unwrap();
+    assert!(!report.new_dict && report.fields.is_empty() && report.unfilled.is_empty());
+    let out = c.dict("system/air/createPatchDict").unwrap().to_string();
+    let before = format!("{}{dict}", header("dictionary", "createPatchDict"));
+    assert!(out.starts_with(&before[..before.find("    }\n);").unwrap()]), "{out}");
+    assert!(out.contains("        patches (left);\n    }\n    {\n        name            half;\n"), "{out}");
+    assert!(out.ends_with(");\npointSync       false;\n"), "{out}");
+}
