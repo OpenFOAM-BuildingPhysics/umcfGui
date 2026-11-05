@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+cd ${0%/*} || exit 1    # run from this directory
+
+# Source tutorial run functions
+. $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+runApplication blockMesh -region air
+runApplication createPatch -region air -overwrite
+
+#-- Run on single processor
+runApplication `getApplication`
+
+## Run in parallel
+## Decompose
+#
+#runParallel `getApplication` 8
+#
+## Reconstruct
+
+# ----------------------------------------------------------------- end-of-file

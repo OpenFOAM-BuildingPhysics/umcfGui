@@ -1,0 +1,127 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  6
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0/vegetation";
+    object      T;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 0 1 0 0 0];
+
+internalField   uniform 285;
+
+boundaryField
+{
+    inlet
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    outlet
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    top
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    ground
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    air_to_street
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    air_to_windward
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    air_to_leeward
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    side1
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    side2
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    buildings
+    {
+        type            mapped;
+        field           T;
+        setAverage      0;
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+    air_to_vegetation
+    {
+        type            mappedLeafTemperature;
+        field           Tl; 
+        setAverage      0;  
+        average         0;
+        interpolationScheme cell;
+        value           uniform 285;
+    }
+
+}
+
+
+// ************************************************************************* //
