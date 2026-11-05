@@ -214,7 +214,8 @@ umcf-cli run --case my-case \
 box (`box`), or as the ones whose centre is within a distance of an STL surface of the case, or
 of one solid of it (`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its
 triangles. A box or a surface takes faces from the patches named in `from`, else from the
-selected patches of the region, else from every patch of the region that isn't coupled.
+selected patches of the region, else from every patch of the region that is neither coupled nor
+of a constraint type (`empty`, `symmetry`, `symmetryPlane`, `wedge`).
 
 ```sh
 umcf-cli run --case my-case \
@@ -236,8 +237,8 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   for the case's OpenFOAM version (`patch.run`): OpenFOAM-12 takes the path from the case
   (`-dict system/<region>/createPatchDict.umcf`), OpenFOAM-8 below `system/<region>/` already
   (`-dict system/createPatchDict.umcf`). Adding to the dictionary is refused when it can't be for this
-  mesh: it notes the number of faces of the mesh it was prepared on, and the mesh must have that
-  many and none of the patches it prepares. A mesh made again with as many faces, before the
+  mesh: it notes the number of faces of the mesh it was prepared on (a dictionary without that line
+  is refused), and the mesh must have that many and none of the patches it prepares. A mesh made again with as many faces, before the
   dictionary has run, isn't caught. Until then, the patch isn't in the mesh, the view or the
   browser. When the case's scripts make the region's mesh again, the mesh they make doesn't have
   it (`patch.remesh`).
@@ -258,7 +259,9 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   removes it, except OpenFOAM-12's, which keeps a constraint type without faces), and the
   `processor*` directories (`patch.decomposed`).
 - **Refused**: a name already used (a patch, a group, a field entry, a prepared patch, a face
-  set), a number, a face that isn't a boundary face, a face prepared for another patch already,
+  set), a number, a face that isn't a boundary face, a face prepared for another patch already (from a face set, or from whole patches by a
+  `constructFrom patches` entry of the dictionary, which may name patches and groups but no
+  patterns),
   faces of a coupled patch (`processor`, `cyclic`, `cyclicAMI`, the non-conformal ones), whose
   faces `createPatch` keeps paired, and a new coupled patch, whose two halves are made together
   with `createPatch`'s own dictionary. So is adding to a dictionary whose face sets are gone.

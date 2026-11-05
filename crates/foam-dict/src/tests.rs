@@ -344,6 +344,10 @@ fn append_adds_a_list_item_like_the_ones_before() {
     let mut doc = Document::parse("patches\n(\n    a\n    /* one\n       two */\n);\n").unwrap();
     doc.append(&["patches"], "b").unwrap();
     assert_eq!(doc.to_string(), "patches\n(\n    a\n    /* one\n       two */\n    b\n);\n");
+    // A comment on the `)`'s line stays after `a`.
+    let mut doc = Document::parse("patches\n(\n    a\n    /* one */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches\n(\n    a\n    /* one */ \n    b\n);\n");
     let mut doc = Document::parse("patches\n(\n    a\n    // the end\n);\n").unwrap();
     doc.append(&["patches"], "b").unwrap();
     assert_eq!(doc.to_string(), "patches\n(\n    a\n    // the end\n    b\n);\n");

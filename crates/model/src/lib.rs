@@ -33,6 +33,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use umcf_core::{CaseFs, CaseWrite, FsError};
@@ -362,11 +363,30 @@ pub fn create_patch_command(region: &str, version: Option<umcf_core::OfVersion>)
     }
 }
 
+/// OpenFOAM's wall patch types: a patch of one is in the group `wall`.
+pub fn is_wall_type(kind: &str) -> bool {
+    matches!(kind, "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall")
+}
+
+/// OpenFOAM's constraint patch types that take a condition of their own type (`empty`, …) and
+/// are in the group of their type.
+pub fn is_constraint_type(kind: &str) -> bool {
+    matches!(kind, "empty" | "symmetry" | "symmetryPlane" | "wedge")
+}
+
+/// Whether patch `p` is in group `g`: its `inGroups`, or the group OpenFOAM gives its type
+/// (`wall` for the wall types, the type for a constraint type).
+fn in_group(p: &Patch, g: &str) -> bool {
+    p.groups.iter().any(|x| umcf_foam_dict::unquote(x) == g)
+        || (g == "wall" && is_wall_type(&p.kind))
+        || (is_constraint_type(&p.kind) && p.kind == g)
+}
+
 /// The kind of condition a patch type takes: its own for a constraint type, `wall` for the wall
 /// types, else the type. A copied entry is only right between patches of one kind.
 fn condition_kind(kind: &str) -> &str {
     match kind {
-        "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall" => "wall",
+        k if is_wall_type(k) => "wall",
         "patch" | "mapped" | "mappedPatch" | "mappedExtrudedPatch" => "patch",
         k => k,
     }
@@ -1325,13 +1345,19 @@ impl Case {
         let mut report = CreateReport { new_dict: self.dict(&dict).is_none(), ..Default::default() };
         // Prepared on another mesh: its face labels are not this mesh's.
         let text = doc.to_string();
-        if let Some(n) =
-            text.split(STAMP).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok())
-            && n != mesh_faces
-        {
-            return Err(Error::Bc(format!(
-                "{dict} was prepared on a mesh of {n} faces, and this one has {mesh_faces}: run it on that mesh or delete it (and its face sets) first"
-            )));
+        match text.split(STAMP).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) if n == mesh_faces => {}
+            Some(n) => {
+                return Err(Error::Bc(format!(
+                    "{dict} was prepared on a mesh of {n} faces, and this one has {mesh_faces}: run it on that mesh or delete it (and its face sets) first"
+                )));
+            }
+            None => {
+                return Err(Error::Bc(format!(
+                    "{dict} doesn't say the mesh it was prepared on (its `{}` line is gone): run it or delete it (and its face sets) first",
+                    STAMP.trim()
+                )));
+            }
         }
         let mut pending: Vec<(String, Vec<u32>)> = Vec::new();
         match doc.get(&["patches"]).map(|e| e.value.as_slice()) {
@@ -1352,9 +1378,32 @@ impl Case {
                             "{dict} prepares `{name}`, which the mesh has already: it has run, so delete it (and its face sets) first"
                         )));
                     }
-                    let (Some(name), Some("set"), Some(set_name)) =
-                        (get("name"), get("constructFrom").as_deref(), get("set"))
-                    else {
+                    let Some(name) = get("name") else { continue };
+                    // Made from whole patches: their faces are taken.
+                    if get("constructFrom").as_deref() == Some("patches") {
+                        let listed = get("patches").unwrap_or_default();
+                        let names: Vec<&str> = listed
+                            .trim_matches(|c| c == '(' || c == ')')
+                            .split_whitespace()
+                            .map(umcf_foam_dict::unquote)
+                            .collect();
+                        // By name or group; a pattern (or anything else) can't be told here.
+                        let named = |n: &str| patches.iter().any(|p| p.name == n || in_group(p, n));
+                        if let Some(n) = names.iter().find(|n| !named(n)) {
+                            return Err(Error::Bc(format!(
+                                "{dict} prepares `{name}` from `{n}`, which is no patch or group of this mesh: run that dictionary or delete it first"
+                            )));
+                        }
+                        let labels: Vec<u32> = patches
+                            .iter()
+                            .filter(|p| names.iter().any(|n| p.name == *n || in_group(p, n)))
+                            .flat_map(|p| p.faces())
+                            .filter_map(|f| u32::try_from(f).ok())
+                            .collect();
+                        pending.push((name, labels));
+                        continue;
+                    }
+                    let (Some("set"), Some(set_name)) = (get("constructFrom").as_deref(), get("set")) else {
                         continue;
                     };
                     let limits = umcf_foam_mesh::Limits { max_bytes: self.edit_cap(), ..Default::default() };
@@ -1452,7 +1501,7 @@ impl Case {
             faces.len()
         );
         for f in &faces {
-            text.push_str(&format!("{f}\n"));
+            let _ = writeln!(text, "{f}");
         }
         text.push_str(")\n");
         self.put_file(fs, &set, text.into_bytes())?;
@@ -1462,7 +1511,7 @@ impl Case {
         report.dict = dict;
         // The fields of the start time.
         let sources: Vec<&str> = report.from.iter().map(|(p, _)| p.as_str()).collect();
-        let constraint = matches!(new.kind, "empty" | "symmetry" | "symmetryPlane" | "wedge");
+        let constraint = is_constraint_type(new.kind);
         let one = match sources.as_slice() {
             [p] if !constraint
                 && patches.iter().any(|q| q.name == *p && condition_kind(&q.kind) == condition_kind(new.kind)) =>
@@ -1474,7 +1523,7 @@ impl Case {
         // Its groups, with the ones OpenFOAM gives a patch of its type (`wall` for every wall
         // type, the type for a constraint type).
         let mut groups: Vec<&str> = new.groups.to_vec();
-        if matches!(new.kind, "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall") {
+        if is_wall_type(new.kind) {
             groups.push("wall");
         }
         if constraint {
@@ -1494,14 +1543,16 @@ impl Case {
             }
             let copy = one.as_deref().and_then(|p| bcs.iter().rfind(|b| b.patch == p && !b.pattern));
             let Some(source) = copy.filter(|b| !b.lists).map(|b| b.patch.clone()) else {
-                // An entry for one of its groups gives it a condition; a pattern or text from
-                // elsewhere may.
-                // OpenFOAM gives an `empty` patch its condition without one.
-                if new.kind == "empty" || bcs.iter().any(|b| !b.pattern && groups.contains(&b.patch.as_str())) {
-                } else if indirect || bcs.iter().any(|b| b.pattern) {
-                    report.maybe.push(fpath);
-                } else {
-                    report.unfilled.push(fpath);
+                // Covered when OpenFOAM gives it a condition itself (`empty`) or an entry for one
+                // of its groups does; maybe when a pattern or text from elsewhere does.
+                let covered =
+                    new.kind == "empty" || bcs.iter().any(|b| !b.pattern && groups.contains(&b.patch.as_str()));
+                if !covered {
+                    if indirect || bcs.iter().any(|b| b.pattern) {
+                        report.maybe.push(fpath);
+                    } else {
+                        report.unfilled.push(fpath);
+                    }
                 }
                 continue;
             };

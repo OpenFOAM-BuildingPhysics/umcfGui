@@ -75,8 +75,16 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
     }
     // What is before the `)` (`( a /* note */ )`, `( a // note` and a new line) stays after the
     // items it follows: in front of the new one. The `)` keeps its own line, or gets one.
+    // A comment on the `)`'s own line (`    /* one */ )`) goes too: the `)` gets a line of its own.
     let (kept, rest) = match last_free_newline(&close.lead) {
-        Some(i) => (close.lead.get(..i).unwrap_or("").to_string(), close.lead.get(i..).unwrap_or("").to_string()),
+        Some(i) => {
+            let tail = close.lead.get(i..).unwrap_or("");
+            if tail.trim().is_empty() {
+                (close.lead.get(..i).unwrap_or("").to_string(), tail.to_string())
+            } else {
+                (close.lead.clone(), format!("\n{key_indent}"))
+            }
+        }
         None => (close.lead.clone(), format!("\n{key_indent}")),
     };
     if !kept.is_empty() {

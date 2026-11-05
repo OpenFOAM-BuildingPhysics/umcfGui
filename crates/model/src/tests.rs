@@ -1161,7 +1161,7 @@ fn a_new_patch_is_prepared_for_create_patch() {
     let fs3 = fs.clone().with(
         "system/air/createPatchDict.umcf",
         format!(
-            "{}patches ( {{ name gone; constructFrom set; set gone; }} );\n",
+            "{}// prepared on a mesh of 16 faces\npatches ( {{ name gone; constructFrom set; set gone; }} );\n",
             header("dictionary", "createPatchDict")
         ),
     );
@@ -1205,14 +1205,14 @@ fn the_copied_entry_keeps_comments_and_constraint_types_get_none() {
 
 #[test]
 fn an_entry_is_copied_between_patches_of_one_kind_only() {
-    let b = "2\n(\n    roof\n    {\n        type            wall;\n        nFaces          2;\n        startFace       10;\n    }\n    side\n    {\n        type            empty;\n        nFaces          2;\n        startFace       12;\n    }\n)\n";
+    let b = "3\n(\n    roof\n    {\n        type            wall;\n        nFaces          2;\n        startFace       10;\n    }\n    side\n    {\n        type            empty;\n        nFaces          2;\n        startFace       12;\n    }\n    other\n    {\n        type            patch;\n        nFaces          2;\n        startFace       14;\n    }\n)\n";
     let t = "boundaryField\n{\n    roof { type nutkWallFunction; value uniform 0; } /* a note\n       on two lines */\n    side { type empty; }\n}\n";
     let fs = MemFs::new()
         .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
         .with(
             "system/air/createPatchDict.umcf",
             format!(
-                "{}patches\n(\n    {{ name old; constructFrom patches; patches (side); }}\n);\n",
+                "{}// prepared on a mesh of 16 faces\npatches\n(\n    {{ name old; constructFrom patches; patches (other); }}\n);\n",
                 header("dictionary", "createPatchDict")
             ),
         )
@@ -1233,9 +1233,41 @@ fn an_entry_is_copied_between_patches_of_one_kind_only() {
     assert!(out.contains("    roof { type nutkWallFunction; value uniform 0; }\n    eave { type nutkWallFunction; value uniform 0; } /* a note\n       on two lines */\n    side"), "{out}");
     let dict = c.dict("system/air/createPatchDict.umcf").unwrap().to_string();
     assert!(
-        dict.contains("{ name old; constructFrom patches; patches (side); }\n    {\n        name            vent;"),
+        dict.contains("{ name old; constructFrom patches; patches (other); }\n    {\n        name            vent;"),
         "{dict}"
     );
+    // The faces of `other` are taken by `old`.
+    let e = c.create_patch(&fs, "air", &new("taken", "patch", &[14])).unwrap_err().to_string();
+    assert!(e.contains("face 14 is in `old`"), "{e}");
+    // By the group OpenFOAM gives a type: `wall` takes the faces of `roof`.
+    let group = fs.clone().with(
+        "system/air/createPatchDict.umcf",
+        format!(
+            "{}// prepared on a mesh of 16 faces\npatches ( {{ name w; constructFrom patches; patches (wall); }} );\n",
+            header("dictionary", "createPatchDict")
+        ),
+    );
+    let mut c = Case::open(&group).unwrap();
+    let e = c.create_patch(&group, "air", &new("x", "patch", &[10])).unwrap_err().to_string();
+    assert!(e.contains("face 10 is in `w`"), "{e}");
+    // One whose faces can't be told (a pattern) is refused.
+    let pattern = fs.clone().with(
+        "system/air/createPatchDict.umcf",
+        format!(
+            "{}// prepared on a mesh of 16 faces\npatches ( {{ name p; constructFrom patches; patches (\"oth.*\"); }} );\n",
+            header("dictionary", "createPatchDict")
+        ),
+    );
+    let mut c = Case::open(&pattern).unwrap();
+    let e = c.create_patch(&pattern, "air", &new("x", "patch", &[10])).unwrap_err().to_string();
+    assert!(e.contains("which is no patch or group of this mesh"), "{e}");
+    // A dictionary without the line saying its mesh is refused.
+    let bare = fs
+        .clone()
+        .with("system/air/createPatchDict.umcf", format!("{}patches ();\n", header("dictionary", "createPatchDict")));
+    let mut c = Case::open(&bare).unwrap();
+    let e = c.create_patch(&bare, "air", &new("x", "patch", &[14])).unwrap_err().to_string();
+    assert!(e.contains("doesn't say the mesh it was prepared on"), "{e}");
     assert!(dict.contains("pointSync       false;"), "{dict}");
 }
 

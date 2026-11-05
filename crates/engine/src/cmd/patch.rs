@@ -60,7 +60,7 @@ pub(super) const CREATE: CommandSpec = CommandSpec {
     label: "New patch",
     menu: "Mesh/New patch…",
     shortcut: None,
-    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches. type: default patch. groups, entries: as patch.set. The faces, one of: faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that isn't coupled). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
+    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches. type: default patch. groups, entries: as patch.set. The faces, one of: faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
     enabled: needs_case,
     run: create,
     journal: true,
@@ -358,9 +358,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         found.push(warn("patch.remesh", &report.dict, "the case's scripts make this region's mesh again, which makes it without the patch: run createPatch with that dictionary only on the mesh it was prepared on".to_string()));
     }
     for q in &report.emptied {
-        let constraint = patches
-            .iter()
-            .any(|x| x.name == *q && matches!(x.kind.as_str(), "empty" | "symmetry" | "symmetryPlane" | "wedge"));
+        let constraint = patches.iter().any(|x| x.name == *q && umcf_model::is_constraint_type(&x.kind));
         let what = if constraint {
             "OpenFOAM-12's createPatch keeps it without faces, OpenFOAM-8's removes it"
         } else {
@@ -385,7 +383,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         found.push(warn(
             "patch.unread",
             f,
-            format!("too large to be read here: give it an entry for `{name}` before a run"),
+            format!("too large to be read here: check it has an entry for `{name}`, or give it one, before a run"),
         ));
     }
     if o.case.exists("0.orig") == Some(true) {
@@ -438,7 +436,8 @@ fn labels(id: &str, v: &Value) -> Result<Vec<u32>, Error> {
 }
 
 /// The patches `box` and `surface` take faces from: `from`, else the selected ones of the
-/// region, else every patch that isn't coupled.
+/// region, else every patch that isn't coupled nor of a constraint type (`empty`, `symmetry`, …:
+/// moved to another type, their faces would no longer be treated as such).
 fn from(
     id: &str,
     p: &Params,
@@ -467,7 +466,11 @@ fn from(
     if !mine.is_empty() {
         return Ok(mine);
     }
-    Ok(patches.iter().filter(|q| !umcf_model::COUPLED.contains(&q.kind.as_str())).map(|q| q.name.clone()).collect())
+    Ok(patches
+        .iter()
+        .filter(|q| !umcf_model::COUPLED.contains(&q.kind.as_str()) && !umcf_model::is_constraint_type(&q.kind))
+        .map(|q| q.name.clone())
+        .collect())
 }
 
 /// The faces of the patches `from`, with their centres (the mean of their points).
