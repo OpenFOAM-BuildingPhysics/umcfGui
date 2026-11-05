@@ -378,16 +378,14 @@ pub fn covered(
         }
         next = next.saturating_add(u32::try_from(obj.triangles.len()).unwrap_or(u32::MAX));
     }
-    // A flag per triangle seen (ids are dense from 0; `NONE` is past them), read in order.
-    let mut seen = vec![false; next as usize];
+    // Each triangle seen once, as the pixels are read: as many as the rectangle has pixels at
+    // most, whatever the size of the scene.
+    let mut seen = std::collections::HashSet::new();
     for y in ys.0..=ys.1 {
-        for i in t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]) {
-            if let Some(s) = seen.get_mut(*i as usize) {
-                *s = true;
-            }
-        }
+        seen.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));
     }
-    let ids = seen.iter().enumerate().filter(|(_, s)| **s).filter_map(|(i, _)| u32::try_from(i).ok());
+    let mut ids: Vec<u32> = seen.into_iter().collect();
+    ids.sort_unstable();
     for id in ids {
         // The last object starting at or before it.
         let k = first.partition_point(|f| *f <= id).saturating_sub(1);
