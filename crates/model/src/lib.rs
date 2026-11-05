@@ -527,7 +527,8 @@ const SNAPSHOT_LIMIT: usize = 50_000;
 /// The paths of the case that scripts copy, move and read: everything to a depth of five,
 /// except inside `processor*`, time directories other than `0`, and meshes (a `polyMesh` lists
 /// its files and `sets/`, no deeper). A directory that wasn't listed is marked
-/// `<dir>/\u{1}`: what is below it is not known.
+/// `<dir>/\u{1}`, and one whose listing failed `<dir>/\u{2}` (the case root: `\u{2}`): what is
+/// below either is not known.
 fn snapshot(fs: &dyn CaseFs) -> Result<std::collections::BTreeSet<String>> {
     let mut out = std::collections::BTreeSet::new();
     let mut stack: Vec<(String, usize)> = vec![(String::new(), 0)];
@@ -536,7 +537,7 @@ fn snapshot(fs: &dyn CaseFs) -> Result<std::collections::BTreeSet<String>> {
             Ok(n) => n,
             // A directory that can't be listed: what is below it is not known.
             Err(_) => {
-                out.insert(format!("{dir}/\u{1}"));
+                out.insert(if dir.is_empty() { "\u{2}".to_string() } else { format!("{dir}/\u{2}") });
                 continue;
             }
         };
@@ -737,13 +738,17 @@ impl Case {
         // Below a listed mesh, processor or time directory: not listed, so not known.
         let mut dir = rel;
         while let Some((parent, _)) = dir.rsplit_once('/') {
-            if self.paths.contains(&format!("{parent}/\u{1}")) {
+            if self.paths.contains(&format!("{parent}/\u{1}")) || self.paths.contains(&format!("{parent}/\u{2}")) {
                 return None;
             }
             dir = parent;
         }
         let top = rel.split('/').next().unwrap_or(rel);
-        if top.starts_with("processor") || self.paths.contains(&format!("{top}/\u{1}")) || self.paths.contains("\u{1}")
+        if top.starts_with("processor")
+            || self.paths.contains(&format!("{top}/\u{1}"))
+            || self.paths.contains(&format!("{top}/\u{2}"))
+            || self.paths.contains("\u{1}")
+            || self.paths.contains("\u{2}")
         {
             return None;
         }
@@ -1305,10 +1310,24 @@ impl Case {
         let vf = |dir: &str| {
             if region.is_empty() { format!("{dir}/viewFactorsDict") } else { format!("{dir}/{region}/viewFactorsDict") }
         };
-        for path in [vf("system"), vf("constant")] {
-            if !fs.is_file(&path) {
-                continue;
-            }
+        for plain in [vf("system"), vf("constant")] {
+            // Plain or compressed, put by a command and not saved yet, or on disk. A directory
+            // that can't be listed is said so, not taken as having none.
+            let gz = format!("{plain}.gz");
+            let dir = plain.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+            let listed = match fs.list(&dir) {
+                Ok(names) => names,
+                Err(e) => {
+                    report.not_renamed.push((dir, format!("it can't be listed ({e})")));
+                    continue;
+                }
+            };
+            let there = |p: &str| {
+                self.raw.contains_key(p)
+                    || self.dict(p).is_some()
+                    || (p.rsplit_once('/').is_some_and(|(_, n)| listed.iter().any(|l| l == n)) && fs.is_file(p))
+            };
+            let Some(path) = [plain, gz].into_iter().find(|p| there(p)) else { continue };
             match self.rename_entry(fs, &path, None, patch, to) {
                 Renamed::Yes => report.others.push(path),
                 Renamed::No => {}
@@ -1441,18 +1460,36 @@ impl Case {
             return (out, false, unread);
         }
         // The files there when the case was opened, and those commands made since.
+        let skipped =
+            |p: &str| p.split('/').any(|c| matches!(c, "polyMesh" | "triSurface" | "geometry" | "boundaryData"));
+        let searched =
+            |p: &str| ["system", "constant", "0.orig"].iter().any(|d| p == *d || p.starts_with(&format!("{d}/")));
+        // Directories under those whose listing failed when the case was opened: not searched.
+        // The case root itself: none of them was searched.
+        if self.paths.contains("\u{2}") {
+            unread.extend(["system", "constant", "0.orig"].map(String::from));
+        }
+        for p in &self.paths {
+            if let Some(dir) = p.strip_suffix("/\u{2}")
+                && searched(dir)
+                && !skipped(dir)
+            {
+                unread.push(dir.to_string());
+            }
+        }
+        // The files there when the case was opened, the dictionaries the case holds, and the
+        // files commands made since.
         let mut files: Vec<String> = self
             .paths
             .iter()
+            .chain(self.files.keys())
             .chain(self.raw.keys())
-            .filter(|p| !p.contains('\u{1}'))
+            .filter(|p| !p.contains('\u{1}') && !p.contains('\u{2}'))
             .filter(|p| ["system/", "constant/", "0.orig/"].iter().any(|d| p.starts_with(d)))
             .cloned()
             .collect();
         files.sort();
         files.dedup();
-        let skipped =
-            |p: &str| p.split('/').any(|c| matches!(c, "polyMesh" | "triSurface" | "geometry" | "boundaryData"));
         let push = |out: &mut Vec<(String, usize)>, at: (String, usize)| {
             if out.len() > MAX_MENTIONS {
                 return false;
