@@ -176,6 +176,7 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 - Drawing a mesh reads all of it, not only its boundary: the 2.8-million-cell air region of
   the 3×3 case takes about 5 s and 1.3 GB, almost all of it reading. Its 573 000 boundary
   triangles are drawn and picked in well under a second.
-- No level of detail and no transparency yet; the renderer draws every triangle on one core.
+- No level of detail; the renderer draws every triangle on one core, and sorts transparent
+  triangles one by one ([display modes](#display-modes)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
   by a rectangle (`select.rect`). A brush and picking cells are not there yet.
