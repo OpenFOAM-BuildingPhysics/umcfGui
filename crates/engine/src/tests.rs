@@ -1060,12 +1060,8 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
     s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
     s.execute("select.set", &json!({"items": [{"region": "air", "patch": "inlet"}]})).unwrap();
     // The top of the cube, by a box: the region and the patch are the selection's.
-    let o = s
-        .execute(
-            "patch.create",
-            &json!({"name": "roof", "type": "wall", "box": {"min": [-1, -1, 0.9], "max": [2, 2, 2]}}),
-        )
-        .unwrap();
+    let o =
+        s.execute("patch.create", &json!({"name": "roof", "box": {"min": [-1, -1, 0.9], "max": [2, 2, 2]}})).unwrap();
     assert_eq!(o.message, "air/roof: 1 faces prepared for createPatch");
     assert_eq!(o.data["from"], json!([{"patch": "inlet", "faces": 1}]));
     assert_eq!(o.data["set"], "constant/air/polyMesh/sets/roof");

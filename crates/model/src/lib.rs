@@ -316,6 +316,9 @@ pub struct CreateReport {
     pub maybe: Vec<String>,
 }
 
+/// How [`pending_dict`] says the mesh it was prepared on: its number of faces.
+const STAMP: &str = "// prepared on a mesh of ";
+
 /// The dictionary [`Case::create_patch`] prepares patches in, for one run of `createPatch
 /// [-region <region>] -dict <it> -overwrite`.
 pub fn pending_dict(region: &str) -> String {
@@ -323,6 +326,33 @@ pub fn pending_dict(region: &str) -> String {
         "system/createPatchDict.umcf".to_string()
     } else {
         format!("system/{region}/createPatchDict.umcf")
+    }
+}
+
+/// The `createPatch` command that makes the patches prepared in [`pending_dict`]. OpenFOAM-8
+/// reads `-dict` below `system/<region>/` already, OpenFOAM-12 from the case; `None` gives the
+/// command of each.
+pub fn create_patch_command(region: &str, version: Option<umcf_core::OfVersion>) -> String {
+    use umcf_core::OfVersion;
+    if region.is_empty() {
+        return "createPatch -dict system/createPatchDict.umcf -overwrite".to_string();
+    }
+    let v8 = format!("createPatch -region {region} -dict system/createPatchDict.umcf -overwrite");
+    let v12 = format!("createPatch -region {region} -dict system/{region}/createPatchDict.umcf -overwrite");
+    match version {
+        Some(OfVersion::V8) => v8,
+        Some(OfVersion::V12) => v12,
+        None => format!("{v12} (OpenFOAM-12; OpenFOAM-8: {v8})"),
+    }
+}
+
+/// The kind of condition a patch type takes: its own for a constraint type, `wall` for the wall
+/// types, else the type. A copied entry is only right between patches of one kind.
+fn condition_kind(kind: &str) -> &str {
+    match kind {
+        "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall" => "wall",
+        "patch" | "mapped" | "mappedPatch" => "patch",
+        k => k,
     }
 }
 
@@ -1256,7 +1286,8 @@ impl Case {
         if [&set, &gz].iter().any(|p| self.raw.contains_key(p.as_str()) || fs.is_file(p)) {
             return Err(Error::Bc(format!("{set} is there already")));
         }
-        // The patches prepared already, and their faces.
+        // The patches prepared already, and their faces, on a mesh of this many faces.
+        let mesh_faces = patches.iter().map(|p| p.start_face + p.n_faces).max().unwrap_or(0);
         let dict = pending_dict(region);
         let dict_err = |source| Error::Dict { path: dict.clone(), source };
         let mut doc = match self.dict(&dict) {
@@ -1269,13 +1300,23 @@ impl Case {
             None => {
                 let object = if region.is_empty() { "system".to_string() } else { format!("system/{region}") };
                 Document::parse(&format!(
-                    "FoamFile\n{{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"{object}\";\n    object      createPatchDict;\n}}\n\n// The patches umcfGui prepared on this mesh, for one run of\n//     createPatch{} -dict {dict} -overwrite\n// The face sets hold face labels of this mesh: delete this file once it has run.\n\npointSync false;\n\npatches\n(\n);\n",
-                    if region.is_empty() { String::new() } else { format!(" -region {region}") }
+                    "FoamFile\n{{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"{object}\";\n    object      createPatchDict;\n}}\n\n// The patches umcfGui prepared on this mesh, for one run of\n//     {}\n// The face sets hold face labels of this mesh: delete this file once it has run.\n{STAMP}{mesh_faces} faces\n\npointSync false;\n\npatches\n(\n);\n",
+                    create_patch_command(region, self.layout.version)
                 ))
                 .map_err(dict_err)?
             }
         };
         let mut report = CreateReport { new_dict: self.dict(&dict).is_none(), ..Default::default() };
+        // Prepared on another mesh: its face labels are not this mesh's.
+        let text = doc.to_string();
+        if let Some(n) =
+            text.split(STAMP).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok())
+            && n != mesh_faces
+        {
+            return Err(Error::Bc(format!(
+                "{dict} was prepared on a mesh of {n} faces, and this one has {mesh_faces}: run it on that mesh or delete it (and its face sets) first"
+            )));
+        }
         let mut pending: Vec<(String, Vec<u32>)> = Vec::new();
         match doc.get(&["patches"]).map(|e| e.value.as_slice()) {
             Some([Node::List { items, .. }]) => {
@@ -1363,7 +1404,7 @@ impl Case {
                 )));
             }
             report.from.push((p.name.clone(), *n));
-            if n + t == p.n_faces {
+            if n + t >= p.n_faces {
                 report.emptied.push(p.name.clone());
             }
         }
@@ -1399,7 +1440,11 @@ impl Case {
         let sources: Vec<&str> = report.from.iter().map(|(p, _)| p.as_str()).collect();
         let constraint = matches!(new.kind, "empty" | "symmetry" | "symmetryPlane" | "wedge");
         let one = match sources.as_slice() {
-            [p] if !constraint => Some(p.to_string()),
+            [p] if !constraint
+                && patches.iter().any(|q| q.name == *p && condition_kind(&q.kind) == condition_kind(new.kind)) =>
+            {
+                Some(p.to_string())
+            }
             _ => None,
         };
         // Its groups, with the ones OpenFOAM gives a patch of its type (`wall` for every wall
@@ -1427,7 +1472,8 @@ impl Case {
             let Some(source) = copy.filter(|b| !b.lists).map(|b| b.patch.clone()) else {
                 // An entry for one of its groups gives it a condition; a pattern or text from
                 // elsewhere may.
-                if bcs.iter().any(|b| !b.pattern && groups.contains(&b.patch.as_str())) {
+                // OpenFOAM gives an `empty` patch its condition without one.
+                if new.kind == "empty" || bcs.iter().any(|b| !b.pattern && groups.contains(&b.patch.as_str())) {
                 } else if indirect || bcs.iter().any(|b| b.pattern) {
                     report.maybe.push(fpath);
                 } else {
@@ -1452,14 +1498,23 @@ impl Case {
                 };
                 let mut e = e.clone();
                 e.key.text = new.name.to_string();
-                let indent = e.key.lead.rsplit('\n').next().unwrap_or("").to_string();
+                // Indented like the source.
+                let indent: String = match e.key.lead.rsplit_once('\n') {
+                    Some((_, last)) => last.chars().take_while(|c| *c == ' ' || *c == '\t').collect(),
+                    None => "    ".to_string(),
+                };
                 // On a line of its own after the source, without the comments before that one;
-                // a comment on the source's last line stays with it.
+                // a comment on the source's last line stays with it (unless it is a block comment
+                // that goes on).
                 let next = match bf.items.get_mut(at + 1) {
                     Some(item) => &mut item.key_tok_mut().lead,
                     None => &mut close.lead,
                 };
-                e.key.lead = match next.find('\n') {
+                let split = next.find('\n').filter(|&i| {
+                    let same = next.get(..i).unwrap_or("");
+                    same.matches("/*").count() == same.matches("*/").count()
+                });
+                e.key.lead = match split {
                     Some(i) => {
                         let same = next.get(..i).unwrap_or("").to_string();
                         *next = next.get(i..).unwrap_or("").to_string();

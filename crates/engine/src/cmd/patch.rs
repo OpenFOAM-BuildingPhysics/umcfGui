@@ -341,7 +341,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let report = o.case.create_patch(o.fs.as_ref(), &region, &new)?;
     let warn = |code: &str, path: &str, message: String| json!({ "level": "warning", "code": code, "path": path, "region": region, "patch": name, "field": null, "message": message });
     let mut found: Vec<Value> = Vec::new();
-    let flag = if region.is_empty() { String::new() } else { format!(" -region {region}") };
+    let command = umcf_model::create_patch_command(&region, o.case.layout.version);
     found.push(json!({
         "level": "info",
         "code": "patch.run",
@@ -350,7 +350,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         "patch": name,
         "field": null,
         "message": format!(
-            "the mesh gets the patch when `createPatch{flag} -dict {} -overwrite` runs, once, on this mesh (with the other patches prepared there); then delete that dictionary: its face sets hold face labels of this mesh only",
+            "the mesh gets the patch when `{command}` runs, once, on this mesh (with the other patches prepared in {}); then delete that dictionary: its face sets hold face labels of this mesh only",
             report.dict
         ),
     }));

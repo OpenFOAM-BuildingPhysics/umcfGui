@@ -1061,7 +1061,7 @@ fn a_new_patch_is_prepared_for_create_patch() {
         ),
     );
     let mut c = Case::open(&fs).unwrap();
-    let new = |name, faces| NewPatch { name, kind: "wall", groups: &["roofs"], entries: &[], faces };
+    let new = |name, faces| NewPatch { name, kind: "patch", groups: &["roofs"], entries: &[], faces };
     // One face of `top`: its entry in T is copied for the new patch.
     let report = c.create_patch(&fs, "air", &new("roof", &[15, 15])).unwrap();
     assert_eq!(report.set, "constant/air/polyMesh/sets/roof");
@@ -1093,12 +1093,13 @@ fn a_new_patch_is_prepared_for_create_patch() {
     let again = Document::parse(&dict).unwrap();
     assert!(again.root.problems().is_empty(), "{dict}");
     assert!(dict.contains("createPatch -region air -dict system/air/createPatchDict.umcf -overwrite"), "{dict}");
+    assert!(dict.contains("// prepared on a mesh of 16 faces\n"), "{dict}");
     assert_eq!(again.value(&["pointSync"]).as_deref(), Some("false"));
     let Some([umcf_foam_dict::Node::List { items, .. }]) = again.get(&["patches"]).map(|e| e.value.as_slice()) else {
         panic!("{dict}")
     };
     assert_eq!(items.len(), 2);
-    assert!(dict.contains("        name            terrain;\n        patchInfo\n        {\n            type            wall;\n            inGroups        List<word> 1(roofs);\n        }\n        constructFrom   set;\n        set             terrain;\n"), "{dict}");
+    assert!(dict.contains("        name            terrain;\n        patchInfo\n        {\n            type            patch;\n            inGroups        List<word> 1(roofs);\n        }\n        constructFrom   set;\n        set             terrain;\n"), "{dict}");
 
     let mut changed = c.changed();
     changed.sort();
@@ -1135,6 +1136,20 @@ fn a_new_patch_is_prepared_for_create_patch() {
     // The last face of `top`: `top` goes, with the face prepared before.
     let report = c.create_patch(&fs, "air", &new("x", &[14])).unwrap();
     assert_eq!(report.emptied, ["top"]);
+    // Prepared on another mesh: stopped.
+    let other = fs.clone().with(
+        "constant/air/polyMesh/boundary",
+        format!(
+            "{}{}",
+            header("polyBoundaryMesh", "boundary"),
+            BOUNDARY.replace("nFaces          2;", "nFaces          3;")
+        ),
+    );
+    let mut c4 = Case::open(&other).unwrap();
+    assert!(
+        e(c4.create_patch(&other, "air", &new("y", &[16])))
+            .contains("prepared on a mesh of 16 faces, and this one has 17")
+    );
     // A prepared set that has gone stops it.
     let fs3 = fs.clone().with(
         "system/air/createPatchDict.umcf",
@@ -1164,7 +1179,7 @@ fn the_copied_entry_keeps_comments_and_constraint_types_get_none() {
         "{out}"
     );
     // A constraint type takes no copy; the included constraint types may give it one.
-    let report = c.create_patch(&fs, "air", &new("flat", "empty", &[11])).unwrap();
+    let report = c.create_patch(&fs, "air", &new("flat", "symmetry", &[11])).unwrap();
     assert!(report.fields.is_empty() && report.unfilled.is_empty());
     assert_eq!(report.maybe, ["0/air/T"]);
     // From two patches: no entry to copy. An entry for one of its groups (`wall` for a wall)
@@ -1176,6 +1191,63 @@ fn the_copied_entry_keeps_comments_and_constraint_types_get_none() {
     assert!(report.unfilled.is_empty() && report.maybe.is_empty() && report.fields.is_empty(), "{report:?}");
     let report = c.create_patch(&fs, "air", &new("edge2", "patch", &[10])).unwrap();
     assert_eq!(report.unfilled, ["0/air/T"]);
+    // OpenFOAM gives an empty patch its condition.
+    let report = c.create_patch(&fs, "air", &new("edge3", "empty", &[13])).unwrap();
+    assert!(report.unfilled.is_empty() && report.maybe.is_empty(), "{report:?}");
+}
+
+#[test]
+fn an_entry_is_copied_between_patches_of_one_kind_only() {
+    let b = "2\n(\n    roof\n    {\n        type            wall;\n        nFaces          2;\n        startFace       10;\n    }\n    side\n    {\n        type            empty;\n        nFaces          2;\n        startFace       12;\n    }\n)\n";
+    let t = "boundaryField\n{\n    roof { type nutkWallFunction; value uniform 0; } /* a note\n       on two lines */\n    side { type empty; }\n}\n";
+    let fs = MemFs::new()
+        .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
+        .with(
+            "system/air/createPatchDict.umcf",
+            format!(
+                "{}patches\n(\n    {{ name old; constructFrom patches; patches (side); }}\n);\n",
+                header("dictionary", "createPatchDict")
+            ),
+        )
+        .with("constant/air/polyMesh/boundary", format!("{}{b}", header("polyBoundaryMesh", "boundary")))
+        .with("0/air/nut", format!("{}internalField uniform 0;\n{t}", header("volScalarField", "nut")));
+    let mut c = Case::open(&fs).unwrap();
+    let new = |name, kind, faces| NewPatch { name, kind, groups: &[], entries: &[], faces };
+    // A wall's condition doesn't go to a patch, nor an empty one's.
+    let report = c.create_patch(&fs, "air", &new("vent", "patch", &[10])).unwrap();
+    assert!(report.fields.is_empty() && report.unfilled == ["0/air/nut"], "{report:?}");
+    let report = c.create_patch(&fs, "air", &new("hole", "patch", &[12])).unwrap();
+    assert!(report.fields.is_empty() && report.unfilled == ["0/air/nut"], "{report:?}");
+    // A wall's does go to a mappedWall, after the block comment, not into it. The item made
+    // from patches by hand is kept and passed over.
+    let report = c.create_patch(&fs, "air", &new("eave", "mappedWall", &[11])).unwrap();
+    assert_eq!(report.fields, ["0/air/nut"]);
+    let out = String::from_utf8(c.file(&fs, "0/air/nut").unwrap().unwrap().to_vec()).unwrap();
+    assert!(out.contains("    roof { type nutkWallFunction; value uniform 0; }\n    eave { type nutkWallFunction; value uniform 0; } /* a note\n       on two lines */\n    side"), "{out}");
+    let dict = c.dict("system/air/createPatchDict.umcf").unwrap().to_string();
+    assert!(
+        dict.contains("{ name old; constructFrom patches; patches (side); }\n    {\n        name            vent;"),
+        "{dict}"
+    );
+    assert!(dict.contains("pointSync       false;"), "{dict}");
+}
+
+#[test]
+fn the_create_patch_command_follows_the_version() {
+    use umcf_core::OfVersion;
+    assert_eq!(create_patch_command("", None), "createPatch -dict system/createPatchDict.umcf -overwrite");
+    assert_eq!(
+        create_patch_command("air", Some(OfVersion::V12)),
+        "createPatch -region air -dict system/air/createPatchDict.umcf -overwrite"
+    );
+    assert_eq!(
+        create_patch_command("air", Some(OfVersion::V8)),
+        "createPatch -region air -dict system/createPatchDict.umcf -overwrite"
+    );
+    assert!(
+        create_patch_command("air", None)
+            .contains("OpenFOAM-8: createPatch -region air -dict system/createPatchDict.umcf")
+    );
 }
 
 #[test]

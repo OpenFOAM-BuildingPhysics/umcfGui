@@ -221,7 +221,8 @@ umcf-cli run --case my-case \
   --cmd 'patch.create={"region": "air", "name": "skyWest", "box": {"min": [-1, -1, -1], "max": [295, 1e9, 1e9]}, "from": ["sky"]}' \
   --cmd 'patch.create={"region": "air", "name": "roofs", "type": "wall", "surface": {"file": "buildings.stl", "solid": "roof", "distance": 0.5}}' \
   --cmd 'case.save={}'
-createPatch -region air -dict system/air/createPatchDict.umcf -overwrite
+createPatch -region air -dict system/air/createPatchDict.umcf -overwrite   # OpenFOAM-12
+createPatch -region air -dict system/createPatchDict.umcf -overwrite       # OpenFOAM-8
 ```
 
 - The faces go into a face set, `constant/<region>/polyMesh/sets/<name>`, and the patch into
@@ -231,14 +232,20 @@ createPatch -region air -dict system/air/createPatchDict.umcf -overwrite
   a face set holds face labels, which hold for this mesh only. The case's own `createPatchDict`,
   which its scripts may run after meshing, isn't touched.
 - **The mesh doesn't change yet**: the patches are made when `createPatch -region <region> -dict
-  system/<region>/createPatchDict.umcf -overwrite` runs, once, on this mesh; delete the
-  dictionary then (`patch.run`). Until then, the patch isn't in the mesh, the view or the
+  … -overwrite` runs, once, on this mesh; delete the dictionary then. The command says the line
+  for the case's OpenFOAM version (`patch.run`): OpenFOAM-12 takes the path from the case
+  (`-dict system/<region>/createPatchDict.umcf`), OpenFOAM-8 below `system/<region>/` already
+  (`-dict system/createPatchDict.umcf`). The dictionary notes the number of faces of the mesh it
+  was prepared on, and adding to it on a mesh of another size is refused. Until then, the patch isn't in the mesh, the view or the
   browser. When the case's scripts make the region's mesh again, the mesh they make doesn't have
   it (`patch.remesh`).
-- **The fields follow when they can.** When all the faces come from one patch, each field file of
-  the region at the start time gets a copy of that patch's own entry for the new patch: OpenFOAM
-  reads an entry for a patch the mesh doesn't have yet without a word. A patch of a constraint
-  type (`empty`, `symmetry`, `symmetryPlane`, `wedge`) gets none: its condition is its type's.
+- **The fields follow when they can.** When all the faces come from one patch of the same kind,
+  each field file of the region at the start time gets a copy of that patch's own entry for the
+  new patch: OpenFOAM reads an entry for a patch the mesh doesn't have yet without a word. The
+  kinds are the wall types (`wall`, `mappedWall`, …), `patch` with the mapped patch types, and
+  each other type on its own: a wall function doesn't go to a `patch`, nor `type empty` to
+  anything else. A patch of a constraint type (`empty`, `symmetry`, `symmetryPlane`, `wedge`)
+  gets none: its condition is its type's, and OpenFOAM gives an `empty` patch its own.
   The command warns about the fields that still need one (`patch.unfilled`), and notes the ones
   whose pattern entry or included text may give one (`patch.maybe`, as
   `#includeEtc "caseDicts/setConstraintTypes"` does for the constraint types). An entry for one of
