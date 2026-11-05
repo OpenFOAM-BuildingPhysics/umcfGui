@@ -9,6 +9,7 @@
 )]
 
 mod catalog;
+mod examples;
 mod layers;
 
 use std::path::{Path, PathBuf};
@@ -30,6 +31,10 @@ commands:
   docs      API reference with warnings as errors, every docs/ page in the zensical.toml nav, and
             the site in strict mode (skipped with a notice if Zensical is not installed)
   deny      cargo deny check licenses (skipped with a notice if cargo-deny is not installed)
+  examples [<filter>]
+            run every example case (examples/of8, examples/of12) with OpenFOAM and
+            urbanMicroclimateFoam, each on a temporary copy; <filter> picks cases by path. The
+            environments are UMCF_OF8_BASHRC and UMCF_OF12_BASHRC, else ~/OpenFOAM-<v>/etc/bashrc
 ";
 
 fn main() -> ExitCode {
@@ -49,6 +54,11 @@ fn main() -> ExitCode {
             }
         },
         Some("deny") => cmd_deny(),
+        Some("examples") => match args.get(1..).unwrap_or_default() {
+            [] => examples::cmd_examples(None),
+            [f] => examples::cmd_examples(Some(f)),
+            _ => Err("examples: one filter at most (usage: cargo xtask examples [<filter>])".into()),
+        },
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())
