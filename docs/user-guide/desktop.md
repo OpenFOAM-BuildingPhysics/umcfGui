@@ -46,10 +46,12 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   selects what is under the cursor (`select.pick`), Ctrl+click toggles it, Shift+click adds it.
   The name of what is under the cursor shows in the history bar.
 - **The axis triad** (top right): click an axis to look along it.
-- **The navigation bar** (bottom): orbit or pan, zoom, fit, the standard views, the faces' edges.
+- **The navigation bar** (bottom): orbit or pan, zoom, fit, the standard views, the faces' edges,
+  and *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
+  adds or takes away one), drawn in the selection colour.
 - **Properties** (right): the selected patches with their type, size and each field's boundary
   condition for them (by name or patch group; one given by a pattern is matched by the
-  [case check](checks.md), not shown here).
+  [case check](checks.md), not shown here), and the picked faces, counted by region.
 - **Results** (right): the last command's message and its diagnostics; it opens when a command
   reports some.
 - **History** (bottom): one chip per edit that can be undone, the marker after the last one
@@ -77,10 +79,11 @@ suggestions under it, the groups, other entries (`neighbourRegion air`), and wha
 now. *Set* sends only what was changed, as [`patch.set`](meshes.md#editing-patches): a renamed
 patch stays selected, and its field files follow.
 
-*New patch* (on the *Mesh* tab) opens a card that prepares a patch from faces of the selected
-patches, as [`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the
-faces, either those whose centre is in a box (from x y z, to x y z) or those within a distance of
-a surface of the case (one of its solids, or all of it). *Prepare* writes the face set and adds the
+*New patch* (on the *Mesh* tab) opens a card that prepares a patch, as
+[`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the faces: those
+picked in the view (chosen when faces are picked), or, of the selected patches, those whose centre
+is in a box (from x y z, to x y z) or within a distance of a surface of the case (one of its
+solids, or all of it). *Prepare* writes the face set and adds the
 patch to the dictionary of the patches prepared on this mesh; the mesh gets them when
 `createPatch` runs once with that dictionary.
 

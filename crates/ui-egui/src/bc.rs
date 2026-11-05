@@ -80,7 +80,7 @@ pub fn selected(session: &Session) -> Vec<(String, String)> {
         .iter()
         .filter_map(|s| match s {
             Sel::Patch { region, patch } => Some((region.clone(), patch.clone())),
-            Sel::Solid { .. } => None,
+            Sel::Solid { .. } | Sel::Face { .. } => None,
         })
         .collect()
 }

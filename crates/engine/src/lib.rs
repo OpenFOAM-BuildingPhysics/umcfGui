@@ -39,7 +39,7 @@ mod cmd;
 mod params;
 
 pub use cmd::COMMANDS;
-pub use cmd::scene::Sel;
+pub use cmd::scene::{Sel, selected_faces};
 
 /// The most undo steps kept; the oldest go first.
 pub const UNDO_DEPTH: usize = 100;
@@ -373,6 +373,9 @@ impl Session {
                 .region(region)
                 .is_some_and(|r| r.patches.as_ref().is_none_or(|ps| ps.iter().any(|p| p.name == *patch))),
             Sel::Solid { .. } => true,
+            Sel::Face { region, face } => case.region(region).is_some_and(|r| {
+                r.patches.as_ref().is_none_or(|ps| ps.iter().any(|p| p.faces().contains(&(*face as usize))))
+            }),
         });
     }
 

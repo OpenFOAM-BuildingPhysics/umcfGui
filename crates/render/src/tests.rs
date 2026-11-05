@@ -157,6 +157,15 @@ fn the_rasteriser_draws_patches_in_their_colours_and_the_selection_in_its_own() 
     style.selected = vec![(0, 1)];
     let img = draw(&s, &cam, &style);
     assert!(close(img.pixel(60, 50).unwrap(), SELECTED, 0.02));
+    // A selected face (the sky is face 1), its patch not selected.
+    style.selected.clear();
+    style.selected_faces.insert((0, 1));
+    let img = draw(&s, &cam, &style);
+    assert!(close(img.pixel(60, 50).unwrap(), SELECTED, 0.02));
+    style.selected_faces = [(0, 0)].into_iter().collect();
+    let img = draw(&s, &cam, &style);
+    assert!(close(img.pixel(60, 50).unwrap(), palette(1), 0.02));
+    style.selected_faces.clear();
     // With the faces' edges: the quad's diagonal is not drawn, its sides are.
     style.selected.clear();
     style.edges = true;

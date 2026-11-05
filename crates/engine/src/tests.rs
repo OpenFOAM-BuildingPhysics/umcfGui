@@ -1122,3 +1122,46 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
     }
     assert!(s.case().unwrap().changed().is_empty());
 }
+
+#[test]
+fn faces_are_picked_selected_and_made_a_patch() {
+    let mut s = scene_session();
+    let top = json!({ "view": "top", "width": 100, "height": 100, "pixel": [50, 50], "faces": true });
+    let out = s.execute("select.pick", &top).unwrap();
+    assert_eq!(out.data["picked"], json!({ "region": "air", "face": 1 }));
+    assert_eq!(
+        out.data["hits"][0],
+        json!({ "region": "air", "face": 1, "patch": "sky", "distance": out.data["hits"][0]["distance"], "point": out.data["hits"][0]["point"] })
+    );
+    assert_eq!(out.data["hits"][1]["face"], 0);
+    assert_eq!(out.message, "face 1 of region air (2 under the cursor); 1 selected");
+    // The one behind, added; select.set takes faces by label too.
+    let mut behind = top.clone();
+    behind["depth"] = json!(1);
+    behind["mode"] = json!("add");
+    s.execute("select.pick", &behind).unwrap();
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 2 }], "mode": "add" })).unwrap();
+    assert_eq!(s.selection().len(), 3);
+    for bad in [
+        json!({ "region": "air", "face": 99 }),
+        json!({ "region": "air", "face": -1 }),
+        json!({ "region": "nowhere", "face": 0 }),
+    ] {
+        assert!(s.execute("select.set", &json!({ "items": [bad] })).is_err(), "{bad}");
+    }
+    // The snapshot draws them.
+    let out = s.execute("scene.snapshot", &json!({ "width": 16, "height": 16 })).unwrap();
+    assert!(out.message.ends_with(", 3 selected"), "{}", out.message);
+    // patch.create takes the selected faces, and their region.
+    let o = s.execute("patch.create", &json!({ "name": "picked" })).unwrap();
+    assert_eq!(o.data["faces"], json!(3));
+    assert_eq!(o.data["region"], "air");
+    let from: Vec<&str> = o.data["from"].as_array().unwrap().iter().map(|f| f["patch"].as_str().unwrap()).collect();
+    assert_eq!(from, ["ground", "sky", "walls"]);
+    assert!(s.execute("patch.create", &json!({ "name": "again", "from": ["sky"] })).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Nothing picked and no faces given: says so.
+    s.execute("select.clear", &json!({})).unwrap();
+    let e = s.execute("patch.create", &json!({ "name": "x", "region": "air" })).unwrap_err().to_string();
+    assert!(e.contains("select faces"), "{e}");
+}

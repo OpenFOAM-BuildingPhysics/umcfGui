@@ -37,6 +37,8 @@ pub enum Icon {
     EyeOff,
     Region,
     Patch,
+    /// Picking single faces: a grid with one cell taken.
+    Faces,
     /// A boundary condition: a patch with what flows in through it.
     Condition,
     Surface,
@@ -295,6 +297,13 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, ink: Ink) {
         Icon::Patch => {
             closed(&[(-0.36, -0.2), (0.24, -0.36), (0.36, 0.2), (-0.24, 0.36)], soft);
             circle(0.0, 0.0, 0.07, ink.fill, Stroke::NONE);
+        }
+        Icon::Faces => {
+            closed(&[(0.0, -0.4), (0.4, -0.4), (0.4, 0.0), (0.0, 0.0)], ink.fill);
+            for k in [-0.4f32, 0.0, 0.4] {
+                line(&[(k, -0.4), (k, 0.4)]);
+                line(&[(-0.4, k), (0.4, k)]);
+            }
         }
         Icon::Condition => {
             closed(&[(-0.4, 0.06), (0.16, -0.06), (0.4, 0.22), (-0.16, 0.36)], soft);

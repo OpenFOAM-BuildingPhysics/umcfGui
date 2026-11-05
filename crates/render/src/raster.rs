@@ -32,6 +32,9 @@ pub struct Style {
     pub edges: bool,
     /// Classes drawn in the selection colour: (object index, class index).
     pub selected: Vec<(usize, u32)>,
+    /// Faces (mesh faces, STL triangles) drawn in the selection colour: (object index, the
+    /// index each triangle of the object comes from, [`crate::Object::origin_index`]).
+    pub selected_faces: std::collections::HashSet<(usize, u32)>,
     pub colour_by: ColourBy,
     /// The background's colours at the top and the bottom (a vertical gradient); `None` for
     /// the default light grey.
@@ -233,7 +236,11 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             let p = tri.map(|i| view.get(i as usize).copied());
             let [Some(a), Some(b), Some(c)] = p else { continue };
             let class = obj.class.get(n).copied().unwrap_or(0);
-            let Some(colour) = colours.get(class as usize) else { continue };
+            let face_selected = !style.selected_faces.is_empty()
+                && obj.origin_index.get(n).is_some_and(|f| style.selected_faces.contains(&(k, *f)));
+            let Some(colour) = (if face_selected { Some(&SELECTED) } else { colours.get(class as usize) }) else {
+                continue;
+            };
             // Lambert with the light at the eye, both sides lit alike.
             let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -245,7 +252,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             let shade = (0.3 + 0.7 * cos) as f32;
             let colour = colour.map(|ch| ch * shade);
             let id = base.saturating_add(class);
-            let front = selected.get(class as usize).copied().unwrap_or(false);
+            let front = face_selected || selected.get(class as usize).copied().unwrap_or(false);
             let edges = if style.edges { obj.edges.get(n).copied().unwrap_or(0) } else { 0 };
             let verts = [a, b, c];
             if verts.iter().all(|v| v[2] >= near) {

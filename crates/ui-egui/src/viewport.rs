@@ -28,6 +28,8 @@ pub struct Viewport {
     pub rect: Option<Rect>,
     /// A primary drag turns the view (else it pans).
     pub orbit: bool,
+    /// A click picks the mesh face under it, not its patch.
+    pub faces: bool,
 }
 
 impl Default for Viewport {
@@ -41,6 +43,7 @@ impl Default for Viewport {
             last_hover: None,
             rect: None,
             orbit: true,
+            faces: false,
         }
     }
 }
@@ -59,8 +62,8 @@ struct Drawn {
 /// What the user asked the view for, done by the app (it runs commands).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// Pick along `ray`: `select.pick` with this mode.
-    Pick { ray: Ray, mode: &'static str },
+    /// Pick along `ray`: `select.pick` with this mode, the face under it when `faces`.
+    Pick { ray: Ray, mode: &'static str, faces: bool },
     /// Frame the scene from this view (the axis triad).
     Fit(View),
 }
@@ -187,6 +190,7 @@ impl Viewport {
                 height: size[1],
                 edges: self.edges,
                 selected,
+                selected_faces: umcf_engine::selected_faces(scene, selection),
                 colour_by: ColourBy::Class,
                 background: Some(tokens.view_background()),
             };
@@ -208,7 +212,16 @@ impl Viewport {
             Some(p) if !dragging && self.last_hover != Some(p) => {
                 self.last_hover = Some(p);
                 let hits = scene.pick_classes(&ray_at(&cam, rect, p, shown));
-                self.hover = hits.first().and_then(|h| scene.objects.get(h.object).map(|o| class_label(o, h.class)));
+                self.hover = hits.first().and_then(|h| {
+                    scene.objects.get(h.object).map(|o| {
+                        let label = class_label(o, h.class);
+                        if self.faces && matches!(o.source, Source::Mesh { .. }) {
+                            format!("face {} of {label}", h.index)
+                        } else {
+                            label
+                        }
+                    })
+                });
             }
             Some(_) => {}
             None => {
@@ -229,7 +242,7 @@ impl Viewport {
             } else {
                 "replace"
             };
-            action = Some(Action::Pick { ray: ray_at(&cam, rect, p, shown), mode });
+            action = Some(Action::Pick { ray: ray_at(&cam, rect, p, shown), mode, faces: self.faces });
         }
         action
     }

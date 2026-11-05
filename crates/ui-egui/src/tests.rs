@@ -775,4 +775,31 @@ fn open_asks_for_the_folder_in_the_systems_dialog() {
     assert_eq!(app.dialog.as_ref().map(|d| d.id), Some("case.open"));
     assert!(!app.folder_requested);
     let _ = std::fs::remove_dir_all(&dir);
+
+fn faces_picked_in_the_view_become_a_new_patch() {
+    let mut h = harness(app());
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    h.get_by_label("Pick faces").click();
+    h.run();
+    assert!(h.state().viewport.faces);
+    let rect = h.state().viewport.rect.unwrap();
+    click_at(&mut h, rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().session().selection(), [Sel::Face { region: String::new(), face: 1 }]);
+    assert_eq!(h.state().viewport.hover.as_deref(), Some("face 1 of patch sky"));
+    // The card takes the picked faces.
+    h.get_by_role_and_label(egui::Role::Tab, "Mesh").click();
+    h.run();
+    h.get_by_label("New patch").click();
+    h.run();
+    h.run();
+    type_into(&mut h, egui::Role::TextInput, "Name", "lid");
+    h.run();
+    assert_eq!(h.state().new_patch.as_ref().unwrap().source, crate::newpatch::Source::Picked);
+    h.get_by_label("Prepare").click();
+    h.run();
+    assert!(h.state().new_patch.is_none(), "{:?}", h.state().new_patch);
+    let case = h.state().session().case().unwrap();
+    let set = String::from_utf8(case.put_bytes("constant/polyMesh/sets/lid").unwrap().to_vec()).unwrap();
+    assert!(set.ends_with("\n1\n(\n1\n)\n"), "{set}");
 }

@@ -60,7 +60,7 @@ pub(super) const CREATE: CommandSpec = CommandSpec {
     label: "New patch",
     menu: "Mesh/New patch…",
     shortcut: None,
-    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches. type: default patch. groups, entries: as patch.set. The faces, one of: faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
+    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches. type: default patch. groups, entries: as patch.set. The faces, one of: the selected faces (select.pick with faces: true), when none of these is given; faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
     enabled: needs_case,
     run: create,
     journal: true,
@@ -260,7 +260,7 @@ fn patches(s: &Session, p: &Params) -> Result<Vec<(String, String)>, Error> {
             .iter()
             .filter_map(|x| match x {
                 Sel::Patch { region, patch } => Some((region.clone(), patch.clone())),
-                Sel::Solid { .. } => None,
+                Sel::Solid { .. } | Sel::Face { .. } => None,
             })
             .collect(),
     };
@@ -288,25 +288,51 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .iter()
         .filter_map(|x| match x {
             Sel::Patch { region, patch } => Some((region.clone(), patch.clone())),
-            Sel::Solid { .. } => None,
+            Sel::Solid { .. } | Sel::Face { .. } => None,
         })
         .collect();
+    let picked: Vec<(String, u32)> = s
+        .selection()
+        .iter()
+        .filter_map(|x| match x {
+            Sel::Face { region, face } => Some((region.clone(), *face)),
+            _ => None,
+        })
+        .collect();
+    let given = |k: &str| p.required(k).ok();
+    let sources = [given("faces"), given("box"), given("surface")];
+    // Without one, the selected faces.
+    let from_selection = sources.iter().flatten().count() == 0;
+    if from_selection && picked.is_empty() {
+        return Err(Error::Params(format!(
+            "{id}: give the faces as one of `faces`, `box` or `surface`, or select faces (select.pick with faces)"
+        )));
+    }
+    if sources.iter().flatten().count() > 1 {
+        return Err(Error::Params(format!("{id}: give the faces as one of `faces`, `box` or `surface`")));
+    }
     let region = match p.str("region")? {
         Some(r) => r.to_string(),
         None => {
-            let mut regions: Vec<&str> = selected.iter().map(|(r, _)| r.as_str()).collect();
+            let mut regions: Vec<&str> = if from_selection {
+                picked.iter().map(|(r, _)| r.as_str()).collect()
+            } else {
+                selected.iter().map(|(r, _)| r.as_str()).collect()
+            };
             regions.sort_unstable();
             regions.dedup();
             match regions.as_slice() {
                 [r] => r.to_string(),
-                _ => return Err(Error::Params(format!("{id}: give `region` (or select patches of one region)"))),
+                _ => {
+                    return Err(Error::Params(format!(
+                        "{id}: give `region` (or select patches or faces of one region)"
+                    )));
+                }
             }
         }
     };
-    let given = |k: &str| p.required(k).ok();
-    let sources = [given("faces"), given("box"), given("surface")];
-    if sources.iter().flatten().count() != 1 {
-        return Err(Error::Params(format!("{id}: give the faces as one of `faces`, `box` or `surface`")));
+    if from_selection && given("from").is_some() {
+        return Err(Error::Params(format!("{id}: `from` is for `box` and `surface`, not the selected faces")));
     }
     if given("faces").is_some() && given("from").is_some() {
         return Err(Error::Params(format!("{id}: `from` is for `box` and `surface`, not `faces`")));
@@ -318,6 +344,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .and_then(|r| r.patches.clone())
         .ok_or_else(|| Error::Params(format!("{id}: region `{region}` has no mesh")))?;
     let faces: Vec<u32> = match (given("faces"), given("box"), given("surface")) {
+        (None, None, None) => picked.iter().filter(|(r, _)| *r == region).map(|(_, f)| *f).collect(),
         (Some(v), _, _) => labels(id, v)?,
         (None, b, around) => {
             let from = from(id, &p, &region, &patches, &selected)?;

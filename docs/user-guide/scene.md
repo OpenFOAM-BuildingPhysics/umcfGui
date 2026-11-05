@@ -61,6 +61,11 @@ or triangle, the distance and the point), and selects one of them:
 | `toggle` | Adds it, or takes it out if it was selected |
 | `none` | Only lists what is under the cursor |
 
+With `faces: true` it picks the mesh face under the cursor instead of its patch: the hits are
+then one per face (with the patch it is in), and the selection gets `{"region": "air", "face":
+75548}`. Surfaces have no faces to pick: their triangles are passed over. Selected faces are drawn
+in the selection colour, and [`patch.create`](meshes.md#new-patches) makes a patch of them.
+
 `depth` picks the one behind: 0 (default) is the nearest, 1 the next ("select other": a patch
 hidden by another, an internal patch), up to 63; 64 are listed at most. A `depth` past what is under the cursor
 changes nothing.
@@ -72,7 +77,8 @@ ray is cast, on the full mesh or surface.
 
 `select.set` sets the selection from a list of `items`: patches as
 `{"region": "air", "patch": "inlet"}` (region `""` in a single-region case) and surface regions
-as `{"surface": "walls.stl", "solid": "roofs"}`. Each must exist. `mode` is `replace`
+as `{"surface": "walls.stl", "solid": "roofs"}`, and boundary faces of a mesh as
+`{"region": "air", "face": 75548}`, by label. Each must exist. `mode` is `replace`
 (default), `add` or `remove`. `select.clear` empties it.
 
 The selection belongs to the session, not the case: opening a case clears it, and undo doesn't
