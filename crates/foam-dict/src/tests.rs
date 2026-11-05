@@ -309,3 +309,52 @@ fn fuzz_mutations_of_real_files() {
         }
     }
 }
+
+#[test]
+fn append_adds_a_list_item_like_the_ones_before() {
+    let src = "pointSync false;\n\npatches\n(\n    // the inlet\n    {\n        name in;\n        constructFrom patches;\n        patches (a);\n    }\n);\n\n// end\n";
+    let mut doc = Document::parse(src).unwrap();
+    doc.append(&["patches"], "{ name roof; patchInfo { type wall; } constructFrom set; set roof; }").unwrap();
+    let out = doc.to_string();
+    let added = "    }\n    {\n        name            roof;\n        patchInfo\n        {\n            type            wall;\n        }\n        constructFrom   set;\n        set             roof;\n    }\n);\n\n// end\n";
+    assert!(out.starts_with(&src[..src.find("    }\n);").unwrap()]), "{out}");
+    assert!(out.ends_with(added), "{out}");
+    let again = Document::parse(&out).unwrap();
+    assert!(again.root.problems().is_empty());
+
+    // An empty list on one line gets the item on its own line, and the `)` after it.
+    let mut doc = Document::parse("patches ();\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches (\n    b\n);\n");
+    // A comment before the `)` stays after the item before it.
+    let mut doc = Document::parse("patches ( a /* note */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches ( a /* note */ \n    b\n);\n");
+    let mut doc = Document::parse("patches ( a // note\n);\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches ( a // note\n    b\n);\n");
+    // A block comment over lines before the `)`: the item goes after it, not into it.
+    let mut doc = Document::parse("patches ( a /* x\n   y */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    let out = doc.to_string();
+    assert_eq!(out, "patches ( a /* x\n   y */ \n    b\n);\n");
+    let again = Document::parse(&out).unwrap();
+    let Some([Node::List { items, .. }]) = again.get(&["patches"]).map(|e| e.value.as_slice()) else { panic!("{out}") };
+    assert_eq!(items.len(), 2, "{out}");
+    let mut doc = Document::parse("patches\n(\n    a\n    /* one\n       two */\n);\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches\n(\n    a\n    /* one\n       two */\n    b\n);\n");
+    // A comment on the `)`'s line stays after `a`.
+    let mut doc = Document::parse("patches\n(\n    a\n    /* one */ );\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches\n(\n    a\n    /* one */ \n    b\n);\n");
+    let mut doc = Document::parse("patches\n(\n    a\n    // the end\n);\n").unwrap();
+    doc.append(&["patches"], "b").unwrap();
+    assert_eq!(doc.to_string(), "patches\n(\n    a\n    // the end\n    b\n);\n");
+
+    assert_eq!(doc.append(&["pointSync"], "b"), Err(Error::NotFound("pointSync".into())));
+    let mut doc = Document::parse("pointSync false;\n").unwrap();
+    assert_eq!(doc.append(&["pointSync"], "b"), Err(Error::NotAList("pointSync".into())));
+    assert!(doc.append(&["pointSync"], "a b").is_err());
+    assert_eq!(doc.to_string(), "pointSync false;\n");
+}

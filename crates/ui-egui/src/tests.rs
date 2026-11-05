@@ -661,3 +661,68 @@ fn the_patch_card_sends_only_what_changed() {
     assert!(renamed.params(false).is_err());
     assert!(crate::patch::PatchForm { kind: " ".into(), ..form }.params(true).is_err());
 }
+
+#[test]
+fn a_new_patch_is_prepared_from_its_card() {
+    let mut app = app();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "walls" }] })).unwrap();
+    let mut h = harness(app);
+    h.get_by_role_and_label(egui::Role::Tab, "Mesh").click();
+    h.run();
+    h.get_by_label("New patch").click();
+    h.run();
+    // The card is laid out in its first frame and shown from the next.
+    h.run();
+    assert!(h.state().new_patch.is_some());
+    // Without a name it says so, and stays open.
+    h.get_by_label("Prepare").click();
+    h.run();
+    let f = h.state().new_patch.clone();
+    assert!(
+        f.as_ref().and_then(|f| f.error.as_deref()).is_some_and(|e| e.contains("name")),
+        "{f:?} {:?}",
+        h.state().log.last().map(|l| &l.command)
+    );
+    type_into(&mut h, egui::Role::TextInput, "Name", "west");
+    if let Some(f) = &mut h.state_mut().new_patch {
+        f.min = ["-1".into(), "-1".into(), "-1".into()];
+        f.max = ["0.1".into(), "2".into(), "2".into()];
+    }
+    h.run();
+    h.get_by_label("Prepare").click();
+    h.run();
+    assert!(h.state().new_patch.is_none(), "{:?}", h.state().new_patch);
+    assert_eq!(h.state().log.last().unwrap().command, "patch.create");
+    let case = h.state().session().case().unwrap();
+    let set = String::from_utf8(case.put_bytes("constant/polyMesh/sets/west").unwrap().to_vec()).unwrap();
+    assert!(set.ends_with("\n1\n(\n4\n)\n"), "{set}");
+    assert!(case.dict("system/createPatchDict.umcf").is_some());
+}
+
+#[test]
+fn the_new_patch_card_reads_its_fields() {
+    use crate::newpatch::{NewPatchForm, Source};
+    let form = NewPatchForm {
+        name: " roof ".into(),
+        kind: "wall".into(),
+        groups: "buildings  roofs".into(),
+        min: ["0".into(), "0".into(), "10".into()],
+        max: ["5".into(), " 5 ".into(), "20".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        form.params(Some("air")).unwrap(),
+        json!({ "name": "roof", "type": "wall", "groups": ["buildings", "roofs"], "region": "air", "box": { "min": [0.0, 0.0, 10.0], "max": [5.0, 5.0, 20.0] } })
+    );
+    assert!(
+        NewPatchForm { min: ["a".into(), "0".into(), "0".into()], ..form.clone() }
+            .params(None)
+            .unwrap_err()
+            .contains("From x")
+    );
+    let near =
+        NewPatchForm { source: Source::Surface, file: "buildings.stl".into(), distance: "0.5".into(), ..form.clone() };
+    assert_eq!(near.params(None).unwrap()["surface"], json!({ "file": "buildings.stl", "distance": 0.5 }));
+    assert!(NewPatchForm { distance: String::new(), ..near.clone() }.params(None).is_err());
+    assert!(NewPatchForm { file: " ".into(), ..near }.params(None).is_err());
+}

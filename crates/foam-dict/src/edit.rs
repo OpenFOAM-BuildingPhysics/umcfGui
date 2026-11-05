@@ -52,6 +52,78 @@ pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str) -
     Ok(())
 }
 
+/// Appends `node` to the list that is the entry at the end of `path`, on a line of its own.
+pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
+    let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
+    let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
+    if !rest.is_empty() {
+        let sub = entry.dict_mut().ok_or_else(|| Error::NotADict(key.to_string()))?;
+        return append(sub, rest, node);
+    }
+    let key_indent = trailing_indent(&entry.key.lead).to_string();
+    let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
+        return Err(Error::NotAList(key.to_string()));
+    };
+    // Like the items before, when they are on lines of their own; one step in otherwise.
+    let indent = match items.last().map(first_lead) {
+        Some(lead) if lead.contains('\n') => trailing_indent(lead).to_string(),
+        _ => format!("{key_indent}{STEP}"),
+    };
+    match &mut node {
+        Node::Dict { .. } => layout_dict(&mut node, &indent),
+        other => other.first_tok_mut().lead = format!("\n{indent}"),
+    }
+    // What is before the `)` (`( a /* note */ )`, `( a // note` and a new line) stays after the
+    // items it follows: in front of the new one. The `)` keeps its own line, or gets one.
+    // A comment on the `)`'s own line (`    /* one */ )`) goes too: the `)` gets a line of its own.
+    let (kept, rest) = match last_free_newline(&close.lead) {
+        Some(i) => {
+            let tail = close.lead.get(i..).unwrap_or("");
+            if tail.trim().is_empty() {
+                (close.lead.get(..i).unwrap_or("").to_string(), tail.to_string())
+            } else {
+                (close.lead.clone(), format!("\n{key_indent}"))
+            }
+        }
+        None => (close.lead.clone(), format!("\n{key_indent}")),
+    };
+    if !kept.is_empty() {
+        let lead = &mut node.first_tok_mut().lead;
+        *lead = format!("{kept}{lead}");
+    }
+    close.lead = rest;
+    items.push(node);
+    Ok(())
+}
+
+/// The last line break of trivia `t` that isn't inside a `/* … */` comment (the one ending a
+/// `//` comment counts).
+fn last_free_newline(t: &str) -> Option<usize> {
+    let b = t.as_bytes();
+    let at = |i: usize| b.get(i).copied();
+    let (mut i, mut last, mut block, mut line) = (0, None, false, false);
+    while let Some(c) = at(i) {
+        let next = at(i + 1);
+        if block {
+            if c == b'*' && next == Some(b'/') {
+                block = false;
+                i += 1;
+            }
+        } else if c == b'\n' {
+            line = false;
+            last = Some(i);
+        } else if !line && c == b'/' && next == Some(b'*') {
+            block = true;
+            i += 1;
+        } else if !line && c == b'/' && next == Some(b'/') {
+            line = true;
+            i += 1;
+        }
+        i += 1;
+    }
+    last
+}
+
 /// Removes every entry with the key at the end of `path`. The second flag tells the caller that
 /// the last item of `dict` went, so the trivia after the dictionary (its closing brace's lead or
 /// the document tail) starts with that entry's same-line comment, which should go too.

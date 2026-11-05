@@ -1049,3 +1049,76 @@ fn patch_entries_are_written_as_given() {
     assert!(p.params.contains(&("offset".into(), "(0 0 1)".into())), "{:?}", p.params);
     assert!(p.params.contains(&("distance".into(), "0.5".into())), "{:?}", p.params);
 }
+
+#[test]
+fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
+    use umcf_geom::stl::Format;
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    fs.insert("constant/triSurface/box.stl", cube_stl(Format::Ascii, false));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("select.set", &json!({"items": [{"region": "air", "patch": "inlet"}]})).unwrap();
+    // The top of the cube, by a box: the region and the patch are the selection's.
+    let o =
+        s.execute("patch.create", &json!({"name": "roof", "box": {"min": [-1, -1, 0.9], "max": [2, 2, 2]}})).unwrap();
+    assert_eq!(o.message, "air/roof: 1 faces prepared for createPatch");
+    assert_eq!(o.data["from"], json!([{"patch": "inlet", "faces": 1}]));
+    assert_eq!(o.data["set"], "constant/air/polyMesh/sets/roof");
+    assert_eq!(o.data["fields"].as_array().unwrap().len(), 6, "{}", o.data);
+    assert_eq!(codes(&o), ["patch.run"]);
+    let run = o.data["diagnostics"][0]["message"].as_str().unwrap();
+    assert!(run.contains("createPatch -region air -dict system/air/createPatchDict.umcf -overwrite"), "{run}");
+    assert!(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").is_some());
+    assert_eq!(bc_of(&s, "T", "roof"), Some((Some("fixedValue".into()), Some("uniform 300".into()))));
+    let set =
+        String::from_utf8(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").unwrap().to_vec()).unwrap();
+    assert!(set.ends_with("\n1\n(\n1\n)\n"), "{set}");
+    // Face labels.
+    let o = s.execute("patch.create", &json!({"name": "floor", "faces": [0], "region": "air"})).unwrap();
+    assert_eq!(o.data["faces"], json!(1));
+    // A surface: every face of the cube is on it, two of them prepared already.
+    let skin = json!({"name": "skin", "surface": {"file": "box.stl", "solid": "box", "distance": 0.01}});
+    let e = s.execute("patch.create", &skin).unwrap_err().to_string();
+    assert!(e.contains("prepared in system/air/createPatchDict.umcf already"), "{e}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.case().unwrap().dict("system/air/createPatchDict.umcf").is_none());
+    assert!(s.case().unwrap().put_bytes("constant/air/polyMesh/sets/roof").is_none());
+    // On its own it takes them all, so `inlet` goes.
+    let o = s.execute("patch.create", &skin).unwrap();
+    assert_eq!(o.data["faces"], json!(6));
+    assert!(codes(&o).contains(&"patch.emptied".to_string()), "{:?}", codes(&o));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // A patch named twice in `from` gives its faces once.
+    let o = s
+        .execute(
+            "patch.create",
+            &json!({"name": "top", "box": {"min": [-1, -1, 0.9], "max": [2, 2, 2]}, "from": ["inlet", "inlet"]}),
+        )
+        .unwrap();
+    assert_eq!(o.data["from"], json!([{"patch": "inlet", "faces": 1}]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Refused.
+    for bad in [
+        json!({"faces": [0]}),
+        json!({"name": "x"}),
+        json!({"name": "x", "faces": [0], "box": {"min": [0, 0, 0], "max": [1, 1, 1]}}),
+        json!({"name": "x", "faces": [-1]}),
+        json!({"name": "x", "faces": [99]}),
+        json!({"name": "x", "faces": [0], "from": ["inlet"]}),
+        json!({"name": "x", "box": {"min": [1, 1, 1], "max": [0, 0, 0]}}),
+        json!({"name": "x", "box": {"min": [0, 0, 0]}}),
+        json!({"name": "x", "box": {"min": [5, 5, 5], "max": [6, 6, 6]}}),
+        json!({"name": "x", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "from": ["nowhere"]}),
+        json!({"name": "x", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "from": vec!["inlet"; 100]}),
+        json!({"name": "x", "surface": {"file": "box.stl"}}),
+        json!({"name": "x", "surface": {"file": "box.stl", "solid": "lid", "distance": 1}}),
+        json!({"name": "x", "surface": {"file": "nowhere.stl", "distance": 1}}),
+        json!({"name": "inlet", "faces": [0]}),
+        json!({"name": "1", "faces": [0]}),
+    ] {
+        assert!(s.execute("patch.create", &bad).is_err(), "{bad}");
+    }
+    assert!(s.case().unwrap().changed().is_empty());
+}

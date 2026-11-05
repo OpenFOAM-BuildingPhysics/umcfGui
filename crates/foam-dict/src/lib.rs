@@ -60,6 +60,8 @@ pub enum Error {
     NotFound(String),
     #[error("`{0}` is not a dictionary")]
     NotADict(String),
+    #[error("`{0}` is not a list")]
+    NotAList(String),
     #[error("empty key path")]
     EmptyPath,
 }
@@ -109,6 +111,18 @@ impl Document {
     pub fn set(&mut self, path: &[&str], value: &str) -> Result<()> {
         let nodes = cst::parse_value(value, &Limits::default())?;
         edit::set(&mut self.root, path, nodes, "")
+    }
+
+    /// Appends `value` (one value: `{ name a; }`, `b`) to the list that is the entry at `path`
+    /// (`patches ( … );`), on a line of its own, indented like the items before it. Nothing
+    /// else in the file changes.
+    pub fn append(&mut self, path: &[&str], value: &str) -> Result<()> {
+        let mut nodes = cst::parse_value(value, &Limits::default())?;
+        let node = match (nodes.pop(), nodes.is_empty()) {
+            (Some(n), true) => n,
+            _ => return Err(Error::Unexpected { found: value.to_string(), expected: "one value", at: (1, 1) }),
+        };
+        edit::append(&mut self.root, path, node)
     }
 
     /// Removes the entry at `path`, with the comments and blank lines in front of it.

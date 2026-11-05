@@ -33,6 +33,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use umcf_core::{CaseFs, CaseWrite, FsError};
@@ -158,6 +159,9 @@ pub struct Bc {
     /// `patchType`: the patch type a condition is meant for (`fixedJump` on a `cyclic` patch),
     /// which lifts OpenFOAM's check that constraint patches use their own type.
     pub patch_type: Option<String>,
+    /// The entry holds data lists (`value nonuniform List<scalar> 120(…)`), one value per face
+    /// of the patch.
+    pub lists: bool,
 }
 
 /// What is on disk for one dictionary, as read or last saved. Shared by every clone of a
@@ -270,6 +274,138 @@ pub struct PatchReport {
     /// old name: not changed there.
     pub indirect: Vec<String>,
 }
+
+/// A patch [`Case::create_patch`] prepares.
+#[derive(Debug, Clone, Copy)]
+pub struct NewPatch<'a> {
+    pub name: &'a str,
+    /// `patch`, `wall`, `mappedWall`, …
+    pub kind: &'a str,
+    pub groups: &'a [&'a str],
+    /// Other entries of the patch (`neighbourRegion air`, …).
+    pub entries: &'a [(&'a str, &'a str)],
+    /// The boundary faces it takes, by face label of the region's mesh.
+    pub faces: &'a [u32],
+}
+
+/// What [`Case::create_patch`] wrote, and what is left to do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CreateReport {
+    /// The face set (`constant/<region>/polyMesh/sets/<name>`).
+    pub set: String,
+    /// The dictionary the patch was added to ([`pending_dict`]), and whether this made it.
+    pub dict: String,
+    pub new_dict: bool,
+    /// The patches the faces come from, with how many each gives.
+    pub from: Vec<(String, usize)>,
+    /// Patches that give all their faces: `createPatch` removes them.
+    pub emptied: Vec<String>,
+    /// Field files given an entry for the new patch, a copy of the one of the patch its faces
+    /// come from.
+    pub fields: Vec<String>,
+    /// Field files that still need an entry for it before a run: faces from several patches,
+    /// or no entry of the patch's own to copy, and no entry for one of its groups (the given
+    /// ones, `wall` for a wall type, the type for a constraint type).
+    pub unfilled: Vec<String>,
+    /// Field files with data lists on a patch that gives faces: their size is wrong once
+    /// `createPatch` has run, so they must be made again (from `0.orig`, by `setFields`, …).
+    pub resized: Vec<String>,
+    /// Field files too large to be read here.
+    pub unread: Vec<String>,
+    /// Field files with a pattern entry or text from elsewhere (`#includeEtc
+    /// "caseDicts/setConstraintTypes"`), which may give the new patch a condition.
+    pub maybe: Vec<String>,
+}
+
+/// Whether trivia `text` (one line) leaves a `/* … */` comment open at its end: read left to
+/// right, a `//` ends the line and a `/*` runs to its `*/`.
+fn opens_block_comment(text: &str) -> bool {
+    let mut rest = text;
+    loop {
+        match (rest.find("//"), rest.find("/*")) {
+            (_, None) => return false,
+            (Some(l), Some(b)) if l < b => return false,
+            (_, Some(b)) => match rest.get(b + 2..).and_then(|r| r.find("*/").map(|e| (r, e))) {
+                Some((r, e)) => rest = r.get(e + 2..).unwrap_or(""),
+                None => return true,
+            },
+        }
+    }
+}
+
+/// How [`pending_dict`] says the mesh it was prepared on: its number of faces.
+const STAMP: &str = "// prepared on a mesh of ";
+
+/// The dictionary [`Case::create_patch`] prepares patches in, for one run of `createPatch
+/// [-region <region>] -dict <it> -overwrite`.
+pub fn pending_dict(region: &str) -> String {
+    if region.is_empty() {
+        "system/createPatchDict.umcf".to_string()
+    } else {
+        format!("system/{region}/createPatchDict.umcf")
+    }
+}
+
+/// The `createPatch` command that makes the patches prepared in [`pending_dict`]. OpenFOAM-8
+/// reads `-dict` below `system/<region>/` already, OpenFOAM-12 from the case; `None` gives the
+/// command of each.
+pub fn create_patch_command(region: &str, version: Option<umcf_core::OfVersion>) -> String {
+    use umcf_core::OfVersion;
+    if region.is_empty() {
+        return "createPatch -dict system/createPatchDict.umcf -overwrite".to_string();
+    }
+    let v8 = format!("createPatch -region {region} -dict system/createPatchDict.umcf -overwrite");
+    let v12 = format!("createPatch -region {region} -dict system/{region}/createPatchDict.umcf -overwrite");
+    match version {
+        Some(OfVersion::V8) => v8,
+        Some(OfVersion::V12) => v12,
+        None => format!("{v12} (OpenFOAM-12; OpenFOAM-8: {v8})"),
+    }
+}
+
+/// OpenFOAM's wall patch types: a patch of one is in the group `wall`.
+pub fn is_wall_type(kind: &str) -> bool {
+    matches!(kind, "wall" | "mappedWall" | "mappedExtrudedWall" | "nonConformalMappedWall")
+}
+
+/// OpenFOAM's constraint patch types that take a condition of their own type (`empty`, …) and
+/// are in the group of their type.
+pub fn is_constraint_type(kind: &str) -> bool {
+    matches!(kind, "empty" | "symmetry" | "symmetryPlane" | "wedge")
+}
+
+/// Whether patch `p` is in group `g`: its `inGroups`, or the group OpenFOAM gives its type
+/// (`wall` for the wall types, the type for a constraint type).
+fn in_group(p: &Patch, g: &str) -> bool {
+    p.groups.iter().any(|x| umcf_foam_dict::unquote(x) == g)
+        || (g == "wall" && is_wall_type(&p.kind))
+        || (is_constraint_type(&p.kind) && p.kind == g)
+}
+
+/// The kind of condition a patch type takes: its own for a constraint type, `wall` for the wall
+/// types, else the type. A copied entry is only right between patches of one kind.
+fn condition_kind(kind: &str) -> &str {
+    match kind {
+        k if is_wall_type(k) => "wall",
+        "patch" | "mapped" | "mappedPatch" | "mappedExtrudedPatch" => "patch",
+        k => k,
+    }
+}
+
+/// Patch types whose faces are paired with others (by `createPatch`'s ordering, or across
+/// processors): faces are not taken from them.
+pub const COUPLED: &[&str] = &[
+    "processor",
+    "processorCyclic",
+    "cyclic",
+    "cyclicAMI",
+    "cyclicACMI",
+    "cyclicSlip",
+    "cyclicRepeatAMI",
+    "nonConformalCyclic",
+    "nonConformalProcessorCyclic",
+    "nonConformalError",
+];
 
 /// What [`Case::set_bc`] couldn't do as asked, by patch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -983,26 +1119,7 @@ impl Case {
         if let Some(to) = change.name
             && to != patch
         {
-            if patches.iter().any(|p| p.name == to) {
-                return Err(Error::Bc(format!("region `{region}` has a patch `{to}` already")));
-            }
-            if patches.iter().any(|p| p.groups.iter().any(|g| g == to)) {
-                return Err(Error::Bc(format!("`{to}` is a patch group of region `{region}`")));
-            }
-            if to.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(Error::Bc(format!("`{to}` is a number, not a patch name")));
-            }
-            // A field entry by that name (a group, a pattern, a leftover) would take the
-            // renamed patch's entry over, or merge with it.
-            let taken = self
-                .regions
-                .get(r)
-                .into_iter()
-                .flat_map(|reg| &reg.fields)
-                .find(|f| f.bcs.iter().flatten().any(|b| b.patch == to));
-            if let Some(f) = taken {
-                return Err(Error::Bc(format!("{} has an entry `{to}` already", f.path)));
-            }
+            self.name_free(r, &patches, to)?;
             let twice = self
                 .regions
                 .get(r)
@@ -1125,6 +1242,368 @@ impl Case {
                 reg.patches = Some(parsed);
             }
             report.partners.push(format!("{oname}/{other}"));
+        }
+        Ok(report)
+    }
+
+    /// Whether `to` can be a new patch name in region `r` (with `patches`): not a patch, a
+    /// group, a number, nor a field entry already.
+    fn name_free(&self, r: usize, patches: &[Patch], to: &str) -> Result<()> {
+        let region = self.regions.get(r).map_or("", |reg| reg.name.as_str());
+        if patches.iter().any(|p| p.name == to) {
+            return Err(Error::Bc(format!("region `{region}` has a patch `{to}` already")));
+        }
+        if patches.iter().any(|p| p.groups.iter().any(|g| g == to)) {
+            return Err(Error::Bc(format!("`{to}` is a patch group of region `{region}`")));
+        }
+        if to.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::Bc(format!("`{to}` is a number, not a patch name")));
+        }
+        // A field entry by that name (a group, a pattern, a leftover) would take the patch's
+        // entry over, or merge with it.
+        let taken = self
+            .regions
+            .get(r)
+            .into_iter()
+            .flat_map(|reg| &reg.fields)
+            .find(|f| f.bcs.iter().flatten().any(|b| b.patch == to));
+        if let Some(f) = taken {
+            return Err(Error::Bc(format!("{} has an entry `{to}` already", f.path)));
+        }
+        Ok(())
+    }
+
+    /// Prepares a new patch of a region's mesh from some of its boundary faces, for OpenFOAM's
+    /// `createPatch` to make, once, on this mesh: the faces go into a face set
+    /// (`constant/<region>/polyMesh/sets/<name>`), and the patch into the dictionary of the
+    /// patches prepared so ([`pending_dict`], made when there is none) with `constructFrom
+    /// set`. The case's own `createPatchDict`, which its scripts may run after meshing, is not
+    /// touched: face labels hold for one mesh only. The faces may not be in a patch prepared
+    /// there already. The mesh itself doesn't change until `createPatch` has run. When all the
+    /// faces come from one patch, each field of the start time whose own entry for that patch
+    /// holds no data lists gets a copy of it for the new patch (OpenFOAM reads an entry for a
+    /// patch the mesh doesn't have yet without a word), unless the new patch is of a constraint
+    /// type. [`Case::save`] writes it all.
+    pub fn create_patch(&mut self, fs: &dyn CaseFs, region: &str, new: &NewPatch) -> Result<CreateReport> {
+        use umcf_foam_dict::{Entry, Item, Node};
+        let r = self
+            .regions
+            .iter()
+            .position(|r| r.name == region)
+            .ok_or_else(|| Error::Bc(format!("the case has no region `{region}`")))?;
+        let patches = self
+            .regions
+            .get(r)
+            .and_then(|r| r.patches.clone())
+            .ok_or_else(|| Error::Bc(format!("region `{region}` has no mesh")))?;
+        let words = [new.name, new.kind]
+            .into_iter()
+            .chain(new.groups.iter().copied())
+            .chain(new.entries.iter().flat_map(|(k, v)| [*k, *v]));
+        if let Some(w) = words.into_iter().find(|w| w.contains(umcf_foam_field::PLACEHOLDER)) {
+            return Err(Error::Bc(format!("`{w}` can't be written into createPatchDict")));
+        }
+        if COUPLED.contains(&new.kind) {
+            return Err(Error::Bc(format!(
+                "a `{}` patch is paired with another: make both with createPatch's own dictionary",
+                new.kind
+            )));
+        }
+        self.name_free(r, &patches, new.name)?;
+        let mut faces = new.faces.to_vec();
+        faces.sort_unstable();
+        faces.dedup();
+        if faces.is_empty() {
+            return Err(Error::Bc("a new patch needs faces".to_string()));
+        }
+        let dir = umcf_foam_mesh::mesh_dir(region);
+        let set = format!("{dir}/sets/{}", new.name);
+        let gz = format!("{set}.gz");
+        if [&set, &gz].iter().any(|p| self.raw.contains_key(p.as_str()) || fs.is_file(p)) {
+            return Err(Error::Bc(format!("{set} is there already")));
+        }
+        // The patches prepared already, and their faces, on a mesh of this many faces.
+        let mesh_faces = patches.iter().map(|p| p.start_face + p.n_faces).max().unwrap_or(0);
+        let dict = pending_dict(region);
+        let dict_err = |source| Error::Dict { path: dict.clone(), source };
+        let mut doc = match self.dict(&dict) {
+            Some(doc) => doc.clone(),
+            None if fs.is_file(&dict) => {
+                return Err(Error::Bc(format!(
+                    "{dict} is there but wasn't read as a dictionary: it can't be added to"
+                )));
+            }
+            None => {
+                let object = if region.is_empty() { "system".to_string() } else { format!("system/{region}") };
+                Document::parse(&format!(
+                    "FoamFile\n{{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"{object}\";\n    object      createPatchDict;\n}}\n\n// The patches umcfGui prepared on this mesh, for one run of\n//     {}\n// The face sets hold face labels of this mesh: delete this file once it has run.\n{STAMP}{mesh_faces} faces\n\npointSync false;\n\npatches\n(\n);\n",
+                    create_patch_command(region, self.layout.version)
+                ))
+                .map_err(dict_err)?
+            }
+        };
+        let mut report = CreateReport { new_dict: self.dict(&dict).is_none(), ..Default::default() };
+        // Prepared on another mesh: its face labels are not this mesh's.
+        let text = doc.to_string();
+        match text.split(STAMP).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) if n == mesh_faces => {}
+            Some(n) => {
+                return Err(Error::Bc(format!(
+                    "{dict} was prepared on a mesh of {n} faces, and this one has {mesh_faces}: run it on that mesh or delete it (and its face sets) first"
+                )));
+            }
+            None => {
+                return Err(Error::Bc(format!(
+                    "{dict} doesn't say the mesh it was prepared on (its `{}` line is gone): run it or delete it (and its face sets) first",
+                    STAMP.trim()
+                )));
+            }
+        }
+        let mut pending: Vec<(String, Vec<u32>)> = Vec::new();
+        match doc.get(&["patches"]).map(|e| e.value.as_slice()) {
+            Some([Node::List { items, .. }]) => {
+                for item in items {
+                    let Node::Dict { body, .. } = item else { continue };
+                    let get = |k: &str| {
+                        body.get(k).and_then(Entry::value_text).map(|v| umcf_foam_dict::unquote(v.trim()).to_string())
+                    };
+                    if get("name").as_deref() == Some(new.name) {
+                        return Err(Error::Bc(format!("{dict} prepares a patch `{}` already", new.name)));
+                    }
+                    // The mesh has it: the dictionary has run already.
+                    if let Some(name) = get("name")
+                        && patches.iter().any(|p| p.name == name)
+                    {
+                        return Err(Error::Bc(format!(
+                            "{dict} prepares `{name}`, which the mesh has already: it has run, so delete it (and its face sets) first"
+                        )));
+                    }
+                    let Some(name) = get("name") else { continue };
+                    // Made from whole patches: their faces are taken.
+                    if get("constructFrom").as_deref() == Some("patches") {
+                        let listed = get("patches").unwrap_or_default();
+                        let names: Vec<&str> = listed
+                            .trim_matches(|c| c == '(' || c == ')')
+                            .split_whitespace()
+                            .map(umcf_foam_dict::unquote)
+                            .collect();
+                        // By name or group; a pattern (or anything else) can't be told here.
+                        let named = |n: &str| patches.iter().any(|p| p.name == n || in_group(p, n));
+                        if let Some(n) = names.iter().find(|n| !named(n)) {
+                            return Err(Error::Bc(format!(
+                                "{dict} prepares `{name}` from `{n}`, which is no patch or group of this mesh: run that dictionary or delete it first"
+                            )));
+                        }
+                        let labels: Vec<u32> = patches
+                            .iter()
+                            .filter(|p| names.iter().any(|n| p.name == *n || in_group(p, n)))
+                            .flat_map(|p| p.faces())
+                            .filter_map(|f| u32::try_from(f).ok())
+                            .collect();
+                        pending.push((name, labels));
+                        continue;
+                    }
+                    let (Some("set"), Some(set_name)) = (get("constructFrom").as_deref(), get("set")) else {
+                        continue;
+                    };
+                    let limits = umcf_foam_mesh::Limits { max_bytes: self.edit_cap(), ..Default::default() };
+                    let path = format!("{dir}/sets/{set_name}");
+                    let read = match self.raw.get(&path).or_else(|| self.raw.get(&format!("{path}.gz"))) {
+                        Some(f) => umcf_foam_mesh::parse_set(&path, &f.bytes, &limits).map(Some),
+                        None => umcf_foam_mesh::read_set(fs, &dir, &set_name, &limits),
+                    };
+                    let labels = match read {
+                        Ok(Some(s)) => s.labels,
+                        Ok(None) => {
+                            return Err(Error::Bc(format!(
+                                "{dict} prepares `{name}` from the face set `{set_name}`, which isn't there: run that dictionary or delete it first"
+                            )));
+                        }
+                        Err(e) => return Err(Error::Bc(format!("{path}: {e}"))),
+                    };
+                    pending.push((name, labels));
+                }
+            }
+            Some(_) => return Err(Error::Bc(format!("{dict}: `patches` is not a list"))),
+            None => doc.set(&["patches"], "()").map_err(dict_err)?,
+        }
+        for (name, labels) in &pending {
+            if let Some(f) = labels.iter().find(|f| faces.binary_search(f).is_ok()) {
+                return Err(Error::Bc(format!("face {f} is in `{name}`, prepared in {dict} already")));
+            }
+        }
+        // The faces by the patch they are in now (the faces and the patches both in order).
+        let mut ranges: Vec<(usize, std::ops::Range<usize>)> = patches.iter().map(|p| p.faces()).enumerate().collect();
+        ranges.sort_by_key(|(_, r)| r.start);
+        let count = |labels: &[u32]| -> std::result::Result<Vec<usize>, u32> {
+            let mut by_patch = vec![0usize; patches.len()];
+            let mut sorted = labels.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            let mut k = 0;
+            for &f in &sorted {
+                while ranges.get(k).is_some_and(|(_, r)| r.end <= f as usize) {
+                    k += 1;
+                }
+                match ranges.get(k) {
+                    Some((i, r)) if r.contains(&(f as usize)) => {
+                        if let Some(n) = by_patch.get_mut(*i) {
+                            *n += 1;
+                        }
+                    }
+                    _ => return Err(f),
+                }
+            }
+            Ok(by_patch)
+        };
+        let by_patch =
+            count(&faces).map_err(|f| Error::Bc(format!("face {f} is not a boundary face of region `{region}`")))?;
+        let mut taken = vec![0usize; patches.len()];
+        for (name, labels) in &pending {
+            let n = count(labels).map_err(|f| {
+                Error::Bc(format!(
+                    "`{name}` in {dict} has face {f}, which is not a boundary face of this mesh: delete that dictionary"
+                ))
+            })?;
+            for (t, n) in taken.iter_mut().zip(n) {
+                *t += n;
+            }
+        }
+        for ((p, n), t) in patches.iter().zip(&by_patch).zip(&taken).filter(|((_, n), _)| **n > 0) {
+            if COUPLED.contains(&p.kind.as_str()) {
+                return Err(Error::Bc(format!(
+                    "patch `{}` is `{}`: its faces are paired with others and can't be moved to a new patch",
+                    p.name, p.kind
+                )));
+            }
+            report.from.push((p.name.clone(), *n));
+            if n + t >= p.n_faces {
+                report.emptied.push(p.name.clone());
+            }
+        }
+        // The dictionary, with the patch added.
+        let mut info = format!("type {};", new.kind);
+        if !new.groups.is_empty() {
+            info.push_str(&format!(" inGroups List<word> {}({});", new.groups.len(), new.groups.join(" ")));
+        }
+        for (k, v) in new.entries {
+            info.push_str(&format!(" {k} {v};"));
+        }
+        let item = format!("{{ name {0}; patchInfo {{ {info} }} constructFrom set; set {0}; }}", new.name);
+        // OpenFOAM-8 requires it.
+        if doc.get(&["pointSync"]).is_none() {
+            doc.set(&["pointSync"], "false").map_err(dict_err)?;
+        }
+        doc.append(&["patches"], &item).map_err(dict_err)?;
+        let mut text = format!(
+            "FoamFile\n{{\n    version     2.0;\n    format      ascii;\n    class       faceSet;\n    location    \"{dir}/sets\";\n    object      {};\n}}\n\n{}\n(\n",
+            new.name,
+            faces.len()
+        );
+        for f in &faces {
+            let _ = writeln!(text, "{f}");
+        }
+        text.push_str(")\n");
+        self.put_file(fs, &set, text.into_bytes())?;
+        let key = self.resolve(&dict).to_string();
+        self.files.insert(key, Arc::new(doc));
+        report.set = set;
+        report.dict = dict;
+        // The fields of the start time.
+        let sources: Vec<&str> = report.from.iter().map(|(p, _)| p.as_str()).collect();
+        let constraint = is_constraint_type(new.kind);
+        let one = match sources.as_slice() {
+            [p] if !constraint
+                && patches.iter().any(|q| q.name == *p && condition_kind(&q.kind) == condition_kind(new.kind)) =>
+            {
+                Some(p.to_string())
+            }
+            _ => None,
+        };
+        // Its groups, with the ones OpenFOAM gives a patch of its type (`wall` for every wall
+        // type, the type for a constraint type).
+        let mut groups: Vec<&str> = new.groups.to_vec();
+        if is_wall_type(new.kind) {
+            groups.push("wall");
+        }
+        if constraint {
+            groups.push(new.kind);
+        }
+        let fields: Vec<(String, String, Option<Vec<Bc>>, bool)> = self.regions.get(r).map_or(Vec::new(), |reg| {
+            reg.fields.iter().map(|f| (f.name.clone(), f.path.clone(), f.bcs.clone(), f.indirect)).collect()
+        });
+        let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
+        for (name, fpath, bcs, indirect) in fields {
+            let Some(bcs) = bcs else {
+                report.unread.push(fpath);
+                continue;
+            };
+            if bcs.iter().any(|b| b.lists && sources.contains(&b.patch.as_str())) {
+                report.resized.push(fpath.clone());
+            }
+            let copy = one.as_deref().and_then(|p| bcs.iter().rfind(|b| b.patch == p && !b.pattern));
+            let Some(source) = copy.filter(|b| !b.lists).map(|b| b.patch.clone()) else {
+                // Covered when OpenFOAM gives it a condition itself (`empty`) or an entry for one
+                // of its groups does; maybe when a pattern or text from elsewhere does.
+                let covered =
+                    new.kind == "empty" || bcs.iter().any(|b| !b.pattern && groups.contains(&b.patch.as_str()));
+                if !covered {
+                    if indirect || bcs.iter().any(|b| b.pattern) {
+                        report.maybe.push(fpath);
+                    } else {
+                        report.unfilled.push(fpath);
+                    }
+                }
+                continue;
+            };
+            let out = self.rewrite_file(fs, &fpath, |doc| {
+                let unsupported = |m: String| umcf_foam_field::Error::Unsupported(m);
+                let entry =
+                    doc.root.get_mut("boundaryField").ok_or_else(|| unsupported("no boundaryField".to_string()))?;
+                let Some(Node::Dict { body: bf, close, .. }) = entry.value.first_mut() else {
+                    return Err(unsupported("boundaryField is not a dictionary".to_string()));
+                };
+                let at = bf
+                    .items
+                    .iter()
+                    .rposition(|i| matches!(i, Item::Entry(e) if e.key.text == source))
+                    .ok_or_else(|| unsupported(format!("no entry `{source}`")))?;
+                let Some(Item::Entry(e)) = bf.items.get(at) else {
+                    return Err(unsupported(format!("no entry `{source}`")));
+                };
+                let mut e = e.clone();
+                e.key.text = new.name.to_string();
+                // Indented like the source.
+                let indent: String = match e.key.lead.rsplit_once('\n') {
+                    Some((_, last)) => last.chars().take_while(|c| *c == ' ' || *c == '\t').collect(),
+                    None => "    ".to_string(),
+                };
+                // On a line of its own after the source, without the comments before that one. A
+                // comment on the rest of the source's last line stays with the source, unless a
+                // block comment goes on from there: then the copy goes before it.
+                let next = match bf.items.get_mut(at + 1) {
+                    Some(item) => &mut item.key_tok_mut().lead,
+                    None => &mut close.lead,
+                };
+                let split = next.find('\n').filter(|&i| !opens_block_comment(next.get(..i).unwrap_or("")));
+                e.key.lead = match split {
+                    Some(i) => {
+                        let same = next.get(..i).unwrap_or("").to_string();
+                        *next = next.get(i..).unwrap_or("").to_string();
+                        format!("{same}\n{indent}")
+                    }
+                    None => format!("\n{indent}"),
+                };
+                bf.items.insert(at + 1, Item::Entry(e));
+                Ok(())
+            })?;
+            let parsed =
+                Field::parse_with(&out, &limits).map_err(|source| Error::Field { path: fpath.clone(), source })?;
+            let summary = summarise(name, fpath.clone(), &parsed);
+            if let Some(f) = self.regions.get_mut(r).and_then(|reg| reg.fields.iter_mut().find(|f| f.path == fpath)) {
+                *f = summary;
+            }
+            report.fields.push(fpath);
         }
         Ok(report)
     }
@@ -1354,6 +1833,7 @@ fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
                         kind: body.and_then(|b| word(b, "type")),
                         value: body.and_then(|b| b.get("value")).and_then(|v| short_entry(f, v)),
                         patch_type: body.and_then(|b| word(b, "patchType")),
+                        lists: body.is_some_and(|b| b.to_string().contains(umcf_foam_field::PLACEHOLDER)),
                     }
                 })
                 .collect()

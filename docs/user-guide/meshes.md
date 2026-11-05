@@ -207,6 +207,72 @@ umcf-cli run --case my-case \
 - The meshing dictionaries are not changed: meshing again makes the patches as they say.
 - One step in the undo history, written by `case.save` after a backup.
 
+## New patches
+
+`patch.create` prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's
+`createPatch` to make. The faces are given as labels (`faces`), as the ones whose centre is in a
+box (`box`), or as the ones whose centre is within a distance of an STL surface of the case, or
+of one solid of it (`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its
+triangles. A box or a surface takes faces from the patches named in `from`, else from the
+selected patches of the region, else from every patch of the region that is neither coupled nor
+of a constraint type (`empty`, `symmetry`, `symmetryPlane`, `wedge`).
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'patch.create={"region": "air", "name": "skyWest", "box": {"min": [-1, -1, -1], "max": [295, 1e9, 1e9]}, "from": ["sky"]}' \
+  --cmd 'patch.create={"region": "air", "name": "roofs", "type": "wall", "surface": {"file": "buildings.stl", "solid": "roof", "distance": 0.5}}' \
+  --cmd 'case.save={}'
+createPatch -region air -dict system/air/createPatchDict.umcf -overwrite   # OpenFOAM-12
+createPatch -region air -dict system/createPatchDict.umcf -overwrite       # OpenFOAM-8
+```
+
+- The faces go into a face set, `constant/<region>/polyMesh/sets/<name>`, and the patch into
+  `system/<region>/createPatchDict.umcf` (`system/createPatchDict.umcf` for a single-region
+  case) as `{ name …; patchInfo { type …; inGroups …; … } constructFrom set; set …; }`, after the
+  patches prepared there before. That dictionary holds the patches prepared on the mesh as it is:
+  a face set holds face labels, which hold for this mesh only. The case's own `createPatchDict`,
+  which its scripts may run after meshing, isn't touched.
+- **The mesh doesn't change yet**: the patches are made when `createPatch -region <region> -dict
+  … -overwrite` runs, once, on this mesh; delete the dictionary then. The command says the line
+  for the case's OpenFOAM version (`patch.run`): OpenFOAM-12 takes the path from the case
+  (`-dict system/<region>/createPatchDict.umcf`), OpenFOAM-8 below `system/<region>/` already
+  (`-dict system/createPatchDict.umcf`). Adding to the dictionary is refused when it can't be for this
+  mesh: it notes the number of faces of the mesh it was prepared on (a dictionary without that line
+  is refused), and the mesh must have that many and none of the patches it prepares. A mesh made again with as many faces, before the
+  dictionary has run, isn't caught. Until then, the patch isn't in the mesh, the view or the
+  browser. When the case's scripts make the region's mesh again, the mesh they make doesn't have
+  it (`patch.remesh`).
+- **The fields follow when they can.** When all the faces come from one patch of the same kind,
+  each field file of the region at the start time gets a copy of that patch's own entry for the
+  new patch: OpenFOAM reads an entry for a patch the mesh doesn't have yet without a word. The
+  kinds are the wall types (`wall`, `mappedWall`, …), `patch` with the mapped patch types, and
+  each other type on its own: a wall function doesn't go to a `patch`, nor `type empty` to
+  anything else. A patch of a constraint type (`empty`, `symmetry`, `symmetryPlane`, `wedge`)
+  gets none: its condition is its type's, and OpenFOAM gives an `empty` patch its own.
+  The command warns about the fields that still need one (`patch.unfilled`), and notes the ones
+  whose pattern entry or included text may give one (`patch.maybe`, as
+  `#includeEtc "caseDicts/setConstraintTypes"` does for the constraint types). An entry for one of
+  the new patch's groups gives it one: the groups given, `wall` for a wall type, the type for a
+  constraint type. It also warns about field files with values per face (`nonuniform`) on a
+  patch that gives faces (`patch.resized`), whose size is wrong once `createPatch` has run, about
+  `0.orig` (`patch.orig`), a patch that gives all its faces (`patch.emptied`: `createPatch`
+  removes it, except OpenFOAM-12's, which keeps a constraint type without faces), and the
+  `processor*` directories (`patch.decomposed`).
+- **Refused**: a name already used (a patch, a group, a field entry, a prepared patch, a face
+  set), a number, a face that isn't a boundary face, a face prepared for another patch already (from a face set, or from whole patches by a
+  `constructFrom patches` entry of the dictionary, which may name patches and groups but no
+  patterns),
+  faces of a coupled patch (`processor`, `cyclic`, `cyclicAMI`, the non-conformal ones), whose
+  faces `createPatch` keeps paired, and a new coupled patch, whose two halves are made together
+  with `createPatch`'s own dictionary. So is adding to a dictionary whose face sets are gone.
+- One step in the undo history, written by `case.save` after a backup. An undo after the save
+  doesn't take the new files away again (the dictionary, the face set): delete them by hand.
+- A box or a surface reads the whole mesh of the region (a minute or more for the largest), and
+  the desktop app waits for it.
+- Checked on copies of an OpenFOAM-12 case of the solver (1458 of the 2916 `sky` faces of `air`)
+  and an OpenFOAM-8 single-region case: `createPatch` read the set and made the patch,
+  `checkMesh` passed, and the fields read with the new mesh.
+
 ## Tested on
 
 Every region of six projects, from 25,000 to 16 million cells, reads and passes these checks:

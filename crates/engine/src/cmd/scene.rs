@@ -406,7 +406,7 @@ fn selection_json(s: &[Sel]) -> Value {
     s.iter().map(Sel::to_json).collect()
 }
 
-fn vector(id: &str, key: &str, v: Option<&Value>) -> Result<[f64; 3], Error> {
+pub(super) fn vector(id: &str, key: &str, v: Option<&Value>) -> Result<[f64; 3], Error> {
     let bad = || Error::Params(format!("{id}: `{key}` is three finite numbers"));
     let a = v.and_then(Value::as_array).filter(|a| a.len() == 3).ok_or_else(bad)?;
     let x = |i: usize| a.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
