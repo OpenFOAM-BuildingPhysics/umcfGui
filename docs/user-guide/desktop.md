@@ -48,7 +48,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **The axis triad** (top right): click an axis to look along it.
 - **The navigation bar** (bottom): orbit or pan, zoom, fit, the standard views, the faces' edges,
   and *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
-  adds or takes away one), drawn in the selection colour.
+  adds or takes away one, Shift+click adds one), drawn in the selection colour.
 - **Properties** (right): the selected patches with their type, size and each field's boundary
   condition for them (by name or patch group; one given by a pattern is matched by the
   [case check](checks.md), not shown here), and the picked faces, counted by region.

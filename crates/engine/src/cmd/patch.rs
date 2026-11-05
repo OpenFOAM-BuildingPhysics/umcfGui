@@ -60,7 +60,7 @@ pub(super) const CREATE: CommandSpec = CommandSpec {
     label: "New patch",
     menu: "Mesh/New patch…",
     shortcut: None,
-    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches. type: default patch. groups, entries: as patch.set. The faces, one of: the selected faces (select.pick with faces: true), when none of these is given; faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
+    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches, or of the picked faces when they are the faces (they must all be of it, and leave the selection once in the patch). type: default patch. groups, entries: as patch.set. The faces, one of: the selected faces (select.pick with faces: true), when none of these is given; faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
     enabled: needs_case,
     run: create,
     journal: true,
@@ -344,7 +344,22 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .and_then(|r| r.patches.clone())
         .ok_or_else(|| Error::Params(format!("{id}: region `{region}` has no mesh")))?;
     let faces: Vec<u32> = match (given("faces"), given("box"), given("surface")) {
-        (None, None, None) => picked.iter().filter(|(r, _)| *r == region).map(|(_, f)| *f).collect(),
+        (None, None, None) => {
+            let mine: Vec<u32> = picked.iter().filter(|(r, _)| *r == region).map(|(_, f)| *f).collect();
+            let others = picked.len() - mine.len();
+            if mine.is_empty() {
+                return Err(Error::Params(format!("{id}: none of the picked faces is in region `{region}`")));
+            }
+            if others > 0 {
+                return Err(Error::Params(format!(
+                    "{id}: {others} of the picked faces are in other regions than `{region}`: a patch is of one region"
+                )));
+            }
+            if mine.len() > MAX_FACES {
+                return Err(Error::Params(format!("{id}: more than {MAX_FACES} faces")));
+            }
+            mine
+        }
         (Some(v), _, _) => labels(id, v)?,
         (None, b, around) => {
             let from = from(id, &p, &region, &patches, &selected)?;
@@ -393,6 +408,22 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         };
         found.push(warn("patch.emptied", &report.dict, format!("all faces of `{q}` move: {what}")));
     }
+    // Faces of a constraint patch (`empty`, `symmetry`, …) given another type stop being treated
+    // as such: likely picked by mistake (the front and back of a 2D mesh).
+    for (q, n) in &report.from {
+        if let Some(x) =
+            patches.iter().find(|x| x.name == *q && umcf_model::is_constraint_type(&x.kind) && x.kind != kind)
+        {
+            found.push(warn(
+                "patch.constraint",
+                &report.dict,
+                format!(
+                    "{n} of the faces are of `{q}` ({}): as `{kind}` they are no longer treated as {}",
+                    x.kind, x.kind
+                ),
+            ));
+        }
+    }
     for f in &report.maybe {
         found.push(json!({ "level": "info", "code": "patch.maybe", "path": f, "region": region, "patch": name, "field": null, "message": format!("a pattern entry or text from elsewhere (an #include) may give `{name}` a condition: check it has one before a run") }));
     }
@@ -427,6 +458,10 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "the processor directories don't have the new patch: decompose the case again after createPatch"
                 .to_string(),
         ));
+    }
+    // The picked faces are in the new patch now: they leave the selection.
+    if from_selection {
+        s.selection.retain(|x| !matches!(x, Sel::Face { region: r, .. } if *r == region));
     }
     if !KNOWN.contains(&kind) {
         found.push(json!({ "level": "info", "code": "patch.type", "path": "", "region": null, "patch": null, "field": null, "message": format!("`{kind}` is not a patch type umcfGui knows: check its spelling") }));

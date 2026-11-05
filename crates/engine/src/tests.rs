@@ -1145,6 +1145,8 @@ fn faces_are_picked_selected_and_made_a_patch() {
     for bad in [
         json!({ "region": "air", "face": 99 }),
         json!({ "region": "air", "face": -1 }),
+        json!({ "region": "air", "face": 1.5 }),
+        json!({ "region": "air", "face": 4_294_967_296u64 }),
         json!({ "region": "nowhere", "face": 0 }),
     ] {
         assert!(s.execute("select.set", &json!({ "items": [bad] })).is_err(), "{bad}");
@@ -1152,16 +1154,77 @@ fn faces_are_picked_selected_and_made_a_patch() {
     // The snapshot draws them.
     let out = s.execute("scene.snapshot", &json!({ "width": 16, "height": 16 })).unwrap();
     assert!(out.message.ends_with(", 3 selected"), "{}", out.message);
+    // Taken out again, by toggle and remove.
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 2 }], "mode": "remove" })).unwrap();
+    assert_eq!(s.selection().len(), 2);
+    let mut toggle = top.clone();
+    toggle["mode"] = json!("toggle");
+    s.execute("select.pick", &toggle).unwrap();
+    assert_eq!(s.selection(), [Sel::Face { region: "air".into(), face: 0 }]);
+    s.execute("select.pick", &toggle).unwrap();
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 2 }], "mode": "add" })).unwrap();
+    assert_eq!(s.selection().len(), 3);
+    // `none` only lists.
+    let mut look = top.clone();
+    look["mode"] = json!("none");
+    s.execute("select.pick", &look).unwrap();
+    assert_eq!(s.selection().len(), 3);
+    // A surface in front is passed over: the mesh face behind is picked.
+    let mut through = look.clone();
+    through["surfaces"] = json!(["box.stl"]);
+    through["regions"] = json!(["air"]);
+    let out = s.execute("select.pick", &through).unwrap();
+    let hits = out.data["hits"].as_array().unwrap();
+    assert!(
+        !hits.is_empty() && hits.iter().all(|h| h.get("face").is_some() && h.get("triangle").is_none()),
+        "{}",
+        out.data
+    );
     // patch.create takes the selected faces, and their region.
     let o = s.execute("patch.create", &json!({ "name": "picked" })).unwrap();
     assert_eq!(o.data["faces"], json!(3));
     assert_eq!(o.data["region"], "air");
     let from: Vec<&str> = o.data["from"].as_array().unwrap().iter().map(|f| f["patch"].as_str().unwrap()).collect();
     assert_eq!(from, ["ground", "sky", "walls"]);
+    // They are in the patch now: out of the selection.
+    assert!(s.selection().is_empty());
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 3 }] })).unwrap();
     assert!(s.execute("patch.create", &json!({ "name": "again", "from": ["sky"] })).is_err());
     s.execute("edit.undo", &json!({})).unwrap();
+    // A mesh read again drops the faces picked on it.
+    let mut reload = look.clone();
+    reload["reload"] = json!(true);
+    s.execute("select.pick", &reload).unwrap();
+    assert!(s.selection().is_empty());
     // Nothing picked and no faces given: says so.
     s.execute("select.clear", &json!({})).unwrap();
     let e = s.execute("patch.create", &json!({ "name": "x", "region": "air" })).unwrap_err().to_string();
     assert!(e.contains("select faces"), "{e}");
+}
+
+#[test]
+fn picked_faces_make_a_patch_of_one_region() {
+    let mut fs = fs();
+    fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    cube_mesh(&mut fs, "constant/wall/polyMesh");
+    // The wall's one patch is `empty`: faces picked off it are pointed out.
+    let b =
+        String::from_utf8(umcf_core::CaseFs::read(&fs, "constant/wall/polyMesh/boundary", 1 << 20).unwrap().unwrap())
+            .unwrap();
+    fs.insert("constant/wall/polyMesh/boundary", b.replace("type patch;", "type empty;"));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 0 }, { "region": "wall", "face": 1 }] }))
+        .unwrap();
+    let e = s.execute("patch.create", &json!({ "name": "x" })).unwrap_err().to_string();
+    assert!(e.contains("one region"), "{e}");
+    let e = s.execute("patch.create", &json!({ "name": "x", "region": "air" })).unwrap_err().to_string();
+    assert!(e.contains("1 of the picked faces are in other regions"), "{e}");
+    s.execute("select.set", &json!({ "items": [{ "region": "wall", "face": 1 }] })).unwrap();
+    let e = s.execute("patch.create", &json!({ "name": "x", "region": "air" })).unwrap_err().to_string();
+    assert!(e.contains("none of the picked faces is in region `air`"), "{e}");
+    let o = s.execute("patch.create", &json!({ "name": "x" })).unwrap();
+    assert_eq!(o.data["region"], "wall");
+    assert!(codes(&o).contains(&"patch.constraint".to_string()), "{:?}", codes(&o));
 }

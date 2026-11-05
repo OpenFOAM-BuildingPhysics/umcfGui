@@ -24,6 +24,8 @@ pub struct Viewport {
     /// What is under the cursor, for the status bar.
     pub hover: Option<String>,
     last_hover: Option<Pos2>,
+    /// Whether the hover text was made picking faces.
+    hover_faces: bool,
     /// Where the view was last shown, in points.
     pub rect: Option<Rect>,
     /// A primary drag turns the view (else it pans).
@@ -41,6 +43,7 @@ impl Default for Viewport {
             drawn: None,
             hover: None,
             last_hover: None,
+            hover_faces: false,
             rect: None,
             orbit: true,
             faces: false,
@@ -53,8 +56,9 @@ impl Default for Viewport {
 struct Drawn {
     camera: [f64; 7],
     size: [u32; 2],
-    selection: Vec<Sel>,
     edges: bool,
+    /// Picking faces, for the hover text.
+    faces: bool,
     revision: u64,
     dark: bool,
 }
@@ -164,14 +168,8 @@ impl Viewport {
             let (w, h) = umcf_render::raster::size(size[0], size[1]);
             [w, h]
         };
-        let drawn = Drawn {
-            camera: key(&cam),
-            size,
-            selection: selection.to_vec(),
-            edges: self.edges,
-            revision,
-            dark: tokens.dark,
-        };
+        let drawn =
+            Drawn { camera: key(&cam), size, faces: self.faces, edges: self.edges, revision, dark: tokens.dark };
         if self.drawn.as_ref() != Some(&drawn) || self.texture.is_none() {
             let mut selected = Vec::new();
             for (k, o) in scene.objects.iter().enumerate() {
@@ -209,19 +207,23 @@ impl Viewport {
         // What is under the cursor (read only: the scene's BVH, no command).
         let shown = self.drawn.as_ref().map_or(size, |d| d.size);
         match response.hover_pos() {
-            Some(p) if !dragging && self.last_hover != Some(p) => {
+            Some(p) if !dragging && (self.last_hover != Some(p) || self.hover_faces != self.faces) => {
                 self.last_hover = Some(p);
-                let hits = scene.pick_classes(&ray_at(&cam, rect, p, shown));
-                self.hover = hits.first().and_then(|h| {
-                    scene.objects.get(h.object).map(|o| {
-                        let label = class_label(o, h.class);
-                        if self.faces && matches!(o.source, Source::Mesh { .. }) {
-                            format!("face {} of {label}", h.index)
-                        } else {
-                            label
-                        }
+                self.hover_faces = self.faces;
+                let ray = ray_at(&cam, rect, p, shown);
+                self.hover = if self.faces {
+                    // What a click picks: the nearest mesh face, surfaces passed over.
+                    scene.pick(&ray, usize::MAX).into_iter().find_map(|h| {
+                        let o = scene.objects.get(h.object)?;
+                        matches!(o.source, Source::Mesh { .. })
+                            .then(|| format!("face {} of {}", h.index, class_label(o, h.class)))
                     })
-                });
+                } else {
+                    scene
+                        .pick_classes(&ray)
+                        .first()
+                        .and_then(|h| scene.objects.get(h.object).map(|o| class_label(o, h.class)))
+                };
             }
             Some(_) => {}
             None => {

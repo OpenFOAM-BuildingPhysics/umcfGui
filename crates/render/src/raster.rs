@@ -32,8 +32,8 @@ pub struct Style {
     pub edges: bool,
     /// Classes drawn in the selection colour: (object index, class index).
     pub selected: Vec<(usize, u32)>,
-    /// Faces (mesh faces, STL triangles) drawn in the selection colour: (object index, the
-    /// index each triangle of the object comes from, [`crate::Object::origin_index`]).
+    /// Mesh faces drawn in the selection colour: (object index, the face label each triangle of
+    /// the object comes from, [`crate::Object::origin_index`]).
     pub selected_faces: std::collections::HashSet<(usize, u32)>,
     pub colour_by: ColourBy,
     /// The background's colours at the top and the bottom (a vertical gradient); `None` for
@@ -230,14 +230,27 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                 }
             })
             .collect();
+        // The selected faces of this object, by label.
+        let mut picked: Vec<bool> = Vec::new();
+        for (o, f) in &style.selected_faces {
+            if *o == k {
+                let f = *f as usize;
+                if picked.len() <= f {
+                    picked.resize(f + 1, false);
+                }
+                if let Some(x) = picked.get_mut(f) {
+                    *x = true;
+                }
+            }
+        }
         let base = next_id;
         next_id = next_id.saturating_add(u32::try_from(obj.classes.len()).unwrap_or(u32::MAX));
         for (n, tri) in obj.triangles.iter().enumerate() {
             let p = tri.map(|i| view.get(i as usize).copied());
             let [Some(a), Some(b), Some(c)] = p else { continue };
             let class = obj.class.get(n).copied().unwrap_or(0);
-            let face_selected = !style.selected_faces.is_empty()
-                && obj.origin_index.get(n).is_some_and(|f| style.selected_faces.contains(&(k, *f)));
+            let face_selected =
+                !picked.is_empty() && obj.origin_index.get(n).is_some_and(|f| picked.get(*f as usize) == Some(&true));
             let Some(colour) = (if face_selected { Some(&SELECTED) } else { colours.get(class as usize) }) else {
                 continue;
             };

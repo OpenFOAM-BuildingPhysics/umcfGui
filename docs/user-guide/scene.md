@@ -64,7 +64,10 @@ or triangle, the distance and the point), and selects one of them:
 With `faces: true` it picks the mesh face under the cursor instead of its patch: the hits are
 then one per face (with the patch it is in), and the selection gets `{"region": "air", "face":
 75548}`. Surfaces have no faces to pick: their triangles are passed over. Selected faces are drawn
-in the selection colour, and [`patch.create`](meshes.md#new-patches) makes a patch of them.
+in the selection colour, and [`patch.create`](meshes.md#new-patches) makes a patch of them;
+`bc.set` and `patch.set` act on the selected patches and leave the faces out. A mesh read again
+(`"reload": true`, after OpenFOAM rewrote it) may number its faces otherwise, so the faces picked
+on it leave the selection.
 
 `depth` picks the one behind: 0 (default) is the nearest, 1 the next ("select other": a patch
 hidden by another, an internal patch), up to 63; 64 are listed at most. A `depth` past what is under the cursor

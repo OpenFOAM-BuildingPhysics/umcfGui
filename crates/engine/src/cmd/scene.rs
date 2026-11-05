@@ -76,6 +76,8 @@ const WHICH: [&str; 3] = ["regions", "surfaces", "reload"];
 /// The parameters that place the camera.
 const CAMERA: [&str; 6] = ["view", "azimuth", "elevation", "zoom", "width", "height"];
 const DEFAULT_SIZE: (u32, u32) = (1280, 800);
+/// The most items one `select.set` takes.
+const MAX_ITEMS: usize = 50_000_000;
 /// Most hits a pick lists.
 const MAX_HITS: usize = 64;
 
@@ -210,6 +212,11 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         for (f, stl) in &stls {
             scene.objects.push(Object::from_stl(f, stl, scene.origin));
         }
+        // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
+        // the faces picked on it go.
+        if reload {
+            s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
+        }
         s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene });
     }
     Ok(())
@@ -297,7 +304,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -415,7 +422,7 @@ fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
     }
 }
 
-/// The selected faces as the renderer takes them: (object index, face label).
+/// The selected faces as the renderer takes them: (object index, face label), for mesh objects.
 pub fn selected_faces(scene: &Scene, selection: &[Sel]) -> std::collections::HashSet<(usize, u32)> {
     let mut out = std::collections::HashSet::new();
     for sel in selection {
@@ -495,7 +502,16 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         _ => return Err(Error::Params(format!("{id}: give `pixel` or `ray` (one of them)"))),
     };
     // One entry per patch or region at its nearest hit; with `faces`, per mesh face.
-    let hits: Vec<Pick> = if faces { scene.pick(&ray, MAX_HITS * 4) } else { scene.pick_classes(&ray) };
+    // Surfaces have no faces to pick: their triangles are passed over before the limit.
+    let hits: Vec<Pick> = if faces {
+        scene
+            .pick(&ray, usize::MAX)
+            .into_iter()
+            .filter(|h| scene.objects.get(h.object).is_some_and(|o| matches!(o.source, Source::Mesh { .. })))
+            .collect()
+    } else {
+        scene.pick_classes(&ray)
+    };
     let mut under: Vec<(Sel, &Pick)> = Vec::new();
     for h in &hits {
         let sel = scene
@@ -569,6 +585,9 @@ fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(id, p, &["items", "mode"])?;
     let mode = mode(id, &p, &[("replace", Mode::Replace), ("add", Mode::Add), ("remove", Mode::Remove)])?;
     let list = p.required("items")?.as_array().ok_or_else(|| Error::Params(format!("{id}: `items` is a list")))?;
+    if list.len() > MAX_ITEMS {
+        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items")));
+    }
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let mut items = Vec::new();
     // Each surface's regions, read once.

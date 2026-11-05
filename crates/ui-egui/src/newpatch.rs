@@ -129,9 +129,9 @@ impl App {
         let faces = picked(&self.session);
         let (mut ok, mut close) = (false, false);
         let Some(form) = &mut self.new_patch else { return (false, false) };
-        // Faces picked: those, unless another source was chosen since.
-        if !faces.is_empty() && !form.chose {
-            form.source = Source::Picked;
+        // Faces picked: those; none: a box. Unless a source was chosen by hand.
+        if !form.chose {
+            form.source = if faces.is_empty() { Source::Box } else { Source::Picked };
         }
         let muted = Ink { line: t.text_muted, fill: t.accent };
         let card_top = ui.cursor().top();
