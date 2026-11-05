@@ -1090,6 +1090,15 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
     assert_eq!(o.data["faces"], json!(6));
     assert!(codes(&o).contains(&"patch.emptied".to_string()), "{:?}", codes(&o));
     s.execute("edit.undo", &json!({})).unwrap();
+    // A patch named twice in `from` gives its faces once.
+    let o = s
+        .execute(
+            "patch.create",
+            &json!({"name": "top", "box": {"min": [-1, -1, 0.9], "max": [2, 2, 2]}, "from": ["inlet", "inlet"]}),
+        )
+        .unwrap();
+    assert_eq!(o.data["from"], json!([{"patch": "inlet", "faces": 1}]));
+    s.execute("edit.undo", &json!({})).unwrap();
     // Refused.
     for bad in [
         json!({"faces": [0]}),
@@ -1102,6 +1111,7 @@ fn new_patches_are_prepared_from_a_box_a_surface_or_labels() {
         json!({"name": "x", "box": {"min": [0, 0, 0]}}),
         json!({"name": "x", "box": {"min": [5, 5, 5], "max": [6, 6, 6]}}),
         json!({"name": "x", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "from": ["nowhere"]}),
+        json!({"name": "x", "box": {"min": [0, 0, 0], "max": [1, 1, 1]}, "from": vec!["inlet"; 100]}),
         json!({"name": "x", "surface": {"file": "box.stl"}}),
         json!({"name": "x", "surface": {"file": "box.stl", "solid": "lid", "distance": 1}}),
         json!({"name": "x", "surface": {"file": "nowhere.stl", "distance": 1}}),

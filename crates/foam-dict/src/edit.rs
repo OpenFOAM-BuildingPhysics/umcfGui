@@ -73,16 +73,17 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
         Node::Dict { .. } => layout_dict(&mut node, &indent),
         other => other.first_tok_mut().lead = format!("\n{indent}"),
     }
-    if !close.lead.contains('\n') {
-        // A comment before the `)` on that line (`( a /* note */ )`) stays after the item it
-        // follows: in front of the new one.
-        let kept = close.lead.trim_end();
-        if !kept.is_empty() {
-            let lead = &mut node.first_tok_mut().lead;
-            *lead = format!("{kept}{lead}");
-        }
-        close.lead = format!("\n{key_indent}");
+    // What is before the `)` (`( a /* note */ )`, `( a // note` and a new line) stays after the
+    // items it follows: in front of the new one. The `)` keeps its own line, or gets one.
+    let (kept, rest) = match close.lead.rfind('\n') {
+        Some(i) => (close.lead.get(..i).unwrap_or("").to_string(), close.lead.get(i..).unwrap_or("").to_string()),
+        None => (close.lead.clone(), format!("\n{key_indent}")),
+    };
+    if !kept.is_empty() {
+        let lead = &mut node.first_tok_mut().lead;
+        *lead = format!("{kept}{lead}");
     }
+    close.lead = rest;
     items.push(node);
     Ok(())
 }

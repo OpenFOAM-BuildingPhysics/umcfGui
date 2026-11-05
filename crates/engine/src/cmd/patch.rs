@@ -448,13 +448,18 @@ fn from(
 ) -> Result<Vec<String>, Error> {
     if let Ok(v) = p.required("from") {
         let list = v.as_array().ok_or_else(|| Error::Params(format!("{id}: `from` is a list of patch names")))?;
-        let mut out = Vec::new();
+        if list.len() > patches.len() + MAX_ENTRIES {
+            return Err(Error::Params(format!("{id}: `from` has more names than region `{region}` has patches")));
+        }
+        let mut out: Vec<String> = Vec::new();
         for x in list {
             let x = x.as_str().ok_or_else(|| Error::Params(format!("{id}: a patch is a name, not {x}")))?;
             if !patches.iter().any(|q| q.name == x) {
                 return Err(Error::Params(format!("{id}: region `{region}` has no patch `{x}`")));
             }
-            out.push(x.to_string());
+            if !out.iter().any(|o| o == x) {
+                out.push(x.to_string());
+            }
         }
         return Ok(out);
     }
