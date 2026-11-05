@@ -76,6 +76,34 @@ changes nothing.
 Picking uses a bounding volume hierarchy of each object's triangles, built the first time a
 ray is cast, on the full mesh or surface.
 
+## Selecting in a rectangle
+
+`select.rect` selects what is in a rectangle of the same image (`rect: [x0, y0, x1, y1]`, two
+opposite corners in pixels from the top left; a pixel is in it when its middle is):
+
+| `through` | Takes |
+|---|---|
+| `false` (default) | What is seen in it: the faces in front at one of its pixels or more. A face smaller than a pixel can be missed: zoom in, or go through |
+| `true` | Everything in it, hidden or not: the faces whose middle (their area-weighted centre) is inside it, on the image, and in front of the camera |
+
+Without `faces` it selects the patches and surface regions of those faces; with `faces: true`,
+the mesh faces themselves (surfaces are passed over and hide nothing, as for a click). `mode` is `replace` (default), `add`,
+`remove` or `none` (only count). It returns how many were in the rectangle (`in`), up to 1000 of
+them (`items`), and the size of the selection (`selected`).
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'select.rect={"view": "top", "width": 1280, "height": 800, "rect": [300, 200, 700, 500], "faces": true, "through": true}' \
+  --cmd 'patch.create={"name": "plaza", "type": "wall"}'
+```
+
+## The camera
+
+`scene.snapshot` returns the camera it drew with (`camera`: `target`, `distance`, `azimuth`,
+`elevation`, `fov`). `select.pick` and `select.rect` (and `scene.snapshot` itself) take it back
+as `camera`, in place of `view`, `azimuth`, `elevation` and `zoom`, to work on exactly that
+view: the desktop app sends its own camera this way. `fov` may be left out (30°).
+
 ## Selecting by name
 
 `select.set` sets the selection from a list of `items`: patches as
@@ -110,5 +138,5 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
   the 3×3 case takes about 5 s and 1.3 GB, almost all of it reading. Its 573 000 boundary
   triangles are drawn and picked in well under a second.
 - No level of detail and no transparency yet; the renderer draws every triangle on one core.
-- Selections are whole patches, surface regions and single mesh faces (`faces: true`). Picking
-  many faces at once (a drag rectangle, a brush) and picking cells are not there yet.
+- Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
+  by a rectangle (`select.rect`). A brush and picking cells are not there yet.

@@ -39,7 +39,7 @@ mod cmd;
 mod params;
 
 pub use cmd::COMMANDS;
-pub use cmd::scene::{Sel, selected_faces};
+pub use cmd::scene::{Sel, camera_json, selected_faces};
 
 /// The most undo steps kept; the oldest go first.
 pub const UNDO_DEPTH: usize = 100;

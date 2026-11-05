@@ -74,7 +74,7 @@ pub(crate) struct Cached {
 /// The parameters that say what the scene shows.
 const WHICH: [&str; 3] = ["regions", "surfaces", "reload"];
 /// The parameters that place the camera.
-const CAMERA: [&str; 6] = ["view", "azimuth", "elevation", "zoom", "width", "height"];
+const CAMERA: [&str; 7] = ["view", "azimuth", "elevation", "zoom", "camera", "width", "height"];
 const DEFAULT_SIZE: (u32, u32) = (1280, 800);
 /// The most items one `select.set` takes.
 const MAX_ITEMS: usize = 50_000_000;
@@ -237,6 +237,14 @@ fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Err
     if u64::from(w) * u64::from(h) > u64::from(MAX_PIXELS) {
         return Err(Error::Params(format!("{id}: {w} × {h} is more than {MAX_PIXELS} pixels (4096 × 4096)")));
     }
+    if let Some(c) = optional(p, "camera")? {
+        if let Some(k) =
+            ["view", "azimuth", "elevation", "zoom"].iter().find(|k| optional(p, k).ok().flatten().is_some())
+        {
+            return Err(Error::Params(format!("{id}: `camera` places the camera; `{k}` is not given with it")));
+        }
+        return Ok((given_camera(id, c)?, w, h));
+    }
     let view = match p.str("view")? {
         None => View::Iso,
         Some(v) => View::parse(v).ok_or_else(|| {
@@ -260,7 +268,34 @@ fn camera(id: &str, p: &Params, scene: &Scene) -> Result<(Camera, u32, u32), Err
     Ok((cam, w, h))
 }
 
-fn camera_json(c: &Camera) -> Value {
+/// A camera as `camera_json` writes it (`fov` may be left out).
+fn given_camera(id: &str, c: &Value) -> Result<Camera, Error> {
+    const KEYS: [&str; 5] = ["target", "distance", "azimuth", "elevation", "fov"];
+    let bad = || {
+        Error::Params(format!(
+            "{id}: `camera` is {{\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"}}, as scene.snapshot returns it"
+        ))
+    };
+    let o = c.as_object().filter(|o| o.keys().all(|k| KEYS.contains(&k.as_str()))).ok_or_else(bad)?;
+    let number = |k: &str| o.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
+    let t = vector(id, "camera.target", o.get("target"))?;
+    let distance = number("distance").filter(|d| *d > 0.0).ok_or_else(bad)?;
+    let elevation = number("elevation").filter(|e| (-90.0..=90.0).contains(e)).ok_or_else(bad)?;
+    let fov = match o.get("fov") {
+        None => umcf_render::camera::FOV,
+        Some(_) => number("fov").filter(|f| *f > 0.1 && *f < 170.0).ok_or_else(bad)?,
+    };
+    Ok(Camera {
+        target: umcf_geom::Vec3::new(t[0], t[1], t[2]),
+        distance,
+        azimuth: number("azimuth").ok_or_else(bad)?,
+        elevation,
+        fov,
+    })
+}
+
+/// A camera as `scene.snapshot` returns it and `camera` parameters take it.
+pub fn camera_json(c: &Camera) -> Value {
     json!({
         "target": [c.target.x, c.target.y, c.target.z],
         "distance": c.distance,
@@ -304,7 +339,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -326,15 +361,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let selection = s.selection.clone();
     let scene = scene(s, id, &p)?;
     let (cam, width, height) = camera(id, &p, scene)?;
-    let mut selected = Vec::new();
-    for (k, o) in scene.objects.iter().enumerate() {
-        for c in 0..o.classes.len() {
-            let Ok(c) = u32::try_from(c) else { break };
-            if Sel::of(o, c).is_some_and(|x| selection.contains(&x)) {
-                selected.push((k, c));
-            }
-        }
-    }
+    let selected = selected_classes(scene, &selection);
     let selected_faces = selected_faces(scene, &selection);
     let n_selected = selected.len() + selected_faces.len();
     let image =
@@ -422,6 +449,21 @@ fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
     }
 }
 
+/// The selected patches and surface regions as the renderer takes them: (object index, class).
+fn selected_classes(scene: &Scene, selection: &[Sel]) -> Vec<(usize, u32)> {
+    let chosen: std::collections::HashSet<&Sel> = selection.iter().filter(|s| !matches!(s, Sel::Face { .. })).collect();
+    let mut out = Vec::new();
+    for (k, o) in scene.objects.iter().enumerate() {
+        for c in 0..o.classes.len() {
+            let Ok(c) = u32::try_from(c) else { break };
+            if !chosen.is_empty() && Sel::of(o, c).is_some_and(|x| chosen.contains(&x)) {
+                out.push((k, c));
+            }
+        }
+    }
+    out
+}
+
 /// The selected faces as the renderer takes them: (object index, face label), for mesh objects.
 pub fn selected_faces(scene: &Scene, selection: &[Sel]) -> std::collections::HashSet<(usize, u32)> {
     let mut out = std::collections::HashSet::new();
@@ -452,7 +494,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     label: "Pick",
     menu: "",
     shortcut: None,
-    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). faces: true selects the mesh face under it instead ({\"region\", \"face\"}), and lists one entry per face. depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, width, height).",
+    params: "Selects the patch or surface region under a pixel of the view scene.snapshot draws with the same parameters (pixel: [x, y], from the top left), or along a ray in world coordinates (ray: {\"origin\": [x, y, z], \"direction\": [x, y, z]}). Lists everything under it, nearest first, one entry per patch or region at its nearest hit, up to 64 (hits). faces: true selects the mesh face under it instead ({\"region\", \"face\"}), and lists one entry per face. depth: which of them to take (default 0, the nearest; 1 the one behind it: \"select other\"); past the last, nothing changes. mode: replace (default; nothing under it clears the selection), add, toggle, or none (only list). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height).",
     enabled: needs_case,
     run: pick,
     journal: true,
@@ -566,6 +608,90 @@ fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         "ray": { "origin": ray.origin, "direction": ray.direction },
     });
     Ok(Outcome::new(message, data))
+}
+
+pub(super) const RECT: CommandSpec = CommandSpec {
+    id: "select.rect",
+    label: "Select in a rectangle",
+    menu: "",
+    shortcut: None,
+    params: "Selects the patches and surface regions seen in a rectangle of the view scene.snapshot draws with the same parameters (rect: [x0, y0, x1, y1], two opposite corners in pixels from the top left; a pixel is in it when its middle is). faces: true selects the mesh faces instead ({\"region\", \"face\"}; surfaces are passed over and hide nothing). through: true takes everything in it, hidden or not: the faces whose middle (area-weighted centre) is inside it and in front of the camera, and the patches and regions of those; otherwise only what is seen at one of its pixels (a face smaller than a pixel may be missed: zoom in, or go through). mode: replace (default), add, remove, or none (only count). What and camera: as scene.snapshot (regions, surfaces, reload, view, azimuth, elevation, zoom, or camera as scene.snapshot returns it; width, height). Returns how many were in it and up to 1000 of them (items).",
+    enabled: needs_case,
+    run: rect,
+    journal: true,
+    undoable: false,
+};
+
+/// Most items `select.rect` lists.
+const MAX_LISTED: usize = 1000;
+
+fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let id = RECT.id;
+    let mut allowed = WHICH.to_vec();
+    allowed.extend(CAMERA);
+    allowed.extend(["rect", "through", "mode", "faces"]);
+    let p = Params::new(id, p, &allowed)?;
+    let faces = p.bool("faces")?.unwrap_or(false);
+    let through = p.bool("through")?.unwrap_or(false);
+    let mode = mode(
+        id,
+        &p,
+        &[("replace", Mode::Replace), ("add", Mode::Add), ("remove", Mode::Remove), ("none", Mode::None)],
+    )?;
+    let bad = || Error::Params(format!("{id}: `rect` is [x0, y0, x1, y1], four finite numbers"));
+    let r = p.required("rect")?.as_array().filter(|a| a.len() == 4).ok_or_else(bad)?;
+    let c = |i: usize| r.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
+    let area = umcf_render::raster::Rect { a: [c(0)?, c(1)?], b: [c(2)?, c(3)?] };
+    let selection = s.selection.clone();
+    let scene = scene(s, id, &p)?;
+    let (cam, width, height) = camera(id, &p, scene)?;
+    let style = Style {
+        width,
+        height,
+        selected: selected_classes(scene, &selection),
+        selected_faces: selected_faces(scene, &selection),
+        ..Style::default()
+    };
+    // (object, class or face) once each, then what they select.
+    let mut keys: Vec<(usize, u32)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Picking faces, surfaces are passed over: they don't hide the mesh behind them.
+    let keep =
+        |k: usize, _: u32| !faces || scene.objects.get(k).is_some_and(|o| matches!(o.source, Source::Mesh { .. }));
+    for (k, t) in umcf_render::raster::covered(scene, &cam, &style, area, through, &keep) {
+        let Some(o) = scene.objects.get(k) else { continue };
+        let key = if faces { o.origin_index.get(t as usize) } else { o.class.get(t as usize) };
+        if let Some(key) = key
+            && seen.insert((k, *key))
+        {
+            keys.push((k, *key));
+        }
+    }
+    if keys.len() > MAX_ITEMS {
+        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items in the rectangle")));
+    }
+    let items: Vec<Sel> = keys
+        .into_iter()
+        .filter_map(|(k, x)| {
+            let o = scene.objects.get(k)?;
+            if faces { Sel::face_of(o, x) } else { Sel::of(o, x) }
+        })
+        .collect();
+    let n = items.len();
+    let listed: Vec<Value> = items.iter().take(MAX_LISTED).map(Sel::to_json).collect();
+    let before = s.selection.len();
+    apply(&mut s.selection, mode, items);
+    let what = if faces { "face" } else { "item" };
+    let message = match mode {
+        Mode::Remove => format!(
+            "{} in the rectangle, {} taken off; {} selected",
+            count(n, what),
+            before.saturating_sub(s.selection.len()),
+            s.selection.len()
+        ),
+        _ => format!("{} in the rectangle; {} selected", count(n, what), s.selection.len()),
+    };
+    Ok(Outcome::new(message, json!({ "in": n, "items": listed, "selected": s.selection.len() })))
 }
 
 pub(super) const SELECT: CommandSpec = CommandSpec {

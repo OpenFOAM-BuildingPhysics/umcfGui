@@ -1,7 +1,8 @@
 //! The 3D view: the engine's scene drawn by the CPU rasteriser into a texture, an orbit camera
 //! (drag to turn, right or middle drag to pan, wheel to zoom), standard views, and picking. A
 //! click doesn't select anything itself: it becomes a `select.pick` command with the ray under
-//! the cursor, like every other change.
+//! the cursor, like every other change; a rectangle dragged in *Box select* becomes a
+//! `select.rect` with the camera and the rectangle in the image's pixels.
 
 use eframe::egui::{
     self, Color32, ColorImage, PointerButton, Pos2, Rect, Sense, TextureHandle, TextureOptions, pos2, vec2,
@@ -28,10 +29,26 @@ pub struct Viewport {
     hover_faces: bool,
     /// Where the view was last shown, in points.
     pub rect: Option<Rect>,
-    /// A primary drag turns the view (else it pans).
-    pub orbit: bool,
+    /// What a primary drag does.
+    pub drag: Drag,
     /// A click picks the mesh face under it, not its patch.
     pub faces: bool,
+    /// A rectangle takes everything in it, hidden or not.
+    pub through: bool,
+    /// Where the rectangle being dragged started, in points.
+    corner: Option<Pos2>,
+}
+
+/// What a primary drag in the view does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Drag {
+    /// Turns the view.
+    #[default]
+    Orbit,
+    /// Moves the view.
+    Pan,
+    /// Draws a rectangle that selects what is in it.
+    Select,
 }
 
 impl Default for Viewport {
@@ -45,8 +62,10 @@ impl Default for Viewport {
             last_hover: None,
             hover_faces: false,
             rect: None,
-            orbit: true,
+            drag: Drag::Orbit,
             faces: false,
+            through: false,
+            corner: None,
         }
     }
 }
@@ -68,6 +87,8 @@ struct Drawn {
 pub enum Action {
     /// Pick along `ray`: `select.pick` with this mode, the face under it when `faces`.
     Pick { ray: Ray, mode: &'static str, faces: bool },
+    /// Select in `rect` (pixels of an image of `size` that `camera` sees): `select.rect`.
+    Rect { camera: Camera, size: [u32; 2], rect: [f64; 4], mode: &'static str, faces: bool, through: bool },
     /// Frame the scene from this view (the axis triad).
     Fit(View),
 }
@@ -86,6 +107,16 @@ pub fn class_label(object: &Object, class: u32) -> String {
             format!("{name} ({})", file.rsplit('/').next().unwrap_or(file))
         }
     }
+}
+
+/// `pos` (a point in `rect`, where an image of `size` pixels is shown) in the image's pixels,
+/// from its top left corner.
+fn pixel_at(rect: Rect, pos: Pos2, size: [u32; 2]) -> [f64; 2] {
+    let [w, h] = size;
+    [
+        f64::from((pos.x - rect.min.x) / rect.width().max(1.0)) * f64::from(w),
+        f64::from((pos.y - rect.min.y) / rect.height().max(1.0)) * f64::from(h),
+    ]
 }
 
 /// The ray through `pos` (a point in `rect`, where an image of `size` pixels is shown).
@@ -132,10 +163,16 @@ impl Viewport {
         };
 
         // Navigation.
-        let dragging = response.dragged();
         let primary = response.dragged_by(PointerButton::Primary);
+        let selecting = self.drag == Drag::Select && primary;
+        // Drawing a rectangle doesn't move the view, so it is drawn at full resolution.
+        let dragging = response.dragged() && !selecting;
         let other = response.dragged_by(PointerButton::Secondary) || response.dragged_by(PointerButton::Middle);
-        if primary && self.orbit {
+        if selecting {
+            if response.drag_started_by(PointerButton::Primary) {
+                self.corner = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+            }
+        } else if primary && self.drag == Drag::Orbit {
             let d = response.drag_delta();
             cam.azimuth -= f64::from(d.x) * 0.4;
             cam.elevation = (cam.elevation + f64::from(d.y) * 0.4).clamp(-90.0, 90.0);
@@ -233,6 +270,46 @@ impl Viewport {
         }
 
         let mut action = self.triad(ui, rect, &cam, tokens);
+        // The rectangle being dragged; let go, it selects. Let go with no position known, or
+        // found up without a release seen (the view wasn't shown meanwhile), it is dropped.
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let released = response.drag_stopped();
+        if let Some(a) = self.corner {
+            if let (true, Some(b)) = (selecting, pointer) {
+                let r = Rect::from_two_pos(a, b).intersect(rect);
+                let fill = tokens.accent.gamma_multiply(0.12);
+                ui.painter().rect(r, 0.0, fill, egui::Stroke::new(1.0, tokens.accent), egui::StrokeKind::Inside);
+            }
+            if released || !ui.input(|i| i.pointer.primary_down()) {
+                self.corner = None;
+            }
+            if let (true, Some(b)) = (released, pointer) {
+                let r = Rect::from_two_pos(a, b).intersect(rect);
+                let m = ui.input(|i| i.modifiers);
+                let mode = if m.command {
+                    "remove"
+                } else if m.shift {
+                    "add"
+                } else {
+                    "replace"
+                };
+                let (p, q) = (pixel_at(rect, r.min, shown), pixel_at(rect, r.max, shown));
+                // A rectangle of no pixels selects nothing: a slip of the mouse, not a choice.
+                if (q[0] - p[0]).abs() >= 1.0 && (q[1] - p[1]).abs() >= 1.0 {
+                    action = Some(Action::Rect {
+                        camera: cam,
+                        size: shown,
+                        rect: [p[0], p[1], q[0], q[1]],
+                        mode,
+                        faces: self.faces,
+                        through: self.through,
+                    });
+                }
+            }
+        }
+        if self.drag != Drag::Select {
+            self.corner = None;
+        }
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {

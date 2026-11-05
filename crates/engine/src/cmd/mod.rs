@@ -23,6 +23,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     mesh::CHECK,
     scene::SNAPSHOT,
     scene::PICK,
+    scene::RECT,
     scene::SELECT,
     scene::CLEAR,
     bc::SET,

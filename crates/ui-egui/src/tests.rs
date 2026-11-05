@@ -89,6 +89,21 @@ fn click_at(h: &mut Harness<'_, App>, pos: Pos2, modifiers: Modifiers) {
     h.run();
 }
 
+/// A primary drag from `a` to `b`, with `modifiers` held when it is let go.
+fn drag(h: &mut Harness<'_, App>, a: Pos2, b: Pos2, modifiers: Modifiers) {
+    h.hover_at(a);
+    h.run();
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.event(egui::Event::PointerButton { pos: a, button: PointerButton::Primary, pressed: true, modifiers });
+    for k in 1..=5 {
+        h.event(egui::Event::PointerMoved(a + (b - a) * (k as f32 / 5.0)));
+        h.step();
+    }
+    h.event(egui::Event::PointerButton { pos: b, button: PointerButton::Primary, pressed: false, modifiers });
+    h.run();
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+}
+
 fn tree_item<'a>(h: &'a Harness<'_, App>, label: &'a str) -> egui_kittest::Node<'a> {
     h.get_by_role_and_label(egui::Role::TreeItem, label)
 }
@@ -810,4 +825,44 @@ fn faces_picked_in_the_view_become_a_new_patch() {
     h.run();
     h.run();
     assert_eq!(h.state().new_patch.as_ref().unwrap().source, crate::newpatch::Source::Box);
+}
+
+#[test]
+fn a_rectangle_dragged_in_box_select_selects_what_is_in_it() {
+    let mut h = harness(app());
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    h.get_by_label("Box select").click();
+    h.run();
+    assert_eq!(h.state().viewport.drag, crate::viewport::Drag::Select);
+    let rect = h.state().viewport.rect.unwrap();
+    let camera = h.state().viewport.camera.unwrap();
+    let c = rect.center();
+    // Around the middle of the cube: the sky, seen; the view didn't turn.
+    drag(&mut h, c - vec2(20.0, 20.0), c + vec2(20.0, 20.0), Modifiers::NONE);
+    assert_eq!(h.state().log.last().unwrap().command, "select.rect");
+    assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "sky".into() }]);
+    assert_eq!(h.state().viewport.camera.unwrap(), camera);
+    // Faces through it, added with Shift: the sky's face and the ground's under it.
+    h.get_by_label("Pick faces").click();
+    h.get_by_label("Select through").click();
+    h.run();
+    drag(&mut h, c - vec2(20.0, 20.0), c + vec2(20.0, 20.0), Modifiers::SHIFT);
+    let faces: Vec<&Sel> = h.state().session().selection().iter().filter(|s| matches!(s, Sel::Face { .. })).collect();
+    assert_eq!(faces, [&Sel::Face { region: String::new(), face: 0 }, &Sel::Face { region: String::new(), face: 1 }]);
+    let log: Vec<String> = h.state().log.iter().map(|l| format!("{} {}", l.command, l.message)).collect();
+    assert_eq!(h.state().session().selection().len(), 3, "{log:#?}");
+    // Ctrl takes them away again.
+    drag(&mut h, c - vec2(20.0, 20.0), c + vec2(20.0, 20.0), Modifiers::COMMAND);
+    assert_eq!(h.state().session().selection().len(), 1);
+    // A click still picks.
+    click_at(&mut h, c, Modifiers::NONE);
+    assert_eq!(h.state().session().selection(), [Sel::Face { region: String::new(), face: 1 }]);
+    let n = h.state().log.len();
+    // Back to orbit: a drag turns the view and selects nothing.
+    h.get_by_label("Orbit").click();
+    h.run();
+    drag(&mut h, c, c + vec2(50.0, 0.0), Modifiers::NONE);
+    assert!(h.state().viewport.camera.unwrap().azimuth < camera.azimuth - 5.0);
+    assert_eq!(h.state().log.len(), n);
 }
