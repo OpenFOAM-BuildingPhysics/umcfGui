@@ -1564,6 +1564,10 @@ fn geometry_trees_from_a_table_a_file_or_a_list() {
             json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "solid": "Bäume" }),
             "printable ASCII only",
         ),
+        (
+            json!({ "trees": [{ "x": 1, "y": 2, "z": 0, "diameter": 4, "height": 6 }], "solid": "ä".repeat(100_000) }),
+            "at most 255 characters",
+        ),
         (json!({ "trees": [{ "x": 1, "y": 2, "diameter": 4, "height": 6 }] }), "`z` is a number"),
         (json!({ "table": "constant/triSurface/none.txt" }), "no such file"),
         (

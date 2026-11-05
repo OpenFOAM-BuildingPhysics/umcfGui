@@ -363,7 +363,12 @@ pub(super) const TREES: CommandSpec = CommandSpec {
 fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(TREES.id, p, &["table", "path", "trees", "name", "solid", "replace"])?;
     let rel = surface_path(TREES.id, p.str("name")?.unwrap_or("trees.stl"), false)?;
-    let solid = stl::foam_name(p.str("solid")?.unwrap_or("trees"));
+    let given = p.str("solid")?.unwrap_or("trees");
+    // A region name is a word; a longer one is refused before it is copied anywhere.
+    if given.chars().nth(255).is_some() {
+        return Err(Error::Params(format!("{}: `solid` is a name of at most 255 characters", TREES.id)));
+    }
+    let solid = stl::foam_name(given);
     // The ASCII writer keeps printable ASCII only: a name it would change is refused, so the
     // region is the name reported.
     if !solid.chars().all(|c| c.is_ascii_graphic()) {
