@@ -46,9 +46,15 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   selects what is under the cursor (`select.pick`), Ctrl+click toggles it, Shift+click adds it.
   The name of what is under the cursor shows in the history bar.
 - **The axis triad** (top right): click an axis to look along it.
-- **The navigation bar** (bottom): orbit or pan, zoom, fit, the standard views, the faces' edges,
-  and *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
-  adds or takes away one, Shift+click adds one), drawn in the selection colour.
+- **The navigation bar** (bottom): orbit, pan or *Box select*, zoom, fit, the standard views, the
+  faces' edges, *Pick faces* and *Select through*.
+  - *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
+    adds or takes away one, Shift+click adds one), drawn in the selection colour.
+  - *Box select*: a drag draws a rectangle that selects what is in it (`select.rect`): the
+    patches, or with *Pick faces* the mesh faces. Shift adds to the selection, Ctrl takes away.
+    A click still picks, and a right or middle drag still pans.
+  - *Select through*: the rectangle takes everything in it, hidden too (the faces whose middle is
+    in it), not only what is seen.
 - **Properties** (right): the selected patches with their type, size and each field's boundary
   condition for them (by name or patch group; one given by a pattern is matched by the
   [case check](checks.md), not shown here), and the picked faces, counted by region.

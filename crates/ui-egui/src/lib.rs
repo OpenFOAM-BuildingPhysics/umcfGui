@@ -50,7 +50,7 @@ mod tests;
 use icons::{Icon, Ink};
 use ribbon::{Item, Workspace};
 use theme::Tokens;
-use viewport::{Action, Viewport};
+use viewport::{Action, Drag, Viewport};
 
 pub use serde_json::Value;
 
@@ -1068,6 +1068,30 @@ impl App {
                 }
                 let _ = self.run("select.pick", p);
             }
+            Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
+                let mut p = self.shown();
+                if let Some(o) = p.as_object_mut() {
+                    let c = json!({
+                        "target": [camera.target.x, camera.target.y, camera.target.z],
+                        "distance": camera.distance,
+                        "azimuth": camera.azimuth,
+                        "elevation": camera.elevation,
+                        "fov": camera.fov,
+                    });
+                    o.insert("camera".into(), c);
+                    o.insert("width".into(), json!(size[0]));
+                    o.insert("height".into(), json!(size[1]));
+                    o.insert("rect".into(), json!(rect));
+                    o.insert("mode".into(), json!(mode));
+                    if faces {
+                        o.insert("faces".into(), json!(true));
+                    }
+                    if through {
+                        o.insert("through".into(), json!(true));
+                    }
+                }
+                let _ = self.run("select.rect", p);
+            }
             Some(Action::Fit(view)) => self.fit_view(Some(view)),
             None => {}
         }
@@ -1572,15 +1596,30 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let ink = self.ink();
-                    let orbit = self.viewport.orbit;
+                    let drag = self.viewport.drag;
                     let b = |ui: &mut Ui, icon, on, label: &str, tip: &str| {
                         icon_button(ui, icon, 30.0, true, on, label, ink, &t).on_hover_text(tip).clicked()
                     };
-                    if b(ui, Icon::Orbit, orbit, "Orbit", "Drag turns the view") {
-                        self.viewport.orbit = true;
+                    if b(ui, Icon::Orbit, drag == Drag::Orbit, "Orbit", "Drag turns the view") {
+                        self.viewport.drag = Drag::Orbit;
                     }
-                    if b(ui, Icon::Pan, !orbit, "Pan", "Drag moves the view (a right or middle drag always does)") {
-                        self.viewport.orbit = false;
+                    if b(
+                        ui,
+                        Icon::Pan,
+                        drag == Drag::Pan,
+                        "Pan",
+                        "Drag moves the view (a right or middle drag always does)",
+                    ) {
+                        self.viewport.drag = Drag::Pan;
+                    }
+                    if b(
+                        ui,
+                        Icon::BoxSelect,
+                        drag == Drag::Select,
+                        "Box select",
+                        "Drag a rectangle to select what is in it (Shift adds, Ctrl takes away); a right or middle drag moves the view",
+                    ) {
+                        self.viewport.drag = Drag::Select;
                     }
                     if b(ui, Icon::ZoomIn, false, "Zoom in", "Zoom in (wheel)") {
                         zoom = Some(0.8);
@@ -1618,6 +1657,16 @@ impl App {
                         "A click picks the mesh face under it, not its patch (Ctrl+click adds or takes away one)",
                     ) {
                         self.viewport.faces = !faces;
+                    }
+                    let through = self.viewport.through;
+                    if b(
+                        ui,
+                        Icon::Through,
+                        through,
+                        "Select through",
+                        "A rectangle takes everything in it, hidden too (the faces whose middle is in it), not only what is seen",
+                    ) {
+                        self.viewport.through = !through;
                     }
                 });
             });

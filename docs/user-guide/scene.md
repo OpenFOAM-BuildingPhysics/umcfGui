@@ -76,6 +76,34 @@ changes nothing.
 Picking uses a bounding volume hierarchy of each object's triangles, built the first time a
 ray is cast, on the full mesh or surface.
 
+## Selecting in a rectangle
+
+`select.rect` selects what is in a rectangle of the same image (`rect: [x0, y0, x1, y1]`, two
+opposite corners in pixels from the top left; a pixel is in it when its middle is):
+
+| `through` | Takes |
+|---|---|
+| `false` (default) | What is seen in it: the faces in front at one of its pixels or more. A face smaller than a pixel can be missed: zoom in, or go through |
+| `true` | Everything in it, hidden or not: the faces whose middle (their area-weighted centre) is inside it and in front of the camera |
+
+Without `faces` it selects the patches and surface regions of those faces; with `faces: true`,
+the mesh faces themselves (surfaces are passed over). `mode` is `replace` (default), `add`,
+`remove` or `none` (only count). It returns how many were in the rectangle (`in`), up to 1000 of
+them (`items`), and the size of the selection (`selected`).
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'select.rect={"view": "top", "width": 1280, "height": 800, "rect": [300, 200, 700, 500], "faces": true, "through": true}' \
+  --cmd 'patch.create={"name": "plaza", "type": "wall"}'
+```
+
+## The camera
+
+`scene.snapshot` returns the camera it drew with (`camera`: `target`, `distance`, `azimuth`,
+`elevation`, `fov`). `select.pick` and `select.rect` (and `scene.snapshot` itself) take it back
+as `camera`, in place of `view`, `azimuth`, `elevation` and `zoom`, to work on exactly that
+view: the desktop app sends its own camera this way. `fov` may be left out (30°).
+
 ## Selecting by name
 
 `select.set` sets the selection from a list of `items`: patches as

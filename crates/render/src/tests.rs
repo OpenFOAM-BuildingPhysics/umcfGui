@@ -7,7 +7,7 @@ use umcf_geom::stl::{Format, Stl, Triangle};
 use umcf_geom::{BBox, Vec3};
 
 use crate::camera::{Camera, View};
-use crate::raster::{SELECTED, Style, draw, palette};
+use crate::raster::{Rect, SELECTED, Style, covered, draw, palette};
 use crate::{Object, Scene, Source, png};
 
 /// A unit cube mesh at `at`, its bottom face patch `ground`, top `sky`, the sides `walls`.
@@ -286,4 +286,62 @@ fn picks_list_each_patch_once() {
     assert_eq!(s.pick(&ray, 100).len(), 4);
     let classes: Vec<u32> = s.pick_classes(&ray).iter().map(|p| p.class).collect();
     assert_eq!(classes, [1, 0]);
+}
+
+/// The faces of `covered`'s triangles, by object.
+fn faces_of(s: &Scene, hits: &[(usize, u32)]) -> Vec<(usize, u32)> {
+    let mut f: Vec<(usize, u32)> = hits.iter().map(|(k, t)| (*k, s.objects[*k].origin_index[*t as usize])).collect();
+    f.dedup();
+    f
+}
+
+#[test]
+fn a_rectangle_covers_what_is_seen_in_it_or_everything_through_it() {
+    // Two cubes side by side, seen from above: the left one in the left half of the image.
+    let mut s = scene_of(&cube([0.0; 3]));
+    let right = cube([2.0, 0.0, 0.0]);
+    s.objects.push(Object::from_mesh("veg", &right, s.origin));
+    let b = BBox { min: Vec3::ZERO, max: Vec3::new(3.0, 1.0, 1.0) };
+    let cam = Camera::fit(View::Top, &b, 2.0);
+    let (w, h) = (200, 100);
+    let all = Rect { a: [0.0, 0.0], b: [200.0, 100.0] };
+    // Seen: the two skies (face 1) with both their triangles, and the walls perspective shows
+    // from above, not the grounds (face 0) under them.
+    let seen = covered(&s, &cam, w, h, all, false);
+    for k in 0..2 {
+        assert!(seen.contains(&(k, 2)) && seen.contains(&(k, 3)), "{seen:?}");
+        assert!(!seen.contains(&(k, 0)) && !seen.contains(&(k, 1)), "{seen:?}");
+    }
+    assert!(seen.windows(2).all(|p| p[0] < p[1]));
+    // Through: every face of both (their middles are all inside the image).
+    let through = covered(&s, &cam, w, h, all, true);
+    assert_eq!(faces_of(&s, &through), (0..2).flat_map(|k| (0..6).map(move |f| (k, f))).collect::<Vec<_>>());
+    assert_eq!(through.len(), 24);
+    // The left half, corners in either order: the left cube only.
+    let left = Rect { a: [100.0, 100.0], b: [0.0, 0.0] };
+    assert!(faces_of(&s, &covered(&s, &cam, w, h, left, false)).iter().all(|(k, f)| *k == 0 && *f != 0));
+    assert_eq!(faces_of(&s, &covered(&s, &cam, w, h, left, true)).len(), 6);
+    // A small one in the left cube's middle: through it, the sky and the ground (the walls'
+    // middles are outside).
+    // (The left cube's middle is seen at about (69, 50).)
+    let mid = Rect { a: [64.0, 45.0], b: [74.0, 55.0] };
+    assert_eq!(faces_of(&s, &covered(&s, &cam, w, h, mid, true)), [(0, 0), (0, 1)]);
+    assert_eq!(faces_of(&s, &covered(&s, &cam, w, h, mid, false)), [(0, 1)]);
+    // No pixel's middle inside, outside the image, or not finite: nothing.
+    for r in [
+        Rect { a: [10.2, 10.0], b: [10.4, 20.0] },
+        Rect { a: [300.0, 0.0], b: [400.0, 100.0] },
+        Rect { a: [f64::NAN, 0.0], b: [10.0, 10.0] },
+    ] {
+        assert!(covered(&s, &cam, w, h, r, false).is_empty(), "{r:?}");
+    }
+    // Above both, looking up: everything is behind the camera.
+    let mut inside = cam;
+    inside.distance = 0.0;
+    inside.target = Vec3::new(1.5, 0.5, 2.0);
+    inside.elevation = -90.0;
+    assert!(covered(&s, &inside, w, h, all, true).is_empty());
+    // An empty scene, an empty image.
+    assert!(covered(&Scene::new(Vec3::ZERO), &cam, w, h, all, false).is_empty());
+    assert!(covered(&s, &cam, 0, 0, all, false).len() <= 4);
 }

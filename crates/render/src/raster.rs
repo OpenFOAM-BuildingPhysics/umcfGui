@@ -4,8 +4,8 @@
 
 use umcf_geom::Vec3;
 
-use crate::Scene;
 use crate::camera::Camera;
+use crate::{Object, Scene};
 
 /// The largest image side drawn.
 pub const MAX_SIDE: u32 = 8192;
@@ -101,7 +101,9 @@ struct Screen {
 /// The buffers being drawn into.
 struct Target {
     w: usize,
-    h: usize,
+    /// The pixels drawn: columns `x.0..=x.1`, rows `y.0..=y.1`.
+    x: (usize, usize),
+    y: (usize, usize),
     depth: Vec<f32>,
     id: Vec<u32>,
     colour: Vec<[u8; 3]>,
@@ -124,11 +126,10 @@ impl Target {
         if !area.is_finite() || area.abs() <= 1e-12 {
             return;
         }
-        let (wf, hf) = (self.w as f64, self.h as f64);
-        let x0 = a.x.min(b.x).min(c.x).floor().max(0.0);
-        let x1 = a.x.max(b.x).max(c.x).ceil().min(wf - 1.0);
-        let y0 = a.y.min(b.y).min(c.y).floor().max(0.0);
-        let y1 = a.y.max(b.y).max(c.y).ceil().min(hf - 1.0);
+        let x0 = a.x.min(b.x).min(c.x).floor().max(self.x.0 as f64);
+        let x1 = a.x.max(b.x).max(c.x).ceil().min(self.x.1 as f64);
+        let y0 = a.y.min(b.y).min(c.y).floor().max(self.y.0 as f64);
+        let y1 = a.y.max(b.y).max(c.y).ceil().min(self.y.1 as f64);
         if x0.is_nan() || y0.is_nan() || x1 < x0 || y1 < y0 {
             return;
         }
@@ -172,6 +173,201 @@ impl Target {
     }
 }
 
+/// The camera as the rasteriser uses it: points into view coordinates (right, up, into the
+/// image, relative to the eye) and those onto the image.
+struct Lens {
+    eye: Vec3,
+    right: Vec3,
+    up: Vec3,
+    forward: Vec3,
+    focal: f64,
+    near: f64,
+    w: f64,
+    h: f64,
+}
+
+impl Lens {
+    fn new(scene: &Scene, camera: &Camera, w: usize, h: usize) -> Lens {
+        let f = camera.frame();
+        Lens {
+            eye: f.eye - scene.origin,
+            right: f.right,
+            up: f.up,
+            forward: f.forward,
+            focal: h as f64 * 0.5 / f.tan_half,
+            near: (camera.distance * 1e-4).max(1e-9),
+            w: w as f64,
+            h: h as f64,
+        }
+    }
+
+    /// `obj`'s points in view coordinates.
+    fn view(&self, obj: &Object) -> Vec<[f64; 3]> {
+        obj.points.iter().map(|p| self.point(Vec3::from_f32(*p))).collect()
+    }
+
+    /// A point relative to the scene's origin, in view coordinates.
+    fn point(&self, p: Vec3) -> [f64; 3] {
+        let d = p - self.eye;
+        [d.dot(self.right), d.dot(self.up), d.dot(self.forward)]
+    }
+
+    fn project(&self, v: [f64; 3]) -> Screen {
+        Screen {
+            x: self.w * 0.5 + v[0] / v[2] * self.focal,
+            y: self.h * 0.5 - v[1] / v[2] * self.focal,
+            inv_z: 1.0 / v[2],
+        }
+    }
+
+    /// Fills the triangle `verts` (view coordinates) into `t`, clipped against the near plane
+    /// (the pieces of a clipped one get no edges).
+    fn fill(&self, t: &mut Target, verts: [[f64; 3]; 3], colour: [f32; 3], id: u32, edges: u8, front: bool) {
+        let near = self.near;
+        if verts.iter().all(|v| v[2] >= near) {
+            t.triangle(&verts.map(|v| self.project(v)), colour, id, edges, front);
+            return;
+        }
+        let mut poly: Vec<[f64; 3]> = Vec::with_capacity(4);
+        for i in 0..3 {
+            let (Some(p), Some(q)) = (verts.get(i), verts.get((i + 1) % 3)) else { continue };
+            if p[2] >= near {
+                poly.push(*p);
+            }
+            if (p[2] >= near) != (q[2] >= near) {
+                let s = (near - p[2]) / (q[2] - p[2]);
+                poly.push([p[0] + s * (q[0] - p[0]), p[1] + s * (q[1] - p[1]), near]);
+            }
+        }
+        for i in 1..poly.len().saturating_sub(1) {
+            if let (Some(a), Some(b), Some(c)) = (poly.first(), poly.get(i), poly.get(i + 1)) {
+                t.triangle(&[self.project(*a), self.project(*b), self.project(*c)], colour, id, 0, front);
+            }
+        }
+    }
+}
+
+/// A rectangle of an image, in pixels from its top left corner: any two opposite corners.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+}
+
+impl Rect {
+    /// The pixels whose middle is inside, as column and row ranges (inclusive) within a
+    /// `w` × `h` image; `None` when there are none.
+    fn pixels(&self, w: usize, h: usize) -> Option<((usize, usize), (usize, usize))> {
+        let range = |a: f64, b: f64, n: usize| {
+            let (lo, hi) = (a.min(b), a.max(b));
+            // Pixel i's middle is i + 0.5.
+            let first = (lo - 0.5).ceil().max(0.0);
+            let last = (hi - 0.5).floor().min(n as f64 - 1.0);
+            (lo.is_finite() && hi.is_finite() && first <= last).then_some((first as usize, last as usize))
+        };
+        Some((range(self.a[0], self.b[0], w)?, range(self.a[1], self.b[1], h)?))
+    }
+
+    fn contains(&self, x: f64, y: f64) -> bool {
+        let inside = |v: f64, a: f64, b: f64| a.min(b) <= v && v <= a.max(b);
+        inside(x, self.a[0], self.b[0]) && inside(y, self.a[1], self.b[1])
+    }
+}
+
+/// What `rect` of the image `camera` sees at `width` × `height` (sized as [`draw`] sizes it)
+/// covers, as (object index, triangle index) in order, each once.
+///
+/// - `through` false: the triangles seen in it, in front of everything else, at the middle of
+///   one of its pixels or more (a triangle smaller than a pixel may be missed).
+/// - `through` true: every triangle of each face (mesh face, STL triangle) whose middle (its
+///   area-weighted centre) is inside it and in front of the camera, seen or hidden.
+pub fn covered(
+    scene: &Scene,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    rect: Rect,
+    through: bool,
+) -> Vec<(usize, u32)> {
+    let (w, h) = size(width, height);
+    let (wu, hu) = (w as usize, h as usize);
+    let Some((xs, ys)) = rect.pixels(wu, hu) else { return Vec::new() };
+    let lens = Lens::new(scene, camera, wu, hu);
+    let mut out = Vec::new();
+    if through {
+        for (k, obj) in scene.objects.iter().enumerate() {
+            let view = lens.view(obj);
+            // The triangles of one face follow each other.
+            let mut n = 0;
+            while let Some(face) = obj.origin_index.get(n) {
+                let mut end = n + 1;
+                while obj.origin_index.get(end) == Some(face) {
+                    end += 1;
+                }
+                let (mut sum, mut area) = ([0.0f64; 3], 0.0f64);
+                let (mut first, mut count) = ([0.0f64; 3], 0usize);
+                for tri in obj.triangles.get(n..end).unwrap_or(&[]) {
+                    let [Some(a), Some(b), Some(c)] = tri.map(|i| view.get(i as usize).copied()) else { continue };
+                    let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let x =
+                        [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                    let s = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+                    for i in 0..3 {
+                        let m = (a[i] + b[i] + c[i]) / 3.0;
+                        sum[i] += s * m;
+                        if count == 0 {
+                            first[i] = a[i];
+                        }
+                    }
+                    area += s;
+                    count += 1;
+                }
+                // A face of no area: its first point.
+                let centre = if area > 0.0 { sum.map(|v| v / area) } else { first };
+                if count > 0 && centre[2] >= lens.near {
+                    let p = lens.project(centre);
+                    if rect.contains(p.x, p.y) {
+                        out.extend((n..end).filter_map(|t| u32::try_from(t).ok()).map(|t| (k, t)));
+                    }
+                }
+                n = end;
+            }
+        }
+        return out;
+    }
+    let mut t = Target { w: wu, x: xs, y: ys, depth: vec![0.0; wu * hu], id: vec![NONE; wu * hu], colour: Vec::new() };
+    // Each triangle's id: its object's first id plus its index.
+    let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());
+    let mut next: u32 = 0;
+    for obj in &scene.objects {
+        first.push(next);
+        let view = lens.view(obj);
+        for (n, tri) in obj.triangles.iter().enumerate() {
+            let [Some(a), Some(b), Some(c)] = tri.map(|i| view.get(i as usize).copied()) else { continue };
+            let Some(id) = u32::try_from(n).ok().and_then(|n| next.checked_add(n)).filter(|id| *id != NONE) else {
+                break;
+            };
+            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, false);
+        }
+        next = next.saturating_add(u32::try_from(obj.triangles.len()).unwrap_or(u32::MAX));
+    }
+    let mut ids: Vec<u32> = Vec::new();
+    for y in ys.0..=ys.1 {
+        ids.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        // The last object starting at or before it.
+        let k = first.partition_point(|f| *f <= id).saturating_sub(1);
+        if let Some(f) = first.get(k) {
+            out.push((k, id - f));
+        }
+    }
+    out
+}
+
 /// The size an image of `width` × `height` is drawn at: each side from 1 to [`MAX_SIDE`],
 /// and at most [`MAX_PIXELS`] (the width kept, the height cut).
 pub fn size(width: u32, height: u32) -> (u32, u32) {
@@ -185,7 +381,8 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
     let (wu, hu) = (w as usize, h as usize);
     let mut t = Target {
         w: wu,
-        h: hu,
+        x: (0, wu - 1),
+        y: (0, hu - 1),
         depth: vec![0.0; wu * hu],
         id: vec![NONE; wu * hu],
         colour: (0..hu)
@@ -196,25 +393,10 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             })
             .collect(),
     };
-    let f = camera.frame();
-    let eye = f.eye - scene.origin;
-    let focal = hu as f64 * 0.5 / f.tan_half;
-    let near = (camera.distance * 1e-4).max(1e-9);
-    let project = |v: [f64; 3]| Screen {
-        x: wu as f64 * 0.5 + v[0] / v[2] * focal,
-        y: hu as f64 * 0.5 - v[1] / v[2] * focal,
-        inv_z: 1.0 / v[2],
-    };
+    let lens = Lens::new(scene, camera, wu, hu);
     let mut next_id: u32 = 0;
     for (k, obj) in scene.objects.iter().enumerate() {
-        let view: Vec<[f64; 3]> = obj
-            .points
-            .iter()
-            .map(|p| {
-                let d = Vec3::from_f32(*p) - eye;
-                [d.dot(f.right), d.dot(f.up), d.dot(f.forward)]
-            })
-            .collect();
+        let view = lens.view(obj);
         let selected: Vec<bool> = (0..obj.classes.len())
             .map(|c| style.selected.contains(&(k, u32::try_from(c).unwrap_or(u32::MAX))))
             .collect();
@@ -257,28 +439,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             let id = base.saturating_add(class);
             let front = face_selected || selected.get(class as usize).copied().unwrap_or(false);
             let edges = if style.edges { obj.edges.get(n).copied().unwrap_or(0) } else { 0 };
-            let verts = [a, b, c];
-            if verts.iter().all(|v| v[2] >= near) {
-                t.triangle(&verts.map(project), colour, id, edges, front);
-                continue;
-            }
-            // Clip against the near plane; the pieces get no edges.
-            let mut poly: Vec<[f64; 3]> = Vec::with_capacity(4);
-            for i in 0..3 {
-                let (Some(p), Some(q)) = (verts.get(i), verts.get((i + 1) % 3)) else { continue };
-                if p[2] >= near {
-                    poly.push(*p);
-                }
-                if (p[2] >= near) != (q[2] >= near) {
-                    let s = (near - p[2]) / (q[2] - p[2]);
-                    poly.push([p[0] + s * (q[0] - p[0]), p[1] + s * (q[1] - p[1]), near]);
-                }
-            }
-            for i in 1..poly.len().saturating_sub(1) {
-                if let (Some(a), Some(b), Some(c)) = (poly.first(), poly.get(i), poly.get(i + 1)) {
-                    t.triangle(&[project(*a), project(*b), project(*c)], colour, id, 0, front);
-                }
-            }
+            lens.fill(&mut t, [a, b, c], colour, id, edges, front);
         }
     }
     // Outlines where one class meets another or the background.

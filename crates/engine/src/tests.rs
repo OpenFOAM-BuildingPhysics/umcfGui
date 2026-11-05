@@ -1203,6 +1203,93 @@ fn faces_are_picked_selected_and_made_a_patch() {
 }
 
 #[test]
+fn a_rectangle_selects_what_is_seen_in_it_or_everything_through_it() {
+    let mut s = scene_session();
+    let all = json!({ "view": "top", "width": 100, "height": 100, "rect": [0, 0, 100, 100] });
+    // Seen from above: the sky; the walls and the ground are under it.
+    let out = s.execute("select.rect", &all).unwrap();
+    let patches: Vec<&str> =
+        out.data["items"].as_array().unwrap().iter().map(|i| i["patch"].as_str().unwrap()).collect();
+    assert_eq!(patches, ["sky"]);
+    assert_eq!(out.message, "1 item in the rectangle; 1 selected");
+    // Through it: all three.
+    let mut through = all.clone();
+    through["through"] = json!(true);
+    through["mode"] = json!("add");
+    let out = s.execute("select.rect", &through).unwrap();
+    assert_eq!(out.data["in"], 3);
+    assert_eq!(s.selection().len(), 3);
+    // Faces: the sky's in the middle, both faces under it through it; added, then taken off.
+    let mut mid = json!({ "view": "top", "width": 100, "height": 100, "rect": [45, 45, 55, 55], "faces": true });
+    s.execute("select.clear", &json!({})).unwrap();
+    s.execute("select.rect", &mid).unwrap();
+    assert_eq!(s.selection(), [Sel::Face { region: "air".into(), face: 1 }]);
+    mid["through"] = json!(true);
+    mid["mode"] = json!("add");
+    let out = s.execute("select.rect", &mid).unwrap();
+    assert_eq!(out.data["items"], json!([{ "region": "air", "face": 0 }, { "region": "air", "face": 1 }]));
+    assert_eq!(s.selection().len(), 2);
+    mid["through"] = json!(false);
+    mid["mode"] = json!("remove");
+    let out = s.execute("select.rect", &mid).unwrap();
+    assert_eq!(out.message, "1 face in the rectangle, 1 taken off; 1 selected");
+    assert_eq!(s.selection(), [Sel::Face { region: "air".into(), face: 0 }]);
+    // `none` only counts; an empty rectangle with replace clears.
+    mid["mode"] = json!("none");
+    assert_eq!(s.execute("select.rect", &mid).unwrap().data["in"], 1);
+    assert_eq!(s.selection().len(), 1);
+    let empty = json!({ "view": "top", "width": 100, "height": 100, "rect": [0, 0, 3, 3] });
+    assert_eq!(s.execute("select.rect", &empty).unwrap().data["in"], 0);
+    assert!(s.selection().is_empty());
+    // A surface has regions to give, and no faces.
+    let surface =
+        json!({ "view": "top", "width": 100, "height": 100, "rect": [45, 45, 55, 55], "surfaces": ["box.stl"] });
+    let out = s.execute("select.rect", &surface).unwrap();
+    assert_eq!(out.data["items"], json!([{ "surface": "constant/triSurface/box.stl", "solid": "box" }]));
+    let mut faces = surface.clone();
+    faces["faces"] = json!(true);
+    assert_eq!(s.execute("select.rect", &faces).unwrap().data["in"], 0);
+
+    // The camera as scene.snapshot returns it places the view exactly.
+    let shot = s.execute("scene.snapshot", &json!({ "view": "top", "width": 100, "height": 100, "zoom": 3 })).unwrap();
+    let cam = shot.data["camera"].clone();
+    let mut given = json!({ "camera": cam, "width": 100, "height": 100, "rect": [0, 0, 100, 100], "faces": true });
+    // Zoomed in on the sky, nothing else is seen.
+    assert_eq!(s.execute("select.rect", &given).unwrap().data["items"], json!([{ "region": "air", "face": 1 }]));
+    given["camera"].as_object_mut().unwrap().remove("fov");
+    assert!(s.execute("select.rect", &given).is_ok());
+    let pick = json!({ "camera": shot.data["camera"], "width": 100, "height": 100, "pixel": [50, 50] });
+    assert_eq!(s.execute("select.pick", &pick).unwrap().data["picked"]["patch"], "sky");
+    for (p, says) in [
+        (json!({}), "`rect`"),
+        (json!({ "rect": [0, 0, 1] }), "four finite numbers"),
+        (json!({ "rect": [0, 0, 1, "a"] }), "four finite numbers"),
+        (json!({ "rect": [0, 0, 1, 1], "mode": "toggle" }), "`mode` is replace, add, remove, none"),
+        (json!({ "rect": [0, 0, 1, 1], "camera": cam, "view": "top" }), "`view` is not given with it"),
+        (json!({ "rect": [0, 0, 1, 1], "camera": { "target": [0, 0, 0] } }), "`camera` is"),
+        (
+            json!({ "rect": [0, 0, 1, 1], "camera": { "target": [0, 0, 0], "distance": 0, "azimuth": 0, "elevation": 0 } }),
+            "`camera` is",
+        ),
+        (
+            json!({ "rect": [0, 0, 1, 1], "camera": { "target": [0, 0, 0], "distance": 1, "azimuth": 0, "elevation": 95 } }),
+            "`camera` is",
+        ),
+        (
+            json!({ "rect": [0, 0, 1, 1], "camera": { "target": [0, 0], "distance": 1, "azimuth": 0, "elevation": 0 } }),
+            "camera.target",
+        ),
+        (
+            json!({ "rect": [0, 0, 1, 1], "camera": { "target": [0, 0, 0], "distance": 1, "azimuth": 0, "elevation": 0, "up": 1 } }),
+            "`camera` is",
+        ),
+    ] {
+        let e = s.execute("select.rect", &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{p}: {e}");
+    }
+}
+
+#[test]
 fn picked_faces_make_a_patch_of_one_region() {
     let mut fs = fs();
     fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));
