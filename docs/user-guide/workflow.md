@@ -145,19 +145,22 @@ reconstruct yes;
 each patch's role. Coupled patches and their partners come from the mesh
 (`neighbourRegion`/`neighbourPatch`, or `sampleRegion`/`samplePatch` in OpenFOAM-8); the canopy
 is the vegetation patch that maps to the air's cells; the air's inlet, outlet and sides come
-from the patch's own velocity condition (not one given by a group or a pattern) (`atmBoundaryLayerInletVelocity`, `inletOutlet`, `slip`); `top`,
-`ground`, `interior`, `bottom` and `sides` from their names; the vegetation region's patches
+from the patch's own velocity condition, not one given by a group or a pattern
+(`atmBoundaryLayerInletVelocity`, `inletOutlet`, `slip`); `top`, `ground`, `interior`, `bottom`
+and `sides` from their names; the vegetation region's patches
 take their air twin's role, the open sides and the top becoming `sky`. What it can't tell is
 listed and left without a role. On the 3×3 test case every patch gets its role. A region split
 from another (the street canyon's vegetation) is not described yet: its steps are listed.
 
 `workflow.show` returns the description, read from the file or, when the case has none, as the
-import would write it; it also says when a file is there that doesn't load (not a dictionary, or
-over the size limit), or one the open case doesn't hold (written or undone since it was opened).
+import would write it; it also says when a file is there that doesn't load (not a dictionary, a
+directory, or over the size limit), or one the open case doesn't hold (written or undone since it was opened).
 `workflow.import` writes over neither, nor a file that is a link to another (a dictionary, a
-field: the save would change that file). In the window, both show in the results card the
-problems and the import's notes first, then the settings (version, radiation, solver), then the
-regions with their meshes, steps and patch roles. The case check reads the file against the case
-(`workflow.description`): what can't be read in it, regions and patches the case doesn't have or
-it leaves out, other kinds, partners that aren't there, and another OpenFOAM version.
+field: the save would change that file); with `replace` it writes over the case's own, whose
+comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
+commands show in the results card the problems and the import's notes first, then the settings
+(version, radiation, solver), then the regions with their meshes, steps and patch roles. The case
+check reads the file against the case (`workflow.description`): what can't be read in it, regions
+and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, and
+another OpenFOAM version.
 

@@ -1600,7 +1600,8 @@ fn workflow_show_and_import() {
 
     let e = s.execute("workflow.import", &Value::Null).unwrap_err();
     assert!(e.to_string().contains("pass \"replace\": true"), "{e}");
-    s.execute("workflow.import", &json!({ "replace": true })).unwrap();
+    let out = s.execute("workflow.import", &json!({ "replace": true })).unwrap();
+    assert!(out.message.contains("over the one there: its comments and hand edits are gone"), "{}", out.message);
     // Undone twice, the case has none again.
     s.execute("edit.undo", &Value::Null).unwrap();
     s.execute("edit.undo", &Value::Null).unwrap();
@@ -1611,6 +1612,16 @@ fn workflow_show_and_import() {
     s.execute("case.save", &Value::Null).unwrap();
     assert!(text(&s, "system/umcfWorkflow").contains("object      umcfWorkflow;"));
     assert!(s.execute("workflow.import", &json!({ "replace": "yes" })).is_err());
+}
+
+#[test]
+fn workflow_show_says_a_directory_there_is_unreadable() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs().with("system/umcfWorkflow/x", "a")), "mem", OpenOptions::default(), false).unwrap();
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "unreadable");
+    let e = s.execute("workflow.import", &json!({ "replace": true })).unwrap_err();
+    assert!(e.to_string().contains("doesn't load"), "{e}");
 }
 
 #[test]

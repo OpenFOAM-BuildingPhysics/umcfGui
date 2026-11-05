@@ -35,6 +35,7 @@
 //! reconstruct yes;
 //! ```
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use umcf_core::OfVersion;
@@ -315,14 +316,14 @@ impl Description {
         let mut d = Description::default();
         let mut problems = Vec::new();
         let mut problem = |at: &str, message: String| problems.push(Problem { at: at.to_string(), message });
-        let mut seen: Vec<String> = Vec::new();
+        // Sets, not lists: a file near the size limit has many names, each checked once.
+        let mut seen: HashSet<&str> = HashSet::new();
         for e in doc.root.entries() {
             let key = e.key();
-            if key != "FoamFile" && seen.iter().any(|k| k == key) {
+            if !seen.insert(key) && key != "FoamFile" {
                 problem(key, "is given twice: the first is read".into());
                 continue;
             }
-            seen.push(key.to_string());
             match key {
                 "FoamFile" => {}
                 "version" => match single(e).as_deref() {
@@ -349,6 +350,7 @@ impl Description {
                 },
                 "regions" => match e.dict() {
                     Some(body) => {
+                        let mut names: HashSet<String> = HashSet::new();
                         for r in body.entries() {
                             let rname = entry_name(r);
                             let at =
@@ -357,8 +359,8 @@ impl Description {
                                 problem(&at, "is not a name".into());
                                 continue;
                             }
-                            if d.regions.iter().any(|x| x.name == rname) {
-                                problem(&at, "is given twice: the first is read".into());
+                            if !names.insert(rname.clone()) {
+                                problem(&at, "is given twice: the later ones are left out".into());
                                 continue;
                             }
                             match r.dict() {
@@ -587,6 +589,7 @@ fn read_region(
             },
             "patches" => match e.dict() {
                 Some(pb) => {
+                    let mut names: HashSet<String> = HashSet::new();
                     for p in pb.entries() {
                         let pname = entry_name(p);
                         let pat = if pname.is_empty() { format!("{here}/\"\"") } else { format!("{here}/{pname}") };
@@ -594,8 +597,8 @@ fn read_region(
                             problem(&pat, "is not a name".into());
                             continue;
                         }
-                        if r.patches.iter().any(|x| x.name == pname) {
-                            problem(&pat, "is given twice: the first is read".into());
+                        if !names.insert(pname.clone()) {
+                            problem(&pat, "is given twice: the later ones are left out".into());
                             continue;
                         }
                         match p.dict() {

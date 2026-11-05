@@ -39,7 +39,7 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let message = match source {
         "file" => format!("{PATH}: {}, {}", count(d.regions.len(), "region"), count(problems.len(), "problem")),
         "unreadable" => format!(
-            "{PATH} is there but doesn't load (not a dictionary, or over the case's dictionary size limit): as the scripts and meshes have it, {}",
+            "{PATH} is there but doesn't load (not a dictionary, a directory, or over the case's dictionary size limit): as the scripts and meshes have it, {}",
             count(d.regions.len(), "region")
         ),
         "disk" => format!(
@@ -67,7 +67,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow. Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, and each patch's role and partner as its mesh and velocity condition tell. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit) is listed in notes. case.save writes it.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, and each patch's role and partner as its mesh and velocity condition tell. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit) is listed in notes. case.save writes it.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -79,6 +79,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let replace = p.bool("replace")?.unwrap_or(false);
     let o = s.opened_mut()?;
     let elsewhere = if o.case.description().is_none() { on_disk(&o.case, o.fs.as_ref()) } else { OnDisk::None };
+    let had = o.case.description().is_some();
     let (d, notes) = Description::import(&o.case);
     if d.regions.is_empty() {
         return Err(Error::Failed(format!("{}: the case has no regions to describe", IMPORT.id)));
@@ -98,13 +99,22 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 "{PATH} is on disk but not in the open case (written or undone since the case was opened): edit.redo or open the case again first"
             )),
             _ => Error::Failed(format!(
-                "{PATH} is there but doesn't load (not a dictionary, or over the case's dictionary size limit): mend or remove it first (it isn't written over)"
+                "{PATH} is there but doesn't load (not a dictionary, a directory, or over the case's dictionary size limit): mend or remove it first (it isn't written over)"
             )),
         },
         e => e.into(),
     })?;
-    let message =
-        format!("{PATH}: written from the case, {}, {}", count(d.regions.len(), "region"), count(notes.len(), "note"));
+    // Written over, the old file's comments and what the case doesn't tell are gone.
+    let over = if had {
+        " (over the one there: its comments and hand edits are gone; edit.undo brings them back)"
+    } else {
+        ""
+    };
+    let message = format!(
+        "{PATH}: written from the case{over}, {}, {}",
+        count(d.regions.len(), "region"),
+        count(notes.len(), "note")
+    );
     Ok(Outcome::new(message, json!({ "file": PATH, "description": to_json(&d), "notes": notes })))
 }
 
@@ -118,6 +128,10 @@ enum OnDisk {
 }
 
 fn on_disk(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs) -> OnDisk {
+    // A directory there isn't a dictionary either (a read of it finds no file).
+    if fs.is_dir(PATH) {
+        return OnDisk::Unreadable;
+    }
     // Read as the open loaded its dictionaries: one too large for that limit didn't load either.
     match fs.read(PATH, case.options().dict_bytes) {
         Ok(Some(bytes)) => match umcf_foam_dict::Document::parse_bytes(&bytes) {

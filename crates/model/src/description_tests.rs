@@ -362,6 +362,15 @@ fn a_case_holds_one_description() {
     assert!(matches!(c.put_description(&fs, &d.write(), true), Err(crate::Error::NotLoaded { .. })));
 }
 
+#[test]
+fn a_region_given_twice_is_read_once_even_when_the_first_is_wrong() {
+    let doc = Document::parse("regions { air 1; air { kind fluid; } }\n").unwrap();
+    let (d, problems) = Description::read(&doc);
+    assert!(d.regions.is_empty(), "{:?}", d.regions);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert_eq!(problems[1].message, "is given twice: the later ones are left out");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_description_linked_to_another_dictionary_is_not_written() {
