@@ -46,8 +46,9 @@ fn pick_folder(start: Option<&str>, parent: &Frame) -> Picked {
 }
 
 /// Whether there is a folder dialog to show. Windows and macOS always have theirs. On Linux the
-/// portal needs a D-Bus session, and `zenity` (the fallback) must be on the PATH: without
-/// either, the dialog would come back as if cancelled.
+/// portal runs with a desktop (`XDG_CURRENT_DESKTOP` set, and a D-Bus session), and `zenity`
+/// (the fallback) must be on the PATH: without either, the dialog would come back as if
+/// cancelled. A desktop without a portal service running can still come back so.
 fn dialog_available() -> bool {
     if !cfg!(any(
         target_os = "linux",
@@ -58,11 +59,13 @@ fn dialog_available() -> bool {
     )) {
         return true;
     }
-    let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty())
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let bus = set("DBUS_SESSION_BUS_ADDRESS")
         || std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|d| std::path::Path::new(&d).join("bus").exists());
+    let portal = bus && set("XDG_CURRENT_DESKTOP");
     let zenity =
         std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("zenity").is_file()));
-    bus || zenity
+    portal || zenity
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {

@@ -61,8 +61,10 @@ directories) in the system's own dialog, over the app's window: the Windows file
 macOS open panel, and on Linux the desktop portal (`xdg-desktop-portal`, which GNOME, KDE and
 most desktops run) or else `zenity`. A folder that doesn't open (not a case, or the open case
 has unsaved changes) brings up the *Open* card with the path and why, to change it or to open
-anyway (`"discard": true`). On a Linux system with neither dialog the card asks for the path
-instead; `umcf-gui <case>` opens one from the command line on every system.
+anyway (`"discard": true`). On a Linux system with neither dialog (a window manager without a
+desktop, and no `zenity`) the card asks for the path instead; a desktop whose portal service isn't
+running shows no dialog at all, so install `zenity` or `xdg-desktop-portal` there.
+`umcf-gui <case>` opens a case from the command line on every system.
 
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search.
