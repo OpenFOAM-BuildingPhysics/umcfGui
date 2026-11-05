@@ -646,17 +646,17 @@ impl App {
             1.5,
             t.accent,
         );
-        let icon_rect = Rect::from_center_size(pos2(ws.center().x, ws.top() + 30.0), vec2(30.0, 30.0));
+        let icon_rect = Rect::from_center_size(pos2(ws.center().x, ws.top() + 34.0), vec2(30.0, 30.0));
         icons::paint(ui.painter(), icon_rect, self.workspace.icon(), self.ink());
         ui.painter().text(
-            pos2(ws.center().x, ws.top() + 58.0),
+            pos2(ws.center().x, ws.top() + 62.0),
             Align2::CENTER_CENTER,
             self.workspace.name(),
             theme::strong(14.0),
             t.accent,
         );
         let label = ui.painter().text(
-            pos2(ws.center().x - 5.0, ws.top() + 78.0),
+            pos2(ws.center().x - 5.0, ws.top() + 82.0),
             Align2::CENTER_CENTER,
             "Workspace",
             egui::FontId::proportional(11.5),

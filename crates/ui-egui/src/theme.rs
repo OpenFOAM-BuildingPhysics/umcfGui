@@ -88,7 +88,7 @@ impl Tokens {
             radius_card: 9,
             text_size: 13.5,
             bar_height: 34.0,
-            ribbon_height: 110.0,
+            ribbon_height: 122.0,
             gap: 7.0,
         }
     }
