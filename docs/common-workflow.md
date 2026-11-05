@@ -6,7 +6,7 @@ question: how does a case stay consistent when its patches, regions or surfaces 
 Today every case carries hand-written meshing dictionaries and scripts, copied from case to case
 and edited. A patch name is written in a dozen places (the blockMesh or snappyHexMesh dictionary,
 `createPatchDict`, each region's `changeDictionaryDict`, every field file, the vegetation patch of
-the same name, the view factor dictionary, the partner's `neighbourPatch`), a material's in the
+the same name (with trees), the view factor dictionary, the partner's `neighbourPatch`), a material's in the
 `topoSetDict` and the material properties. Renaming one means finding all of them, and the case's
 scripts make the mesh again from the old ones.
 
@@ -91,7 +91,8 @@ Each region is meshed one of four ways: blocks (`blockMesh`), a box and surfaces
 A patch's role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) decides
 its type, its partner and its boundary conditions, by the rules in
 [What a case needs](case-requirements.md#coupling-rules): an air patch coupled to a solid is a
-`mappedWall` pair, with a vegetation patch of the same name; the canopy becomes
+`mappedWall` pair and, in a case with trees (a `vegetation` region), has a vegetation patch of the
+same name (without trees the solid reads the radiation from the air patch); the canopy becomes
 `air_to_vegetation`; the radiation region's sky patches are `patch` or `mapped`. Cell zones are
 named by the description too: a solid's materials, the tree zone.
 
@@ -102,14 +103,16 @@ named by the description too: a solid's materials, the tree zone.
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
 | `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` |
-| `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields generated, then edited by `bc.set`; the tables from the site and weather data (row 10) or the user |
+| `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 10) or the user |
+| The materials' entries in `buildingMaterials` (`transportProperties` of each solid) | added with the material from a library of materials with their coefficients, then edited by the user |
 | `Allprepare`, `Allrun`, `Allclean` | generated, for the version in `umcfWorkflow` |
 | Solver dictionaries (`fvSchemes`, `fvSolution`, physical properties, run controls) | the user, as now (templates for a new case) |
 
 A generated file says so in its header, as the scripts umcfGui writes already do (`Written by
 umcfGui from the case workflow; edit the workflow, not this file.`), and is written again
 whenever the description changes. One edited by hand since it was generated is kept in the backup
-before it is replaced, and the change says which.
+before it is replaced, and the change says which. The fields of `0.orig` are not generated files:
+they are edited in place (below).
 
 ## The fields
 
@@ -121,14 +124,27 @@ STL tutorials the vegetation fields from `0/vegetation.bckp`. A field that has t
 field the solver and its chosen models read ([fields per region](case-requirements.md#fields)),
 with an entry for every patch.
 
+The fields in `0.orig` are edited, never written over: a change to the description adds the
+entries of new patches (by role), renames the entries of renamed patches and removes those of
+removed ones, each a lossless edit of the kind `patch.set` and `bc.set` make now. The conditions the
+user set stay; for that `bc.set`, which sets a condition in the start time's field today, will set
+it in `0.orig` too. A missing field is made from its role's defaults.
+
 ## Renaming and the other edits
 
-With the description the source, a rename is: change the name in `umcfWorkflow`, generate again,
-and rename the patch in the mesh as it is (`patch.set` already does the mesh, the fields of the
-start time and `0.orig`, the partner patches and the region's view factor dictionary). The
-vegetation twin and the shared background follow because they are generated from the same entry.
-What `patch.set` lists today (the meshing dictionaries) is then generated, not listed. New
-regions, solids and materials are edits of the description in the same way.
+With the description the source, a rename is one command: it changes the name in
+`umcfWorkflow`, generates the dictionaries again, and renames the patch in the meshes as they are,
+in every region the description names it in, so the case runs without meshing again. For an air
+patch coupled to a solid that is the air patch and, in a case with trees, its vegetation twin
+(`patch.set` already does a region's mesh, the fields of the start time and `0.orig`, the partner
+patches and the region's view factor dictionary). The shared background follows because it is
+generated from the same entry. What `patch.set` lists today (the meshing dictionaries) is then
+generated, not listed.
+
+New regions, solids and materials are edits of the description in the same way. A new material
+takes its `buildingMaterials` entry and coefficients from a library of materials (the reference
+cases' ones to begin with), so its zone never comes without properties; the case check names a
+zone without an entry, or an entry without a zone.
 
 ## Existing cases
 
