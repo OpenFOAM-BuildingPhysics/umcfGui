@@ -9,8 +9,8 @@ name: Claude Code Review
 # Not workflow_dispatch: the action sets up its inline-comment tool only for an event tied to a
 # pull request, so a run from the Actions tab could post a summary but no inline comments.
 #
-# It needs the repository secret CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`, then
-# `gh secret set CLAUDE_CODE_OAUTH_TOKEN`).
+# It needs the repository secret ANTHROPIC_API_KEY (an API key from the Claude Console, then
+# `gh secret set ANTHROPIC_API_KEY`); the review is billed to that key's organization.
 #
 # The review job itself is the one of RustGIS (github.com/pick2510/RustGIS,
 # .github/workflows/claude-code-review.yml), with its automatic pull_request_target triggers
@@ -317,24 +317,20 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        # Pinned to a full commit SHA, not the mutable `v1` tag. This workflow's
-        # behaviour depends on action internals that `v1` has silently changed
-        # under us before — the env scrub that broke review for nine days
-        # arrived that way, with no commit here to point at. A SHA turns the
-        # next such change into a reviewable Dependabot PR. Dependabot covers
-        # the github-actions ecosystem weekly and bumps pinned SHAs, so this
-        # does not strand us on an old version. When it bumps, re-read the
-        # action's release notes for changes to the scrub, MCP wiring, or the
-        # `execution_file` contract that the summary step below parses.
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (Claude Code 2.1.220)
+        # The moving `v1` tag: each run takes the action's latest v1 release. Its
+        # internals have changed under this workflow before (an env scrub broke
+        # review for nine days), so when a review fails for no reason here,
+        # read the action's release notes for changes to the scrub, MCP wiring,
+        # or the `execution_file` contract that the summary step below parses.
+        uses: anthropics/claude-code-action@v1
         with:
           # Use the workflow's GITHUB_TOKEN for GitHub API calls (it carries the
           # pull-requests and issues write scopes this job declares, so the review
           # is posted as github-actions[bot]) rather than the OIDC -> Claude GitHub
-          # App exchange, so no app needs installing. claude_code_oauth_token
+          # App exchange, so no app needs installing. anthropic_api_key
           # authenticates Claude to the model.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # By default the action aborts ("Actor does not have write permissions
           # to the repository") when the PR author lacks write access. Allow all
           # authors so a maintainer can have an outside contributor's PR reviewed
