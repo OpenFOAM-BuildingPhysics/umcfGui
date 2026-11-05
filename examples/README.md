@@ -39,9 +39,9 @@ made small:
   street keep their graded resolution through the material (at most 20 cells) and have the air's
   cells along it, so that each coupled face has one partner.
 - **Runs:** serial (OpenFOAM-12's `Allrun` without `decomposePar` and `reconstructPar`,
-  `runApplication` for `runParallel`; the OpenFOAM-8 ones were serial already), `endTime 7200` with `maxFluidIteration 30`, and lower relaxation for the air
-  (`p_rgh` 0.3, `U` 0.5, `h` 0.5) so the coarse mesh's first iterations stay stable. The probes
-  write at every step.
+  `runApplication` for `runParallel`; the OpenFOAM-8 ones were serial already), `endTime 7200`
+  with `maxFluidIteration 30`, and lower relaxation for the air (`p_rgh` 0.3, `U` 0.5, `h` 0.5)
+  so the coarse mesh's first iterations stay stable. The probes write at every step.
 - **Scripts:** `Allprepare` and `Allrun` stop at the first failing step (`set -e`); the
   vegetation case's removal of what splitMeshRegions may not write is `rm -rf`.
 - **Inputs:** the weather tables (`Tambient`, `wambient`) and the solar ones (`IDN`, `Idif`,
