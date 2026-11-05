@@ -516,8 +516,14 @@ fn read_radiation(body: &umcf_foam_dict::Dict, problem: &mut impl FnMut(&str, St
     for e in body.entries() {
         let at = format!("radiation/{}", e.key());
         match e.key() {
-            "region" => region = single(e),
-            "lai" => rad.lai_region = single(e),
+            "region" => match single(e) {
+                Some(r) => region = Some(r),
+                None => problem(&at, "is one region's name".into()),
+            },
+            "lai" => match single(e) {
+                Some(r) => rad.lai_region = Some(r),
+                None => problem(&at, "is one region's name".into()),
+            },
             "viewFactors" => match flag(e) {
                 Some(b) => rad.view_factors = b,
                 None => problem(&at, "is yes or no".into()),
@@ -535,7 +541,9 @@ fn read_radiation(body: &umcf_foam_dict::Dict, problem: &mut impl FnMut(&str, St
             Some(rad)
         }
         None => {
-            problem("radiation/region", "is missing: the region the radiation is computed on".into());
+            if body.get("region").is_none() {
+                problem("radiation/region", "is missing: the region the radiation is computed on".into());
+            }
             None
         }
     }

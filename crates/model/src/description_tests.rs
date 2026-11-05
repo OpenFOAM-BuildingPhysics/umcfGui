@@ -327,6 +327,22 @@ fn problems_are_named_and_the_rest_is_read() {
 }
 
 #[test]
+fn radiation_values_that_are_not_one_name_are_problems() {
+    let text = format!(
+        "{}regions {{ }}\nradiation {{ region vegetation; lai ( air ); }}\n",
+        header("dictionary", "umcfWorkflow")
+    );
+    let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(at, ["radiation/lai"]);
+    assert_eq!(d.radiation.unwrap().lai_region, None);
+    let text = format!("{}regions {{ }}\nradiation {{ region ( a b ); }}\n", header("dictionary", "umcfWorkflow"));
+    let (_, problems) = Description::read(&Document::parse(&text).unwrap());
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(at, ["radiation/region"], "one problem, not also `is missing`");
+}
+
+#[test]
 fn a_case_holds_one_description() {
     let fs = canyon();
     let mut c = Case::open(&fs).unwrap();
@@ -344,4 +360,21 @@ fn a_case_holds_one_description() {
     let mut c = Case::open(&fs).unwrap();
     assert!(c.description().is_none());
     assert!(matches!(c.put_description(&fs, &d.write(), true), Err(crate::Error::NotLoaded { .. })));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_description_linked_to_another_dictionary_is_not_written() {
+    use umcf_core::{CaseWrite, DirFs};
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    std::os::unix::fs::symlink("controlDict", root.join(PATH)).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    let r = c.put_description(&fs, "regions { }\n", true);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(r, Err(crate::Error::IsDict(_))), "{r:?}");
+    assert!(c.changed().is_empty());
 }

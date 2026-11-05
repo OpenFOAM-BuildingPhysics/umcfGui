@@ -42,21 +42,8 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
                 .region(&r.name),
             );
         }
-        // Patches only where the region has a mesh to compare with.
-        let Some(mesh) = cr.patches.as_ref() else { continue };
+        // What needs no mesh: partners, coupling, roles.
         for p in &r.patches {
-            if !mesh.iter().any(|m| m.name == p.name) {
-                out.push(
-                    Diagnostic::new(
-                        Level::Warning,
-                        CODE,
-                        PATH,
-                        format!("patch {} of region {} is not in its mesh", p.name, r.name),
-                    )
-                    .region(&r.name)
-                    .patch(&p.name),
-                );
-            }
             if let Some((pr, pp)) = &p.partner {
                 let there =
                     case.region(pr).map(|x| x.patches.as_ref().is_none_or(|ps| ps.iter().any(|q| q.name == *pp)));
@@ -92,6 +79,22 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
                         CODE,
                         PATH,
                         format!("patch {} of region {} has no role", p.name, r.name),
+                    )
+                    .region(&r.name)
+                    .patch(&p.name),
+                );
+            }
+        }
+        // The patches against the mesh, where the region has one.
+        let Some(mesh) = cr.patches.as_ref() else { continue };
+        for p in &r.patches {
+            if !mesh.iter().any(|m| m.name == p.name) {
+                out.push(
+                    Diagnostic::new(
+                        Level::Warning,
+                        CODE,
+                        PATH,
+                        format!("patch {} of region {} is not in its mesh", p.name, r.name),
                     )
                     .region(&r.name)
                     .patch(&p.name),

@@ -1619,7 +1619,7 @@ fn workflow_show_says_when_the_file_is_there_but_unreadable() {
         .unwrap();
     let out = s.execute("workflow.show", &Value::Null).unwrap();
     assert_eq!(out.data["source"], "unreadable");
-    assert!(out.message.contains("doesn't read as a dictionary"), "{}", out.message);
+    assert!(out.message.contains("doesn't load (not a dictionary"), "{}", out.message);
     for p in [Value::Null, json!({ "replace": true })] {
         let e = s.execute("workflow.import", &p).unwrap_err();
         assert!(e.to_string().contains("mend or remove it first"), "{e}");
@@ -1638,4 +1638,19 @@ fn workflow_show_after_an_undo_past_a_save() {
     assert!(out.message.contains("written or undone since the case was opened"), "{}", out.message);
     let e = s.execute("workflow.import", &json!({ "replace": true })).unwrap_err();
     assert!(e.to_string().contains("edit.redo or open the case again first"), "{e}");
+}
+
+#[test]
+fn workflow_show_counts_a_description_over_the_dictionary_limit_as_unreadable() {
+    // A good description, too large for the limit the case was opened with: it didn't load,
+    // and a reread with a larger limit mustn't call it a file the open case could hold.
+    let big = format!(
+        "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class dictionary;\n    object umcfWorkflow;\n}}\n// {}\nregions {{ }}\n",
+        "x".repeat(4096)
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let options = OpenOptions { dict_bytes: 2048, ..OpenOptions::default() };
+    s.open(Box::new(fs().with("system/umcfWorkflow", big)), "mem", options, false).unwrap();
+    let out = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(out.data["source"], "unreadable");
 }

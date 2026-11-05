@@ -782,6 +782,11 @@ impl Case {
         wf
     }
 
+    /// The size limits the case was opened with.
+    pub fn options(&self) -> OpenOptions {
+        self.options
+    }
+
     /// The case's workflow description (`system/umcfWorkflow`), read, with its problems; `None`
     /// when the case has none (or it isn't a dictionary: see the open notes).
     pub fn description(&self) -> Option<(description::Description, Vec<description::Problem>)> {
@@ -793,6 +798,10 @@ impl Case {
     /// disk but didn't load as a dictionary (whatever `replace`).
     pub fn put_description(&mut self, fs: &dyn CaseFs, text: &str, replace: bool) -> Result<()> {
         let rel = description::PATH;
+        // The same file as another dictionary (a link): writing it would write that one.
+        if self.resolve(rel) != rel {
+            return Err(Error::IsDict(rel.to_string()));
+        }
         if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel)) {
             // On disk but not loaded (not a dictionary): not written over, with or without
             // `replace`; the file is mended or removed by hand.

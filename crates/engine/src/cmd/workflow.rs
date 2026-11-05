@@ -39,7 +39,7 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let message = match source {
         "file" => format!("{PATH}: {}, {}", count(d.regions.len(), "region"), count(problems.len(), "problem")),
         "unreadable" => format!(
-            "{PATH} is there but doesn't read as a dictionary: as the scripts and meshes have it, {}",
+            "{PATH} is there but doesn't load (not a dictionary, or over the case's dictionary size limit): as the scripts and meshes have it, {}",
             count(d.regions.len(), "region")
         ),
         "disk" => format!(
@@ -87,12 +87,15 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         umcf_model::Error::Exists(_) => {
             Error::Failed(format!("{PATH} is there already: pass \"replace\": true to write over it"))
         }
+        umcf_model::Error::IsDict(_) => Error::Failed(format!(
+            "{PATH} is a link to another of the case's dictionaries: it isn't written over"
+        )),
         umcf_model::Error::NotLoaded { .. } => match elsewhere {
             OnDisk::NotOpen => Error::Failed(format!(
                 "{PATH} is on disk but not in the open case (written or undone since the case was opened): edit.redo or open the case again first"
             )),
             _ => Error::Failed(format!(
-                "{PATH} is there but doesn't read as a dictionary: mend or remove it first (it isn't written over)"
+                "{PATH} is there but doesn't load (not a dictionary, or over the case's dictionary size limit): mend or remove it first (it isn't written over)"
             )),
         },
         e => e.into(),
@@ -112,7 +115,8 @@ enum OnDisk {
 }
 
 fn on_disk(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs) -> OnDisk {
-    match case.file(fs, PATH) {
+    // Read as the open loaded its dictionaries: one too large for that limit didn't load either.
+    match fs.read(PATH, case.options().dict_bytes) {
         Ok(Some(bytes)) => match umcf_foam_dict::Document::parse_bytes(&bytes) {
             Ok(_) => OnDisk::NotOpen,
             Err(_) => OnDisk::Unreadable,

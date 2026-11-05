@@ -152,9 +152,9 @@ listed and left without a role. On the 3×3 test case every patch gets its role.
 from another (the street canyon's vegetation) is not described yet: its steps are listed.
 
 `workflow.show` returns the description, read from the file or, when the case has none, as the
-import would write it; it also says when a file is there that isn't a dictionary, or one the open
-case doesn't hold (written or undone since it was opened). `workflow.import` writes over
-neither. The case check reads the file against the case (`workflow.description`):
-what can't be read in it, regions and patches the case doesn't have or it leaves out, other
-kinds, partners that aren't there, and another OpenFOAM version.
+import would write it; it also says when a file is there that doesn't load (not a dictionary, or
+over the size limit), or one the open case doesn't hold (written or undone since it was opened).
+`workflow.import` writes over neither. The case check reads the file against the case
+(`workflow.description`): what can't be read in it, regions and patches the case doesn't have or it
+leaves out, other kinds, partners that aren't there, and another OpenFOAM version.
 

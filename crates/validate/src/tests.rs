@@ -1358,3 +1358,21 @@ fn the_workflow_description_against_the_case() {
     assert!(m.iter().any(|x| x.contains("region vegetation is not in the description")), "{m:#?}");
     assert!(m.iter().any(|x| x.contains("it is for OpenFOAM-8, the case is OpenFOAM-12")), "{m:#?}");
 }
+
+#[test]
+fn description_partners_and_roles_are_checked_without_a_mesh() {
+    use umcf_model::description::PATH;
+    let mut fs = case();
+    // A solid region without a mesh yet.
+    edit(&mut fs, "system/controlDict", "solid (street);", "solid (street roofs);");
+    fs.insert(
+        PATH,
+        dict("version 12;\nregions\n{\n    roofs { kind solid; mesh blocks; patches { a { role coupled; } b { role side; partner ( nowhere b ); } } }\n}\n"),
+    );
+    let c = Case::open(&complete(&fs)).unwrap();
+    let m: Vec<String> =
+        check(&c).into_iter().filter(|d| d.code == "workflow.description").map(|d| d.message).collect();
+    assert!(m.iter().any(|x| x.contains("patch a of region roofs is coupled to no partner")), "{m:#?}");
+    assert!(m.iter().any(|x| x.contains("its partner nowhere/b is not in the case")), "{m:#?}");
+    assert!(!m.iter().any(|x| x.contains("is not in its mesh")), "{m:#?}");
+}
