@@ -18,7 +18,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     label: "Set patch",
     menu: "Mesh/Patch…",
     shortcut: None,
-    params: "type: the patch type (patch, wall, mappedWall, symmetry, symmetryPlane, empty, …). groups: [\"wall\", …], replacing inGroups. entries: other entries of the patch, {\"neighbourRegion\": \"air\", \"neighbourPatch\": \"buildings\"}. name: a new name (one patch only): the region's field files at the start time and the mapped patches of other regions that name it follow. patches: [{\"region\": \"air\", \"patch\": \"top\"}, …]; default the selected patches. Only those entries change in the mesh's boundary file.",
+    params: "type: the patch type (patch, wall, mappedWall, symmetry, symmetryPlane, empty, …). groups: [\"wall\", …], replacing inGroups. entries: other entries of the patch, {\"neighbourRegion\": \"air\", \"neighbourPatch\": \"buildings\"}. name: a new name (one patch only): the region's field files at the start time and in 0.orig, its viewFactorsDict and the mapped patches of other regions that name it follow; the result time directories and each file and line that still has the old name are listed. patches: [{\"region\": \"air\", \"patch\": \"top\"}, …]; default the selected patches. Only those entries change in the mesh's boundary file.",
     enabled: needs_case,
     run: set,
     journal: true,
@@ -149,21 +149,71 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 found.push(warn("patch.pattern", f, region, patch, "has a pattern entry or text from elsewhere, which may name the patch by its old name: not changed there"));
             }
         }
-        renamed.extend(report.fields.iter().chain(&report.partners).cloned());
-    }
-    if let Some(to) = name {
-        if o.case.exists("0.orig") == Some(true) {
-            found.push(warn("patch.orig", "0.orig", "", to, "0.orig still names the patch by its old name, and preparing the case copies it to 0: rename it there too"));
+        renamed.extend(report.fields.iter().chain(&report.orig).chain(&report.others).chain(&report.partners).cloned());
+        if name.is_some() {
+            if let Some(last) = report.times.last() {
+                let n = report.times.len();
+                let shown: Vec<&str> = report.times.iter().take(5).map(String::as_str).collect();
+                let more = if n > 5 { format!(" … {last} ({n} time directories)") } else { String::new() };
+                found.push(warn(
+                    "patch.times",
+                    "",
+                    region,
+                    patch,
+                    &format!("the time directories {}{more} aren't read here and may still name the patch `{patch}`: a run started from one of them needs it renamed there", shown.join(", ")),
+                ));
+            }
+            for f in &report.unsearched {
+                found.push(warn(
+                    "patch.unsearched",
+                    f,
+                    region,
+                    patch,
+                    &format!("can't be read: it wasn't searched for `{patch}`"),
+                ));
+            }
+            for (f, why) in &report.not_renamed {
+                found.push(warn(
+                    "patch.unrenamed",
+                    f,
+                    region,
+                    patch,
+                    &format!("not changed, as {why}: rename the patch `{patch}` there by hand if it names it"),
+                ));
+            }
+            // Where the old name is still written: the meshing dictionaries, function objects, …
+            let mut by_file: Vec<(String, Vec<usize>)> = Vec::new();
+            for (f, line) in &report.mentions {
+                match by_file.last_mut() {
+                    Some((g, lines)) if g == f => lines.push(*line),
+                    _ => by_file.push((f.clone(), vec![*line])),
+                }
+            }
+            for (f, lines) in by_file {
+                if lines == [0] {
+                    found.push(warn("patch.mention", &f, region, patch, &format!("this directory is named `{patch}`: data found by the patch's name (boundaryData) needs the new name")));
+                    continue;
+                }
+                let at: Vec<String> = lines.iter().map(usize::to_string).collect();
+                let (what, verb) = if lines.len() == 1 { ("line", "names") } else { ("lines", "name") };
+                found.push(warn(
+                    "patch.mention",
+                    &f,
+                    region,
+                    patch,
+                    &format!("{what} {} {verb} `{patch}`: rename it there if that is the patch", at.join(", ")),
+                ));
+            }
+            if report.more_mentions {
+                found.push(warn(
+                    "patch.mention",
+                    "",
+                    region,
+                    patch,
+                    &format!("more places name `{patch}` than are listed here ({})", umcf_model::MAX_MENTIONS),
+                ));
+            }
         }
-        found.push(json!({
-            "level": "info",
-            "code": "patch.elsewhere",
-            "path": "",
-            "region": null,
-            "patch": to,
-            "field": null,
-            "message": "other files may name the patch by its old name: time directories other than the start, function objects in controlDict, viewFactorsDict, the meshing dictionaries",
-        }));
     }
     if let Some(k) = kind
         && !KNOWN.contains(&k)
