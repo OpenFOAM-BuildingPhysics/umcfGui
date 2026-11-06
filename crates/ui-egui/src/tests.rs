@@ -1173,6 +1173,12 @@ fn a_cards_set_takes_the_place_of_a_scene_only_queued() {
     app.wait_for_job();
     assert!(app.bc.is_none(), "{:?}", app.bc);
     assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("bc.set", true)), "{:?}", app.log.last());
+    // The scene that gave way is read on the view's next frames, for the case as it is now.
+    assert!(app.scene_built.is_none());
+    let mut h = harness(app);
+    h.run();
+    let (revision, shown) = (h.state().revision, h.state().shown());
+    assert_eq!(h.state().scene_built.as_ref(), Some(&(revision, shown)));
 }
 
 #[test]
