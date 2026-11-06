@@ -345,6 +345,8 @@ impl Field {
         Field::parse_plain(bytes, limits)
     }
 
+    /// Parses decompressed `bytes`: the header, then the lists scanned out and the rest as a
+    /// document.
     fn parse_plain(bytes: &[u8], limits: &Limits) -> Result<Field> {
         let header = read_header(bytes)?;
         let scanned = scan::scan(bytes, header.format == Format::Binary, header.arch, limits)?;
@@ -368,6 +370,7 @@ impl Field {
         self.size
     }
 
+    /// The header's `class` (`volScalarField`, …).
     pub fn class(&self) -> Option<&str> {
         self.header.class.as_deref()
     }
