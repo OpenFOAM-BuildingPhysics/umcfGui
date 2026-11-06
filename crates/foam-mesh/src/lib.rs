@@ -533,26 +533,34 @@ fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
 }
 
 /// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
-/// them; `None` for each it doesn't (or no `owner`, or one without a header). A compressed file is
-/// decompressed only as far as its header (64 KB); an error decompressing that far, or a header
-/// that can't be read, is an error. An uncompressed one is read whole.
+/// them; `None` for each it doesn't (or no `owner`, or one without a header). Only the file's
+/// first 64 KB are read (on disk: only those bytes), compressed or not: the header is in the
+/// first few hundred. A header that can't be read, or a compressed start that can't be
+/// decompressed, is an error.
 fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
     use std::io::Read;
-    let (path, bytes) = match fs.read(&format!("{dir}/owner"), limits.max_bytes)? {
+    const HEAD: usize = 64 << 10;
+    let (path, bytes) = match fs.read_prefix(&format!("{dir}/owner"), HEAD + 1, limits.max_bytes)? {
         Some(b) => (format!("{dir}/owner"), b),
-        None => match fs.read(&format!("{dir}/owner.gz"), limits.max_bytes)? {
+        None => match fs.read_prefix(&format!("{dir}/owner.gz"), HEAD + 1, limits.max_bytes)? {
             Some(b) => (format!("{dir}/owner.gz"), b),
             None => return Ok((None, None)),
         },
     };
     let head = if bytes.starts_with(&[0x1f, 0x8b]) {
-        // The header is in the first kilobytes. Any error decompressing them is an error: deflate
-        // has no checksum of its own, so bytes before a failed one may not be the file's.
+        // Decompressed as far as these bytes go. A file longer than them ends early here, and
+        // that alone is fine (what came out is the file's start); any other error, or an early
+        // end in a file that was read whole, is an error (deflate has no checksum of its own,
+        // so bytes before a failure may not be the file's).
+        // One byte more than is decompressed: a file of up to 64 KB was read whole.
+        let whole = bytes.len() <= HEAD;
         let mut head = Vec::new();
-        flate2::read::MultiGzDecoder::new(bytes.as_slice())
-            .take(64 << 10)
-            .read_to_end(&mut head)
-            .map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(format!("{path}: {e}"))))?;
+        let read = flate2::read::MultiGzDecoder::new(bytes.as_slice()).take(HEAD as u64).read_to_end(&mut head);
+        match read {
+            Ok(_) => {}
+            Err(e) if !whole && e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(e) => return Err(Error::Field(umcf_foam_field::Error::Gzip(format!("{path}: {e}")))),
+        }
         head
     } else {
         bytes

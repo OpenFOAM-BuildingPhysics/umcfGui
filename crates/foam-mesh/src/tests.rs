@@ -869,3 +869,34 @@ fn an_owner_header_cut_short_is_an_error() {
     let data = with(ascii_mesh(), "owner", "11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n".to_string());
     assert!(read_boundary_mesh(&data).is_ok());
 }
+
+#[test]
+fn a_long_compressed_owner_is_read_only_as_far_as_its_header() {
+    let d = "constant/air/polyMesh";
+    // An owner.gz of hundreds of kilobytes that barely compresses: its first 64 KB are a stream
+    // cut short, which is fine; its header (11 faces, 1 internal) fits the mesh.
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    let mut long = owner.clone();
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    long.extend(b"// ");
+    for _ in 0..400_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        long.push(b'a' + (x % 26) as u8);
+    }
+    long.push(b'\n');
+    let gz = gzip(&long);
+    assert!(gz.len() > 128 << 10, "{}", gz.len());
+    let mut fs = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        fs.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    fs.insert(&format!("{d}/owner.gz"), gz);
+    assert!(read_boundary_mesh(&fs).is_ok());
+    // And its header is still checked: a stale boundary is found.
+    let stale = BOUNDARY
+        .replace("nFaces          1;\n        startFace       1;", "nFaces          2;\n        startFace       0;");
+    fs.insert(&format!("{d}/boundary"), stale);
+    assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("another mesh"));
+}
