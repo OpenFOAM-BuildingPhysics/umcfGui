@@ -1479,4 +1479,8 @@ fn read_fields_asked_for_at_start_up_reads_them_once() {
     app.start_up(Some("case.fields")).unwrap();
     assert_eq!(app.queue.len(), 2);
     assert!(matches!(app.queue.back(), Some(crate::jobs::Work::Command { id, .. }) if id == "case.fields"));
+    app.wait_for_job();
+    assert!(app.session().case().is_some_and(|c| !c.fields_pending));
+    let reads: Vec<bool> = app.log.iter().filter(|e| e.command == "case.fields").map(|e| e.ok).collect();
+    assert_eq!(reads, [true]);
 }
