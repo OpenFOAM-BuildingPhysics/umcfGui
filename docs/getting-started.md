@@ -25,12 +25,13 @@ target/release/umcf-cli check path/to/case
 
 The desktop app opens a case, shows it in 3D and runs the same commands
 ([The desktop app](user-guide/desktop.md)). The example cases carry no mesh, so mesh a copy with
-OpenFOAM-12 first; the scripts write into the case, and the copy keeps the example as it is:
+OpenFOAM-12 first; the scripts write into the case, and the copy keeps the example as it is. In
+Bash, load your OpenFOAM-12 installation's environment first (`. <OpenFOAM-12>/etc/bashrc`), then:
 
 ```sh
 cargo build --release -p umcf-gui
 run=$(mktemp -d) && cp -r examples/of12/streetCanyon_CFDHAM "$run/"
-(cd "$run/streetCanyon_CFDHAM" && . ~/OpenFOAM-12/etc/bashrc && sh ./Allprepare)
+(cd "$run/streetCanyon_CFDHAM" && sh ./Allprepare)
 target/release/umcf-gui "$run/streetCanyon_CFDHAM"
 ```
 
