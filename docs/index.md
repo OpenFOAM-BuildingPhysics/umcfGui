@@ -11,8 +11,9 @@ solver run.
 
 !!! warning "Early development"
     umcfGui is at milestone M0, the foundation. The libraries that read and edit cases exist
-    and are tested against real cases. The desktop app, the command line and the run pipeline
-    don't exist yet. See the [roadmap](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/ROADMAP.md).
+    and are tested against real cases, and so do the command line (`umcf-cli`) and a first
+    desktop app (`umcf-gui`). Meshing set-up and the run pipeline don't exist yet. See the
+    [roadmap](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/ROADMAP.md).
 
 ## Design goals
 

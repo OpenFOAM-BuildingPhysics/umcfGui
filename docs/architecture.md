@@ -22,7 +22,7 @@ Rust crates.
 | Agent control | `mcp` crate: tools = commands; `--connect` drives the running app |
 | Window snapshot | `umcf-gui <case> --screenshot shot.png` (under `xvfb-run` without a display) writes a PNG of the window once it has drawn; the UI tests drive the interface without a window (egui_kittest). This is how agents check UI work |
 | Fuzzing invariants | Every command survives empty params. Random command sequences are checked against undo/redo and "save → reload → identical model" |
-| `xtask` as the only tooling | `ci`, `layers`, `assets`, `catalog`, `wasm` |
+| `xtask` as the only tooling | `ci`, `layers`, `assets`, `catalog`, `wasm`, `docs`, `deny`, `examples` |
 
 ## Layer table
 
@@ -153,7 +153,9 @@ egui, command-driven app). Code ported from it keeps its copyright notice and ge
 
 ## Command families (initial)
 
-`case.*` (new, open, save, clean, export-allrun) · `geometry.*` (import, trees, repair, scale) ·
+`case.*` (new, open, save, info, check, clean, export-allrun) · `workflow.*` (show, import; edits
+of the description to come) · `geometry.*` (import, trees, check, repair, scale) · `select.*` (pick,
+rect, set, clear) · `scene.snapshot` · `dict.set` / `dict.remove` ·
 `mesh.*` (setup, block, refine, layers, check) · `patch.*` · `region.*` · `material.*` · `bc.*` ·
 `control.*` (controlDict, fvSolution, fvSchemes entries) · `mesh.*` · `veg.*` · `solar.*` ·
 `run.*` (export always; start, stop, status only with `runner`) · `post.*` (probe, slice, timeseries) · `view.*` (UI-only,

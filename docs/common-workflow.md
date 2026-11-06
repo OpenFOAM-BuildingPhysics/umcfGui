@@ -1,7 +1,9 @@
 # The common workflow
 
-A design, not yet built: what [gaps](gaps.md) rows 4–9 and 12 build towards. It answers one
-question: how does a case stay consistent when its patches, regions or surfaces change?
+A design, partly built (the description's format, its import from a case and its check: [the
+case workflow](user-guide/workflow.md#the-workflow-description)): what [gaps](gaps.md) rows 4–9
+and 12 build towards. It answers one question: how does a case stay consistent when its patches,
+regions or surfaces change?
 
 Today every case carries hand-written meshing dictionaries and scripts, copied from case to case
 and edited. A patch name is written in a dozen places (the blockMesh or snappyHexMesh dictionary,
@@ -210,7 +212,7 @@ In the order of the [gaps](gaps.md):
 
 | Row | |
 |---|---|
-| 4 | `umcfWorkflow`: the format, read and written losslessly; the import from the 3×3 pattern; commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`) |
+| 4 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
 | 5 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
 | 6–8 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
 | 9 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |

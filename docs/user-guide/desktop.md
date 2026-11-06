@@ -34,7 +34,9 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **The ribbon**: the commands in tabs and groups (Case, Geometry, Mesh, Boundary conditions,
   View). A command that can't run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
-  (`{"endTime": 7200}`); *OK* runs it. The checks and *Summary* run at once.
+  (`{"endTime": 7200}`); *OK* runs it. The checks and *Summary* run at once. Commands without a
+  place of their own are in a *More* group of their tab: *Workflow description* and *Write workflow
+  description* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
   that can run.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and
@@ -62,8 +64,9 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **Properties** (right): the selected patches with their type, size and each field's boundary
   condition for them (by name or patch group; one given by a pattern is matched by the
   [case check](checks.md), not shown here), and the picked faces, counted by region.
-- **Results** (right): the last command's message and its diagnostics; it opens when a command
-  reports some.
+- **Results** (right): the last command's message and its diagnostics, and for
+  `workflow.show` and `workflow.import` the description (its problems and the import's notes
+  first, then the settings and the regions); it opens when a command reports some.
 - **History** (bottom): one chip per edit that can be undone, the marker after the last one
   done; a click on a chip undoes or redoes up to it. When there are more than fit, the ones
   nearest the marker are shown, with the number left out on each side.

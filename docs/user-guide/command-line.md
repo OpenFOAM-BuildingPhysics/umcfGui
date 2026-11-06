@@ -1,7 +1,8 @@
 # Command line
 
-`umcf-cli` works on a case without the GUI. It runs the same commands the GUI will. Build it
-with `cargo build --release -p umcf-cli`; the program is `target/release/umcf-cli`.
+`umcf-cli` works on a case without the GUI. It runs the same commands as the desktop app
+(`umcf-gui`). Build it with `cargo build --release -p umcf-cli`; the program is
+`target/release/umcf-cli`.
 
 ## Checking a case
 
@@ -136,10 +137,13 @@ bad arguments.
 | Command | Does |
 |---|---|
 | `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files), `discard` (`true` opens even if the open case has unsaved changes) |
-| `case.save` | Writes the changed dictionaries and surfaces, after a backup of each |
+| `case.save` | Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each; a file a command wrote whole is refused when it is a symbolic link, checked once before anything is written ([Cases](cases.md#editing-and-saving)) |
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |
+| `workflow.show` | The [workflow description](workflow.md#the-workflow-description): `system/umcfWorkflow` as read, with its problems, or as `workflow.import` would write it when the case has none |
+| `workflow.import` | Writes `system/umcfWorkflow` from the case's scripts and meshes, with notes on what it couldn't tell: `replace` (`true` writes over the case's own) |
 | `geometry.import` | Copies an STL file into `constant/triSurface` ([Surfaces](surfaces.md#importing)): `path` (required), `name`, `replace`, `scale` |
+| `geometry.trees` | Writes [tree crowns](surfaces.md#tree-crowns) as one surface in `constant/triSurface`: the trees from `table` (a file of the case), `path` (a file outside it) or `trees` (`[{"x": 10, "y": 5, "z": 0, "diameter": 6, "height": 8}]`); `name` (default `trees.stl`), `solid` (default `trees`), `replace` |
 | `geometry.check` | The [surface checks](surfaces.md#checks): `file` (one surface of the case), `path` (a file anywhere, no case needed), or neither (every STL surface in `constant/triSurface`) |
 | `geometry.repair` | The [repairs](surfaces.md#repairs) of one surface: `file` (required), `weld` (a distance in metres), `degenerate`, `orient` (`true`/`false`; without any of the three: `degenerate` and `orient`) |
 | `geometry.scale` | Multiplies a surface's coordinates: `file`, `factor` (both required) |

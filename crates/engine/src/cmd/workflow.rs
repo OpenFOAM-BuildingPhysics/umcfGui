@@ -67,7 +67,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, and each patch's role and partner as its mesh and velocity condition tell. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit) is listed in notes. case.save writes it.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, and each patch's role and partner as its mesh and velocity condition tell. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
