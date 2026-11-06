@@ -199,16 +199,18 @@ impl App {
         (ok, close)
     }
 
-    /// Runs `patch.set` with the card's parameters; the card closes when it works, and stays open
-    /// with the error when it doesn't.
+    /// Runs `patch.set` with the card's parameters, as a job; the card closes when it works, and
+    /// stays open with the error when it doesn't.
     pub(crate) fn set_patch(&mut self) {
+        // While a job runs the session here is a stand-in: refused, and the card says why.
+        if self.busy() {
+            return self.start_card("patch.set", serde_json::json!({}), crate::jobs::Card::Patch);
+        }
         let single = selected(&self.session).len() == 1;
         let Some(form) = self.patch_form.clone() else { return };
-        let result = form.params(single).and_then(|p| self.run("patch.set", p).map(|_| ()));
-        match (result, &mut self.patch_form) {
-            (Ok(()), _) => self.patch_form = None,
-            (Err(e), Some(f)) => f.error = Some(e),
-            (Err(_), None) => {}
+        match form.params(single) {
+            Ok(params) => self.start_card("patch.set", params, crate::jobs::Card::Patch),
+            Err(e) => self.card_error(crate::jobs::Card::Patch, e),
         }
     }
 }

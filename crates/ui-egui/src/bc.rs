@@ -311,14 +311,13 @@ impl App {
         (ok, close)
     }
 
-    /// Runs `bc.set` with the card's parameters; the card stays open with the error if it fails.
+    /// Runs `bc.set` with the card's parameters, as a job: the card closes when it works, and
+    /// stays open with the error when it doesn't.
     pub(crate) fn set_bc(&mut self) {
         let Some(form) = self.bc.clone() else { return };
-        let result = form.params().and_then(|p| self.run("bc.set", p).map(|_| ()));
-        match (result, &mut self.bc) {
-            (Ok(()), _) => self.bc = None,
-            (Err(e), Some(f)) => f.error = Some(e),
-            (Err(_), None) => {}
+        match form.params() {
+            Ok(params) => self.start_card("bc.set", params, crate::jobs::Card::Bc),
+            Err(e) => self.card_error(crate::jobs::Card::Bc, e),
         }
     }
 }

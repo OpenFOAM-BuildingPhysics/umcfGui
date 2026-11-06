@@ -1107,3 +1107,129 @@ fn the_scene_is_read_only_by_jobs() {
     assert_eq!(reads.load(Ordering::SeqCst), 0);
     assert!(!h.state().classes.is_empty(), "the browser lists the surface's regions");
 }
+
+#[test]
+fn a_cards_command_is_a_job_and_its_card_waits_for_it() {
+    let (mut app, hold, waiting) = held();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    // `patch.set` reads the mesh's `boundary`, held here: the command runs as a job and the
+    // card stays open meanwhile, behind the busy screen.
+    let form = crate::patch::PatchForm {
+        name: "sky".into(),
+        kind: "symmetry".into(),
+        filled: ("sky".into(), "wall".into(), String::new()),
+        ..Default::default()
+    };
+    app.patch_form = Some(form.clone());
+    app.set_patch();
+    app.launch();
+    wait_until(&waiting);
+    assert!(app.busy() && app.writing(), "a card's command changes the case: not cancellable");
+    assert!(app.patch_form.is_some());
+    // Another card's OK meanwhile: refused, its card says why.
+    app.bc = Some(crate::bc::BcForm { field: "T".into(), kind: "zeroGradient".into(), ..Default::default() });
+    app.set_bc();
+    assert!(app.bc.as_ref().and_then(|f| f.error.as_ref()).is_some_and(|e| e.contains("first")), "{:?}", app.bc);
+    app.bc = None;
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+    assert!(app.patch_form.is_none(), "it worked: the card closed");
+    let case = app.session().case().unwrap();
+    assert!(case.region("").unwrap().patches.as_ref().unwrap().iter().any(|p| p.name == "sky" && p.kind == "symmetry"));
+    assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("patch.set", true)));
+    // A failure keeps the card, with the error.
+    app.patch_form = Some(crate::patch::PatchForm { kind: "no such type".into(), ..form });
+    app.set_patch();
+    app.wait_for_job();
+    assert!(app.patch_form.as_ref().and_then(|f| f.error.as_ref()).is_some(), "{:?}", app.patch_form);
+}
+
+#[test]
+fn the_history_bar_goes_back_as_a_job() {
+    let (mut app, hold, waiting) = held();
+    hold.store(false, Ordering::SeqCst);
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    app.run("control.set", json!({ "endTime": 9000 })).unwrap();
+    assert_eq!(app.session().history().0.len(), 2);
+    app.go_to(0);
+    assert!(app.working(), "queued for the next frame");
+    app.wait_for_job();
+    assert_eq!(app.session().history().0.len(), 0);
+    let steps: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(steps, [("edit.undo", true), ("edit.undo", true)]);
+    let _ = waiting;
+}
+
+#[test]
+fn a_cards_set_takes_the_place_of_a_scene_only_queued() {
+    // The view queues its scene as it draws, and the cards draw after it: their *Set* in that
+    // frame runs (the view asks for its scene again), rather than being refused.
+    let mut app = app();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    app.start(crate::jobs::Work::Scene { params: app.shown() });
+    app.bc = Some(crate::bc::BcForm { field: "T".into(), kind: "zeroGradient".into(), ..Default::default() });
+    app.set_bc();
+    app.wait_for_job();
+    assert!(app.bc.is_none(), "{:?}", app.bc);
+    assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("bc.set", true)), "{:?}", app.log.last());
+    // The scene that gave way is read on the view's next frames, for the case as it is now.
+    assert!(app.scene_built.is_none());
+    let mut h = harness(app);
+    h.run();
+    let (revision, shown) = (h.state().revision, h.state().shown());
+    assert_eq!(h.state().scene_built.as_ref(), Some(&(revision, shown)));
+}
+
+#[test]
+fn a_history_walk_that_fails_partway_logs_each_step_and_opens_the_results() {
+    let mut app = app();
+    app.results_open = false;
+    let undone = umcf_engine::Outcome::new("undone", json!({}));
+    let failed = umcf_engine::Error::Failed("the case changed on disk".into());
+    app.finish_history_for_test(vec![("edit.undo", Ok(undone)), ("edit.undo", Err(failed))]);
+    let last: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(last, [("edit.undo", false), ("edit.undo", true)]);
+    assert!(app.log.last().is_some_and(|e| e.message.contains("changed on disk")));
+    assert!(app.results_open, "a failure opens the results card");
+}
+
+#[test]
+fn the_patch_cards_refuse_while_a_job_runs_and_say_why() {
+    // Review finding: they read the selection from the stand-in session first, and said
+    // "select the patches" instead of why they couldn't run.
+    let (mut app, hold, waiting) = held();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    app.patch_form = Some(crate::patch::PatchForm { kind: "symmetry".into(), ..Default::default() });
+    app.set_patch();
+    let e = app.patch_form.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
+    app.new_patch = Some(crate::newpatch::NewPatchForm::default());
+    app.create_patch();
+    let e = app.new_patch.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+}
+
+#[test]
+fn the_history_bar_goes_forward_as_a_job_too() {
+    let mut app = app();
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    app.run("control.set", json!({ "endTime": 9000 })).unwrap();
+    app.go_to(0);
+    app.wait_for_job();
+    app.go_to(2);
+    app.wait_for_job();
+    assert_eq!(app.session().history().0.len(), 2);
+    let steps: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(steps, [("edit.redo", true), ("edit.redo", true)]);
+    // Past the end: nothing to do, nothing logged.
+    let logged = app.log.len();
+    app.go_to(5);
+    app.wait_for_job();
+    assert_eq!((app.session().history().0.len(), app.log.len()), (2, logged));
+}

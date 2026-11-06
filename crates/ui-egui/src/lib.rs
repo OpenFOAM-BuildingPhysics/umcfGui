@@ -556,22 +556,14 @@ impl App {
         json!({ "regions": self.shown_regions, "surfaces": self.shown_surfaces })
     }
 
-    /// Undo or redo until `done` edits are done.
+    /// Undo or redo until `done` edits are done, as a job.
     pub fn go_to(&mut self, done: usize) {
-        loop {
-            let (d, u) = self.session.history();
-            let (d, u) = (d.len(), u.len());
-            let step = if d > done {
-                "edit.undo"
-            } else if d < done && u > 0 {
-                "edit.redo"
-            } else {
-                break;
-            };
-            if self.run(step, json!({})).is_err() {
-                break;
-            }
-        }
+        self.start(jobs::Work::History { done });
+    }
+
+    /// Runs card command `id` as a job, the card staying open until it ends.
+    pub(crate) fn start_card(&mut self, id: &str, params: Value, card: jobs::Card) {
+        self.start(jobs::Work::Command { id: id.to_string(), params, then: jobs::Then::Card(card) });
     }
 
     /// The whole interface.
@@ -670,7 +662,7 @@ impl App {
                         ui.label(RichText::new(status).color(t.text_muted));
                         ui.add_space(8.0);
                         if !cancellable {
-                            ui.label(RichText::new("It writes the case: it runs to its end.").color(t.text_muted));
+                            ui.label(RichText::new("It changes the case: it runs to its end.").color(t.text_muted));
                         } else if ui.add_enabled(!cancelling, egui::Button::new("Cancel")).clicked() {
                             cancel = true;
                         }
@@ -1228,6 +1220,8 @@ impl App {
                         o.insert("faces".into(), json!(true));
                     }
                 }
+                // Here, not as a job: the view takes clicks only once its scene is built, so the
+                // pick reads nothing.
                 let _ = self.run("select.pick", p);
             }
             Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
