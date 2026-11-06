@@ -232,6 +232,10 @@ const CONSTRAINTS: &[&str] = &[
 
 fn region(case: &Case, r: &Region, cx: &mut Patterns, out: &mut Vec<Diagnostic>) {
     let mesh = umcf_foam_mesh::mesh_dir(&r.name);
+    // The sizes need only the counts, which a time directory's mesh may give without `constant`.
+    for f in r.fields.iter().filter(|f| is_field(f)) {
+        size(case, r, f, out);
+    }
     let Some(patches) = &r.patches else {
         if r.kind != RegionKind::Single || case.layout.kind == CaseKind::Solver {
             out.push(
@@ -284,6 +288,44 @@ fn region(case: &Case, r: &Region, cx: &mut Patterns, out: &mut Vec<Diagnostic>)
             );
         }
         field(case, r, &mesh, f, cx, out);
+    }
+}
+
+/// A `nonuniform` `internalField` as long as the mesh's count for its class: cells for a
+/// `vol…Field`, internal faces for a `surface…Field`, points for a `point…Field`, as the
+/// `owner` header notes them. OpenFOAM stops on a length that differs (*size … is not equal to
+/// the given value of …*). Only a Warning in a decomposed case, whose parallel run reads
+/// `processor*/`.
+fn size(case: &Case, r: &Region, f: &FieldInfo, out: &mut Vec<Diagnostic>) {
+    let (Some(n), Some(class)) = (f.internal_size, f.class.as_deref()) else { return };
+    let (want, what) = if class.starts_with("vol") {
+        (r.counts.cells, "cells")
+    } else if class.starts_with("surface") {
+        (r.counts.internal_faces, "internal faces")
+    } else if class.starts_with("point") {
+        (r.counts.points, "points")
+    } else {
+        return;
+    };
+    let Some(want) = want else { return };
+    if n as u64 != want {
+        let copy = f.object.as_deref().is_some_and(|o| umcf_foam_dict::unquote(o) != f.name);
+        out.push(
+            Diagnostic::new(
+                if copy {
+                    Level::Info
+                } else if case.processors > 0 {
+                    Level::Warning
+                } else {
+                    Level::Error
+                },
+                "field.size",
+                &f.path,
+                format!("internalField lists {n} values, the mesh has {want} {what}: is the field from another mesh?"),
+            )
+            .region(&r.name)
+            .field(&f.name),
+        );
     }
 }
 

@@ -31,7 +31,8 @@ Rust crates.
 L0  core        ids, units (SI + typed quantities), errors, case paths
     geom        Vec3, bbox, transforms, STL/OBJ triSurface I/O
 L1  foam-dict   lossless FoamFile dictionary CST: parse, edit-in-place, write
-    foam-field  vol*/surface* fields, uniform/nonuniform lists, gzip, time dirs, processor* dirs
+    foam-field  vol*/surface* fields, uniform/nonuniform lists, gzip, time dirs, processor* dirs;
+                a field's outline read as a stream (Field::outline: lists by kind and length)
     foam-mesh   polyMesh (points/faces/owner/neighbour/boundary, cellZones), ASCII + binary;
                 the boundary alone (BoundaryMesh) for drawing and picking; ASCII points
                 (and the boundary's faces) parsed as a stream (CaseFs::reader)

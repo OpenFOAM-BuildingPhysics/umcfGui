@@ -90,8 +90,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct OpenOptions {
     /// A file bigger than this is not loaded as a dictionary.
     pub dict_bytes: u64,
-    /// A field file bigger than this (after decompression) is listed without its boundary
-    /// conditions.
+    /// A field file bigger than this (after decompression) is not edited. At open, where only a
+    /// field's outline is read, it bounds the text outside the file's lists instead (4 MB at
+    /// most): a file with more is listed without its boundary conditions. 0: field files are
+    /// not read at all.
     pub field_bytes: u64,
 }
 
@@ -117,6 +119,10 @@ pub struct Region {
     pub kind: RegionKind,
     /// The patches of `constant/<region>/polyMesh/boundary`; `None` when there is no mesh yet.
     pub patches: Option<Vec<Patch>>,
+    /// The sizes the `owner` header of the mesh the run reads notes (that of the latest time up to
+    /// the start time with a mesh of its own, else `constant`'s); all `None` without a mesh, or
+    /// a note.
+    pub counts: umcf_foam_mesh::Counts,
     /// The fields of the initial time directory, by name.
     pub fields: Vec<FieldInfo>,
 }
@@ -138,8 +144,13 @@ pub struct FieldInfo {
     pub dimensions: Option<String>,
     /// `internalField` in short: `uniform 300`, `nonuniform List<scalar> 2400`, `$T0`.
     pub internal: Option<String>,
+    /// How many values a `nonuniform` `internalField` lists.
+    pub internal_size: Option<usize>,
     /// `boundaryField` entries in file order. `None` when the file was too big to read here.
     pub bcs: Option<Vec<Bc>>,
+    /// Bigger, decompressed, than commands edit ([`OpenOptions::field_bytes`]): its conditions
+    /// are read and checked, not changed.
+    pub too_big: bool,
     /// `boundaryField` also takes entries from elsewhere (`#include`, `#includeEtc`,
     /// `$macro`): the list above may not be all of them.
     pub indirect: bool,
@@ -289,7 +300,7 @@ pub struct PatchReport {
     pub fields: Vec<String>,
     /// Mapped patches of other regions (`region/patch`) that now name the new name.
     pub partners: Vec<String>,
-    /// Field files too large to be read here: not renamed.
+    /// Field files not edited here (too large, or not read): not renamed.
     pub unread: Vec<String>,
     /// Field files with a pattern entry or text from elsewhere, which may name the patch by its
     /// old name: not changed there.
@@ -367,7 +378,7 @@ pub struct CreateReport {
     /// Field files with data lists on a patch that gives faces: their size is wrong once
     /// `createPatch` has run, so they must be made again (from `0.orig`, by `setFields`, …).
     pub resized: Vec<String>,
-    /// Field files too large to be read here.
+    /// Field files not edited here (too large, or not read).
     pub unread: Vec<String>,
     /// Field files with a pattern entry or text from elsewhere (`#includeEtc
     /// "caseDicts/setConstraintTypes"`), which may give the new patch a condition.
@@ -603,11 +614,11 @@ fn skipped_name(name: &str) -> bool {
 }
 
 impl Case {
-    pub fn open(fs: &dyn CaseFs) -> Result<Case> {
+    pub fn open(fs: &(dyn CaseFs + Sync)) -> Result<Case> {
         Case::open_with(fs, OpenOptions::default())
     }
 
-    pub fn open_with(fs: &dyn CaseFs, options: OpenOptions) -> Result<Case> {
+    pub fn open_with(fs: &(dyn CaseFs + Sync), options: OpenOptions) -> Result<Case> {
         let layout = umcf_schema::detect(fs)?;
         let mut notes = Vec::new();
 
@@ -702,6 +713,15 @@ impl Case {
             ));
         }
 
+        // The start-time fields of every region, read at once.
+        let field_dirs: Vec<String> = match &start {
+            Some(t) => regions
+                .iter()
+                .map(|(name, _)| if name.is_empty() { t.name.clone() } else { join(&t.name, name) })
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut fields = read_fields(fs, &field_dirs, options, &mut notes)?.into_iter();
         let mut out = Vec::new();
         for (name, kind) in regions {
             let mesh = umcf_foam_mesh::mesh_dir(&name);
@@ -715,16 +735,33 @@ impl Case {
                     None
                 }
             };
-            let fields = match &start {
-                Some(t) => read_fields(
-                    fs,
-                    &if name.is_empty() { t.name.clone() } else { join(&t.name, &name) },
-                    options,
-                    &mut notes,
-                )?,
-                None => Vec::new(),
+            // The sizes the `owner` header notes, for the fields' lengths (its first bytes only),
+            // of the mesh the run reads: the latest time up to the start time with a mesh of
+            // its own (meshing without `-overwrite` writes one), else `constant`.
+            let mesh_owner = start
+                .as_ref()
+                .and_then(|t| {
+                    time_dirs.iter().filter(|d| d.value <= t.value).rev().find_map(|d| {
+                        let dir = if name.is_empty() {
+                            format!("{}/polyMesh", d.name)
+                        } else {
+                            format!("{}/{name}/polyMesh", d.name)
+                        };
+                        (fs.is_file(&format!("{dir}/owner")) || fs.is_file(&format!("{dir}/owner.gz"))).then_some(dir)
+                    })
+                })
+                .unwrap_or_else(|| mesh.clone());
+            // Read whether or not `constant` has a mesh: a time directory may have the only one.
+            // The error names the file (`owner` or `owner.gz`).
+            let counts = match umcf_foam_mesh::counts(fs, &mesh_owner, &umcf_foam_mesh::Limits::default()) {
+                Ok(c) => c,
+                Err(e) => {
+                    notes.push(note(Severity::Info, mesh_owner.clone(), format!("{e}: field sizes not checked")));
+                    Default::default()
+                }
             };
-            out.push(Region { name, kind, patches, fields });
+            let fields = fields.next().unwrap_or_default();
+            out.push(Region { name, kind, patches, counts, fields });
         }
 
         let scripts = read_scripts(fs, options, &mut notes)?;
@@ -1070,8 +1107,8 @@ impl Case {
             .get(r)
             .and_then(|r| r.field(field))
             .ok_or_else(|| Error::Bc(format!("there is no field {which} at the start time")))?;
-        if info.bcs.is_none() {
-            return Err(Error::Bc(format!("{}: too large to be read here, so it isn't edited", info.path)));
+        if info.bcs.is_none() || info.too_big {
+            return Err(Error::Bc(format!("{}: too large to be edited here", info.path)));
         }
         if !info.boundary_field {
             return Err(Error::Bc(format!(
@@ -1247,6 +1284,7 @@ impl Case {
                 .get(r)
                 .into_iter()
                 .flat_map(|reg| &reg.fields)
+                .filter(|f| !f.too_big)
                 .find(|f| f.bcs.iter().flatten().filter(|b| b.patch == patch).count() > 1);
             if let Some(f) = twice {
                 return Err(Error::Bc(format!("{} has two entries `{patch}`: keep one first", f.path)));
@@ -1295,7 +1333,13 @@ impl Case {
         });
         let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
         for (name, fpath, own) in fields {
-            let unread = self.regions.get(r).and_then(|reg| reg.field(&name)).is_some_and(|f| f.bcs.is_none());
+            // Not read, or read but too big to edit with an entry of its own: that entry keeps
+            // the old name.
+            let unread = self
+                .regions
+                .get(r)
+                .and_then(|reg| reg.field(&name))
+                .is_some_and(|f| f.bcs.is_none() || (f.too_big && own));
             if unread {
                 report.unread.push(fpath);
                 continue;
@@ -1923,11 +1967,9 @@ impl Case {
         if constraint {
             groups.push(new.kind);
         }
-        let fields: Vec<(String, String, Option<Vec<Bc>>, bool)> = self.regions.get(r).map_or(Vec::new(), |reg| {
-            reg.fields.iter().map(|f| (f.name.clone(), f.path.clone(), f.bcs.clone(), f.indirect)).collect()
-        });
+        let fields: Vec<FieldInfo> = self.regions.get(r).map_or(Vec::new(), |reg| reg.fields.clone());
         let limits = umcf_foam_field::Limits { max_bytes: self.options.field_bytes, ..Default::default() };
-        for (name, fpath, bcs, indirect) in fields {
+        for FieldInfo { name, path: fpath, bcs, indirect, too_big, .. } in fields {
             let Some(bcs) = bcs else {
                 report.unread.push(fpath);
                 continue;
@@ -1950,6 +1992,11 @@ impl Case {
                 }
                 continue;
             };
+            // Read and judged, but too big to edit: the copy is for the user to make.
+            if too_big {
+                report.unread.push(fpath);
+                continue;
+            }
             let out = self.rewrite_file(fs, &fpath, |doc| {
                 let unsupported = |m: String| umcf_foam_field::Error::Unsupported(m);
                 let entry =
@@ -2178,35 +2225,127 @@ impl Case {
     }
 }
 
-fn read_fields(fs: &dyn CaseFs, dir: &str, options: OpenOptions, notes: &mut Vec<Note>) -> Result<Vec<FieldInfo>> {
-    let limits = umcf_foam_field::Limits { max_bytes: options.field_bytes, ..Default::default() };
-    let mut out = Vec::new();
-    for name in times::fields(fs, dir)? {
-        let plain = join(dir, &name);
-        let path = if fs.is_file(&plain) { plain } else { format!("{plain}.gz") };
-        match Field::read(fs, &join(dir, &name), &limits) {
-            Ok(Some(f)) => out.push(summarise(name, path, &f)),
-            Ok(None) => {}
+/// The most text outside its lists a field file's outline keeps at open (and reads ahead for
+/// bare lists): a real field's is kilobytes, its `boundaryField`.
+const OUTLINE_TEXT: u64 = 4 << 20;
+
+/// What reading one field file at open gave.
+enum Read {
+    Info(FieldInfo),
+    Missing,
+    TooLarge(String),
+    Failed(String, String),
+}
+
+/// The start-time fields of each of `dirs` (in their order), read as outlines
+/// ([`Field::outline`]: their lists' numbers aren't kept), on as many threads as the machine has,
+/// 16 at most (one after the other where threads can't start: wasm). Only the text
+/// outside the lists is bounded, by `field_bytes` (at most [`OUTLINE_TEXT`]): a big field still
+/// has its boundary conditions.
+fn read_fields(
+    fs: &(dyn CaseFs + Sync),
+    dirs: &[String],
+    options: OpenOptions,
+    notes: &mut Vec<Note>,
+) -> Result<Vec<Vec<FieldInfo>>> {
+    let mut jobs = Vec::new();
+    for (d, dir) in dirs.iter().enumerate() {
+        for name in times::fields(fs, dir)? {
+            jobs.push((d, dir.as_str(), name));
+        }
+    }
+    let read = |dir: &str, name: &str| -> Read {
+        let plain = join(dir, name);
+        let path = if fs.is_file(&plain) { plain.clone() } else { format!("{plain}.gz") };
+        if options.field_bytes == 0 {
+            return Read::TooLarge(path);
+        }
+        match Field::outline(fs, &plain, &umcf_foam_field::Limits::default(), options.field_bytes.min(OUTLINE_TEXT)) {
+            Ok(Some(f)) => {
+                let mut info = summarise(name.to_string(), path, &f);
+                info.too_big = f.size() > options.field_bytes;
+                Read::Info(info)
+            }
+            Ok(None) => Read::Missing,
             Err(umcf_foam_field::Error::Fs(FsError::TooLarge { .. }) | umcf_foam_field::Error::TooLarge { .. }) => {
+                Read::TooLarge(path)
+            }
+            Err(e) => Read::Failed(path, e.to_string()),
+        }
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some((_, dir, name)) = jobs.get(i) else { break };
+            done.push((i, read(dir, name)));
+        }
+        done
+    };
+    // At most 16: each may hold a few times `OUTLINE_TEXT` for a hostile file (its text, the
+    // text with placeholders, what bare lists read ahead, the document), a real one's kilobytes:
+    // all together about what one file whole held before (256 MB).
+    let threads = std::thread::available_parallelism().map_or(1, usize::from).min(16).min(jobs.len()).max(1);
+    let mut results: Vec<Option<Read>> = (0..jobs.len()).map(|_| None).collect();
+    std::thread::scope(|s| {
+        // This thread works too: where no other starts, it reads every file.
+        let helpers: Vec<_> =
+            (1..threads).filter_map(|_| std::thread::Builder::new().spawn_scoped(s, work).ok()).collect();
+        let mut done = work();
+        for h in helpers {
+            // A reader that failed (it can't panic: no panics in this crate) leaves its
+            // files unread, and they are noted below.
+            done.extend(h.join().unwrap_or_default());
+        }
+        for (i, r) in done {
+            if let Some(slot) = results.get_mut(i) {
+                *slot = Some(r);
+            }
+        }
+    });
+    let mut out: Vec<Vec<FieldInfo>> = dirs.iter().map(|_| Vec::new()).collect();
+    for ((d, dir, name), r) in jobs.iter().zip(results) {
+        let Some(fields) = out.get_mut(*d) else { continue };
+        let r = r.unwrap_or_else(|| Read::Failed(join(dir, name), "its reader stopped".to_string()));
+        match r {
+            Read::Info(f) => {
+                if f.too_big {
+                    let limit = match options.field_bytes {
+                        b if b >= 1 << 20 => format!("{} MB", b >> 20),
+                        b => format!("{b} bytes"),
+                    };
+                    notes.push(note(
+                        Severity::Info,
+                        &f.path,
+                        format!("over {limit}: its boundary conditions are checked, not edited here"),
+                    ));
+                }
+                fields.push(f)
+            }
+            Read::Missing => {}
+            Read::TooLarge(path) => {
                 let why = if options.field_bytes == 0 {
                     "not read (field files skipped): its boundary conditions are not checked"
                 } else {
                     "too large to read its boundary conditions here"
                 };
                 notes.push(note(Severity::Info, &path, why));
-                out.push(FieldInfo {
-                    name,
+                fields.push(FieldInfo {
+                    name: name.clone(),
                     path,
                     class: None,
                     dimensions: None,
                     internal: None,
+                    internal_size: None,
                     bcs: None,
+                    too_big: true,
                     indirect: false,
                     boundary_field: false,
                     object: None,
                 });
             }
-            Err(e) => notes.push(note(Severity::Warning, &path, e.to_string())),
+            Read::Failed(path, e) => notes.push(note(Severity::Warning, &path, e)),
         }
     }
     Ok(out)
@@ -2273,7 +2412,12 @@ fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
         class: f.class().map(str::to_string),
         dimensions: f.dimensions(),
         internal: short(f, &["internalField"]),
+        internal_size: match f.value(&["internalField"]) {
+            Some(Value::List(l)) => Some(l.len()),
+            _ => None,
+        },
         bcs: Some(bcs),
+        too_big: false,
         indirect,
         boundary_field: entries.is_some(),
         object: f.header.object.clone(),

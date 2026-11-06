@@ -145,7 +145,8 @@ about the new conditions.
   of their own; forms for the others come with meshing.
 - The cards of boundary conditions and patches, picking, and going back in the history bar
   still run while the window waits. *Cancel* stops reading a mesh's ASCII `points` or `faces`
-  within a megabyte, but a file read whole (binary meshes, fields) only once it is read; the card
+  and field files within a megabyte, but a file read whole (binary meshes, the mesh check's)
+  only once it is read; the card
   shows the seconds a job has run, not how far it is.
 - The window reads the case's files when it needs them, not when they change. An STL copied
   into `constant/triSurface` shows in the browser after the next command; a file changed outside

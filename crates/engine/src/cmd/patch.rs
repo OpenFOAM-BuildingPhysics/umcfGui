@@ -145,7 +145,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     f,
                     region,
                     patch,
-                    "too large to be read here: an entry for the patch in it keeps the old name",
+                    "not edited here (too large, or field files not read): an entry for the patch in it keeps the old name",
                 ));
             }
             for f in &report.indirect {
@@ -495,7 +495,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         found.push(warn(
             "patch.unread",
             f,
-            format!("too large to be read here: check it has an entry for `{name}`, or give it one, before a run"),
+            format!("not edited here (too large, or field files not read): check it has an entry for `{name}`, or give it one, before a run"),
         ));
     }
     if o.case.exists("0.orig") == Some(true) {
