@@ -34,18 +34,36 @@ const TABLES: [&str; 5] =
 const SHIFT: f64 = 39600.0;
 const DAY: f64 = 86400.0;
 
+/// `pattern` compiled; an error names it.
 fn re(pattern: &str) -> Result<Regex, String> {
     Regex::new(pattern).map_err(|e| format!("regex {pattern}: {e}"))
 }
 
+/// The text of the file at `path`.
 fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Writes `text` to the file at `path`, replacing it.
 fn write(path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The entries of `dir` that a shell's `dir/*` lists (not hidden ones), sorted; an entry that
+/// can't be read is an error, never skipped.
+fn entries(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let e = e.map_err(|e| format!("{}: {e}", dir.display()))?;
+        if !e.file_name().to_string_lossy().starts_with('.') {
+            out.push(e.path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Removes the file at `path`; one that isn't there is fine.
 fn remove(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
@@ -74,18 +92,22 @@ fn re_bytes(pattern: &str) -> Result<regex::bytes::Regex, String> {
     regex::bytes::Regex::new(pattern).map_err(|e| format!("regex {pattern}: {e}"))
 }
 
+/// The bytes of the file at `path`.
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Writes `bytes` to the file at `path`, replacing it.
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// `f` applied to each line of `text`, the bytes between them kept.
 fn each_line_bytes(text: &[u8], mut f: impl FnMut(&[u8]) -> Vec<u8>) -> Vec<u8> {
     text.split(|b| *b == b'\n').map(&mut f).collect::<Vec<_>>().join(&b"\n"[..])
 }
 
+/// The first match of `pattern` in each line of `text` replaced by `with` (`${1}` for a group).
 fn sub_lines_bytes(text: &[u8], pattern: &regex::bytes::Regex, with: &str) -> Vec<u8> {
     each_line_bytes(text, |l| pattern.replacen(l, 1, with.as_bytes()).into_owned())
 }
@@ -249,13 +271,9 @@ fn stop_on_error(text: &[u8]) -> Vec<u8> {
 /// One case made small, in place.
 fn make_case(case: &Path, version: &str) -> Result<(), String> {
     let system = case.join("system");
-    let mut dicts: Vec<PathBuf> = std::fs::read_dir(&system)
-        .map_err(|e| format!("{}: {e}", system.display()))?
-        .flatten()
-        .map(|e| e.path().join("blockMeshDict"))
-        .filter(|p| p.is_file())
-        .collect();
-    dicts.sort();
+    // `system/*/blockMeshDict`.
+    let dicts: Vec<PathBuf> =
+        entries(&system)?.into_iter().map(|d| d.join("blockMeshDict")).filter(|p| p.is_file()).collect();
     for d in dicts {
         let solid = d.parent().and_then(|p| p.file_name()).is_some_and(|n| n != "air");
         let text = block_mesh(&read(&d)?, solid).map_err(|e| format!("{}: {e}", d.display()))?;
@@ -320,16 +338,15 @@ fn make_case(case: &Path, version: &str) -> Result<(), String> {
             }
             _ => return Err(format!("{}: faceAgglomerate runs for more than one region", allrun.display())),
         }
-        for e in std::fs::read_dir(&system).map_err(|e| format!("{}: {e}", system.display()))?.flatten() {
-            // `system/*/`: directories, not hidden ones.
-            if e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.') {
-                remove(&e.path().join("setset.batch"))?;
-            }
+        // `system/*/setset.batch`.
+        for dir in entries(&system)?.into_iter().filter(|d| d.is_dir()) {
+            remove(&dir.join("setset.batch"))?;
         }
     }
     Ok(())
 }
 
+/// Runs `git -C <dir> <args>`; its own messages go to the terminal.
 fn git(args: &[&str], dir: &Path) -> Result<(), String> {
     let status = Command::new("git").arg("-C").arg(dir).args(args).status().map_err(|e| format!("git: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("git {} failed ({status})", args.join(" "))) }
@@ -398,6 +415,7 @@ fn unpack(repo: &Path, commit: &str, out: &Path) -> Result<(), String> {
 
 /// Every file under `dir` by its path relative to it: its bytes and whether it is executable.
 fn files(dir: &Path) -> Result<BTreeMap<PathBuf, (Vec<u8>, bool)>, String> {
+    /// Adds the files under `dir` to `out`, by their path relative to `base`.
     fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, (Vec<u8>, bool)>) -> Result<(), String> {
         for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
             let e = e.map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -477,6 +495,7 @@ fn examples_as_committed() -> Result<(), String> {
     Ok(())
 }
 
+/// Makes the examples in `scratch`, then checks `examples/` against them or writes them there.
 fn make(scratch: &Path, check: bool) -> Result<(), String> {
     if !check {
         examples_as_committed()?;
@@ -486,12 +505,7 @@ fn make(scratch: &Path, check: bool) -> Result<(), String> {
     for (version, commit) in PINS {
         let out = made.join(version);
         unpack(&repo, commit, &out)?;
-        let mut cases: Vec<PathBuf> = std::fs::read_dir(&out)
-            .map_err(|e| format!("{}: {e}", out.display()))?
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        cases.sort();
+        let cases = entries(&out)?;
         if cases.is_empty() {
             return Err(format!("tutorials {commit}: no streetCanyon_* case"));
         }
@@ -528,6 +542,7 @@ fn make(scratch: &Path, check: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `cargo xtask make-examples [--check]`.
 pub fn cmd_make_examples(check: bool) -> Result<(), String> {
     println!("==> make-examples{}", if check { " --check" } else { "" });
     // A new directory of its own, only this user's: never one that is there already.

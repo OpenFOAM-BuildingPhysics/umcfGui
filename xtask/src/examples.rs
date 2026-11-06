@@ -38,6 +38,7 @@ fn bashrc(version: &str) -> Result<Option<PathBuf>, String> {
     Ok(p.is_file().then_some(p))
 }
 
+/// Copies the directory `from` to `to`, files with their permissions.
 pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
@@ -219,6 +220,7 @@ fn prepare(base: &Path, filter: Option<&str>) -> Result<Vec<(String, PathBuf, Pa
     Ok(jobs)
 }
 
+/// `cargo xtask examples [<filter>]`.
 pub fn cmd_examples(filter: Option<&str>) -> Result<(), String> {
     println!("==> examples");
     // A directory of its own: made here, so that no earlier run's logs or times are in it.
