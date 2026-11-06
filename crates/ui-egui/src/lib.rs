@@ -168,8 +168,8 @@ pub fn shortcut(text: &str) -> Option<KeyboardShortcut> {
 }
 
 /// Commands whose parameters are all optional and whose defaults are what a button means:
-/// they run at once (their card is still there through the search, with Shift+click).
-const DIRECT: [&str; 4] = ["case.check", "case.info", "geometry.check", "mesh.check"];
+/// they run at once, from the ribbon, the search and `--open`.
+const DIRECT: [&str; 5] = ["case.check", "case.fields", "case.info", "geometry.check", "mesh.check"];
 
 /// Whether a command runs without asking for parameters.
 fn takes_none(spec: &CommandSpec) -> bool {

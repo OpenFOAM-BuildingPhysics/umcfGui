@@ -2126,7 +2126,7 @@ fn a_stand_in_shows_the_session_and_reads_nothing() {
     assert!(copy.scene(&json!({ "regions": ["air"] })).is_ok(), "from the cache");
     // What needs a file fails, and changes nothing of the session's.
     assert!(copy.scene(&json!({ "regions": ["air"], "reload": true })).is_err());
-    assert!(!s.stand_in(false).scene.is_some());
+    assert!(s.stand_in(false).scene.is_none());
     // The session builds on, its scene not copied while the copy is gone.
     drop(copy);
     s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();

@@ -232,7 +232,8 @@ impl App {
             ui.add_space(4.0);
             let row = vec2(ui.available_width(), 28.0);
             ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                let set = egui::Button::new(RichText::new(if busy { "Preparing…" } else { "Prepare" }).color(Color32::WHITE).strong())
+                let label = if busy { "Preparing…" } else { "Prepare" };
+                let set = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
                     .fill(t.accent)
                     .min_size(vec2(64.0, 26.0));
                 ok = ui.add(set).clicked();

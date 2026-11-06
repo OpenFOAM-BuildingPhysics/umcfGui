@@ -452,7 +452,10 @@ struct Away;
 
 impl Away {
     fn away(rel: &str) -> FsError {
-        FsError::Io { path: rel.to_string(), source: std::io::Error::other("the case is busy with a job") }
+        FsError::Io {
+            path: rel.to_string(),
+            source: std::io::Error::other("the case's files are in use by a job; if none runs, open the case again"),
+        }
     }
 }
 

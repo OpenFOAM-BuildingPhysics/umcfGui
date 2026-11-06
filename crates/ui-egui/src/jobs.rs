@@ -189,8 +189,12 @@ impl App {
         {
             o.insert("fields".into(), serde_json::json!("later"));
         }
-        if matches!(work, Work::Scene { .. }) {
-            if self.queue.iter().any(|w| matches!(w, Work::Scene { .. })) {
+        if let Work::Scene { params } = &work {
+            // One scene waits at most: the newest request, with the regions the view shows now.
+            if let Some(Work::Scene { params: queued }) =
+                self.queue.iter_mut().find(|w| matches!(w, Work::Scene { .. }))
+            {
+                *queued = params.clone();
                 return;
             }
         } else {

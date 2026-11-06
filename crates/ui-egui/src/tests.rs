@@ -1420,3 +1420,22 @@ fn every_open_from_the_window_reads_the_fields_after() {
     app.wait_for_job();
     assert!(app.session().case().is_some_and(|c| !c.fields_pending));
 }
+
+#[test]
+fn a_newer_scene_request_takes_the_place_of_one_waiting() {
+    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+    app.start(crate::jobs::Work::Scene { params: json!({ "regions": ["air"] }) });
+    app.start(crate::jobs::Work::Scene { params: json!({ "regions": ["air", "ground"] }) });
+    assert_eq!(app.queue.len(), 1);
+    assert!(
+        matches!(&app.queue[0], crate::jobs::Work::Scene { params } if params["regions"] == json!(["air", "ground"]))
+    );
+}
+
+#[test]
+fn read_fields_runs_without_a_card() {
+    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+    app.invoke("case.fields");
+    assert!(app.dialog.is_none());
+    assert!(matches!(app.queue.back(), Some(crate::jobs::Work::Command { id, .. }) if id == "case.fields"));
+}

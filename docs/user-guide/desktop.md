@@ -34,11 +34,11 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **The ribbon**: the commands in tabs and groups (Case, Geometry, Mesh, Boundary conditions,
   View). A command that can't run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
-  (`{"endTime": 7200}`); *OK* runs it. The checks and *Summary* run at once. Commands without a
-  place of their own are in a *More* group of their tab: *Workflow description* and *Write workflow
-  description* on *Case*, *Tree crowns* on *Geometry*.
+  (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
+  Commands without a place of their own are in a *More* group of their tab: *Read fields*,
+  *Workflow description* and *Write workflow description* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
-  that can run.
+  that can run, or opens its card when it asks for parameters, as its ribbon button does.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and
   its STL surfaces and their regions. The eye says whether the 3D view shows a region or a
   surface. A click selects a patch or a surface region; Ctrl+click adds it or takes it out. A
@@ -114,9 +114,10 @@ A case opens quickly, with its field files listed only: the meshes and surfaces 
 are read first, so the case shows at once, then the field files, as a job of their own. Until
 they are read, their boundary conditions aren't known (a check says so: `fields.pending`), and
 conditions and patches can't be changed (`bc.set`, `patch.set` and `patch.create` say to read
-them first): the field files change with them. *Read fields* (`case.fields`) reads them again
-after a *Cancel*. A case named on the command line (`umcf-gui <case>`) opens the same way; with
-`--cmd`, its fields are read as it opens, for the commands to act on.
+them first): the field files change with them. *Read fields* (`case.fields`, in the *Case* tab's
+*More* group or the search) reads them after a *Cancel*. A case named on the command line
+(`umcf-gui <case>`) opens the same way; with `--cmd`, its fields are read as it opens, for the
+commands to act on.
 
 ## Patches
 

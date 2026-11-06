@@ -15,11 +15,11 @@ const SUGGESTIONS: usize = 10;
 /// The most patches whose condition the card lists.
 const NOW: usize = 30;
 
-/// What the card holds while it is open.
 /// What a condition card was filled from: the field, the patches (region, patch), and whether
 /// the case's fields were read.
 pub(crate) type Filled = (String, Vec<(String, String)>, bool);
 
+/// What the card holds while it is open.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BcForm {
     pub field: String,
@@ -29,10 +29,8 @@ pub struct BcForm {
     /// Other entries, one `key value` per line.
     pub more: String,
     pub error: Option<String>,
-    /// The field and patches the type and value were filled in for, from the first patch's
-    /// condition.
     /// What it was filled from: the field, the patches, and whether the fields were read (it
-    /// fills again once they are).
+    /// fills again once they are, unless it was typed into).
     pub(crate) filled_for: Option<Filled>,
     /// The value filled in. Unchanged, it is sent as a default: a patch that gets a new entry
     /// gets it, one that keeps its entry keeps its own value.
@@ -319,7 +317,8 @@ impl App {
             ui.add_space(4.0);
             let row = vec2(ui.available_width(), 28.0);
             ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                let set = egui::Button::new(RichText::new(if busy { "Setting…" } else { "Set" }).color(Color32::WHITE).strong())
+                let label = if busy { "Setting…" } else { "Set" };
+                let set = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
                     .fill(t.accent)
                     .min_size(vec2(64.0, 26.0));
                 ok = ui.add(set).clicked();
