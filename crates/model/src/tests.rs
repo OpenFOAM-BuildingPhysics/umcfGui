@@ -674,6 +674,29 @@ fn a_file_isnt_saved_through_a_link_made_after_it_was_put() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(matches!(saved, Err(Error::IsLink(_))), "{saved:?}");
     assert_eq!(shared, b"solid box\nendsolid box\n");
+
+    // An undo past the save puts the original back whole: not through a link made since to a
+    // file with the saved bytes either.
+    let root = std::env::temp_dir().join(format!("umcf-model-undo-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut fs = umcf_core::DirFs::new(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write("constant/triSurface/box.stl", b"solid box\nendsolid box\n").unwrap();
+    let before = Case::open(&fs).unwrap();
+    let mut c = before.clone();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"solid fixed\nendsolid fixed\n".to_vec()).unwrap();
+    c.save(&mut fs, None).unwrap();
+    std::fs::write(root.join("shared.stl"), b"solid fixed\nendsolid fixed\n").unwrap();
+    std::fs::remove_file(root.join("constant/triSurface/box.stl")).unwrap();
+    std::os::unix::fs::symlink("../../shared.stl", root.join("constant/triSurface/box.stl")).unwrap();
+    let mut undone = before.clone();
+    assert_eq!(undone.changed(), ["constant/triSurface/box.stl"], "the original is to go back");
+    let saved = undone.save(&mut fs, None);
+    let shared = std::fs::read(root.join("shared.stl")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(saved, Err(Error::IsLink(_))), "{saved:?}");
+    assert_eq!(shared, b"solid fixed\nendsolid fixed\n");
 }
 
 #[test]

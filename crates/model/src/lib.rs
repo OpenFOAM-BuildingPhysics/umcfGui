@@ -220,6 +220,9 @@ struct DiskState {
     /// each one, and the number of the put behind the description last saved (0: none).
     description_puts: u64,
     description_saved: u64,
+    /// Files saved as put whole ([`Case::put_file`]): an undo past that save puts the original
+    /// back whole, so it is never written through a link either.
+    whole: std::collections::BTreeSet<String>,
 }
 
 type Disk = Arc<std::sync::Mutex<DiskState>>;
@@ -733,6 +736,7 @@ impl Case {
             backed_up: Default::default(),
             description_puts: 0,
             description_saved: 0,
+            whole: Default::default(),
         }));
         Ok(Case {
             layout,
@@ -2038,7 +2042,13 @@ impl Case {
             let put = rel == description::PATH
                 && self.description_put != 0
                 && self.description_put != lock(&self.disk).description_saved;
-            let whole = put || self.raw.get(&rel).is_some_and(|f| f.whole);
+            // A file put back as it was before a save of one put whole (an undo past it) is
+            // written whole too; one put back before a field edit is an edit like it.
+            let whole = put
+                || match self.raw.get(&rel) {
+                    Some(f) => f.whole,
+                    None => lock(&self.disk).whole.contains(&rel),
+                };
             if whole && fs.is_link(&rel) {
                 return Err(Error::IsLink(rel));
             }
@@ -2149,6 +2159,9 @@ impl Case {
                 }
                 Pending::Raw(_, fp) => {
                     let mut disk = lock(&self.disk);
+                    if self.raw.get(&rel).is_some_and(|f| f.whole) {
+                        disk.whole.insert(rel.clone());
+                    }
                     // What the save replaced, for a case from before the command: kept unless it
                     // is what this session last saved there (then the original is older).
                     let replaced = original.as_deref().map(|b| fingerprint(b));
