@@ -57,8 +57,9 @@ never on its own: comment `/claude-review` on an open pull request. Only a comme
 account with write access to the repository counts. It reviews the PR's head as it stands,
 posts its findings as inline comments (each a thread to resolve before merging) and a summary
 comment, and never runs the PR's code. The comment trigger runs the workflow as it is on
-`main`. It needs the repository secret `ANTHROPIC_API_KEY` (an API key from the Claude
-Console, then `gh secret set ANTHROPIC_API_KEY`); the reviews are billed to that key.
+`main`. It needs the repository secret `CLAUDE_CODE_OAUTH_TOKEN` (an OAuth token of a Claude
+Pro or Max subscription from `claude setup-token`, then `gh secret set
+CLAUDE_CODE_OAUTH_TOKEN`); the reviews count against that subscription's usage limits.
 
 ## This site
 
