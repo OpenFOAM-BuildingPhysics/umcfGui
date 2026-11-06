@@ -165,6 +165,13 @@ impl CaseFs for DirFs {
     fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, FsError> {
         let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
         let io = |source| FsError::Io { path: rel.to_string(), source };
+        // Only a regular file is opened: opening a named pipe would wait for a writer.
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io(source)),
+        }
         let file = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -412,6 +419,23 @@ mod tests {
         assert_eq!(out, b"0123456789");
         assert!(m.reader("d/f", 9).is_err());
         assert!(m.reader("d/missing", 10).unwrap().is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_doesnt_open_a_named_pipe() {
+        // Opening a pipe for reading waits for a writer: it isn't a file, so it isn't opened.
+        let root = std::env::temp_dir().join(format!("umcf-core-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(root.join("p")).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("SKIP a_reader_doesnt_open_a_named_pipe: no mkfifo");
+            return;
+        }
+        let fs = DirFs::new(&root);
+        assert!(fs.reader("p", 10).unwrap().is_none());
+        assert!(fs.read("p", 10).unwrap().is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

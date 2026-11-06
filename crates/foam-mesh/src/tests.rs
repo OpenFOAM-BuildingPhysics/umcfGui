@@ -562,6 +562,14 @@ fn compressed_faces_stream_past_the_internal_ones() {
         assert!(same_boundary_meshes(&a, &b), "{extra} internal faces");
         assert_eq!((b.first_boundary_face(), b.n_faces()), (extra + 1, extra + 11));
         assert_eq!(b.face(extra + 1), Some(&[0, 6, 9, 3][..]));
+        // Both are read as a stream: against the whole-file reader.
+        let text = faces_text_of(&plain);
+        let (n, offsets, points) = open("f", &text).unwrap().1.face_list_from(&Limits::default(), extra + 1).unwrap();
+        assert_eq!(n, b.n_faces());
+        for (k, w) in offsets.windows(2).enumerate() {
+            let want = points.get(w[0] as usize..w[1] as usize);
+            assert_eq!(a.face(extra + 1 + k), want, "{extra}: face {}", extra + 1 + k);
+        }
     }
     // The two hexes as they are, compressed: the same as the whole mesh's boundary.
     assert_same_boundary(&read_boundary_mesh(&faces_gz(&ascii_mesh())).unwrap(), &read(&ascii_mesh()).unwrap());
@@ -988,4 +996,20 @@ fn a_huge_point_count_is_not_reserved_up_front() {
     // A count of four billion over a file of two points: an error, not an allocation of 96 GB.
     let t = format!("{}4000000000\n((0 0 0) (1 1 1))\n", header("ascii", "vectorField", None, ""));
     assert!(points_of("points", t.as_bytes(), &Limits::default()).is_err());
+}
+
+#[test]
+fn malformed_internal_faces_make_the_whole_readers_error() {
+    // Internal faces passed over by the stream are checked for their form: one that isn't makes
+    // the whole-file reader's error, plain and compressed.
+    let plain = long_mesh(300_000);
+    let text = String::from_utf8(faces_text_of(&plain)).unwrap();
+    for bad in [
+        text.replacen("4(1 4 10 7)\n4(1 4 10 7)\n", "4(1 4 10 7))\n4(1 4 10 7\n", 1),
+        text.replacen("4(1 4 10 7)\n", "4 1 4 10 7)\n", 1),
+    ] {
+        assert_ne!(bad, text);
+        let (a, b) = error_lines(&plain, &bad);
+        assert!(a != "?" && a == b, "{a} / {b}");
+    }
 }

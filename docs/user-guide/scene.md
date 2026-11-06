@@ -182,8 +182,8 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 ## Limits
 
 - Drawing a mesh reads its boundary only, but keeps all of its points. ASCII files are read as a
-  stream, compressed or not (neither the file nor its text is held); a binary file is held whole
-  while it is read. The 16-million-cell air region of the HK project takes 3.5 s and 0.97 GB the
+  stream, compressed or not (the file isn't held, nor the text of its points or internal faces);
+  a binary file is held whole while it is read. The 16-million-cell air region of the HK project takes 3.5 s and 0.97 GB the
   first time, all five of its regions 4.5 s and 1.8 GB, read in parallel. Drawing and picking
   boundary triangles is quick: the 573 000 of a 2.8-million-cell air region of a 3×3
   street-grid case in 0.14 s.

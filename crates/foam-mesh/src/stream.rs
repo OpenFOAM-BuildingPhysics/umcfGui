@@ -147,8 +147,12 @@ pub(crate) fn vectors(s: &mut Stream, limits: &Limits) -> Result<Option<Vec<[f64
             text.extend_from_slice(seg);
             text.push(b')');
             let got = Reader::new(&s.path, &text, 0, &plain).vectors(limits)?;
-            out.try_reserve(got.len())
-                .map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: out.len() + got.len() })?;
+            if out.capacity() - out.len() < got.len() {
+                // Doubling, but never past the count: the vector ends as long as the list.
+                let more = got.len().max(out.len()).min(n - out.len());
+                out.try_reserve_exact(more)
+                    .map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: out.len() + more })?;
+            }
             out.extend_from_slice(&got);
             at += end;
             continue;
@@ -185,21 +189,33 @@ pub(crate) fn vectors(s: &mut Stream, limits: &Limits) -> Result<Option<Vec<[f64
 /// megabytes (then it is read whole).
 pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Result<Option<FaceTail>> {
     let Some((header, mut buf, open, n)) = s.list(&["faceList"], limits)? else { return Ok(None) };
-    // Each face is `k(a b c …)`: the faces before `skip` end at the first `skip` `)`s.
+    // Each face is `k(a b c …)`: the faces before `skip` are passed over as they come, checked
+    // for that form (digits, then `(`, labels, `)`); anything else, a comment too, is left to
+    // the whole-file reader.
     let skip = skip.min(n);
     let mut passed = 0usize;
     let mut at = open;
+    let mut state = Skip::Between;
     while passed < skip {
         let rest = buf.get(at..).unwrap_or_default();
         let mut found = None;
         for (k, c) in rest.iter().enumerate() {
-            if *c == b')' {
-                passed += 1;
-                if passed == skip {
-                    found = Some(k + 1);
-                    break;
+            state = match (state, *c) {
+                (Skip::Between, c) if c.is_ascii_whitespace() => Skip::Between,
+                (Skip::Between | Skip::Count, c) if c.is_ascii_digit() => Skip::Count,
+                (Skip::Count | Skip::Open, c) if c.is_ascii_whitespace() => Skip::Open,
+                (Skip::Count | Skip::Open, b'(') => Skip::Labels,
+                (Skip::Labels, c) if c.is_ascii_digit() || c.is_ascii_whitespace() => Skip::Labels,
+                (Skip::Labels, b')') => {
+                    passed += 1;
+                    if passed == skip {
+                        found = Some(k + 1);
+                        break;
+                    }
+                    Skip::Between
                 }
-            }
+                _ => return Err(bad(s, "expected a face `k(a b c …)`")),
+            };
         }
         if let Some(k) = found {
             at += k;
@@ -220,6 +236,19 @@ pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Re
     let mut r = Reader::new(&s.path, &text, 0, &plain);
     let (_, offsets, points) = r.face_list_from(limits, 0)?;
     Ok(Some((n, offsets, points)))
+}
+
+/// Where the skip over the internal faces is in a face `k(a b c …)`.
+#[derive(Clone, Copy)]
+enum Skip {
+    /// Between faces.
+    Between,
+    /// In `k`.
+    Count,
+    /// After `k`, before `(`.
+    Open,
+    /// In the labels.
+    Labels,
 }
 
 /// Where a list starts: its count `N` and the index just after its `(`.

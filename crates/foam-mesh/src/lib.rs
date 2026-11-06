@@ -11,8 +11,9 @@
 //! passed over, not kept. Both are [`Boundary`]s.
 //!
 //! ASCII `points` (both readers) and `faces` ([`BoundaryMesh::read`]) are parsed as they are read
-//! through [`CaseFs::reader`], compressed or not, so neither the file nor its text is held whole.
-//! A file the stream finds malformed is read again whole, and that reader makes the error.
+//! through [`CaseFs::reader`], compressed or not, so the file is never held, nor the text of the
+//! points or the internal faces. A file without a header, or one the stream finds malformed, is
+//! read again whole, and that reader makes the error.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
