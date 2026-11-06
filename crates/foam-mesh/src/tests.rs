@@ -900,3 +900,92 @@ fn a_long_compressed_owner_is_read_only_as_far_as_its_header() {
     fs.insert(&format!("{d}/boundary"), stale);
     assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("another mesh"));
 }
+
+/// `n` points as an ASCII `vectorField`, with numbers of every form OpenFOAM writes.
+fn points_text(n: usize) -> String {
+    let mut t = header("ascii", "vectorField", None, "");
+    t.push_str(&format!("{n}\n(\n"));
+    for i in 0..n {
+        let x = i as f64 * 0.37 - 1000.0;
+        t.push_str(&format!("({x} {:e} {})\n", (i % 97) as f64 * 1.0e-7, i % 13));
+    }
+    t.push_str(")\n");
+    t
+}
+
+/// The points of a file with only `points` (as `name`) in it, read as a stream where it can be.
+fn points_of(name: &str, bytes: &[u8], limits: &Limits) -> Result<Vec<[f64; 3]>> {
+    let fs = MemFs::new().with(&format!("constant/air/polyMesh/{name}"), bytes.to_vec());
+    read_points(&fs, &mesh_dir("air"), limits)
+}
+
+/// The same file read whole, as the reader before the stream.
+fn whole_points(name: &str, bytes: &[u8]) -> Result<Vec<[f64; 3]>> {
+    let bytes =
+        if bytes.starts_with(&[0x1f, 0x8b]) { umcf_foam_field::gunzip(bytes, 1 << 32)? } else { bytes.to_vec() };
+    open(&format!("constant/air/polyMesh/{name}"), &bytes)?.1.vectors(&Limits::default())
+}
+
+#[test]
+fn points_stream_across_chunks_plain_and_compressed() {
+    // Some 30 bytes a point: 100 000 points are three megabytes, three chunks of the stream.
+    let text = points_text(100_000);
+    let want = whole_points("points", text.as_bytes()).unwrap();
+    assert_eq!(want.len(), 100_000);
+    let l = Limits::default();
+    assert_eq!(points_of("points", text.as_bytes(), &l).unwrap(), want);
+    assert_eq!(points_of("points.gz", &gzip(text.as_bytes()), &l).unwrap(), want);
+    // A compressed file without `.gz` in its name.
+    assert_eq!(points_of("points", &gzip(text.as_bytes()), &l).unwrap(), want);
+    // Vectors split over lines, a comment before the count, no header at all.
+    let odd = text.replacen("\n(\n", "\n(\n(\n1\n2\n3\n)\n", 1).replacen("100000\n", "/* n */ 100001\n", 1);
+    assert_eq!(points_of("points", odd.as_bytes(), &l).unwrap(), whole_points("points", odd.as_bytes()).unwrap());
+    let bare = "2\n((0 0 0) (1 2 3))\n";
+    assert_eq!(points_of("points", bare.as_bytes(), &l).unwrap(), vec![[0.0; 3], [1.0, 2.0, 3.0]]);
+}
+
+#[test]
+fn malformed_points_make_the_whole_readers_error() {
+    let text = points_text(50_000);
+    let half = text.len() / 2;
+    for bad in [
+        // A word for a number, deep in the file.
+        text.replacen(" 1e-7 1)", " 1e-7 x)", 2).replacen(" 1e-7 x)", " 1e-7 1)", 1),
+        // One vector fewer than the count, one more.
+        text.replacen("50000\n", "50001\n", 1),
+        text.replacen("50000\n", "49999\n", 1),
+        // Cut short, in a vector and before the list's `)`.
+        text[..half].to_string(),
+        text.trim_end().trim_end_matches(')').to_string(),
+        // A vector of two.
+        text.replacen(" 0)\n", ")\n", 1),
+    ] {
+        assert_ne!(bad, text);
+        let l = Limits::default();
+        let want = whole_points("points", bad.as_bytes()).unwrap_err().to_string();
+        assert_eq!(points_of("points", bad.as_bytes(), &l).unwrap_err().to_string(), want);
+        let gz = gzip(bad.as_bytes());
+        let want = whole_points("points.gz", &gz).unwrap_err().to_string();
+        assert_eq!(points_of("points.gz", &gz, &l).unwrap_err().to_string(), want);
+    }
+}
+
+#[test]
+fn streamed_points_keep_the_size_limit() {
+    let text = points_text(10_000);
+    let small = Limits { max_bytes: text.len() as u64 - 1, ..Limits::default() };
+    assert!(points_of("points", text.as_bytes(), &small).unwrap_err().to_string().contains("limit"));
+    // Compressed: the file is small, what comes out of it isn't.
+    let gz = gzip(text.as_bytes());
+    let small = Limits { max_bytes: gz.len() as u64 + 10, ..Limits::default() };
+    assert!(points_of("points.gz", &gz, &small).unwrap_err().to_string().contains("limit"));
+    let enough = Limits { max_bytes: text.len() as u64, ..Limits::default() };
+    assert_eq!(points_of("points", text.as_bytes(), &enough).unwrap().len(), 10_000);
+}
+
+#[test]
+fn a_huge_point_count_is_not_reserved_up_front() {
+    // A count of four billion over a file of two points: an error, not an allocation of 96 GB.
+    let t = format!("{}4000000000\n((0 0 0) (1 1 1))\n", header("ascii", "vectorField", None, ""));
+    assert!(points_of("points", t.as_bytes(), &Limits::default()).is_err());
+}

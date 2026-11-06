@@ -9,6 +9,10 @@
 //! [`BoundaryMesh::read`] reads only what the boundary needs (points, the boundary faces and
 //! the patches) for drawing and picking: no `owner`, no `neighbour`, and the internal faces are
 //! passed over, not kept. Both are [`Boundary`]s.
+//!
+//! ASCII `points` (both readers) and `faces` ([`BoundaryMesh::read`]) are parsed as they are read
+//! through [`CaseFs::reader`], compressed or not, so neither the file nor its text is held whole.
+//! A file the stream finds malformed is read again whole, and that reader makes the error.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,6 +23,7 @@
 )]
 
 mod lists;
+mod stream;
 
 use umcf_core::CaseFs;
 use umcf_foam_dict::{Document, Node};
@@ -194,6 +199,35 @@ fn require(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<(S
     read_file(fs, dir, name, limits)?.ok_or_else(|| Error::Missing { file: format!("{dir}/{name}") })
 }
 
+/// `dir/name` read as a stream by `read` (see `stream`). `None` when it isn't a file the stream
+/// takes, and also when the stream finds it malformed: the whole-file reader then reads it again
+/// and makes the error, so a file reads the same either way.
+fn streamed<T>(
+    fs: &dyn CaseFs,
+    dir: &str,
+    name: &str,
+    limits: &Limits,
+    read: impl FnOnce(&mut stream::Stream) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    let mut s =
+        stream::Stream::open(fs, dir, name, limits)?.ok_or_else(|| Error::Missing { file: format!("{dir}/{name}") })?;
+    match read(&mut s) {
+        Ok(found) => Ok(found),
+        Err(Error::Bad { .. } | Error::Truncated { .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The mesh's points: an ASCII file parsed as it is read, so that neither the file nor its text
+/// is held whole; a binary one read whole.
+fn read_points(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Vec<[f64; 3]>> {
+    if let Some(points) = streamed(fs, dir, "points", limits, |s| stream::vectors(s, limits))? {
+        return Ok(points);
+    }
+    let (path, bytes) = require(fs, dir, "points", limits)?;
+    open(&path, &bytes)?.1.vectors(limits)
+}
+
 /// A list file: its header and a reader positioned at the data.
 fn open<'a>(path: &'a str, bytes: &'a [u8]) -> Result<(umcf_foam_field::Header, Reader<'a>)> {
     let (header, end) = umcf_foam_field::read_header_end(bytes)?;
@@ -205,10 +239,7 @@ fn open<'a>(path: &'a str, bytes: &'a [u8]) -> Result<(umcf_foam_field::Header, 
 impl PolyMesh {
     /// Reads and checks the mesh in `dir` (`constant/air/polyMesh`): every file, the internal faces and cells too.
     pub fn read(fs: &(dyn CaseFs + Sync), dir: &str, limits: &Limits) -> Result<PolyMesh> {
-        let points = || -> Result<Vec<[f64; 3]>> {
-            let (path, bytes) = require(fs, dir, "points", limits)?;
-            open(&path, &bytes)?.1.vectors(limits)
-        };
+        let points = || read_points(fs, dir, limits);
         let faces = || -> Result<(Vec<u32>, Vec<u32>)> {
             let (path, bytes) = require(fs, dir, "faces", limits)?;
             let (header, mut r) = open(&path, &bytes)?;
@@ -377,155 +408,6 @@ impl PolyMesh {
 /// point labels of the faces kept.
 type FaceTail = (usize, Vec<u32>, Vec<u32>);
 
-/// A gzip-compressed ASCII `faceList` from face `skip` on, as `Reader::face_list_from`,
-/// decompressed as a stream: the text of the faces before `skip` is passed over as it comes and
-/// never kept. `Ok(None)` when the file is not an ASCII `faceList`, or its list doesn't start
-/// within the first few megabytes (then it is read whole).
-fn gz_face_list_from(path: &str, gz: &[u8], skip: usize, limits: &Limits) -> Result<Option<FaceTail>> {
-    use std::io::Read;
-    /// How far into the file the header and the list's `N (` may be.
-    const PREAMBLE: usize = 4 << 20;
-    let mut decoder = flate2::read::MultiGzDecoder::new(gz);
-    let mut chunk = vec![0u8; 1 << 20];
-    // Every decompressed byte is counted here, against the limit.
-    let mut seen: u64 = 0;
-    let mut fill = |buf: &mut Vec<u8>| -> Result<bool> {
-        let n = decoder.read(&mut chunk).map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(e.to_string())))?;
-        seen = seen.saturating_add(n as u64);
-        if seen > limits.max_bytes {
-            return Err(Error::Field(umcf_foam_field::Error::TooLarge {
-                what: "decompressed file",
-                limit: limits.max_bytes,
-            }));
-        }
-        buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
-        Ok(n > 0)
-    };
-    // The header, then `N (`.
-    let mut buf = Vec::new();
-    let (header, end) = loop {
-        let more = fill(&mut buf)?;
-        if let Ok((h, Some(end))) = umcf_foam_field::read_header_end(&buf) {
-            break (h, end);
-        }
-        if !more || buf.len() > PREAMBLE {
-            return Ok(None);
-        }
-    };
-    if header.format != umcf_foam_field::Format::Ascii || !matches!(header.class.as_deref(), Some("faceList") | None) {
-        return Ok(None);
-    }
-    let (n, open) = loop {
-        match list_start(buf.get(end..).unwrap_or_default(), limits)? {
-            Start::Found(n, at) => break (n, end + at),
-            Start::NotHere => return Ok(None),
-            Start::NeedMore => {
-                if buf.len() > PREAMBLE || !fill(&mut buf)? {
-                    return Ok(None);
-                }
-            }
-        }
-    };
-    // Each face is `k(a b c …)`: the faces before `skip` end at the first `skip` `)`s. The lines
-    // passed over are counted, so that an error names the file's own line.
-    let skip = skip.min(n);
-    // The newlines before the list's `(`, then those passed with the faces.
-    let mut lines = buf.get(..open).map_or(0, |h| h.iter().filter(|c| **c == b'\n').count());
-    let mut passed = 0usize;
-    let mut at = open;
-    loop {
-        if passed == skip {
-            break;
-        }
-        let rest = buf.get(at..).unwrap_or_default();
-        let mut found = None;
-        for (k, c) in rest.iter().enumerate() {
-            match c {
-                b'\n' => lines += 1,
-                b')' => {
-                    passed += 1;
-                    if passed == skip {
-                        found = Some(k + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(k) = found {
-            at += k;
-            continue;
-        }
-        buf.clear();
-        at = 0;
-        if !fill(&mut buf)? {
-            return Err(Error::Truncated { file: path.to_string() });
-        }
-    }
-    // The rest as a list of its own, `n - skip (` and the faces from `skip` on, in one buffer.
-    let mut text = format!("{}\n(", n - skip).into_bytes();
-    text.extend_from_slice(buf.get(at..).unwrap_or_default());
-    drop(buf);
-    while fill(&mut text)? {}
-    let plain = umcf_foam_field::Header { class: Some("faceList".into()), ..header };
-    let mut r = Reader::new(path, &text, 0, &plain);
-    match r.face_list_from(limits, 0) {
-        Ok((_, offsets, points)) => Ok(Some((n, offsets, points))),
-        // The re-made list's line 2 is the file's line `lines + 1`.
-        Err(Error::Bad { file, line, msg }) => Err(Error::Bad { file, line: (line + lines).saturating_sub(1), msg }),
-        Err(e) => Err(e),
-    }
-}
-
-/// Where a list starts: its count `N` and the index just after its `(`.
-enum Start {
-    Found(usize, usize),
-    /// Something else is there: not a list this reader takes.
-    NotHere,
-    /// The text ends before it is known.
-    NeedMore,
-}
-
-/// `N (` at the start of `text`, after whitespace and comments.
-fn list_start(text: &[u8], limits: &Limits) -> Result<Start> {
-    let mut k = 0;
-    loop {
-        while text.get(k).is_some_and(u8::is_ascii_whitespace) {
-            k += 1;
-        }
-        if text.get(k..k + 2) == Some(b"//") {
-            match text.get(k..).and_then(|r| r.iter().position(|c| *c == b'\n')) {
-                Some(e) => k += e,
-                None => return Ok(Start::NeedMore),
-            }
-        } else if text.get(k..k + 2) == Some(b"/*") {
-            match text.get(k + 2..).and_then(|r| r.windows(2).position(|w| w == b"*/")) {
-                Some(e) => k += e + 4,
-                None => return Ok(Start::NeedMore),
-            }
-        } else {
-            break;
-        }
-    }
-    let digits = text.get(k..).unwrap_or_default().iter().take_while(|c| c.is_ascii_digit()).count();
-    let mut j = k + digits;
-    while text.get(j).is_some_and(u8::is_ascii_whitespace) {
-        j += 1;
-    }
-    match text.get(j) {
-        None => Ok(Start::NeedMore),
-        Some(b'(') if digits > 0 => {
-            let count = std::str::from_utf8(text.get(k..k + digits).unwrap_or_default()).unwrap_or("");
-            let n: usize = count.parse().map_err(|_| Error::TooLarge { what: "list", limit: limits.max_elements })?;
-            if n > limits.max_elements {
-                return Err(Error::TooLarge { what: "list", limit: limits.max_elements });
-            }
-            Ok(Start::Found(n, j + 1))
-        }
-        Some(_) => Ok(Start::NotHere),
-    }
-}
-
 /// Whether threads start here: a probe thread, as a failed spawn would drop its job (wasm has
 /// no threads).
 fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
@@ -629,35 +511,15 @@ impl BoundaryMesh {
         let first = boundary.iter().map(|p| p.start_face).min();
         // What the mesh says of its faces, to check the boundary against.
         let counts = owner_counts(fs, dir, limits)?;
-        let points = || -> Result<Vec<[f64; 3]>> {
-            let (path, bytes) = require(fs, dir, "points", limits)?;
-            open(&path, &bytes)?.1.vectors(limits)
-        };
+        let points = || read_points(fs, dir, limits);
         let faces = || -> Result<FaceTail> {
             let skip = first.unwrap_or(usize::MAX);
-            // As `read_file` picks the file: `faces`, else `faces.gz`. A compressed ASCII
-            // faceList is decompressed as a stream: the internal faces are counted past and
-            // never held, decompressed, in memory.
-            let (path, bytes) = match fs.read(&format!("{dir}/faces"), limits.max_bytes)? {
-                Some(bytes) => (format!("{dir}/faces"), bytes),
-                None => {
-                    let gz = format!("{dir}/faces.gz");
-                    let bytes = fs
-                        .read(&gz, limits.max_bytes)?
-                        .ok_or_else(|| Error::Missing { file: format!("{dir}/faces") })?;
-                    if bytes.starts_with(&[0x1f, 0x8b])
-                        && let Some(tail) = gz_face_list_from(&gz, &bytes, skip, limits)?
-                    {
-                        return Ok(tail);
-                    }
-                    (gz, bytes)
-                }
-            };
-            let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
-                umcf_foam_field::gunzip(&bytes, limits.max_bytes)?
-            } else {
-                bytes
-            };
+            // An ASCII faceList is read as a stream: the internal faces are counted past and
+            // never held in memory, nor is the file. Others are read whole.
+            if let Some(tail) = streamed(fs, dir, "faces", limits, |s| stream::face_list_from(s, skip, limits))? {
+                return Ok(tail);
+            }
+            let (path, bytes) = require(fs, dir, "faces", limits)?;
             let (header, mut r) = open(&path, &bytes)?;
             match header.class.as_deref() {
                 Some("faceCompactList") => r.face_compact_list_from(limits, skip),

@@ -11,7 +11,10 @@ such as a meshing step, has `constant/polyMesh`). umcfGui reads the files OpenFO
 | `boundary` | the patches: name, type, faces, groups and parameters (`neighbourRegion`, `samplePatch`, …) |
 | `cellZones` | named groups of cells (materials and cell zones of the solid regions) |
 
-ASCII and binary (any `arch`), gzip-compressed or not, from OpenFOAM-8 and OpenFOAM-12.
+ASCII and binary (any `arch`), gzip-compressed or not, from OpenFOAM-8 and OpenFOAM-12. ASCII
+`points` (and, for the 3D view, `faces`) are parsed as they are read, compressed or not, so a big
+mesh's file is never held in memory whole, nor its text; a malformed one is read again whole, so
+that the error names its line.
 
 ## Checked before use
 
