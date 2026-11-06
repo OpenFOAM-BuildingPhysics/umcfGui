@@ -1434,8 +1434,49 @@ fn a_newer_scene_request_takes_the_place_of_one_waiting() {
 
 #[test]
 fn read_fields_runs_without_a_card() {
-    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
-    app.invoke("case.fields");
-    assert!(app.dialog.is_none());
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut h = harness(App::new(s));
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::P);
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("Read fields");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().dialog.is_none(), "no card");
+    h.state_mut().wait_for_job();
+    assert!(h.state().session().case().is_some_and(|c| !c.fields_pending));
+    assert_eq!(h.state().log.last().map(|e| (e.command.as_str(), e.ok)), Some(("case.fields", true)));
+}
+
+#[test]
+fn a_command_asked_for_at_start_up_leaves_the_first_scene_waiting() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("case.check")).unwrap();
+    let ids: Vec<String> = app
+        .queue
+        .iter()
+        .map(|w| match w {
+            crate::jobs::Work::Command { id, .. } => id.clone(),
+            crate::jobs::Work::Scene { .. } => "scene".to_string(),
+            crate::jobs::Work::History { .. } => "history".to_string(),
+        })
+        .collect();
+    assert_eq!(ids, ["scene", "case.fields", "case.check"]);
+}
+
+#[test]
+fn read_fields_asked_for_at_start_up_reads_them_once() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("case.fields")).unwrap();
+    assert_eq!(app.queue.len(), 2);
     assert!(matches!(app.queue.back(), Some(crate::jobs::Work::Command { id, .. }) if id == "case.fields"));
 }

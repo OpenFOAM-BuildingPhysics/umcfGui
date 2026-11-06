@@ -19,7 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
-| `--open <id>` | Opens a command's card at the start, as its ribbon button does (`--open bc.set`) |
+| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |

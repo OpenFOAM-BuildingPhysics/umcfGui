@@ -2211,6 +2211,24 @@ impl eframe::App for Desktop {
     }
 }
 
+impl App {
+    /// What the window does once the case named on the command line is open: the card or
+    /// command of `--open` (`open`), then, ahead of it, the view's scene (of what `--show` asked
+    /// for) and the field files when they were listed only. The command is asked for first, as
+    /// other work would drop a scene already waiting.
+    pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
+        if let Some(id) = open {
+            let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
+            if let Some(tab) = ribbon::tab_of(self.workspace, spec.id) {
+                self.tab = tab;
+            }
+            self.invoke(spec.id);
+        }
+        self.after_open();
+        Ok(())
+    }
+}
+
 /// Opens the window and runs until it is closed.
 pub fn run(options: Options) -> Result<(), String> {
     let mut startup = Vec::new();
@@ -2260,15 +2278,7 @@ pub fn run(options: Options) -> Result<(), String> {
             eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
         }
     }
-    // Fields listed only: the view's scene (of what `--show` asked for), then the fields.
-    app.after_open();
-    if let Some(id) = &options.open {
-        let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
-        if let Some(tab) = ribbon::tab_of(app.workspace, spec.id) {
-            app.tab = tab;
-        }
-        app.invoke(spec.id);
-    }
+    app.start_up(options.open.as_deref())?;
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),

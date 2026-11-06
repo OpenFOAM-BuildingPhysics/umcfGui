@@ -458,7 +458,9 @@ impl App {
     /// first, so the case shows at once, then the fields, while the view is in use.
     pub(crate) fn after_open(&mut self) {
         if self.session.case().is_some_and(|c| c.fields_pending) {
-            // Before anything asked already: it is for the case opened.
+            // Before anything asked already: it is for the case opened. A read asked already
+            // (`--open case.fields`) moves to the front.
+            self.queue.retain(|w| !matches!(w, Work::Command { id, .. } if id == "case.fields"));
             self.queue.push_front(Work::Command {
                 id: "case.fields".into(),
                 params: serde_json::json!({}),
