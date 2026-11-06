@@ -66,7 +66,8 @@ pub trait CaseFs {
         }))
     }
     /// The file's bytes as a stream, `Ok(None)` if there is no such file; a file bigger than
-    /// `limit` is an error, as for [`CaseFs::read`]. The default reads the whole file (within
+    /// `limit` is an error, as for [`CaseFs::read`]. A file that grows while it is read gives at
+    /// most `limit + 1` bytes: a reader counting them against `limit` finds it too large. The default reads the whole file (within
     /// `limit`) and hands it out; a file system on disk reads the file as the stream is read, so
     /// a reader that parses as it goes never holds the file whole.
     fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, FsError> {
@@ -185,9 +186,10 @@ impl CaseFs for DirFs {
         if meta.len() > limit {
             return Err(FsError::TooLarge { path: rel.to_string(), size: meta.len(), limit });
         }
-        // At most `limit` bytes, should the file grow while it is read.
+        // Should the file grow while it is read: at most one byte more than `limit`, so that a
+        // reader counting what it gets finds it too large rather than cut at the limit.
         use std::io::Read;
-        Ok(Some(Box::new(std::io::BufReader::new(file).take(limit))))
+        Ok(Some(Box::new(std::io::BufReader::new(file).take(limit.saturating_add(1)))))
     }
 
     fn is_file(&self, rel: &str) -> bool {
@@ -408,6 +410,13 @@ mod tests {
         let mut out = Vec::new();
         fs.reader("d/f", 10).unwrap().unwrap().read_to_end(&mut out).unwrap();
         assert_eq!(out, b"0123456789");
+        // A file that grows after it was opened: one byte past the limit, so it shows as too big.
+        let mut r = fs.reader("d/f", 10).unwrap().unwrap();
+        std::fs::write(root.join("d/f"), b"0123456789abcdef").unwrap();
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 11);
+        std::fs::write(root.join("d/f"), b"0123456789").unwrap();
         // Too big, missing, a directory, outside the case.
         assert!(matches!(fs.reader("d/f", 9), Err(FsError::TooLarge { size: 10, limit: 9, .. })));
         assert!(fs.reader("d/missing", 10).unwrap().is_none());
