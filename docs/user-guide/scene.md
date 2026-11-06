@@ -46,9 +46,13 @@ the selection in orange (in front of a patch of another region in the same place
 The scene is built the first time it is needed: each region's mesh (only its boundary: its
 points, boundary faces and patches) and each surface is read once, the missing ones in parallel,
 and kept, also while it is hidden. So a pick after a snapshot, or showing a region again, reads
-nothing. It follows the surfaces and patch lists commands change (a repair, a rename, an undo).
-A mesh rewritten on disk (by OpenFOAM) is read again only with `reload`, which drops what was
-kept of every region and surface and reads what is shown again.
+nothing, while what is shown stays near where the scene is centred. Points are kept in single
+precision relative to the middle of what is shown; when that moves more than 10 km (a mesh in
+local and a surface in projected coordinates, say), what is shown is read again around the new
+middle and what was kept of hidden ones is dropped, so that nothing loses precision. The scene
+follows the surfaces and patch lists commands change (a repair, a rename, an undo). A mesh
+rewritten on disk (by OpenFOAM) is read again only with `reload`, which drops what was kept of
+every region and surface and reads what is shown again.
 
 ## Display modes
 
@@ -179,8 +183,9 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 
 - Drawing a mesh reads its boundary only, but all of its points, and an uncompressed or binary
   `faces` file whole while it is read: the 16-million-cell air region of the HK project takes
-  3.8 s and 1.8 GB the first time. Drawing and picking its boundary triangles is quick (573 000
-  of the 3×3 case's in well under a second).
+  3.8 s and 1.8 GB the first time, all five of its regions 4.6 s and 2.8 GB, read in parallel
+  (each reader holds its region's files at once). Drawing and picking boundary triangles is
+  quick: the 573 000 of a 2.8-million-cell air region of a 3×3 street-grid case in 0.14 s.
 - No level of detail; the renderer draws every triangle on one core, and sorts transparent
   triangles one by one ([display modes](#display-modes)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or

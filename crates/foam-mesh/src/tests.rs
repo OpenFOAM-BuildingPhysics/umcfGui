@@ -527,7 +527,9 @@ fn long_mesh(extra: usize) -> MemFs {
         .replace("startFace       1;", &format!("startFace       {};", extra + 1))
         .replace("startFace       2;", &format!("startFace       {};", extra + 2))
         .replace("startFace       3;", &format!("startFace       {};", extra + 3));
-    let mut fs = ascii_mesh();
+    // Points, faces and the boundary only: the two hexes' owner would note other counts.
+    let mut fs = MemFs::new();
+    fs.insert(&format!("{d}/points"), ascii_mesh().read(&format!("{d}/points"), 1 << 20).unwrap().unwrap());
     fs.insert(&format!("{d}/faces"), format!("{}{}\n(\n{fcs})\n", h("faceList"), extra + 11));
     fs.insert(&format!("{d}/boundary"), boundary);
     fs
@@ -721,7 +723,13 @@ fn compressed_errors_name_the_files_line() {
         .replace("startFace       1;", "startFace       0;")
         .replace("startFace       2;", "startFace       1;")
         .replace("startFace       3;", "startFace       2;");
-    let plain = with(with(ascii_mesh(), "boundary", boundary), "faces", format!("{h}10\n(\n{}\n)\n", fcs.join("\n")));
+    // Without the two hexes' owner (it notes 11 faces with one internal).
+    let no_note = format!("{}10\n(\n0 0 0 0 0 0 0 0 0 0\n)\n", header("ascii", "labelList", None, ""));
+    let plain = with(
+        with(with(ascii_mesh(), "boundary", boundary), "owner", no_note),
+        "faces",
+        format!("{h}10\n(\n{}\n)\n", fcs.join("\n")),
+    );
     assert_eq!(read_boundary_mesh(&plain).unwrap().first_boundary_face(), 0);
     let text = String::from_utf8(faces_text_of(&plain)).unwrap().replacen("4(0 6 9 3)", "4(0 6 x 3)", 1);
     let (a, b) = error_lines(&plain, &text);
@@ -781,4 +789,37 @@ fn corrupt_compressed_faces_are_errors() {
     }
     fs.insert("constant/air/polyMesh/faces.gz", bytes);
     assert!(read_boundary_mesh(&fs).is_err());
+}
+
+#[test]
+fn a_boundary_from_another_mesh_is_an_error() {
+    let d = "constant/air/polyMesh";
+    // The patches start at face 0, the owner header notes 1 internal face.
+    let stale = BOUNDARY
+        .replace("nFaces          1;\n        startFace       1;", "nFaces          2;\n        startFace       0;");
+    let fs = with(ascii_mesh(), "boundary", stale);
+    let e = read_boundary_mesh(&fs).unwrap_err().to_string();
+    assert!(e.contains("internal faces") && e.contains("another mesh"), "{e}");
+    assert!(read(&fs).is_err());
+    // The same with a compressed owner, read only as far as its header.
+    let mut gz = fs.clone();
+    let owner = fs.read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    gz.insert(&format!("{d}/owner.gz"), gzip(&owner));
+    let mut only_gz = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        only_gz.insert(&format!("{d}/{name}"), gz.read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    only_gz.insert(&format!("{d}/owner.gz"), gzip(&owner));
+    assert!(read_boundary_mesh(&only_gz).unwrap_err().to_string().contains("another mesh"));
+    // A faces file with other faces than the owner notes.
+    let h = header("ascii", "faceList", None, "");
+    let more = with(ascii_mesh(), "faces", format!("{h}12\n(\n{}\n4(0 1 2 3)\n)\n", faces_text().join("\n")));
+    assert!(read_boundary_mesh(&more).unwrap_err().to_string().contains("owner header says 11 faces"));
+    // No note (an owner written without one): nothing to check against.
+    let plain = with(
+        ascii_mesh(),
+        "owner",
+        format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n", header("ascii", "labelList", None, "")),
+    );
+    assert!(read_boundary_mesh(&plain).is_ok());
 }

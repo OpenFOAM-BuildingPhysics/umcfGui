@@ -73,6 +73,8 @@ pub struct Object {
     pub dropped: usize,
     bvh: OnceLock<Bvh>,
     wire: OnceLock<Wire>,
+    /// The box around the points, relative to the scene's origin, found once.
+    extent: OnceLock<Option<BBox>>,
 }
 
 /// An object's edges and points as wireframes and points draw them: each edge of a face once
@@ -129,6 +131,7 @@ impl Object {
             dropped: 0,
             bvh: OnceLock::new(),
             wire: OnceLock::new(),
+            extent: OnceLock::new(),
         }
     }
 
@@ -232,7 +235,8 @@ impl Object {
 
     /// The box around the object's points, in world coordinates.
     pub fn bbox(&self, origin: Vec3) -> Option<BBox> {
-        BBox::of(self.points.iter().map(|p| origin + Vec3::from_f32(*p)))
+        let extent = self.extent.get_or_init(|| BBox::of(self.points.iter().map(|p| Vec3::from_f32(*p))));
+        extent.map(|b| BBox { min: origin + b.min, max: origin + b.max })
     }
 
     /// The object's edges and points (see [`Wire`]), found the first time they are asked for.

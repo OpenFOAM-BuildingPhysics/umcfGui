@@ -234,7 +234,8 @@ impl<'a> Reader<'a> {
     }
 
     /// [`Self::labels`], keeping only the elements from `skip` on: the list's length and those
-    /// elements. Binary elements before `skip` aren't decoded; ASCII ones are read past.
+    /// elements. Binary elements before `skip` aren't decoded; ASCII ones are parsed (each still
+    /// a label) but not kept.
     pub fn labels_from(&mut self, limits: &Limits, skip: usize) -> Result<(usize, Vec<u32>), Error> {
         let n = self.count(limits)?;
         let keep = n.saturating_sub(skip);

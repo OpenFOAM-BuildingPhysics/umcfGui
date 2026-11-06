@@ -1667,7 +1667,7 @@ fn workflow_show_counts_a_description_over_the_dictionary_limit_as_unreadable() 
     assert_eq!(out.data["source"], "unreadable");
 }
 
-/// A case's files, counting how often each mesh's `points` is read.
+/// A case's files, counting how often each mesh's `points` and each surface is read.
 struct CountingFs {
     inner: MemFs,
     reads: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
@@ -1675,7 +1675,7 @@ struct CountingFs {
 
 impl umcf_core::CaseFs for CountingFs {
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
-        if rel.ends_with("/points") {
+        if rel.ends_with("/points") || rel.ends_with(".stl") {
             *self.reads.lock().unwrap().entry(rel.to_string()).or_default() += 1;
         }
         self.inner.read(rel, limit)
@@ -1827,4 +1827,25 @@ fn undo_and_redo_reach_hidden_regions() {
     s.execute("edit.redo", &json!({})).unwrap();
     assert_eq!(names(&mut s, "ground"), ["inlet"]);
     assert_eq!(names(&mut s, "air"), ["sides"]);
+}
+
+/// A surface shown, hidden and shown again is read once; a surface a command changed since is
+/// read again from what the command put, not from disk.
+#[test]
+fn the_scene_reads_each_surface_once() {
+    let mut fs = two_region_fs();
+    fs.insert("constant/triSurface/box.stl", cube_stl(umcf_geom::stl::Format::Ascii, false));
+    let (mut s, reads) = counting_session(fs);
+    let count = || reads.lock().unwrap().get("constant/triSurface/box.stl").copied().unwrap_or(0);
+    let surface = json!({ "surfaces": ["box.stl"] });
+    s.scene(&surface).unwrap();
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    let triangles = s.scene(&surface).unwrap().triangles();
+    assert_eq!(count(), 1);
+    // Scaled by a command: the scene shows the new surface (put, not yet saved).
+    s.execute("geometry.scale", &json!({ "file": "box.stl", "factor": 2 })).unwrap();
+    let scene = s.scene(&surface).unwrap();
+    assert_eq!(scene.triangles(), triangles);
+    let b = scene.bbox().unwrap();
+    assert!((b.max.x - b.min.x - 2.0).abs() < 1e-6, "{b:?}");
 }

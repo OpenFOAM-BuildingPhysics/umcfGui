@@ -230,7 +230,7 @@ impl PolyMesh {
         // after the other where they don't (wasm). A probe thread tells which: a failed spawn
         // drops its job, so the real jobs only go to threads once one has run.
         let (points, faces, owner, neighbour) = std::thread::scope(|s| -> Result<_> {
-            let threads = std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok());
+            let threads = threads(s);
             if !threads {
                 return Ok((points()?, faces()?, owner()?, neighbour()?));
             }
@@ -526,6 +526,39 @@ fn list_start(text: &[u8], limits: &Limits) -> Result<Start> {
     }
 }
 
+/// Whether threads start here: a probe thread, as a failed spawn would drop its job (wasm has
+/// no threads).
+fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
+    std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok())
+}
+
+/// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
+/// them; `None` for each it doesn't (or no `owner`). A compressed file is decompressed only as far
+/// as its header; an uncompressed one is read whole.
+fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
+    use std::io::Read;
+    let bytes = match fs.read(&format!("{dir}/owner"), limits.max_bytes)? {
+        Some(b) => b,
+        None => match fs.read(&format!("{dir}/owner.gz"), limits.max_bytes)? {
+            Some(b) => b,
+            None => return Ok((None, None)),
+        },
+    };
+    let head = if bytes.starts_with(&[0x1f, 0x8b]) {
+        // The header is in the first kilobytes; a bad stream only means no counts here (the
+        // whole mesh's reader says what is wrong with it).
+        let mut head = Vec::new();
+        let _ = flate2::read::MultiGzDecoder::new(bytes.as_slice()).take(64 << 10).read_to_end(&mut head);
+        head
+    } else {
+        bytes
+    };
+    match umcf_foam_field::read_header_end(&head) {
+        Ok((h, _)) => Ok((h.count("nFaces"), h.count("nInternalFaces"))),
+        Err(_) => Ok((None, None)),
+    }
+}
+
 /// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
 /// label in the whole mesh, and the patches.
 pub trait Boundary {
@@ -555,10 +588,10 @@ impl Boundary for PolyMesh {
     }
 }
 
-/// A mesh's boundary: its points, its boundary faces and its patches, read without `owner`,
-/// `neighbour` or the internal faces. It is checked as far as it goes: the patches cover the
-/// faces from the first boundary face to the last, every face has 3 points or more, every
-/// point label is in range.
+/// A mesh's boundary: its points, its boundary faces and its patches, read without `neighbour`,
+/// the internal faces or `owner` (only its header). It is checked as far as it goes: the patches
+/// cover the faces from the first boundary face to the last, where the `owner` header says the
+/// internal faces end, every face has 3 points or more, every point label is in range.
 #[derive(Debug, Clone)]
 pub struct BoundaryMesh {
     pub points: Vec<[f64; 3]>,
@@ -577,6 +610,8 @@ impl BoundaryMesh {
         let boundary = parse_boundary(&bytes)?;
         // The patches start where the internal faces end; none: no boundary faces.
         let first = boundary.iter().map(|p| p.start_face).min();
+        // What the mesh says of its faces, to check the boundary against.
+        let counts = owner_counts(fs, dir, limits)?;
         let points = || -> Result<Vec<[f64; 3]>> {
             let (path, bytes) = require(fs, dir, "points", limits)?;
             open(&path, &bytes)?.1.vectors(limits)
@@ -614,7 +649,7 @@ impl BoundaryMesh {
         };
         // Points and faces in parallel where threads exist (see PolyMesh::read).
         let (points, faces) = std::thread::scope(|s| -> Result<_> {
-            let threads = std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok());
+            let threads = threads(s);
             if !threads {
                 return Ok((points()?, faces()?));
             }
@@ -626,7 +661,7 @@ impl BoundaryMesh {
         })?;
         let (n_faces, face_offsets, face_points) = faces;
         let mesh = BoundaryMesh { points, first: first.unwrap_or(n_faces), face_offsets, face_points, boundary };
-        mesh.check(n_faces)?;
+        mesh.check(n_faces, counts)?;
         Ok(mesh)
     }
 
@@ -654,9 +689,26 @@ impl BoundaryMesh {
         self.face_points.get(start..end)
     }
 
-    /// The checks the boundary allows (see the type): `n_faces` is the faces file's count.
-    fn check(&self, n_faces: usize) -> Result<()> {
+    /// The checks the boundary allows (see the type): `n_faces` is the faces file's count, and the
+    /// counts the `owner` header notes, when it does.
+    fn check(&self, n_faces: usize, (noted_faces, noted_internal): (Option<u64>, Option<u64>)) -> Result<()> {
         let bad = |m: String| Err(Error::Inconsistent(m));
+        // A `boundary` left from another mesh: its patches don't start where this mesh's internal
+        // faces end, or the faces aren't as many as the mesh says.
+        if let Some(n) = noted_faces
+            && n != n_faces as u64
+        {
+            return bad(format!("the owner header says {n} faces, the faces file has {n_faces}"));
+        }
+        if let Some(n) = noted_internal
+            && !self.boundary.is_empty()
+            && n != self.first as u64
+        {
+            return bad(format!(
+                "the patches start at face {}, but the owner header says the mesh has {n} internal faces: is `boundary` from another mesh?",
+                self.first
+            ));
+        }
         if self.first > n_faces {
             return bad(format!("the patches start at face {}, the mesh has {n_faces}", self.first));
         }
