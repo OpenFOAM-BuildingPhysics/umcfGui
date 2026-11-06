@@ -7,7 +7,7 @@ There are no releases yet. umcfGui builds from source with a recent stable Rust 
 git clone --recurse-submodules https://github.com/OpenFOAM-BuildingPhysics/umcfGui.git
 cd umcfGui
 cargo build --release
-cargo xtask ci          # every quality gate: formatting, lints, tests, layering, wasm, licences
+cargo xtask ci          # every quality gate: formatting, lints, tests, layering, catalog, assets, wasm, docs, licences
 ```
 
 `--recurse-submodules` also fetches the urbanMicroclimateFoam source into `solver/` (about 9 MB).
@@ -22,6 +22,18 @@ The command line checks a case and edits it ([Command line](user-guide/command-l
 cargo build --release -p umcf-cli
 target/release/umcf-cli check path/to/case
 ```
+
+The desktop app opens a case, shows it in 3D and runs the same commands
+([The desktop app](user-guide/desktop.md)):
+
+```sh
+cargo build --release -p umcf-gui
+target/release/umcf-gui examples/of12/streetCanyon_CFDHAM
+```
+
+Small example cases for OpenFOAM-8 and -12, made from the solver's street canyon tutorials, are
+in `examples/` (see
+[`examples/README.md`](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md)).
 
 The foundation libraries, from Rust:
 

@@ -20,7 +20,7 @@ usage: cargo xtask <command>
 
 commands:
   ci        fmt --check, clippy -D warnings (default and --no-default-features), tests, layers,
-            assets, wasm, deny (stops at the first failure)
+            catalog, assets, wasm, docs, deny (stops at the first failure)
   layers    enforce the crate dependency layering (docs/architecture.md)
   assets    check that every file under assets/ and docs/images/ has a row in ATTRIBUTION.md
   wasm      cargo check --target wasm32-unknown-unknown for the L0-L3 crates

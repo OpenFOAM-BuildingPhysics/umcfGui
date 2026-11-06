@@ -47,7 +47,7 @@ pub(super) const SAVE: CommandSpec = CommandSpec {
     label: "Save",
     menu: "Case/Save",
     shortcut: Some("Ctrl+S"),
-    params: "none. Writes the changed dictionaries and surfaces, after a backup of each under the session's backup directory.",
+    params: "none. Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each under the session's backup directory. A file a command wrote whole is not written through a symbolic link.",
     enabled: needs_case,
     run: save,
     journal: true,
