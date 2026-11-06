@@ -234,6 +234,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     run: check,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -293,6 +294,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     run: import,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -358,6 +360,7 @@ pub(super) const TREES: CommandSpec = CommandSpec {
     run: trees,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -465,6 +468,7 @@ pub(super) const REPAIR: CommandSpec = CommandSpec {
     run: repair_cmd,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn repair_cmd(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -547,6 +551,7 @@ pub(super) const SCALE: CommandSpec = CommandSpec {
     run: scale,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn scale(s: &mut Session, p: &Value) -> Result<Outcome, Error> {

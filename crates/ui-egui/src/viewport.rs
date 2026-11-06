@@ -141,6 +141,14 @@ impl Viewport {
         }
     }
 
+    /// The image last drawn, over `rect` (while a job runs); nothing before the first.
+    pub fn paint_last(&self, painter: &egui::Painter, rect: Rect) {
+        if let Some(t) = &self.texture {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            painter.image(t.id(), rect, uv, Color32::WHITE);
+        }
+    }
+
     /// Shows `scene` in the rest of `ui`; returns what the user asked for.
     #[allow(clippy::too_many_arguments)]
     pub fn show(

@@ -24,6 +24,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     run: check,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 /// The largest `checkMesh` log read.

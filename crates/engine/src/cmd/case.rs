@@ -1,7 +1,7 @@
 //! `case.*`: open, save, describe and check the case.
 
 use serde_json::{Value, json};
-use umcf_core::DirFs;
+use umcf_core::{Cancellable, DirFs};
 use umcf_model::{Case, OpenOptions, RegionKind};
 use umcf_schema::{CaseKind, Severity};
 use umcf_validate::{Diagnostic, Level};
@@ -24,6 +24,7 @@ pub(super) const OPEN: CommandSpec = CommandSpec {
     // Not journaled: a journal runs again on whichever case is open.
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 fn open(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -35,7 +36,8 @@ fn open(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         return Err(Error::Failed(format!("{path} is not a directory")));
     }
     let options = if fields { OpenOptions::default() } else { OpenOptions { field_bytes: 0, ..Default::default() } };
-    s.open(Box::new(DirFs::new(path)), path, options, discard)?;
+    // Its reads stop when the command running is cancelled (`Session::canceller`).
+    s.open(Box::new(Cancellable::new(DirFs::new(path), s.canceller())), path, options, discard)?;
     let case = s.case().ok_or_else(|| Error::Failed("the case did not open".to_string()))?;
     let version = case.layout.version.map_or("unknown OpenFOAM version", |v| v.label());
     let message = format!("opened {path}: {version}, {} regions", case.regions.len());
@@ -52,6 +54,7 @@ pub(super) const SAVE: CommandSpec = CommandSpec {
     run: save,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 fn save(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -77,6 +80,7 @@ pub(super) const INFO: CommandSpec = CommandSpec {
     run: info,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 fn info(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -130,6 +134,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     run: check,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 pub(crate) fn level(l: Level) -> &'static str {

@@ -23,6 +23,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     run: set,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 /// OpenFOAM's patch types (OpenFOAM-8 and -12), for a note on a type that is none of them.
@@ -65,6 +66,7 @@ pub(super) const CREATE: CommandSpec = CommandSpec {
     run: create,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 /// The most faces given as labels.

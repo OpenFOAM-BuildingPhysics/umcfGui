@@ -74,8 +74,13 @@ fn app() -> App {
     App::new(s)
 }
 
-fn harness(app: App) -> Harness<'static, App> {
-    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(|ui, app: &mut App| app.show(ui), app);
+fn harness(mut app: App) -> Harness<'static, App> {
+    // Jobs are waited for: a frame shows what they did, however slow the machine.
+    app.job_wait = std::time::Duration::from_secs(120);
+    let mut h = Harness::builder()
+        .with_size(vec2(1200.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run();
     h
 }
@@ -773,6 +778,7 @@ fn open_asks_for_the_folder_in_the_systems_dialog() {
     assert!(app.session().location().is_none() && app.dialog.is_none());
     // Not a case: the card shows the path and why.
     app.folder_picked(Picked::Folder("/nonexistent/umcf-case".to_string()));
+    app.wait_for_job();
     let d = app.dialog.take().unwrap();
     assert_eq!(d.id, "case.open");
     assert!(d.params.contains("/nonexistent/umcf-case") && d.error.is_some(), "{d:?}");
@@ -782,8 +788,10 @@ fn open_asks_for_the_folder_in_the_systems_dialog() {
     assert!(d.error.unwrap().contains("type the case's path"));
     // A case: opened, and the card from the folder before goes.
     app.folder_picked(Picked::Folder("/nonexistent/umcf-case".to_string()));
+    app.wait_for_job();
     assert!(app.dialog.is_some());
     app.folder_picked(Picked::Folder(path.clone()));
+    app.wait_for_job();
     assert_eq!(app.session().location(), Some(path.as_str()));
     assert!(app.dialog.is_none());
     assert_eq!(app.log.last().unwrap().command, "case.open");
@@ -916,4 +924,186 @@ fn a_layer_is_shown_as_its_context_menu_says() {
     assert_eq!(order, [&region]);
     click_at(&mut h, rect.center(), Modifiers::NONE);
     assert_eq!(h.state().log.last().unwrap().command, "select.pick");
+}
+
+/// A case whose mesh `boundary` reads wait, once `hold` is set, until it is cleared again.
+struct Held {
+    fs: MemFs,
+    hold: Arc<AtomicBool>,
+    waiting: Arc<AtomicBool>,
+}
+
+impl CaseFs for Held {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        if rel.ends_with("polyMesh/boundary") {
+            while self.hold.load(Ordering::SeqCst) {
+                self.waiting.store(true, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        self.fs.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        self.fs.list(rel)
+    }
+}
+
+impl CaseWrite for Held {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.fs.write(rel, bytes)
+    }
+}
+
+/// An app whose case can be held at its mesh reads, its reads stopped by the session's cancel.
+fn held() -> (App, Arc<AtomicBool>, Arc<AtomicBool>) {
+    let (hold, waiting) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let fs = Held { fs: case(), hold: hold.clone(), waiting: waiting.clone() };
+    let fs = umcf_core::Cancellable::new(fs, s.canceller());
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.job_wait = std::time::Duration::ZERO;
+    hold.store(true, Ordering::SeqCst);
+    (app, hold, waiting)
+}
+
+#[test]
+fn a_slow_scene_is_a_job_the_window_shows_and_can_cancel() {
+    let (app, hold, waiting) = held();
+    let mut h = Harness::builder()
+        .with_size(vec2(1200.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run_steps(2);
+    // The mesh is being read: the window says so, the session is with the job.
+    wait_until(&waiting);
+    assert!(h.state().busy());
+    let _ = h.get_by_label_contains("Reading the meshes");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    let _ = h.get_by_label_contains("Cancelling");
+    // The read it waited in ends; the next one stops: the scene is cancelled, the case is kept.
+    hold.store(false, Ordering::SeqCst);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    assert!(!h.state().busy());
+    assert!(h.state().session().case().is_some());
+    let _ = h.get_by_label_contains("Reading cancelled");
+    // The flag went with the job: what runs next reads.
+    assert!(h.state_mut().run("mesh.check", json!({})).is_ok());
+}
+
+#[test]
+fn a_command_waits_while_a_job_runs() {
+    let (mut app, hold, waiting) = held();
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    let e = app.run("case.info", json!({})).unwrap_err();
+    assert!(e.contains("is running"), "{e}");
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+    assert!(app.run("case.info", json!({})).is_ok());
+    // After a command the scene is taken again as a job, from the cache: done within the wait.
+    app.job_wait = std::time::Duration::from_secs(120);
+    app.start_scene_for_test();
+    assert!(!app.busy());
+    assert!(app.session().case().is_some());
+}
+
+#[test]
+fn only_work_that_reads_can_be_cancelled() {
+    let read =
+        crate::jobs::Work::Command { id: "mesh.check".into(), params: json!({}), then: crate::jobs::Then::Nothing };
+    let write =
+        crate::jobs::Work::Command { id: "case.save".into(), params: json!({}), then: crate::jobs::Then::Nothing };
+    assert!(crate::jobs::cancellable(&read));
+    assert!(!crate::jobs::cancellable(&write));
+    assert!(crate::jobs::cancellable(&crate::jobs::Work::Scene { params: json!({}) }));
+}
+
+#[test]
+fn work_started_while_a_job_runs_is_refused_and_logged() {
+    let (mut app, hold, waiting) = held();
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    app.invoke("case.check");
+    assert!(app.log.last().is_some_and(|e| !e.ok && e.message.contains("first")), "{:?}", app.log.last());
+    // A card's OK refused: the card stays, with its parameters and why.
+    let d = crate::Dialog { id: "control.set", params: "{\"endTime\": 7200}".into(), error: None };
+    app.start(crate::jobs::Work::Command {
+        id: "control.set".into(),
+        params: json!({ "endTime": 7200 }),
+        then: crate::jobs::Then::Dialog(d),
+    });
+    let d = app.dialog.take().unwrap();
+    assert!(d.params.contains("7200") && d.error.is_some_and(|e| e.contains("first")));
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+}
+
+/// Waits for `flag`, at most 30 s: a test fails rather than hangs.
+fn wait_until(flag: &AtomicBool) {
+    let mut waited = 0;
+    while !flag.load(Ordering::SeqCst) {
+        assert!(waited < 15_000, "the job never got to its read");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        waited += 1;
+    }
+}
+
+/// A case that counts the surface reads made on the thread the window runs on (the test's).
+struct OffJob {
+    fs: MemFs,
+    reads: Arc<AtomicUsize>,
+    window: std::thread::ThreadId,
+}
+
+impl CaseFs for OffJob {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        if rel.ends_with(".stl") && std::thread::current().id() == self.window {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.fs.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        self.fs.list(rel)
+    }
+}
+
+impl CaseWrite for OffJob {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.fs.write(rel, bytes)
+    }
+}
+
+#[test]
+fn the_scene_is_read_only_by_jobs() {
+    let mut fs = case();
+    let stl = "solid s\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid s\n";
+    fs.insert("constant/triSurface/tri.stl", stl);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let window = std::thread::current().id();
+    s.open(Box::new(OffJob { fs, reads: reads.clone(), window }), "mem", OpenOptions::default(), false).unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().show_only(&[String::new(), "tri.stl".to_string()]);
+    reads.store(0, Ordering::SeqCst);
+    // The view, the browser's surface regions and Fit: none reads the surface on the window's thread.
+    h.run();
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert!(!h.state().classes.is_empty(), "the browser lists the surface's regions");
 }
