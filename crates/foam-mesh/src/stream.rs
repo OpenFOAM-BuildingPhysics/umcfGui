@@ -190,8 +190,8 @@ pub(crate) fn vectors(s: &mut Stream, limits: &Limits) -> Result<Option<Vec<[f64
 pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Result<Option<FaceTail>> {
     let Some((header, mut buf, open, n)) = s.list(&["faceList"], limits)? else { return Ok(None) };
     // Each face is `k(a b c …)`: the faces before `skip` are passed over as they come, checked
-    // for that form (digits, then `(`, labels, `)`); anything else, a comment too, is left to
-    // the whole-file reader.
+    // for that form (digits, then `(`, no `(` before the `)`); anything else, a comment too, is
+    // left to the whole-file reader.
     let skip = skip.min(n);
     let mut passed = 0usize;
     let mut at = open;
@@ -199,23 +199,37 @@ pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Re
     while passed < skip {
         let rest = buf.get(at..).unwrap_or_default();
         let mut found = None;
-        for (k, c) in rest.iter().enumerate() {
-            state = match (state, *c) {
+        let mut k = 0;
+        while let Some(&c) = rest.get(k) {
+            if let Skip::Labels = state {
+                // The labels up to the face's `)` in one pass, the hot path: what they are isn't
+                // checked (nor is it by the whole-file reader), only that no `(` comes first.
+                let tail = rest.get(k..).unwrap_or_default();
+                let end = tail.iter().position(|c| matches!(c, b'(' | b')')).unwrap_or(tail.len());
+                if tail.get(end) == Some(&b'(') {
+                    return Err(bad(s, "expected a face `k(a b c …)`"));
+                }
+                k += end;
+                if end == tail.len() {
+                    break;
+                }
+                k += 1;
+                passed += 1;
+                state = Skip::Between;
+                if passed == skip {
+                    found = Some(k);
+                    break;
+                }
+                continue;
+            }
+            state = match (state, c) {
                 (Skip::Between, c) if c.is_ascii_whitespace() => Skip::Between,
                 (Skip::Between | Skip::Count, c) if c.is_ascii_digit() => Skip::Count,
                 (Skip::Count | Skip::Open, c) if c.is_ascii_whitespace() => Skip::Open,
                 (Skip::Count | Skip::Open, b'(') => Skip::Labels,
-                (Skip::Labels, c) if c.is_ascii_digit() || c.is_ascii_whitespace() => Skip::Labels,
-                (Skip::Labels, b')') => {
-                    passed += 1;
-                    if passed == skip {
-                        found = Some(k + 1);
-                        break;
-                    }
-                    Skip::Between
-                }
                 _ => return Err(bad(s, "expected a face `k(a b c …)`")),
             };
+            k += 1;
         }
         if let Some(k) = found {
             at += k;
