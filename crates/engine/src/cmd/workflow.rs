@@ -18,6 +18,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     run: show,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -72,6 +73,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     run: import,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {

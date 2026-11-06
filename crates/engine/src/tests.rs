@@ -241,6 +241,7 @@ fn a_failure_after_replacing_the_case_drops_the_history() {
         run: reopen,
         journal: true,
         undoable: false,
+        reads_only: false,
     };
     let mut s = session();
     s.execute("control.set", &json!({"endTime": 7200})).unwrap();
@@ -269,6 +270,7 @@ fn a_failure_after_reopening_the_same_case() {
         run: reopen,
         journal: true,
         undoable: false,
+        reads_only: false,
     };
     let mut s = session();
     s.execute("control.set", &json!({"endTime": 7200})).unwrap();
@@ -338,6 +340,7 @@ fn a_panic_is_caught_and_the_case_restored() {
         run: boom,
         journal: true,
         undoable: true,
+        reads_only: false,
     };
     let mut s = session();
     s.execute("control.set", &json!({"endTime": 7200})).unwrap();
@@ -1848,4 +1851,215 @@ fn the_scene_reads_each_surface_once() {
     assert_eq!(scene.triangles(), triangles);
     let b = scene.bbox().unwrap();
     assert!((b.max.x - b.min.x - 2.0).abs() < 1e-6, "{b:?}");
+}
+
+/// A session can move to another thread (a job), and its cancel flag stops what it reads.
+#[test]
+fn a_cancelled_command_leaves_the_case_as_it_was() {
+    fn send<T: Send>() {}
+    send::<Session>();
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let cancel = s.canceller();
+    s.open(
+        Box::new(umcf_core::Cancellable::new(two_region_fs(), cancel.clone())),
+        "mem",
+        OpenOptions::default(),
+        false,
+    )
+    .unwrap();
+    // The scene, cancelled before it is read: an error that says so, nothing cached.
+    cancel.cancel();
+    let e = s.scene(&json!({ "regions": ["air"] })).unwrap_err();
+    assert!(matches!(e, Error::Cancelled { ref id } if id == "scene"), "{e}");
+    // A command: cancelled, and the case is as it was.
+    let before = s.case().cloned();
+    let e = s.execute("scene.snapshot", &json!({ "regions": ["air"] })).unwrap_err();
+    assert!(matches!(e, Error::Cancelled { .. }), "{e}");
+    assert!(e.to_string().contains("as it was"), "{e}");
+    assert_eq!(s.case().map(|c| c.regions.len()), before.map(|c| c.regions.len()));
+    // Reset, it reads again.
+    cancel.reset();
+    assert!(s.scene(&json!({ "regions": ["air"] })).is_ok());
+}
+
+/// `case.open` cancelled keeps the case that was open.
+#[test]
+fn a_cancelled_open_keeps_the_open_case() {
+    // A case of each OpenFOAM version.
+    for example in [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of8/streetCanyon_CFD"),
+    ] {
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(two_region_fs()), "mem", OpenOptions::default(), false).unwrap();
+        s.canceller().cancel();
+        let e = s.execute("case.open", &json!({ "path": example })).unwrap_err();
+        assert!(matches!(e, Error::Cancelled { ref id } if id == "case.open"), "{example}: {e}");
+        assert_eq!(s.location(), Some("mem"));
+        // Not cancelled, it opens.
+        s.canceller().reset();
+        s.execute("case.open", &json!({ "path": example })).unwrap();
+        assert_eq!(s.location(), Some(example));
+    }
+}
+
+/// A case that sets the cancel flag when one file is read, as a click on *Cancel* would while
+/// a command reads.
+struct Trip {
+    inner: MemFs,
+    at: &'static str,
+    cancel: umcf_core::Cancel,
+}
+
+impl umcf_core::CaseFs for Trip {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
+        if rel == self.at {
+            self.cancel.cancel();
+        }
+        self.inner.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.inner.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.inner.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, umcf_core::FsError> {
+        self.inner.list(rel)
+    }
+}
+
+impl umcf_core::CaseWrite for Trip {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), umcf_core::FsError> {
+        self.inner.write(rel, bytes)
+    }
+}
+
+/// Cancelled in the middle of reading, where the reads that fail would only be notes: still
+/// cancelled, and the session as it was.
+#[test]
+fn a_command_cancelled_while_it_reads_is_cancelled() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(two_region_fs()), "first", OpenOptions::default(), false).unwrap();
+    let cancel = s.canceller();
+    // Opening another case: the one open stays.
+    let trip = Trip { inner: two_region_fs(), at: "constant/air/polyMesh/boundary", cancel: cancel.clone() };
+    let e =
+        s.open(Box::new(umcf_core::Cancellable::new(trip, cancel.clone())), "second", OpenOptions::default(), false);
+    assert!(matches!(e, Err(Error::Cancelled { .. })), "{e:?}");
+    assert_eq!(s.location(), Some("first"));
+    // A check whose unreadable meshes would be diagnostics.
+    cancel.reset();
+    let trip = Trip { inner: two_region_fs(), at: "constant/air/polyMesh/points", cancel: cancel.clone() };
+    s.open(Box::new(umcf_core::Cancellable::new(trip, cancel.clone())), "third", OpenOptions::default(), false)
+        .unwrap();
+    let e = s.execute("mesh.check", &json!({})).unwrap_err();
+    assert!(matches!(e, Error::Cancelled { ref id } if id == "mesh.check"), "{e}");
+    assert_eq!(s.location(), Some("third"));
+    // A snapshot whose mesh read was cancelled leaves no scene: the next one reads it again.
+    cancel.reset();
+    let reads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let counted = CountingFs { inner: two_region_fs(), reads: reads.clone() };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let cancel = s.canceller();
+    s.open(Box::new(umcf_core::Cancellable::new(counted, cancel.clone())), "fourth", OpenOptions::default(), false)
+        .unwrap();
+    assert!(s.scene(&json!({ "regions": ["air"] })).is_ok());
+    cancel.cancel();
+    let r = s.execute("scene.snapshot", &json!({ "regions": ["air"] }));
+    assert!(matches!(r, Err(Error::Cancelled { .. })), "{r:?}");
+    cancel.reset();
+    let before = reads.lock().unwrap().values().sum::<usize>();
+    assert!(s.scene(&json!({ "regions": ["air"] })).is_ok());
+    assert!(reads.lock().unwrap().values().sum::<usize>() > before, "the scene was kept");
+}
+
+/// A command that only reads writes nothing to the journal or the undo history.
+#[test]
+fn commands_that_only_read_change_nothing() {
+    for c in COMMANDS {
+        if c.reads_only {
+            assert!(!c.journal && !c.undoable, "{} reads only but is journaled or undoable", c.id);
+        }
+    }
+    assert!(COMMANDS.iter().filter(|c| c.reads_only).count() >= 5);
+}
+
+/// A case whose `points` stream sets the cancel flag after its first read, as a click on
+/// *Cancel* would partway through a big file; whole-file reads of `points` are counted.
+struct MidStream {
+    inner: MemFs,
+    cancel: umcf_core::Cancel,
+    whole: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct Tripping {
+    inner: std::io::Cursor<Vec<u8>>,
+    cancel: umcf_core::Cancel,
+}
+
+impl std::io::Read for Tripping {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.cancel.cancel();
+        Ok(n)
+    }
+}
+
+impl umcf_core::CaseFs for MidStream {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
+        if rel.ends_with("/points") {
+            self.whole.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.inner.read(rel, limit)
+    }
+    fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, umcf_core::FsError> {
+        let cancel = self.cancel.clone();
+        Ok(self.inner.read(rel, limit)?.map(|b| {
+            if rel.ends_with("/points") {
+                Box::new(Tripping { inner: std::io::Cursor::new(b), cancel }) as Box<dyn std::io::Read + Send>
+            } else {
+                Box::new(std::io::Cursor::new(b)) as Box<dyn std::io::Read + Send>
+            }
+        }))
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.inner.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.inner.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, umcf_core::FsError> {
+        self.inner.list(rel)
+    }
+}
+
+impl umcf_core::CaseWrite for MidStream {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), umcf_core::FsError> {
+        self.inner.write(rel, bytes)
+    }
+}
+
+/// Cancelled partway through a streamed `points` file of several megabytes: the scene is
+/// cancelled, and the file is not read again whole.
+#[test]
+fn a_cancel_stops_a_streamed_file_partway() {
+    let mut fs = two_region_fs();
+    // The cube's eight points, then 300 000 more nothing uses: some 7 MB of text.
+    let mut points = String::from("FoamFile\n{\n    format ascii;\n    class vectorField;\n}\n300008\n(\n");
+    points.push_str("(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n");
+    for i in 0..300_000 {
+        points.push_str(&format!("({i}.5 0.25 0.125)\n"));
+    }
+    points.push_str(")\n");
+    fs.insert("constant/air/polyMesh/points", points);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let cancel = s.canceller();
+    let whole = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fs = MidStream { inner: fs, cancel: cancel.clone(), whole: whole.clone() };
+    s.open(Box::new(umcf_core::Cancellable::new(fs, cancel.clone())), "mem", OpenOptions::default(), false).unwrap();
+    whole.store(0, std::sync::atomic::Ordering::SeqCst);
+    let e = s.scene(&json!({ "regions": ["air"] })).unwrap_err();
+    assert!(matches!(e, Error::Cancelled { .. }), "{e}");
+    assert_eq!(whole.load(std::sync::atomic::Ordering::SeqCst), 0, "read again whole");
 }

@@ -15,8 +15,9 @@ Rust crates.
 | Strict layers checked by a tool | `cargo xtask layers` reads `cargo metadata`. A crate may depend only on lower layers, plus explicit chains within a layer (table below) |
 | UI quarantine | UI crates (`egui*`, `eframe`, `winit`, `rfd`, `wgpu*`) only at L6+. `wgpu` only if the 3D view needs it, and only in `ui-egui` |
 | Format crates kept narrow | `foam-*` depend only on `core`, `geom` and the `foam-*` below them. They know OpenFOAM syntax, not UMCF |
-| One command registry | `CommandSpec { id, label, menu, shortcut, params, enabled, run, journal, undoable }`. `enabled` returns `Err(reason)`, which the UI shows as a tooltip |
+| One command registry | `CommandSpec { id, label, menu, shortcut, params, enabled, run, journal, undoable, reads_only }`. `enabled` returns `Err(reason)`, which the UI shows as a tooltip; `reads_only` marks the commands that can be cancelled |
 | Session as the single entry point | `Session::execute(id, Json)` with a panic guard, an undo snapshot and a journal. The case model is `Arc`-cloned for cheap undo snapshots |
+| Long work as jobs | The desktop app moves the `Session` to a thread of its own for opening a case, a command run from the ribbon or its card, and building the 3D scene; the window shows a card with *Cancel* meanwhile. `Session::canceller` gives the flag: a case `case.open` opened reads through `Cancellable`, whose reads fail once it is set, and a command marked `reads_only` fails as `Error::Cancelled` with the case restored; one that writes runs to its end. The CLI and tests call `Session::execute` as before |
 | Headless parity | `execute_headless` rejects commands that would only open a dialog. The CLI and MCP use it |
 | Control channel | JSON lines over TCP: `engine.execute`, `ui.screenshot`, `ui.inspect`, plus `run.events` (a stream of job progress) |
 | Agent control | `mcp` crate: tools = commands; `--connect` drives the running app |

@@ -48,6 +48,8 @@ pub enum FsError {
     TooLarge { path: String, size: u64, limit: u64 },
     #[error("`{0}` is not a path inside the case")]
     BadPath(String),
+    #[error("{path}: not read: cancelled")]
+    Cancelled { path: String },
 }
 
 /// Read access to a case. Paths are relative to the case root and use `/`
@@ -110,6 +112,110 @@ pub trait CaseWrite: CaseFs {
 fn check_rel(rel: &str) -> Result<(), FsError> {
     let ok = Path::new(rel).components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
     if ok { Ok(()) } else { Err(FsError::BadPath(rel.to_string())) }
+}
+
+/// A flag that stops a long job: every [`Cancellable`] holding it fails its reads once it is set.
+/// Clones share the flag. It stays set until [`Cancel::reset`].
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Cancel::default()
+    }
+
+    /// Stops what reads through this flag, from its next read on.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lets reads go on again (before the next job starts).
+    pub fn reset(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn check(&self, rel: &str) -> Result<(), FsError> {
+        if self.is_cancelled() { Err(FsError::Cancelled { path: rel.to_string() }) } else { Ok(()) }
+    }
+}
+
+/// A case whose reads stop once its [`Cancel`] is set: each read and listing after that fails
+/// with [`FsError::Cancelled`], and a stream ([`CaseFs::reader`]) between two of its reads, so a
+/// job reading a big file stops within a chunk of it. Writes
+/// aren't stopped, but a save reads files too: only work that writes nothing should be offered a
+/// cancel (the desktop app offers it only for those).
+pub struct Cancellable<F> {
+    inner: F,
+    cancel: Cancel,
+}
+
+impl<F> Cancellable<F> {
+    pub fn new(inner: F, cancel: Cancel) -> Self {
+        Cancellable { inner, cancel }
+    }
+}
+
+/// A stream that stops once its flag is set.
+struct CancelRead {
+    inner: Box<dyn std::io::Read + Send>,
+    cancel: Cancel,
+}
+
+impl std::io::Read for CancelRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Err(std::io::Error::other("cancelled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<F: CaseFs> CaseFs for Cancellable<F> {
+    fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, FsError> {
+        self.cancel.check(rel)?;
+        let cancel = self.cancel.clone();
+        Ok(self
+            .inner
+            .reader(rel, limit)?
+            .map(|inner| Box::new(CancelRead { inner, cancel }) as Box<dyn std::io::Read + Send>))
+    }
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        self.cancel.check(rel)?;
+        self.inner.read(rel, limit)
+    }
+    fn read_prefix(&self, rel: &str, n: usize, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        self.cancel.check(rel)?;
+        self.inner.read_prefix(rel, n, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.inner.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.inner.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        self.cancel.check(rel)?;
+        self.inner.list(rel)
+    }
+    fn identity(&self, rel: &str) -> Option<PathBuf> {
+        self.inner.identity(rel)
+    }
+    fn is_link(&self, rel: &str) -> bool {
+        self.inner.is_link(rel)
+    }
+    fn hard_links(&self, rel: &str) -> u64 {
+        self.inner.hard_links(rel)
+    }
+}
+
+impl<F: CaseWrite> CaseWrite for Cancellable<F> {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.inner.write(rel, bytes)
+    }
 }
 
 /// A case directory on disk.
@@ -449,6 +555,28 @@ mod tests {
         assert!(fs.reader("p", 10).unwrap().is_none());
         assert!(fs.read("p", 10).unwrap().is_none());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_case_stops_reading_but_still_writes() {
+        use std::io::Read;
+        let cancel = Cancel::new();
+        let mut fs = Cancellable::new(MemFs::new().with("d/f", b"0123456789".to_vec()), cancel.clone());
+        assert!(fs.read("d/f", 10).unwrap().is_some());
+        let mut stream = fs.reader("d/f", 10).unwrap().unwrap();
+        let mut two = [0u8; 2];
+        stream.read_exact(&mut two).unwrap();
+        cancel.cancel();
+        // Every read stops, a stream between two of its reads too.
+        assert!(stream.read(&mut two).is_err());
+        assert!(matches!(fs.reader("d/f", 10), Err(FsError::Cancelled { .. })));
+        assert!(matches!(fs.read("d/f", 10), Err(FsError::Cancelled { .. })));
+        assert!(matches!(fs.read_prefix("d/f", 2, 10), Err(FsError::Cancelled { .. })));
+        assert!(matches!(fs.list("d"), Err(FsError::Cancelled { .. })));
+        // A save goes on.
+        fs.write("d/g", b"x").unwrap();
+        cancel.reset();
+        assert_eq!(fs.read("d/g", 10).unwrap().as_deref(), Some(&b"x"[..]));
     }
 
     #[test]

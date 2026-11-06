@@ -539,6 +539,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     run: snapshot,
     journal: false,
     undoable: false,
+    reads_only: true,
 };
 
 /// `scene.snapshot`.
@@ -702,6 +703,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     run: pick,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 /// `select.pick`.
@@ -832,6 +834,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
     run: rect,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 /// Most items `select.rect` lists.
@@ -918,6 +921,7 @@ pub(super) const SELECT: CommandSpec = CommandSpec {
     run: select,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 /// `select.set`.
@@ -1010,6 +1014,7 @@ pub(super) const CLEAR: CommandSpec = CommandSpec {
     run: clear,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 /// `select.clear`.
@@ -1030,8 +1035,13 @@ impl Session {
         let p = Params::new("scene", params, &WHICH)?;
         // Built into the cache under the guard, then borrowed from it.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(self, "scene", &p))) {
+            // Cancelled as it ended: it may have read less than it shows.
+            Ok(Ok(())) if self.cancel.is_cancelled() => {
+                self.scene = None;
+                Err(Error::Cancelled { id: "scene".to_string() })
+            }
             Ok(Ok(())) => cached(self, "scene"),
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => Err(self.or_cancelled("scene", e)),
             Err(payload) => {
                 self.scene = None;
                 Err(Error::Panicked { id: "scene".to_string(), message: crate::panic_message(payload.as_ref()) })

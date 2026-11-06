@@ -41,6 +41,7 @@ mod params;
 pub use cmd::COMMANDS;
 pub use cmd::display::{DisplayEntry, Layer, parse as parse_display, style as display_style};
 pub use cmd::scene::{Sel, camera_json, selected_faces};
+pub use umcf_core::Cancel;
 
 /// The most undo steps kept; the oldest go first.
 pub const UNDO_DEPTH: usize = 100;
@@ -62,6 +63,10 @@ pub struct CommandSpec {
     pub journal: bool,
     /// Snapshotted for undo before it runs.
     pub undoable: bool,
+    /// It only reads the case: nothing is written, nothing in the session changes but what it
+    /// shows. Such a command can be cancelled while it reads ([`Session::canceller`]); one that
+    /// writes runs to its end.
+    pub reads_only: bool,
 }
 
 impl std::fmt::Debug for CommandSpec {
@@ -97,6 +102,8 @@ pub enum Error {
     Failed(String),
     #[error("{id} stopped on an internal error ({message}); the case is as it was before it ran")]
     Panicked { id: String, message: String },
+    #[error("{id} was cancelled; the case is as it was before it ran")]
+    Cancelled { id: String },
 }
 
 /// The opened case and where it is.
@@ -159,6 +166,8 @@ pub struct Session {
     selection: Vec<Sel>,
     /// The 3D scene last built, for picking and snapshots.
     scene: Option<cmd::scene::Cached>,
+    /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
+    cancel: umcf_core::Cancel,
 }
 
 impl std::fmt::Debug for Session {
@@ -208,7 +217,24 @@ impl Session {
             opens: 0,
             selection: Vec::new(),
             scene: None,
+            cancel: umcf_core::Cancel::new(),
         }
+    }
+
+    /// The flag that stops the command running now, from another thread (a *Cancel* button):
+    /// the files of a case `case.open` opened are read no more, and the command fails as
+    /// [`Error::Cancelled`] with the case as it was. It stays set until reset, so whoever sets it
+    /// resets it before the next command.
+    pub fn canceller(&self) -> umcf_core::Cancel {
+        self.cancel.clone()
+    }
+
+    /// `e`, or [`Error::Cancelled`] when the command was cancelled (whatever the read that stopped
+    /// made of it). A save that wrote some files before it stopped keeps its own error, which
+    /// lists them: the case is not as it was.
+    fn or_cancelled(&self, id: &str, e: Error) -> Error {
+        let partial = matches!(e, Error::Model(umcf_model::Error::Partial { .. }));
+        if self.cancel.is_cancelled() && !partial { Error::Cancelled { id: id.to_string() } } else { e }
     }
 
     pub fn case(&self) -> Option<&Case> {
@@ -289,7 +315,12 @@ impl Session {
                 )));
             }
         }
-        let case = Case::open_with(fs.as_ref(), options)?;
+        let case = Case::open_with(fs.as_ref(), options).map_err(|e| self.or_cancelled("case.open", e.into()))?;
+        // Cancelled while it read: a file it couldn't read is a note in the case, not an error,
+        // so the case would open half read. The case that was open stays.
+        if self.cancel.is_cancelled() {
+            return Err(Error::Cancelled { id: "case.open".to_string() });
+        }
         self.opened = Some(Opened { case, fs, location: location.into() });
         self.undo.clear();
         self.redo.clear();
@@ -338,6 +369,18 @@ impl Session {
         let before = if spec.undoable { self.case().cloned() } else { None };
         let result = catch_unwind(AssertUnwindSafe(|| (spec.run)(self, params)));
         match result {
+            // A command that only reads ([`CommandSpec::reads_only`]), cancelled while it read: what
+            // it couldn't read became notes or diagnostics, not an error. It is cancelled all the
+            // same, and the session is as it was. One that writes keeps what it did.
+            // A case it opened already (the cancel came after) stays open, and so does the result.
+            Ok(Ok(_)) if self.cancel.is_cancelled() && spec.reads_only && self.opens == saved.opens => {
+                self.restore(saved);
+                // A scene it built may lack what it couldn't read.
+                if spec.id == "scene.snapshot" {
+                    self.scene = None;
+                }
+                Err(Error::Cancelled { id: spec.id.to_string() })
+            }
             Ok(Ok(outcome)) => {
                 self.prune_selection();
                 if let Some(case) = before {
@@ -356,7 +399,7 @@ impl Session {
             }
             Ok(Err(e)) => {
                 self.restore(saved);
-                Err(e)
+                Err(self.or_cancelled(spec.id, e))
             }
             Err(payload) => {
                 self.restore(saved);

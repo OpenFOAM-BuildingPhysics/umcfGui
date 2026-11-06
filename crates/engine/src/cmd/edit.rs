@@ -17,6 +17,7 @@ pub(super) const CONTROL_SET: CommandSpec = CommandSpec {
     run: control_set,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn control_set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -50,6 +51,7 @@ pub(super) const DICT_SET: CommandSpec = CommandSpec {
     run: dict_set,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn dict_set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -73,6 +75,7 @@ pub(super) const DICT_REMOVE: CommandSpec = CommandSpec {
     run: dict_remove,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 fn dict_remove(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
@@ -95,6 +98,7 @@ pub(super) const UNDO: CommandSpec = CommandSpec {
     run: undo,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 fn can_undo(s: &Session) -> Result<(), String> {
@@ -121,6 +125,7 @@ pub(super) const REDO: CommandSpec = CommandSpec {
     run: redo,
     journal: true,
     undoable: false,
+    reads_only: false,
 };
 
 fn can_redo(s: &Session) -> Result<(), String> {

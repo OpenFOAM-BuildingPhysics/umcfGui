@@ -39,6 +39,7 @@ use umcf_render::camera::{Camera, View};
 pub mod bc;
 pub mod display;
 pub mod icons;
+mod jobs;
 pub mod newpatch;
 pub mod patch;
 pub mod results;
@@ -128,6 +129,20 @@ pub struct App {
     /// The scene of this revision failed to build, with why: it isn't tried again until the
     /// revision changes.
     scene_error: Option<(u64, String)>,
+    /// The revision and parameters the session's scene was last built for: drawing it again
+    /// takes it from the session's cache, on this thread; anything else is built as a job.
+    scene_built: Option<(u64, Value)>,
+    /// The work running on a thread of its own, with the session (see [`jobs`]).
+    job: Option<jobs::Job>,
+    /// Work queued to start at the top of the next frame.
+    pending: Option<jobs::Work>,
+    /// The regions of the surfaces shown, as the browser listed them last.
+    classes: Vec<(String, Vec<String>)>,
+    /// *Fit* waits for the scene being read: the view it asked for.
+    fit_pending: Option<Option<View>>,
+    /// How long a job is waited for before the window shows it running (a quick one looks as
+    /// if it ran in place).
+    pub job_wait: std::time::Duration,
     styled: bool,
 }
 
@@ -239,12 +254,24 @@ impl App {
             listing_error: None,
             waiting: Vec::new(),
             scene_error: None,
+            scene_built: None,
+            job: None,
+            pending: None,
+            fit_pending: None,
+            classes: Vec::new(),
+            job_wait: std::time::Duration::from_millis(150),
             styled: false,
         };
         app.reset_shown();
         app
     }
 
+    /// The open case's folder name, for the bar.
+    fn case_name(&self) -> Option<String> {
+        self.session.location().map(|l| l.trim_end_matches('/').rsplit('/').next().unwrap_or(l).to_string())
+    }
+
+    /// The session; while a job runs ([`App::busy`]) an empty one stands in for it.
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -371,10 +398,22 @@ impl App {
         unknown
     }
 
-    /// Runs a command, logs it and redraws; returns its outcome.
+    /// Runs a command here (on this thread), logs it and redraws; returns its outcome. While a
+    /// job runs it is refused.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Outcome, String> {
-        let opens = id == "case.open";
+        if let Some(job) = &self.job {
+            return Err(format!("{id} can't run: {} is running", job.label.to_lowercase()));
+        }
+        // A flag left set by a job cancelled as it ended stops nothing here.
+        self.session.canceller().reset();
         let result = self.session.execute(id, &params);
+        self.after(id, result)
+    }
+
+    /// What follows a command, here or as a job: it is logged, the view draws again, and what
+    /// is shown follows the case.
+    fn after(&mut self, id: &str, result: Result<Outcome, umcf_engine::Error>) -> Result<Outcome, String> {
+        let opens = id == "case.open";
         self.revision += 1;
         let entry = match &result {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
@@ -423,7 +462,7 @@ impl App {
             return;
         }
         if takes_none(spec) {
-            let _ = self.run(id, json!({}));
+            self.start(jobs::Work::Command { id: id.to_string(), params: json!({}), then: jobs::Then::Nothing });
         } else {
             self.bc = None;
             self.patch_form = None;
@@ -455,7 +494,16 @@ impl App {
     /// Opens the case in `path`. When that doesn't work (unsaved changes, not a case), the
     /// *Open* card shows the path and why, to change or confirm (`discard`).
     pub fn open_folder(&mut self, path: &str) {
-        let result = self.run("case.open", json!({ "path": path }));
+        let work = jobs::Work::Command {
+            id: "case.open".to_string(),
+            params: json!({ "path": path }),
+            then: jobs::Then::Open { path: path.to_string() },
+        };
+        self.start(work);
+    }
+
+    /// What follows opening the folder `path` (see [`App::open_folder`]).
+    fn opened_folder(&mut self, path: &str, result: Result<Outcome, String>) {
         // An Open card from an earlier folder that didn't open goes once one does.
         if result.is_ok() && self.dialog.as_ref().is_some_and(|d| d.id == "case.open") {
             self.dialog = None;
@@ -471,7 +519,21 @@ impl App {
 
     /// Frames the scene the 3D view shows from `view`; `None` keeps the direction.
     pub fn fit_view(&mut self, view: Option<View>) {
+        // While work runs or waits, the fit follows the next scene read.
+        if self.working() {
+            self.fit_pending = Some(view);
+            return;
+        }
         let params = self.shown();
+        // A scene not read yet (or whose reading failed or was cancelled) is read as a job; the
+        // fit follows when it is there.
+        let built = self.scene_built.as_ref().is_some_and(|(r, p)| *r == self.revision && *p == params);
+        if !built {
+            self.scene_error = None;
+            self.fit_pending = Some(view);
+            self.start(jobs::Work::Scene { params });
+            return;
+        }
         let aspect = self.viewport.aspect();
         let (az, el) = match view {
             Some(v) => v.angles(),
@@ -519,6 +581,12 @@ impl App {
             self.tokens.apply(ui.ctx());
             self.styled = true;
         }
+        self.poll(std::time::Duration::ZERO);
+        self.launch();
+        if self.busy() {
+            self.busy_screen(ui);
+            return;
+        }
         self.shortcuts(ui.ctx());
         let t = self.tokens.clone();
         let gap = t.gap as i8;
@@ -551,6 +619,68 @@ impl App {
             }))
             .show(ui, |ui| self.canvas(ui));
         self.workspace_popup(ui.ctx());
+        // Queued work starts next frame, input or not.
+        if self.pending.is_some() {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The window while a job runs: the last image of the 3D view, dimmed, and a card with what
+    /// runs, for how long, and *Cancel*.
+    fn busy_screen(&mut self, ui: &mut Ui) {
+        let t = self.tokens.clone();
+        let Some(job) = &self.job else { return };
+        let rect = ui.max_rect();
+        let p = ui.painter();
+        p.rect_filled(rect, CornerRadius::ZERO, t.chrome);
+        // The bar, with the case.
+        let bar = Rect::from_min_size(rect.min, vec2(rect.width(), t.bar_height));
+        p.rect_filled(bar, CornerRadius::ZERO, t.bar);
+        let logo = Rect::from_center_size(pos2(bar.min.x + 19.0, bar.center().y), vec2(22.0, 22.0));
+        icons::paint(p, logo, Icon::Logo, Ink { line: t.bar_text, fill: t.bar_accent });
+        let name = job.case.as_deref().unwrap_or("umcfGui");
+        let at = pos2(logo.max.x + 10.0, bar.center().y);
+        p.text(at, egui::Align2::LEFT_CENTER, name, theme::strong(14.0), t.bar_text);
+        // The 3D view as it was, dimmed.
+        let view = self.viewport.rect.unwrap_or_else(|| rect.with_min_y(bar.max.y).shrink(t.gap));
+        let [top, bottom] = t.view_background();
+        let c = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
+        p.rect_filled(view, CornerRadius::same(t.radius_card), c(top).lerp_to_gamma(c(bottom), 0.5));
+        self.viewport.paint_last(p, view);
+        p.rect_filled(
+            view,
+            CornerRadius::same(t.radius_card),
+            Color32::from_black_alpha(if t.dark { 110 } else { 50 }),
+        );
+        let (label, cancelling, secs) = (job.label.clone(), job.cancelling(), job.started.elapsed().as_secs());
+        let cancellable = job.cancellable;
+        let mut cancel = false;
+        egui::Area::new(Id::unique("job")).pivot(Align2::CENTER_CENTER).fixed_pos(view.center()).fade_in(false).show(
+            ui.ctx(),
+            |ui| {
+                egui::Frame::new()
+                    .fill(t.card)
+                    .stroke(egui::Stroke::new(1.0, t.card_border))
+                    .corner_radius(CornerRadius::same(t.radius_card))
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_min_width(260.0);
+                        ui.label(RichText::new(format!("{label}…")).font(theme::strong(14.0)).color(t.text));
+                        let status = if cancelling { "Cancelling…".to_string() } else { format!("{secs} s") };
+                        ui.label(RichText::new(status).color(t.text_muted));
+                        ui.add_space(8.0);
+                        if !cancellable {
+                            ui.label(RichText::new("It writes the case: it runs to its end.").color(t.text_muted));
+                        } else if ui.add_enabled(!cancelling, egui::Button::new("Cancel")).clicked() {
+                            cancel = true;
+                        }
+                    });
+            },
+        );
+        if cancel && let Some(job) = &self.job {
+            job.cancel.cancel();
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -1053,8 +1183,21 @@ impl App {
             let revision = self.revision;
             let entries = self.display.clone();
             let failed = self.scene_error.as_ref().filter(|(r, _)| *r == revision).map(|(_, e)| e.clone());
+            // A scene not built for this revision is built as a job; one that is taken from the
+            // cache here.
+            let built = self.scene_built.as_ref().is_some_and(|(r, p)| *r == revision && *p == params);
+            let waiting = failed.is_none() && !built;
+            if waiting {
+                // Read as a job from the top of the next frame; till then the image as it was.
+                if !self.working() {
+                    self.start(jobs::Work::Scene { params: params.clone() });
+                }
+                self.viewport.paint_last(ui.painter(), rect);
+                ui.ctx().request_repaint();
+            }
             let error = match failed {
                 Some(e) => Some(e),
+                None if waiting => None,
                 None => match self.session.scene(&params) {
                     Ok(scene) => {
                         let display = umcf_engine::display_style(scene, &entries);
@@ -1182,10 +1325,13 @@ impl App {
         // The regions of the surfaces shown, from the scene the view draws.
         let params = self.shown();
         let failed = self.scene_error.as_ref().is_some_and(|(r, _)| *r == self.revision);
-        let classes: Vec<(String, Vec<String>)> = if self.shown_surfaces.is_empty() || failed {
-            Vec::new()
-        } else {
-            self.session.scene(&params).map_or(Vec::new(), |scene| {
+        // Only from a scene read already (taken from the cache): one still to read is a job's,
+        // and the regions listed last stay till it is there.
+        let built = self.scene_built.as_ref().is_some_and(|(r, p)| *r == self.revision && *p == params);
+        if self.shown_surfaces.is_empty() || failed {
+            self.classes.clear();
+        } else if built {
+            self.classes = self.session.scene(&params).map_or(Vec::new(), |scene| {
                 scene
                     .objects
                     .iter()
@@ -1194,8 +1340,9 @@ impl App {
                         Source::Mesh { .. } => None,
                     })
                     .collect()
-            })
-        };
+            });
+        }
+        let classes = self.classes.clone();
         let mut select: Option<(Sel, bool)> = None;
         let mut change: Option<(Layer, display::Change)> = None;
         let mut toggle: Option<String> = None;
@@ -1631,10 +1778,11 @@ impl App {
         }
         if run && let Some(mut d) = self.dialog.take() {
             match serde_json::from_str::<Value>(&d.params) {
-                Ok(params) => match self.run(d.id, params) {
-                    Ok(_) => return,
-                    Err(e) => d.error = Some(e),
-                },
+                Ok(params) => {
+                    let id = d.id.to_string();
+                    self.start(jobs::Work::Command { id, params, then: jobs::Then::Dialog(d) });
+                    return;
+                }
                 Err(e) => d.error = Some(format!("not JSON: {e}")),
             }
             self.dialog = Some(d);
@@ -1945,7 +2093,9 @@ impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.app.show(ui);
         // The folder dialog, over this window (modal to it), once the frame is drawn.
-        if std::mem::take(&mut self.app.folder_requested)
+        // Not while work runs or waits: the folder opens once it is done.
+        if !self.app.working()
+            && std::mem::take(&mut self.app.folder_requested)
             && let Some(pick) = self.app.pick_folder
         {
             let start = self.app.session.location().map(String::from);
@@ -1953,11 +2103,20 @@ impl eframe::App for Desktop {
             self.app.folder_picked(picked);
             ui.ctx().request_repaint();
         }
+        // A save (work that can't be cancelled) runs to its end: the window stays till then.
+        if self.app.writing() && ui.ctx().input(|i| i.viewport().close_requested()) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         if self.done.load(std::sync::atomic::Ordering::SeqCst) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
         let Some(path) = &self.screenshot else { return };
+        // The view as it is once what it shows has been read.
+        if self.app.busy() {
+            ui.ctx().request_repaint();
+            return;
+        }
         self.frames += 1;
         ui.ctx().request_repaint();
         // A few frames for the panels to settle and the view to draw.

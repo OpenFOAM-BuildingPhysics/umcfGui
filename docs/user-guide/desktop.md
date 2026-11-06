@@ -84,6 +84,19 @@ running shows no dialog at all, so install `zenity` or `xdg-desktop-portal` ther
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search.
 
+## Long work
+
+Opening a case, the ribbon's commands without parameters, a command card's *OK* and reading the
+meshes and surfaces the 3D view shows run beside the window, which keeps drawing. What takes
+more than a moment shows a card over the 3D view with what runs and for how long. Work that only
+reads (opening a case, the checks, the summary, reading what the view shows) has *Cancel*: the
+case's files are read no more, the work stops, and the case is as it was (a case being opened
+isn't opened; the one open stays). Work that writes, a save say, runs to its end, and the window doesn't close before it has. Nothing else
+starts while it runs: what is asked meanwhile is refused, and the results card says so (a
+command card stays open, to run again); a folder picked to open waits for it. A check of a 16-million-cell mesh, or reading all five regions of a
+big case, can take a while: that's when this card shows. A case named on the command line
+(`umcf-gui <case>`) is opened before the window shows.
+
 ## Patches
 
 *Edit patch* (on the *Mesh* and *Boundary conditions* tabs) opens a card for the selected
@@ -130,7 +143,10 @@ about the new conditions.
   a GPU view comes later.
 - A command's parameters are typed as JSON, apart from boundary conditions, which have a card
   of their own; forms for the others come with meshing.
-- Opening a large case, reading a mesh and running a check happen while the window waits.
+- The cards of boundary conditions and patches, picking, and going back in the history bar
+  still run while the window waits. *Cancel* stops reading a mesh's ASCII `points` or `faces`
+  within a megabyte, but a file read whole (binary meshes, fields) only once it is read; the card
+  shows the seconds a job has run, not how far it is.
 - The window reads the case's files when it needs them, not when they change. An STL copied
   into `constant/triSurface` shows in the browser after the next command; a file changed outside
   the window shows when the case is opened again. A scene that failed to build (a mesh not

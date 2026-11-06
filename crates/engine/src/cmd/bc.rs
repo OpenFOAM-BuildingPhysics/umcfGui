@@ -20,6 +20,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     run: set,
     journal: true,
     undoable: true,
+    reads_only: false,
 };
 
 /// The most entries and defaults one condition takes (OpenFOAM's take a handful).
