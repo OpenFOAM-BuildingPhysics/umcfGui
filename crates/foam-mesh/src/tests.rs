@@ -739,17 +739,17 @@ fn compressed_errors_name_the_files_line() {
 #[test]
 fn boundaries_without_faces() {
     let d = "constant/air/polyMesh";
-    // No patches at all: nothing to draw.
-    for fs in [ascii_mesh(), faces_gz(&ascii_mesh())] {
-        let mut fs = fs;
-        fs.insert(
-            &format!("{d}/boundary"),
-            "FoamFile { format ascii; class polyBoundaryMesh; object boundary; }\n0\n(\n)\n",
-        );
-        let b = read_boundary_mesh(&fs).unwrap();
-        assert!(b.boundary.is_empty());
-        assert_eq!(b.face(10), None);
-    }
+    let no_patches = "FoamFile { format ascii; class polyBoundaryMesh; object boundary; }\n0\n(\n)\n";
+    // No patches, and no owner to say otherwise: nothing to draw.
+    let mut fs = faces_gz(&ascii_mesh());
+    fs.insert(&format!("{d}/boundary"), no_patches);
+    let b = read_boundary_mesh(&fs).unwrap();
+    assert!(b.boundary.is_empty());
+    assert_eq!(b.face(10), None);
+    // No patches, but the owner header notes 10 boundary faces: they would go uncovered.
+    let mut fs = ascii_mesh();
+    fs.insert(&format!("{d}/boundary"), no_patches);
+    assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("1 internal faces"));
     // A patch with no faces at the end, as OpenFOAM writes one.
     let empty = BOUNDARY.replace(
         "\n)\n",
@@ -822,4 +822,29 @@ fn a_boundary_from_another_mesh_is_an_error() {
         format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n", header("ascii", "labelList", None, "")),
     );
     assert!(read_boundary_mesh(&plain).is_ok());
+}
+
+#[test]
+fn a_compressed_owner_header_that_cant_be_read_is_an_error() {
+    let d = "constant/air/polyMesh";
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    let mesh = |gz: Vec<u8>| {
+        let mut fs = MemFs::new();
+        for name in ["points", "faces", "boundary"] {
+            fs.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+        }
+        fs.insert(&format!("{d}/owner.gz"), gz);
+        fs
+    };
+    let mut gz = gzip(&owner);
+    assert!(read_boundary_mesh(&mesh(gz.clone())).is_ok());
+    // Cut inside the header (after `FoamFile {` began, before it ends): an error, not a mesh
+    // without counts.
+    let at = owner.windows(8).position(|w| w == b"FoamFile").unwrap() + 20;
+    let cut = gzip(&owner[..at]);
+    assert!(read_boundary_mesh(&mesh(cut[..cut.len() - 4].to_vec())).unwrap_err().to_string().contains("owner.gz"));
+    // A bad checksum: an error too (deflate itself has none, so what came before may be wrong).
+    let n = gz.len();
+    gz[n - 6] ^= 0xff;
+    assert!(read_boundary_mesh(&mesh(gz)).unwrap_err().to_string().contains("owner.gz"));
 }

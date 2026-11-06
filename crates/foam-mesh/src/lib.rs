@@ -534,7 +534,8 @@ fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
 
 /// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
 /// them; `None` for each it doesn't (or no `owner`). A compressed file is decompressed only as far
-/// as its header; an uncompressed one is read whole.
+/// as its header (64 KB), and any error decompressing that far is an error; an uncompressed one is
+/// read whole.
 fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
     use std::io::Read;
     let bytes = match fs.read(&format!("{dir}/owner"), limits.max_bytes)? {
@@ -545,10 +546,13 @@ fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u
         },
     };
     let head = if bytes.starts_with(&[0x1f, 0x8b]) {
-        // The header is in the first kilobytes; a bad stream only means no counts here (the
-        // whole mesh's reader says what is wrong with it).
+        // The header is in the first kilobytes. Any error decompressing them is an error: deflate
+        // has no checksum of its own, so bytes before a failed one may not be the file's.
         let mut head = Vec::new();
-        let _ = flate2::read::MultiGzDecoder::new(bytes.as_slice()).take(64 << 10).read_to_end(&mut head);
+        flate2::read::MultiGzDecoder::new(bytes.as_slice())
+            .take(64 << 10)
+            .read_to_end(&mut head)
+            .map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(format!("{dir}/owner.gz: {e}"))))?;
         head
     } else {
         bytes
@@ -700,8 +704,9 @@ impl BoundaryMesh {
         {
             return bad(format!("the owner header says {n} faces, the faces file has {n_faces}"));
         }
+        // Without patches the first boundary face is the last face: the owner must say there
+        // are no boundary faces either.
         if let Some(n) = noted_internal
-            && !self.boundary.is_empty()
             && n != self.first as u64
         {
             return bad(format!(
