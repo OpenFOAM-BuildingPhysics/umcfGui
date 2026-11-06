@@ -465,4 +465,71 @@ fn a_description_linked_to_another_dictionary_is_not_written() {
     std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(saved.unwrap(), ["system/controlDict", PATH]);
     assert!(shared.contains("version 12;") && linked, "{shared}");
+
+    // One put over the description there (replace) that became a link since, to a file with
+    // the same bytes (so not a conflict): refused at save, the file it points to untouched.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias6-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    let text = format!("{}version 8;\n", header("dictionary", "umcfWorkflow"));
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write(PATH, text.as_bytes()).unwrap();
+    fs.write("shared/umcfWorkflow", text.as_bytes()).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.put_description(&fs, "regions { }\n", true).unwrap();
+    std::fs::remove_file(root.join(PATH)).unwrap();
+    std::os::unix::fs::symlink("../shared/umcfWorkflow", root.join(PATH)).unwrap();
+    let saved = c.save(&mut fs, None);
+    let shared = std::fs::read_to_string(root.join("shared/umcfWorkflow")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(saved, Err(crate::Error::IsLink(_))), "{saved:?}");
+    assert_eq!(shared, text);
+    assert_eq!(c.changed(), [PATH], "the put is kept, to be saved once the link is gone");
+
+    // Once the put is saved, a case from before the save (an undo snapshot) agrees: an entry
+    // edit is saved through a link made since, like any dictionary's.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias7-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write(PATH, text.as_bytes()).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.put_description(&fs, "version 9;\n", true).unwrap();
+    let mut snapshot = c.clone();
+    c.set("system/controlDict", &["endTime"], "2").unwrap();
+    c.save(&mut fs, None).unwrap();
+    let put = std::fs::read(root.join(PATH)).unwrap();
+    std::fs::write(root.join("shared"), &put).unwrap();
+    std::fs::remove_file(root.join(PATH)).unwrap();
+    std::os::unix::fs::symlink("../shared", root.join(PATH)).unwrap();
+    snapshot.set(PATH, &["version"], "12").unwrap();
+    let saved = snapshot.save(&mut fs, None);
+    let shared = std::fs::read_to_string(root.join("shared")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(saved.as_ref().is_ok_and(|s| s.iter().any(|p| p == PATH)), "{saved:?}");
+    assert!(shared.contains("version 12;"), "{shared}");
+
+    // A put saved, undone and the original saved back, then redone: the put is no longer what
+    // is on disk, so a link made since is refused again.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias8-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write(PATH, text.as_bytes()).unwrap();
+    let mut before = Case::open(&fs).unwrap();
+    let mut put = before.clone();
+    put.put_description(&fs, "regions { }\n", true).unwrap();
+    put.save(&mut fs, None).unwrap();
+    assert_eq!(before.save(&mut fs, None).unwrap(), [PATH], "the undo puts the original back");
+    std::fs::write(root.join("shared"), &text).unwrap();
+    std::fs::remove_file(root.join(PATH)).unwrap();
+    std::os::unix::fs::symlink("../shared", root.join(PATH)).unwrap();
+    let saved = put.save(&mut fs, None);
+    let shared = std::fs::read_to_string(root.join("shared")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(saved, Err(crate::Error::IsLink(_))), "{saved:?}");
+    assert_eq!(shared, text);
 }

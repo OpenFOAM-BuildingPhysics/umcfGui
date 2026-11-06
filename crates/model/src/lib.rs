@@ -216,6 +216,10 @@ struct DiskState {
     originals: BTreeMap<String, Original>,
     /// `(backup dir, file)` pairs already backed up: a file is backed up once per session.
     backed_up: std::collections::BTreeSet<(String, String)>,
+    /// The workflow descriptions put whole ([`Case::put_description`]) so far, which numbers
+    /// each one, and the number of the put behind the description last saved (0: none).
+    description_puts: u64,
+    description_saved: u64,
 }
 
 type Disk = Arc<std::sync::Mutex<DiskState>>;
@@ -495,6 +499,11 @@ pub struct Case {
     raw: BTreeMap<String, RawFile>,
     /// Paths that are the same file as a loaded one (a symlinked dictionary): path → that one.
     aliases: BTreeMap<String, String>,
+    /// The number of the workflow description put whole ([`Case::put_description`], new or
+    /// over the one there) this case holds, 0 when none: until the description on disk is this
+    /// put's, the save checks it isn't a link. Kept with the shared disk state, so an undo
+    /// snapshot from before or after the save agrees.
+    description_put: u64,
     disk: Disk,
     options: OpenOptions,
 }
@@ -722,6 +731,8 @@ impl Case {
             raw: BTreeMap::new(),
             originals: BTreeMap::new(),
             backed_up: Default::default(),
+            description_puts: 0,
+            description_saved: 0,
         }));
         Ok(Case {
             layout,
@@ -735,6 +746,7 @@ impl Case {
             files,
             raw: BTreeMap::new(),
             aliases,
+            description_put: 0,
             disk,
             options,
         })
@@ -827,6 +839,9 @@ impl Case {
         }
         let doc = Document::parse(text).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
         self.files.insert(rel.to_string(), Arc::new(doc));
+        let mut disk = lock(&self.disk);
+        disk.description_puts += 1;
+        self.description_put = disk.description_puts;
         Ok(())
     }
 
@@ -2020,8 +2035,10 @@ impl Case {
             // A file put whole that became a link since (by hand, with the same bytes, so not a
             // conflict): the save would write the file it points to. A description read from
             // disk and edited entry by entry is a dictionary like the others: written through.
-            let new_description = rel == description::PATH && !lock(&self.disk).files.contains_key(&rel);
-            let whole = new_description || self.raw.get(&rel).is_some_and(|f| f.whole);
+            let put = rel == description::PATH
+                && self.description_put != 0
+                && self.description_put != lock(&self.disk).description_saved;
+            let whole = put || self.raw.get(&rel).is_some_and(|f| f.whole);
             if whole && fs.is_link(&rel) {
                 return Err(Error::IsLink(rel));
             }
@@ -2123,7 +2140,12 @@ impl Case {
             }
             match pending {
                 Pending::Dict(doc) => {
-                    lock(&self.disk).files.insert(rel.clone(), OnDisk { bytes: text, doc });
+                    let mut disk = lock(&self.disk);
+                    // The put behind the description on disk now (0: none, text read or put back).
+                    if rel == description::PATH {
+                        disk.description_saved = self.description_put;
+                    }
+                    disk.files.insert(rel.clone(), OnDisk { bytes: text, doc });
                 }
                 Pending::Raw(_, fp) => {
                     let mut disk = lock(&self.disk);
