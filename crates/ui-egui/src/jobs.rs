@@ -18,6 +18,8 @@ pub(crate) enum Work {
     /// The 3D scene for these parameters (as [`App::shown`] gives them), built into the session's
     /// cache.
     Scene { params: Value },
+    /// Undo or redo until `done` edits are done (the history bar).
+    History { done: usize },
 }
 
 /// What the window does once a command ran.
@@ -29,12 +31,28 @@ pub(crate) enum Then {
     },
     /// The command card it ran from: open again, with the error, when the command failed.
     Dialog(Dialog),
+    /// One of the edit cards, which stays open while it runs: closed when the command worked,
+    /// with the error when it didn't.
+    Card(Card),
+}
+
+/// The edit cards whose *Set* runs as a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Card {
+    /// The boundary condition card (`bc.set`).
+    Bc,
+    /// The patch card (`patch.set`).
+    Patch,
+    /// The new patch card (`patch.create`).
+    NewPatch,
 }
 
 /// What came back.
 enum Done {
     Command(Result<Outcome, Error>),
     Scene(Result<(), Error>),
+    /// Each undo or redo, with its outcome.
+    History(Vec<(&'static str, Result<Outcome, Error>)>),
 }
 
 /// A job running.
@@ -63,6 +81,27 @@ fn perform(session: &mut Session, work: &Work) -> Done {
     match work {
         Work::Command { id, params, .. } => Done::Command(session.execute(id, params)),
         Work::Scene { params } => Done::Scene(session.scene(params).map(|_| ())),
+        Work::History { done } => {
+            let mut steps = Vec::new();
+            loop {
+                let (d, u) = session.history();
+                let (d, u) = (d.len(), u.len());
+                let step = if d > *done {
+                    "edit.undo"
+                } else if d < *done && u > 0 {
+                    "edit.redo"
+                } else {
+                    break;
+                };
+                let result = session.execute(step, &serde_json::json!({}));
+                let failed = result.is_err();
+                steps.push((step, result));
+                if failed {
+                    break;
+                }
+            }
+            Done::History(steps)
+        }
     }
 }
 
@@ -73,6 +112,7 @@ pub(crate) fn cancellable(work: &Work) -> bool {
     match work {
         Work::Command { id, .. } => Session::command(id).is_some_and(|c| c.reads_only),
         Work::Scene { .. } => true,
+        Work::History { .. } => false,
     }
 }
 
@@ -86,20 +126,31 @@ fn label(work: &Work) -> String {
             _ => umcf_engine::Session::command(id).map_or(id.clone(), |s| s.label.to_string()),
         },
         Work::Scene { .. } => "Reading the meshes and surfaces to show".to_string(),
+        Work::History { .. } => "Going back or forward in the history".to_string(),
+    }
+}
+
+/// The command id a refused or failed `work` is logged under.
+fn id_of(work: &Work) -> String {
+    match work {
+        Work::Command { id, .. } => id.clone(),
+        Work::Scene { .. } => "scene".to_string(),
+        Work::History { .. } => "edit.history".to_string(),
     }
 }
 
 impl App {
     /// Queues `work`: it starts at the top of the next frame ([`App::launch`]), before anything
     /// draws, so no part of a frame draws from the stand-in session. While a job runs or waits,
-    /// another is refused, and the log says so.
+    /// another is refused, and the log says so; a scene only queued is dropped for it instead.
     pub(crate) fn start(&mut self, work: Work) {
+        // A scene only queued gives way: the 3D view asks for it again on its next frame.
+        if matches!(self.pending, Some(Work::Scene { .. })) && !matches!(work, Work::Scene { .. }) {
+            self.pending = None;
+        }
         if let Some(label) = self.job.as_ref().map(|j| j.label.clone()).or_else(|| self.pending.as_ref().map(label)) {
             self.log_entry(crate::Entry {
-                command: match &work {
-                    Work::Command { id, .. } => id.clone(),
-                    Work::Scene { .. } => "scene".to_string(),
-                },
+                command: id_of(&work),
                 ok: false,
                 message: format!("not run: {} first", label.to_lowercase()),
                 data: Value::Null,
@@ -116,6 +167,9 @@ impl App {
                             serde_json::to_string_pretty(&serde_json::json!({ "path": path })).unwrap_or_default();
                         let error = Some(format!("not opened yet: {} first", label.to_lowercase()));
                         self.dialog = Some(Dialog { id: "case.open", params, error });
+                    }
+                    Then::Card(card) => {
+                        self.card_error(card, format!("{id} can't run yet: {} first", label.to_lowercase()));
                     }
                     Then::Nothing => {}
                 }
@@ -148,14 +202,12 @@ impl App {
                         .map(|s| s.to_string())
                         .or_else(|| payload.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "a panic".to_string());
-                    let id = match &work {
-                        Work::Command { id, .. } => id.clone(),
-                        Work::Scene { .. } => "scene".to_string(),
-                    };
-                    let e = Error::Panicked { id, message };
+                    let e = Error::Panicked { id: id_of(&work), message };
                     match &work {
                         Work::Command { .. } => Done::Command(Err(e)),
                         Work::Scene { .. } => Done::Scene(Err(e)),
+                        // The walk as a whole: which steps it took before is lost with the panic.
+                        Work::History { .. } => Done::History(vec![("edit.history", Err(e))]),
                     }
                 });
             let _ = send.send((session, result));
@@ -174,6 +226,7 @@ impl App {
                 Work::Command { id: id.clone(), params: params.clone(), then: Then::Nothing }
             }
             Work::Scene { params } => Work::Scene { params: params.clone() },
+            Work::History { done } => Work::History { done: *done },
         };
         if let Err(std::sync::mpsc::SendError((session, _))) = give.send((session, work_for_thread)) {
             // The thread is gone already: run it here.
@@ -271,6 +324,8 @@ impl App {
                         d.error = Some(e);
                         self.dialog = Some(d);
                     }
+                    (Then::Card(card), Ok(_)) => self.close_card(card),
+                    (Then::Card(card), Err(e)) => self.card_error(card, e),
                 }
                 // A fit asked for while it ran.
                 if let Some(view) = self.fit_pending.take() {
@@ -294,8 +349,40 @@ impl App {
                     self.scene_error = Some((self.revision, e.to_string()));
                 }
             },
+            (Work::History { .. }, Done::History(steps)) => {
+                for (step, result) in steps {
+                    if matches!(result, Err(Error::Cancelled { .. })) {
+                        self.scene_built = None;
+                    }
+                    let _ = self.after(step, result);
+                }
+                if let Some(view) = self.fit_pending.take() {
+                    self.fit_view(view);
+                }
+            }
             // A job gives back what its work makes.
-            (Work::Command { .. }, Done::Scene(_)) | (Work::Scene { .. }, Done::Command(_)) => {}
+            (Work::Command { .. } | Work::Scene { .. } | Work::History { .. }, _) => {}
+        }
+    }
+
+    /// Closes `card` (its command worked).
+    fn close_card(&mut self, card: Card) {
+        match card {
+            Card::Bc => self.bc = None,
+            Card::Patch => self.patch_form = None,
+            Card::NewPatch => self.new_patch = None,
+        }
+    }
+
+    /// Shows `error` on `card`, if it is still open.
+    pub(crate) fn card_error(&mut self, card: Card, error: String) {
+        let slot = match card {
+            Card::Bc => self.bc.as_mut().map(|f| &mut f.error),
+            Card::Patch => self.patch_form.as_mut().map(|f| &mut f.error),
+            Card::NewPatch => self.new_patch.as_mut().map(|f| &mut f.error),
+        };
+        if let Some(slot) = slot {
+            *slot = Some(error);
         }
     }
 }

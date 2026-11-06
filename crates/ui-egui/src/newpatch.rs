@@ -237,8 +237,8 @@ impl App {
         (ok, close)
     }
 
-    /// Runs `patch.create` with the card's parameters; the card closes when it works, and stays
-    /// open with the error when it doesn't.
+    /// Runs `patch.create` with the card's parameters, as a job; the card closes when it works,
+    /// and stays open with the error when it doesn't.
     pub(crate) fn create_patch(&mut self) {
         let Some(form) = self.new_patch.clone() else { return };
         let mut regions: Vec<String> = if form.source == Source::Picked {
@@ -249,16 +249,15 @@ impl App {
         regions.sort();
         regions.dedup();
         let what = if form.source == Source::Picked { "faces" } else { "patches" };
-        let result = match regions.as_slice() {
-            [r] => form.params(Some(r)).and_then(|p| self.run("patch.create", p).map(|_| ())),
+        let params = match regions.as_slice() {
+            [r] => form.params(Some(r)),
             [] if form.source == Source::Picked => Err("Pick the faces in the view first.".to_string()),
             [] => Err("Select the patches to take faces from.".to_string()),
             _ => Err(format!("Select {what} of one region.")),
         };
-        match (result, &mut self.new_patch) {
-            (Ok(()), _) => self.new_patch = None,
-            (Err(e), Some(f)) => f.error = Some(e),
-            (Err(_), None) => {}
+        match params {
+            Ok(params) => self.start_card("patch.create", params, crate::jobs::Card::NewPatch),
+            Err(e) => self.card_error(crate::jobs::Card::NewPatch, e),
         }
     }
 }
