@@ -38,7 +38,7 @@ fn bashrc(version: &str) -> Result<Option<PathBuf>, String> {
     Ok(p.is_file().then_some(p))
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
         let e = e?;

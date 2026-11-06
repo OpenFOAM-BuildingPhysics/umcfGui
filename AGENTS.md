@@ -149,7 +149,8 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
 `cargo xtask ci` runs fmt check, clippy `-D warnings`, tests, `layers`, `assets`, `catalog`,
 `wasm`, `docs` and `deny`. Locally, the site build and `deny` are skipped with a notice when
 Zensical or cargo-deny is not installed; on CI (`CI` set) a missing tool fails the gate. So a
-local pass counts only with both installed, or with `CI=1 cargo xtask ci`. Only green states get
+local pass counts only with both installed, or with `CI=1 cargo xtask ci`. CI also runs
+`cargo xtask make-examples --check` (it fetches the tutorials). Only green states get
 committed. One task id per commit (`M1.2: material picker`).
 
 **Every commit brings the docs up to date with it.** What the change touches is described in the
