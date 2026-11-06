@@ -614,10 +614,15 @@ fn skipped_name(name: &str) -> bool {
 }
 
 impl Case {
+    /// Opens the case in `fs` with the default [`OpenOptions`].
     pub fn open(fs: &(dyn CaseFs + Sync)) -> Result<Case> {
         Case::open_with(fs, OpenOptions::default())
     }
 
+    /// Opens the case in `fs`: its layout, dictionaries, start time, and each region's patches,
+    /// mesh counts and start-time fields (read in parallel, as outlines). A file that can't be
+    /// read is a note in [`Case::notes`]; a folder that isn't a case, an unreadable
+    /// `controlDict` or a directory that can't be listed is an error.
     pub fn open_with(fs: &(dyn CaseFs + Sync), options: OpenOptions) -> Result<Case> {
         let layout = umcf_schema::detect(fs)?;
         let mut notes = Vec::new();
@@ -2377,6 +2382,8 @@ fn word(d: &umcf_foam_dict::Dict, key: &str) -> Option<String> {
     d.get(key).and_then(umcf_foam_dict::Entry::value_text).map(|v| umcf_foam_dict::unquote(v.trim()).to_string())
 }
 
+/// What the case keeps of field `f` read from `path`: its class, `internalField` in short and
+/// size, and each `boundaryField` entry.
 fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
     let entries = f.doc.get(&["boundaryField"]).and_then(umcf_foam_dict::Entry::dict);
     let bcs = entries

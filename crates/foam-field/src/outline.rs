@@ -70,6 +70,7 @@ impl Field {
     }
 }
 
+/// A read error of `path`: a gzip error when it is compressed, else the file system's.
 fn io_error(path: &str, compressed: bool, e: std::io::Error) -> Error {
     if compressed {
         Error::Gzip(format!("{path}: {e}"))
@@ -216,6 +217,7 @@ impl Src {
         Ok(())
     }
 
+    /// A list error on the line of the next byte.
     fn bad(&self, msg: impl Into<String>) -> Error {
         Error::BadList { msg: msg.into(), line: self.line }
     }
@@ -289,10 +291,13 @@ enum Step {
     Bad(String),
 }
 
+/// Whether `b` ends a token, as `scan` tells it.
 fn is_delim(b: u8) -> bool {
     b.is_ascii_whitespace() || matches!(b, b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b'"')
 }
 
+/// Scans `src` as `scan::scan` scans a whole file, keeping the text and each list's kind and
+/// length, then parses the text with placeholders as [`Field::parse`] does.
 fn outline(src: &mut Src, limits: &Limits) -> Result<Field> {
     let mut text = Vec::new();
     let mut lists = Vec::new();

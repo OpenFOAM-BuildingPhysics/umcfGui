@@ -308,6 +308,7 @@ fn read_list(
     }
 }
 
+/// Whether `n` elements of `comps` components fit `limits.max_values`.
 pub(crate) fn check_count(n: usize, comps: usize, limits: &Limits) -> Result<(), Error> {
     match n.checked_mul(comps) {
         Some(v) if v <= limits.max_values => Ok(()),

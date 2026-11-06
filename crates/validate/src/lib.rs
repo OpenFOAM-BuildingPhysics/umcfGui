@@ -230,6 +230,8 @@ const CONSTRAINTS: &[&str] = &[
     "internal",
 ];
 
+/// The checks of one region: its field sizes, its mesh, its fields at the start time and each
+/// field's boundary conditions against the mesh.
 fn region(case: &Case, r: &Region, cx: &mut Patterns, out: &mut Vec<Diagnostic>) {
     let mesh = umcf_foam_mesh::mesh_dir(&r.name);
     // The sizes need only the counts, which a time directory's mesh may give without `constant`.
