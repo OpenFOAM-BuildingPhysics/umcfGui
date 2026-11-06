@@ -9,8 +9,9 @@ name: Claude Code Review
 # Not workflow_dispatch: the action sets up its inline-comment tool only for an event tied to a
 # pull request, so a run from the Actions tab could post a summary but no inline comments.
 #
-# It needs the repository secret ANTHROPIC_API_KEY (an API key from the Claude Console, then
-# `gh secret set ANTHROPIC_API_KEY`); the review is billed to that key's organization.
+# It needs the repository secret CLAUDE_CODE_OAUTH_TOKEN (an OAuth token of a Claude Pro or Max
+# subscription from `claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`); the
+# reviews count against that subscription's usage limits.
 #
 # The review job itself is the one of RustGIS (github.com/pick2510/RustGIS,
 # .github/workflows/claude-code-review.yml), with its automatic pull_request_target triggers
@@ -327,10 +328,10 @@ jobs:
           # Use the workflow's GITHUB_TOKEN for GitHub API calls (it carries the
           # pull-requests and issues write scopes this job declares, so the review
           # is posted as github-actions[bot]) rather than the OIDC -> Claude GitHub
-          # App exchange, so no app needs installing. anthropic_api_key
-          # authenticates Claude to the model.
+          # App exchange, so no app needs installing. claude_code_oauth_token
+          # authenticates Claude to the model with a subscription's OAuth token.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # By default the action aborts ("Actor does not have write permissions
           # to the repository") when the PR author lacks write access. Allow all
           # authors so a maintainer can have an outside contributor's PR reviewed
@@ -385,7 +386,7 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
 
       # A failed review says why in the log: the action keeps Claude's output
-      # out of it, so a refused API key or an empty credit balance otherwise
+      # out of it, so a refused or expired token or a used-up usage limit otherwise
       # shows only as `is_error: true`. Prints the error turns' text (cut short),
       # never posts it.
       - name: Show why the review failed
