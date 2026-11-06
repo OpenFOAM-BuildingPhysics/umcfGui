@@ -24,12 +24,18 @@ target/release/umcf-cli check path/to/case
 ```
 
 The desktop app opens a case, shows it in 3D and runs the same commands
-([The desktop app](user-guide/desktop.md)):
+([The desktop app](user-guide/desktop.md)). The example cases carry no mesh, so mesh a copy with
+OpenFOAM-12 first; the scripts write into the case, and the copy keeps the example as it is:
 
 ```sh
 cargo build --release -p umcf-gui
-target/release/umcf-gui examples/of12/streetCanyon_CFDHAM
+run=$(mktemp -d) && cp -r examples/of12/streetCanyon_CFDHAM "$run/"
+(cd "$run/streetCanyon_CFDHAM" && . ~/OpenFOAM-12/etc/bashrc && sh ./Allprepare)
+target/release/umcf-gui "$run/streetCanyon_CFDHAM"
 ```
+
+Without OpenFOAM, the app still opens an example as it is (dictionaries, fields, scripts and
+checks), with nothing to draw in 3D.
 
 Small example cases for OpenFOAM-8 and -12, made from the solver's street canyon tutorials, are
 in `examples/` (see
