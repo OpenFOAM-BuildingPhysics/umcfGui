@@ -848,3 +848,24 @@ fn a_compressed_owner_header_that_cant_be_read_is_an_error() {
     gz[n - 6] ^= 0xff;
     assert!(read_boundary_mesh(&mesh(gz)).unwrap_err().to_string().contains("owner.gz"));
 }
+
+#[test]
+fn an_owner_header_cut_short_is_an_error() {
+    let d = "constant/air/polyMesh";
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    // The text cut inside `FoamFile { … }`: plain, and as a valid gzip file of that text.
+    let at = owner.windows(8).position(|w| w == b"FoamFile").unwrap() + 20;
+    let plain = with(ascii_mesh(), "owner", String::from_utf8(owner[..at].to_vec()).unwrap());
+    let e = read_boundary_mesh(&plain).unwrap_err().to_string();
+    assert!(e.contains("owner: its header can't be read"), "{e}");
+    let mut gz = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        gz.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    gz.insert(&format!("{d}/owner.gz"), gzip(&owner[..at]));
+    let e = read_boundary_mesh(&gz).unwrap_err().to_string();
+    assert!(e.contains("owner.gz: its header can't be read"), "{e}");
+    // An owner of plain data, without a header: nothing to check against.
+    let data = with(ascii_mesh(), "owner", "11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n".to_string());
+    assert!(read_boundary_mesh(&data).is_ok());
+}

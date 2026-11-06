@@ -533,15 +533,15 @@ fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
 }
 
 /// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
-/// them; `None` for each it doesn't (or no `owner`). A compressed file is decompressed only as far
-/// as its header (64 KB), and any error decompressing that far is an error; an uncompressed one is
-/// read whole.
+/// them; `None` for each it doesn't (or no `owner`, or one without a header). A compressed file is
+/// decompressed only as far as its header (64 KB); an error decompressing that far, or a header
+/// that can't be read, is an error. An uncompressed one is read whole.
 fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
     use std::io::Read;
-    let bytes = match fs.read(&format!("{dir}/owner"), limits.max_bytes)? {
-        Some(b) => b,
+    let (path, bytes) = match fs.read(&format!("{dir}/owner"), limits.max_bytes)? {
+        Some(b) => (format!("{dir}/owner"), b),
         None => match fs.read(&format!("{dir}/owner.gz"), limits.max_bytes)? {
-            Some(b) => b,
+            Some(b) => (format!("{dir}/owner.gz"), b),
             None => return Ok((None, None)),
         },
     };
@@ -552,15 +552,20 @@ fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u
         flate2::read::MultiGzDecoder::new(bytes.as_slice())
             .take(64 << 10)
             .read_to_end(&mut head)
-            .map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(format!("{dir}/owner.gz: {e}"))))?;
+            .map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(format!("{path}: {e}"))))?;
         head
     } else {
         bytes
     };
-    match umcf_foam_field::read_header_end(&head) {
-        Ok((h, _)) => Ok((h.count("nFaces"), h.count("nInternalFaces"))),
-        Err(_) => Ok((None, None)),
+    // A header that can't be read is an error, as the whole mesh's reader makes it (a file with
+    // no header at all is plain data: no counts).
+    let (h, end) = umcf_foam_field::read_header_end(&head)
+        .map_err(|e| Error::Inconsistent(format!("{path}: its header can't be read: {e}")))?;
+    // `FoamFile {` without its `}` (the file cut short) reads as no header: here it is an error.
+    if end.is_none() && head.windows(8).any(|w| w == b"FoamFile") {
+        return Err(Error::Inconsistent(format!("{path}: its header can't be read: it ends before its `}}`")));
     }
+    Ok((h.count("nFaces"), h.count("nInternalFaces")))
 }
 
 /// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
