@@ -52,6 +52,9 @@ Moving the pin is a commit of its own; check it with `cargo xtask ci` and the
 | `docs` | the API reference builds without warnings, and the site builds in strict mode |
 | `deny` | every dependency's licence is GPL-3-compatible (needs `cargo install cargo-deny`) |
 
+CI also runs `cargo xtask make-examples --check`, outside `cargo xtask ci` because it fetches
+the tutorials from GitHub ([Example cases](#example-cases)).
+
 ## Reviews
 
 Every pull request gets a CodeRabbit review; `main` requires its check and `cargo xtask ci` to
@@ -116,6 +119,11 @@ cargo xtask examples of12/streetCanyon_CFDHAM
 It uses `UMCF_OF8_BASHRC` and `UMCF_OF12_BASHRC`, else `~/OpenFOAM-8/etc/bashrc` and
 `~/OpenFOAM-12/etc/bashrc`, and skips a version without one. Run it before merging a change to
 the examples, and after building a new solver version.
+
+They are made by `cargo xtask make-examples` from the tutorials at pinned commits: change the
+generator (`xtask/src/make_examples.rs`), not the files, and run it again.
+`cargo xtask make-examples --check` (in CI) fails when `examples/` is not what it makes. It reads
+the tutorials from `UMCF_TUTORIALS` (a clone), else fetches them from GitHub.
 
 ## Commits
 

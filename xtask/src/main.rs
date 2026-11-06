@@ -11,6 +11,7 @@
 mod catalog;
 mod examples;
 mod layers;
+mod make_examples;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -36,6 +37,10 @@ commands:
             urbanMicroclimateFoam, each on a temporary copy; <filter> picks a case
             (of12/streetCanyon_CFD), a version (of12) or a case name in each. The
             environments are UMCF_OF8_BASHRC and UMCF_OF12_BASHRC, else ~/OpenFOAM-<v>/etc/bashrc
+  make-examples [--check]
+            make examples/of8 and examples/of12 from the street canyon tutorials at their pinned
+            commits (UMCF_TUTORIALS: a clone that has them, else fetched from GitHub); --check:
+            fail unless examples/ is what it makes, byte for byte
 ";
 
 fn main() -> ExitCode {
@@ -59,6 +64,11 @@ fn main() -> ExitCode {
             [] => examples::cmd_examples(None),
             [f] => examples::cmd_examples(Some(f)),
             _ => Err("examples: one filter at most (usage: cargo xtask examples [<filter>])".into()),
+        },
+        Some("make-examples") => match args.get(1..).unwrap_or_default() {
+            [] => make_examples::cmd_make_examples(false),
+            [c] if c == "--check" => make_examples::cmd_make_examples(true),
+            _ => Err("make-examples: unexpected argument (usage: cargo xtask make-examples [--check])".into()),
         },
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

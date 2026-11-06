@@ -32,8 +32,10 @@ ended (see [Contributing](../docs/contributing.md#example-cases)).
 
 They are the street canyon cases of the
 [urbanMicroclimateFoam tutorials](https://github.com/OpenFOAM-BuildingPhysics/urbanMicroclimateFoam-tutorials)
-(OpenFOAM-BuildingPhysics), tag `of-org_v8.0` for `of8/` and branch `of-org_v12.0` for `of12/`,
-made small:
+(OpenFOAM-BuildingPhysics) at two pinned commits, `64ae5d2` (2024-05-08) for `of8/` and
+`b8135ba` (2026-03-23) for `of12/`, made small by `cargo xtask make-examples`. The tags
+`of-org_v8.0` and `of-org_v12.0` have moved to later commits since, whose cases differ. The
+changes:
 
 - **Meshes:** the air's blocks have 3 to 6 uniform cells (about 2600 cells); the walls and the
   street keep their graded resolution through the material (at most 20 cells) and have the air's
@@ -56,3 +58,9 @@ made small:
 The files these change are written again: the `blockMeshDict`s and the weather tables with LF
 line endings, and all five tables with spaces instead of tabs. Everything else is as in the
 tutorials, byte for byte.
+
+`cargo xtask make-examples` writes both directories again; `cargo xtask make-examples --check`
+fails unless they are what it makes, byte for byte (CI runs it). It reads the tutorials from
+`UMCF_TUTORIALS` (a clone that has both commits), else it fetches them from GitHub. It refuses to
+write while `of8/` or `of12/` hold files git doesn't have as committed. A change to
+the examples is a change to the generator (`xtask/src/make_examples.rs`), never to the files.

@@ -58,6 +58,9 @@ jobs:
           uv pip install -r requirements_docs.txt
       - name: cargo xtask ci
         run: cargo xtask ci
+      - name: The example cases are what their generator makes
+        # Fetches the two pinned tutorial commits from GitHub.
+        run: cargo xtask make-examples --check
 
   desktop:
     # The desktop app on the other systems it runs on: built, and its interface tests run (the
