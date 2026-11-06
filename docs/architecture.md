@@ -32,7 +32,8 @@ L0  core        ids, units (SI + typed quantities), errors, case paths
 L1  foam-dict   lossless FoamFile dictionary CST: parse, edit-in-place, write
     foam-field  vol*/surface* fields, uniform/nonuniform lists, gzip, time dirs, processor* dirs
     foam-mesh   polyMesh (points/faces/owner/neighbour/boundary, cellZones), ASCII + binary;
-                the boundary alone (BoundaryMesh) for drawing and picking
+                the boundary alone (BoundaryMesh) for drawing and picking; ASCII points
+                (and the boundary's faces) parsed as a stream (CaseFs::reader)
 L2  schema      catalog of solver types and keywords (generated in part by xtask catalog)
     model       typed Case built on foam-dict nodes: regions, materials, BCs, controls, sun/weather
 L3  validate    case diagnostics (missing dicts, region/patch coupling mismatches, unknown types)

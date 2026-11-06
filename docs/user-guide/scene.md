@@ -181,11 +181,12 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 
 ## Limits
 
-- Drawing a mesh reads its boundary only, but all of its points, and an uncompressed or binary
-  `faces` file whole while it is read: the 16-million-cell air region of the HK project takes
-  3.8 s and 1.8 GB the first time, all five of its regions 4.6 s and 2.8 GB, read in parallel
-  (each reader holds its region's files at once). Drawing and picking boundary triangles is
-  quick: the 573 000 of a 2.8-million-cell air region of a 3×3 street-grid case in 0.14 s.
+- Drawing a mesh reads its boundary only, but keeps all of its points. ASCII files are read as a
+  stream, compressed or not (the file isn't held, nor the text of its points or internal faces);
+  a binary file is held whole while it is read. The 16-million-cell air region of the HK project
+  takes 3.8 s and 0.97 GB the first time, all five of its regions 4.5 s and 1.8 GB, read in
+  parallel. Drawing and picking boundary triangles is quick: the 573 000 of a 2.8-million-cell
+  air region of a 3×3 street-grid case in 0.14 s.
 - No level of detail; the renderer draws every triangle on one core, and sorts transparent
   triangles one by one ([display modes](#display-modes)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or

@@ -562,6 +562,14 @@ fn compressed_faces_stream_past_the_internal_ones() {
         assert!(same_boundary_meshes(&a, &b), "{extra} internal faces");
         assert_eq!((b.first_boundary_face(), b.n_faces()), (extra + 1, extra + 11));
         assert_eq!(b.face(extra + 1), Some(&[0, 6, 9, 3][..]));
+        // Both are read as a stream: against the whole-file reader.
+        let text = faces_text_of(&plain);
+        let (n, offsets, points) = open("f", &text).unwrap().1.face_list_from(&Limits::default(), extra + 1).unwrap();
+        assert_eq!(n, b.n_faces());
+        for (k, w) in offsets.windows(2).enumerate() {
+            let want = points.get(w[0] as usize..w[1] as usize);
+            assert_eq!(a.face(extra + 1 + k), want, "{extra}: face {}", extra + 1 + k);
+        }
     }
     // The two hexes as they are, compressed: the same as the whole mesh's boundary.
     assert_same_boundary(&read_boundary_mesh(&faces_gz(&ascii_mesh())).unwrap(), &read(&ascii_mesh()).unwrap());
@@ -899,4 +907,202 @@ fn a_long_compressed_owner_is_read_only_as_far_as_its_header() {
         .replace("nFaces          1;\n        startFace       1;", "nFaces          2;\n        startFace       0;");
     fs.insert(&format!("{d}/boundary"), stale);
     assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("another mesh"));
+}
+
+/// `n` points as an ASCII `vectorField`, with numbers of every form OpenFOAM writes.
+fn points_text(n: usize) -> String {
+    let mut t = header("ascii", "vectorField", None, "");
+    t.push_str(&format!("{n}\n(\n"));
+    for i in 0..n {
+        let x = i as f64 * 0.37 - 1000.0;
+        t.push_str(&format!("({x} {:e} {})\n", (i % 97) as f64 * 1.0e-7, i % 13));
+    }
+    t.push_str(")\n");
+    t
+}
+
+/// The points of a file with only `points` (as `name`) in it, read as a stream where it can be.
+fn points_of(name: &str, bytes: &[u8], limits: &Limits) -> Result<Vec<[f64; 3]>> {
+    let fs = MemFs::new().with(&format!("constant/air/polyMesh/{name}"), bytes.to_vec());
+    read_points(&fs, &mesh_dir("air"), limits)
+}
+
+/// The same file read whole, as the reader before the stream.
+fn whole_points(name: &str, bytes: &[u8]) -> Result<Vec<[f64; 3]>> {
+    let bytes =
+        if bytes.starts_with(&[0x1f, 0x8b]) { umcf_foam_field::gunzip(bytes, 1 << 32)? } else { bytes.to_vec() };
+    open(&format!("constant/air/polyMesh/{name}"), &bytes)?.1.vectors(&Limits::default())
+}
+
+#[test]
+fn points_stream_across_chunks_plain_and_compressed() {
+    // Some 30 bytes a point: 100 000 points are three megabytes, three chunks of the stream.
+    let text = points_text(100_000);
+    let want = whole_points("points", text.as_bytes()).unwrap();
+    assert_eq!(want.len(), 100_000);
+    let l = Limits::default();
+    assert_eq!(points_of("points", text.as_bytes(), &l).unwrap(), want);
+    assert_eq!(points_of("points.gz", &gzip(text.as_bytes()), &l).unwrap(), want);
+    // A compressed file without `.gz` in its name.
+    assert_eq!(points_of("points", &gzip(text.as_bytes()), &l).unwrap(), want);
+    // Vectors split over lines, a comment before the count, no header at all.
+    let odd = text.replacen("\n(\n", "\n(\n(\n1\n2\n3\n)\n", 1).replacen("100000\n", "/* n */ 100001\n", 1);
+    assert_eq!(points_of("points", odd.as_bytes(), &l).unwrap(), whole_points("points", odd.as_bytes()).unwrap());
+    let bare = "2\n((0 0 0) (1 2 3))\n";
+    assert_eq!(points_of("points", bare.as_bytes(), &l).unwrap(), vec![[0.0; 3], [1.0, 2.0, 3.0]]);
+}
+
+#[test]
+fn malformed_points_make_the_whole_readers_error() {
+    let text = points_text(50_000);
+    let half = text.len() / 2;
+    for bad in [
+        // A word for a number, deep in the file (its last vector of that form, chunks in).
+        {
+            let at = text.rfind(" 1e-7 1)").unwrap();
+            assert!(at > 1 << 20);
+            format!("{} 1e-7 x){}", &text[..at], &text[at + " 1e-7 1)".len()..])
+        },
+        // One vector fewer than the count, one more.
+        text.replacen("50000\n", "50001\n", 1),
+        text.replacen("50000\n", "49999\n", 1),
+        // Cut short, in a vector and before the list's `)`.
+        text[..half].to_string(),
+        text.trim_end().trim_end_matches(')').to_string(),
+        // A vector of two.
+        text.replacen(" 0)\n", ")\n", 1),
+    ] {
+        assert_ne!(bad, text);
+        let l = Limits::default();
+        let want = whole_points("points", bad.as_bytes()).unwrap_err().to_string();
+        assert_eq!(points_of("points", bad.as_bytes(), &l).unwrap_err().to_string(), want);
+        let gz = gzip(bad.as_bytes());
+        let want = whole_points("points.gz", &gz).unwrap_err().to_string();
+        assert_eq!(points_of("points.gz", &gz, &l).unwrap_err().to_string(), want);
+    }
+}
+
+#[test]
+fn streamed_points_keep_the_size_limit() {
+    let text = points_text(10_000);
+    let small = Limits { max_bytes: text.len() as u64 - 1, ..Limits::default() };
+    assert!(points_of("points", text.as_bytes(), &small).unwrap_err().to_string().contains("limit"));
+    // Compressed: the file is small, what comes out of it isn't.
+    let gz = gzip(text.as_bytes());
+    let small = Limits { max_bytes: gz.len() as u64 + 10, ..Limits::default() };
+    assert!(points_of("points.gz", &gz, &small).unwrap_err().to_string().contains("limit"));
+    let enough = Limits { max_bytes: text.len() as u64, ..Limits::default() };
+    assert_eq!(points_of("points", text.as_bytes(), &enough).unwrap().len(), 10_000);
+    // What follows the list counts too: a compressed file whose list fits but whose whole
+    // doesn't is too large, as the whole-file reader finds it.
+    let mut padded = text.clone();
+    padded.push_str(&" ".repeat(4 << 20));
+    let gz = gzip(padded.as_bytes());
+    // (more than the first chunk read, less than the whole)
+    let small = Limits { max_bytes: text.len() as u64 + (2 << 20), ..Limits::default() };
+    assert!(points_of("points.gz", &gz, &small).unwrap_err().to_string().contains("limit"));
+}
+
+#[test]
+fn a_huge_point_count_is_not_reserved_up_front() {
+    // A count of four billion over a file of two points: an error, not an allocation of 96 GB.
+    let t = format!("{}4000000000\n((0 0 0) (1 1 1))\n", header("ascii", "vectorField", None, ""));
+    assert!(points_of("points", t.as_bytes(), &Limits::default()).is_err());
+}
+
+#[test]
+fn malformed_internal_faces_make_the_whole_readers_error() {
+    // Internal faces passed over by the stream are checked for their form: one that isn't makes
+    // the whole-file reader's error, plain and compressed.
+    let plain = long_mesh(300_000);
+    let text = String::from_utf8(faces_text_of(&plain)).unwrap();
+    for bad in [
+        text.replacen("4(1 4 10 7)\n4(1 4 10 7)\n", "4(1 4 10 7))\n4(1 4 10 7\n", 1),
+        text.replacen("4(1 4 10 7)\n", "4 1 4 10 7)\n", 1),
+    ] {
+        assert_ne!(bad, text);
+        let (a, b) = error_lines(&plain, &bad);
+        assert!(a != "?" && a == b, "{a} / {b}");
+    }
+}
+
+/// A file system whose readers hand out `step` bytes at a time, so that a chunk of the stream
+/// ends anywhere.
+struct Trickle {
+    fs: MemFs,
+    step: usize,
+}
+
+struct Drip {
+    bytes: std::io::Cursor<Vec<u8>>,
+    step: usize,
+}
+
+impl std::io::Read for Drip {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.step);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+impl CaseFs for Trickle {
+    fn read(&self, rel: &str, limit: u64) -> std::result::Result<Option<Vec<u8>>, umcf_core::FsError> {
+        self.fs.read(rel, limit)
+    }
+    fn reader(
+        &self,
+        rel: &str,
+        limit: u64,
+    ) -> std::result::Result<Option<Box<dyn std::io::Read + Send>>, umcf_core::FsError> {
+        let step = self.step;
+        Ok(self
+            .fs
+            .read(rel, limit)?
+            .map(|b| Box::new(Drip { bytes: std::io::Cursor::new(b), step }) as Box<dyn std::io::Read + Send>))
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> std::result::Result<Vec<String>, umcf_core::FsError> {
+        self.fs.list(rel)
+    }
+}
+
+#[test]
+fn streams_split_anywhere_read_as_the_whole_file() {
+    let d = "constant/air/polyMesh";
+    let points = "FoamFile { format ascii; class vectorField; object points; }\n// x\n/* y */ 2\n((1 2 3)\n(4 5 6) )\n";
+    let faces =
+        "FoamFile { format ascii; class faceList; object faces; }\n// x\n3\n(\n3(0 1 2)\n 4 (0 1 2 3)\n3(1 2 3)\n)\n";
+    let fs = MemFs::new().with(&format!("{d}/points"), points).with(&format!("{d}/faces"), faces);
+    let l = Limits::default();
+    for step in 1..40 {
+        let t = Trickle { fs: fs.clone(), step };
+        let mut s = stream::Stream::open(&t, d, "points", &l).unwrap().unwrap();
+        // Taken by the stream, wherever its chunks end, and the same as the whole file.
+        let got = stream::vectors(&mut s, &l).unwrap().unwrap_or_else(|| panic!("{step}: not streamed"));
+        assert_eq!(got, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "{step}");
+        for skip in 0..4 {
+            let mut s = stream::Stream::open(&t, d, "faces", &l).unwrap().unwrap();
+            let got =
+                stream::face_list_from(&mut s, skip, &l).unwrap().unwrap_or_else(|| panic!("{step}: not streamed"));
+            let want = open("f", faces.as_bytes()).unwrap().1.face_list_from(&l, skip).unwrap();
+            assert_eq!(got, want, "{step}, skip {skip}");
+        }
+    }
+}
+
+#[test]
+fn a_skipped_face_too_large_makes_the_whole_readers_error() {
+    let d = "constant/air/polyMesh";
+    let faces =
+        "FoamFile { format ascii; class faceList; object faces; }\n2\n(\n99999999999999999999999(0 1 2)\n3(1 2 3)\n)\n";
+    let l = Limits::default();
+    let fs = MemFs::new().with(&format!("{d}/faces"), faces);
+    let mut s = stream::Stream::open(&fs, d, "faces", &l).unwrap().unwrap();
+    assert!(matches!(stream::face_list_from(&mut s, 1, &l), Err(Error::Bad { .. })));
+    assert!(open("f", faces.as_bytes()).unwrap().1.face_list_from(&l, 1).is_err());
 }

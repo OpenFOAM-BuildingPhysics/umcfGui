@@ -65,6 +65,14 @@ pub trait CaseFs {
             b
         }))
     }
+    /// The file's bytes as a stream, `Ok(None)` if there is no such file; a file bigger than
+    /// `limit` is an error, as for [`CaseFs::read`]. A file that grows while it is read gives at
+    /// most `limit + 1` bytes: a reader counting them against `limit` finds it too large. The default reads the whole file (within
+    /// `limit`) and hands it out; a file system on disk reads the file as the stream is read, so
+    /// a reader that parses as it goes never holds the file whole.
+    fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, FsError> {
+        Ok(self.read(rel, limit)?.map(|b| Box::new(std::io::Cursor::new(b)) as Box<dyn std::io::Read + Send>))
+    }
     fn is_file(&self, rel: &str) -> bool;
     fn is_dir(&self, rel: &str) -> bool;
     /// Names of the entries directly inside `rel` (files and directories), sorted. A path that
@@ -153,6 +161,35 @@ impl CaseFs for DirFs {
         let mut out = Vec::new();
         file.take(n as u64).read_to_end(&mut out).map_err(io)?;
         Ok(Some(out))
+    }
+
+    fn reader(&self, rel: &str, limit: u64) -> Result<Option<Box<dyn std::io::Read + Send>>, FsError> {
+        let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+        let io = |source| FsError::Io { path: rel.to_string(), source };
+        // Only a regular file is opened: opening a named pipe would wait for a writer.
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io(source)),
+        }
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io(source)),
+        };
+        // The size of the file that was opened, not of whatever is at the path by now.
+        let meta = file.metadata().map_err(io)?;
+        if !meta.is_file() {
+            return Ok(None);
+        }
+        if meta.len() > limit {
+            return Err(FsError::TooLarge { path: rel.to_string(), size: meta.len(), limit });
+        }
+        // Should the file grow while it is read: at most one byte more than `limit`, so that a
+        // reader counting what it gets finds it too large rather than cut at the limit.
+        use std::io::Read;
+        Ok(Some(Box::new(std::io::BufReader::new(file).take(limit.saturating_add(1)))))
     }
 
     fn is_file(&self, rel: &str) -> bool {
@@ -359,6 +396,58 @@ mod tests {
         let mut m = MemFs::new();
         m.insert("d/f", b"0123456789".to_vec());
         assert_eq!(m.read_prefix("d/f", 4, 1 << 20).unwrap().as_deref(), Some(&b"0123"[..]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_reader_streams_the_file() {
+        use std::io::Read;
+        let root = std::env::temp_dir().join(format!("umcf-core-reader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        std::fs::write(root.join("d/f"), b"0123456789").unwrap();
+        let fs = DirFs::new(&root);
+        let mut out = Vec::new();
+        fs.reader("d/f", 10).unwrap().unwrap().read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"0123456789");
+        // A file that grows after it was opened: one byte past the limit, so it shows as too big.
+        let mut r = fs.reader("d/f", 10).unwrap().unwrap();
+        std::fs::write(root.join("d/f"), b"0123456789abcdef").unwrap();
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 11);
+        std::fs::write(root.join("d/f"), b"0123456789").unwrap();
+        // Too big, missing, a directory, outside the case.
+        assert!(matches!(fs.reader("d/f", 9), Err(FsError::TooLarge { size: 10, limit: 9, .. })));
+        assert!(fs.reader("d/missing", 10).unwrap().is_none());
+        assert!(fs.reader("d", 10).unwrap().is_none());
+        assert!(fs.reader("../x", 10).is_err());
+        // The default (in memory) the same.
+        let m = MemFs::new().with("d/f", b"0123456789".to_vec());
+        let mut out = Vec::new();
+        m.reader("d/f", 10).unwrap().unwrap().read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"0123456789");
+        assert!(m.reader("d/f", 9).is_err());
+        assert!(m.reader("d/missing", 10).unwrap().is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_doesnt_open_a_named_pipe() {
+        // Opening a pipe for reading waits for a writer: it isn't a file, so it isn't opened.
+        let root = std::env::temp_dir().join(format!("umcf-core-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(root.join("p")).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("SKIP a_reader_doesnt_open_a_named_pipe: no mkfifo");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let fs = DirFs::new(&root);
+        assert!(fs.reader("p", 10).unwrap().is_none());
+        assert!(fs.read("p", 10).unwrap().is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
