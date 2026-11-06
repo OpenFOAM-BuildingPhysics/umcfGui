@@ -179,6 +179,10 @@ as it was, isn't done.
   `skip!`; they never fail silently.
 - Parallel agents get a separate `CARGO_TARGET_DIR`, their own control port and a scratch case
   copy. They never run the solver in a shared case directory.
+- **Test runs finish quickly.** A check on real cases uses a few chosen ones (a small case of
+  each OpenFOAM version, and one big case only when speed or memory is what the change is
+  about) and takes minutes, never a sweep over every case or mesh on a machine. A reviewer is
+  told the same.
 - **Both OpenFOAM versions.** Real cases mix OpenFOAM-8 and -12, so the version is detected per
   case, and every change that reads or writes case files is tested on cases of both (the
   examples, generated cases, or the corpus through `UMCF_CASES`). OpenFOAM runs only on scratch
