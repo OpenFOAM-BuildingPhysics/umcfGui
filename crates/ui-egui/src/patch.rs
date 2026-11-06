@@ -202,6 +202,10 @@ impl App {
     /// Runs `patch.set` with the card's parameters, as a job; the card closes when it works, and
     /// stays open with the error when it doesn't.
     pub(crate) fn set_patch(&mut self) {
+        // While a job runs the session here is a stand-in: refused, and the card says why.
+        if self.busy() {
+            return self.start_card("patch.set", serde_json::json!({}), crate::jobs::Card::Patch);
+        }
         let single = selected(&self.session).len() == 1;
         let Some(form) = self.patch_form.clone() else { return };
         match form.params(single) {

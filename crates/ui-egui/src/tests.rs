@@ -1193,3 +1193,43 @@ fn a_history_walk_that_fails_partway_logs_each_step_and_opens_the_results() {
     assert!(app.log.last().is_some_and(|e| e.message.contains("changed on disk")));
     assert!(app.results_open, "a failure opens the results card");
 }
+
+#[test]
+fn the_patch_cards_refuse_while_a_job_runs_and_say_why() {
+    // Review finding: they read the selection from the stand-in session first, and said
+    // "select the patches" instead of why they couldn't run.
+    let (mut app, hold, waiting) = held();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    app.patch_form = Some(crate::patch::PatchForm { kind: "symmetry".into(), ..Default::default() });
+    app.set_patch();
+    let e = app.patch_form.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
+    app.new_patch = Some(crate::newpatch::NewPatchForm::default());
+    app.create_patch();
+    let e = app.new_patch.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+}
+
+#[test]
+fn the_history_bar_goes_forward_as_a_job_too() {
+    let mut app = app();
+    app.run("control.set", json!({ "endTime": 7200 })).unwrap();
+    app.run("control.set", json!({ "endTime": 9000 })).unwrap();
+    app.go_to(0);
+    app.wait_for_job();
+    app.go_to(2);
+    app.wait_for_job();
+    assert_eq!(app.session().history().0.len(), 2);
+    let steps: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(steps, [("edit.redo", true), ("edit.redo", true)]);
+    // Past the end: nothing to do, nothing logged.
+    let logged = app.log.len();
+    app.go_to(5);
+    app.wait_for_job();
+    assert_eq!((app.session().history().0.len(), app.log.len()), (2, logged));
+}

@@ -88,15 +88,18 @@ check. Escape closes the parameter card, the condition card, the results and the
 
 Opening a case, the ribbon's commands without parameters, a command card's *OK*, the *Set* of
 the boundary condition, patch and new patch cards, going back or forward in the history bar, and
-reading the meshes and surfaces the 3D view shows run beside the window, which keeps drawing. What takes
-more than a moment shows a card over the 3D view with what runs and for how long. Work that only
-reads (opening a case, the checks, the summary, reading what the view shows) has *Cancel*: the
-case's files are read no more, the work stops, and the case is as it was (a case being opened
-isn't opened; the one open stays). Work that changes the case (a save, an edit, an undo) runs to its end, and the window doesn't close before it has. A card whose *Set* runs stays open behind the busy card: it closes when the command worked, and shows the error when it didn't. Nothing else
-starts while it runs: what is asked meanwhile is refused, and the results card says so (a
-command card stays open, to run again); a folder picked to open waits for it. A reading of the
-3D view that hasn't started yet gives way to a command asked at the same moment, and follows it. A check of a 16-million-cell mesh, or reading all five regions of a
-big case, can take a while: that's when this card shows. A case named on the command line
+reading the meshes and surfaces the 3D view shows run beside the window, which keeps drawing.
+What takes more than a moment shows a card over the 3D view with what runs and for how long.
+Work that only reads (opening a case, the checks, the summary, reading what the view shows) has
+*Cancel*: the case's files are read no more, the work stops, and the case is as it was (a case
+being opened isn't opened; the one open stays). Work that changes the case (a save, an edit, an
+undo) runs to its end, and the window doesn't close before it has. A card whose *Set* runs stays
+open behind the busy card: it closes when the command worked, and shows the error when it
+didn't. Nothing else starts while it runs: what is asked meanwhile is refused, and the results
+card says so (a command card stays open, to run again); a folder picked to open waits for it. A
+reading of the 3D view that hasn't started yet gives way to a command asked at the same moment,
+and follows it. A check of a 16-million-cell mesh, or reading all five regions of a big case,
+can take a while: that's when this card shows. A case named on the command line
 (`umcf-gui <case>`) is opened before the window shows.
 
 ## Patches

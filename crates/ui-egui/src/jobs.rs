@@ -83,7 +83,10 @@ fn perform(session: &mut Session, work: &Work) -> Done {
         Work::Scene { params } => Done::Scene(session.scene(params).map(|_| ())),
         Work::History { done } => {
             let mut steps = Vec::new();
-            loop {
+            // Each step moves one edit between the two lists: never more steps than edits.
+            let (d, u) = session.history();
+            let most = d.len() + u.len();
+            for _ in 0..most {
                 let (d, u) = session.history();
                 let (d, u) = (d.len(), u.len());
                 let step = if d > *done {

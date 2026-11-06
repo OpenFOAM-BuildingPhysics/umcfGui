@@ -240,6 +240,10 @@ impl App {
     /// Runs `patch.create` with the card's parameters, as a job; the card closes when it works,
     /// and stays open with the error when it doesn't.
     pub(crate) fn create_patch(&mut self) {
+        // While a job runs the session here is a stand-in: refused, and the card says why.
+        if self.busy() {
+            return self.start_card("patch.create", serde_json::json!({}), crate::jobs::Card::NewPatch);
+        }
         let Some(form) = self.new_patch.clone() else { return };
         let mut regions: Vec<String> = if form.source == Source::Picked {
             picked(&self.session).into_iter().map(|(r, _)| r).collect()
