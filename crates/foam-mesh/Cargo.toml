@@ -12,9 +12,10 @@ umcf-foam-dict.workspace = true
 umcf-foam-field.workspace = true
 thiserror.workspace = true
 fast-float2.workspace = true
+# Compressed faces read as a stream (BoundaryMesh), so the internal faces are never held.
+flate2.workspace = true
 
 [dev-dependencies]
-flate2.workspace = true
 
 [lints]
 workspace = true

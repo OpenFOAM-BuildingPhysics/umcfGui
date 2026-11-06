@@ -292,8 +292,8 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   with `createPatch`'s own dictionary. So is adding to a dictionary whose face sets are gone.
 - One step in the undo history, written by `case.save` after a backup. An undo after the save
   doesn't take the new files away again (the dictionary, the face set): delete them by hand.
-- A box or a surface reads the whole mesh of the region (a minute or more for the largest), and
-  the desktop app waits for it.
+- A box or a surface reads the region's points and boundary faces, not its cells: about 3 s for
+  the 16-million-cell air region of the HK project, while the desktop app waits.
 - Checked on copies of an OpenFOAM-12 case of the solver (1458 of the 2916 `sky` faces of `air`)
   and an OpenFOAM-8 single-region case: `createPatch` read the set and made the patch,
   `checkMesh` passed, and the fields read with the new mesh.

@@ -43,9 +43,12 @@ the selection in orange (in front of a patch of another region in the same place
 | `reload` | `false` | Reads the files again (after OpenFOAM rewrote a mesh) |
 | `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
 
-The scene is built the first time it is needed and kept while the same things are shown, so a
-pick after a snapshot doesn't read the mesh again. It follows the surfaces commands change (a
-repair, an undo); a mesh rewritten on disk needs `reload`.
+The scene is built the first time it is needed: each region's mesh (only its boundary: its
+points, boundary faces and patches) and each surface is read once, the missing ones in parallel,
+and kept, also while it is hidden. So a pick after a snapshot, or showing a region again, reads
+nothing. It follows the surfaces and patch lists commands change (a repair, a rename, an undo).
+A mesh rewritten on disk (by OpenFOAM) is read again only with `reload`, which drops what was
+kept of every region and surface and reads what is shown again.
 
 ## Display modes
 

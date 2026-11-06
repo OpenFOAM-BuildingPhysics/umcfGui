@@ -1666,3 +1666,141 @@ fn workflow_show_counts_a_description_over_the_dictionary_limit_as_unreadable() 
     let out = s.execute("workflow.show", &Value::Null).unwrap();
     assert_eq!(out.data["source"], "unreadable");
 }
+
+/// A case's files, counting how often each mesh's `points` is read.
+struct CountingFs {
+    inner: MemFs,
+    reads: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+}
+
+impl umcf_core::CaseFs for CountingFs {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
+        if rel.ends_with("/points") {
+            *self.reads.lock().unwrap().entry(rel.to_string()).or_default() += 1;
+        }
+        self.inner.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.inner.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.inner.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, umcf_core::FsError> {
+        self.inner.list(rel)
+    }
+}
+
+impl umcf_core::CaseWrite for CountingFs {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), umcf_core::FsError> {
+        self.inner.write(rel, bytes)
+    }
+}
+
+/// Two regions, air and ground, each a unit cube, ground one metre lower.
+fn two_region_fs() -> MemFs {
+    let mut fs = fs();
+    fs.insert("system/controlDict", control().replace("fluid (air);", "fluid (air);\n    solid (ground);"));
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    cube_mesh(&mut fs, "constant/ground/polyMesh");
+    let ground = umcf_core::CaseFs::read(&fs, "constant/ground/polyMesh/points", 1 << 20).unwrap().unwrap();
+    let lowered = String::from_utf8(ground).unwrap().replace(" 0)\n", " -1)\n").replace(" 1)\n", " 0)\n");
+    fs.insert("constant/ground/polyMesh/points", lowered);
+    fs
+}
+
+/// A session of `fs`, and the reads of each mesh's points.
+type Reads = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>;
+
+fn counting_session(fs: MemFs) -> (Session, Reads) {
+    let reads: Reads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(CountingFs { inner: fs, reads: reads.clone() }), "mem", OpenOptions::default(), false).unwrap();
+    (s, reads)
+}
+
+fn two_region_session() -> (Session, Reads) {
+    counting_session(two_region_fs())
+}
+
+/// Showing fewer regions and then all again reads no mesh twice; `reload` reads them again.
+#[test]
+fn the_scene_reads_each_mesh_once() {
+    let (mut s, reads) = two_region_session();
+    let count = |r: &str| reads.lock().unwrap().get(&format!("constant/{r}/polyMesh/points")).copied().unwrap_or(0);
+    let snap = |s: &mut Session, p: Value| s.execute("scene.snapshot", &p).unwrap().data["camera"].clone();
+    let all = snap(&mut s, json!({ "width": 8, "height": 8 }));
+    assert_eq!((count("air"), count("ground")), (1, 1));
+    snap(&mut s, json!({ "regions": ["ground"], "width": 8, "height": 8 }));
+    snap(&mut s, json!({ "regions": ["air"], "width": 8, "height": 8 }));
+    // The same scene as the first time: the same objects at the same origin.
+    assert_eq!(snap(&mut s, json!({ "width": 8, "height": 8 })), all);
+    assert_eq!((count("air"), count("ground")), (1, 1));
+    snap(&mut s, json!({ "regions": ["air"], "reload": true, "width": 8, "height": 8 }));
+    assert_eq!((count("air"), count("ground")), (2, 1));
+    // After a reload the other region is read again too when it is shown (its objects went).
+    snap(&mut s, json!({ "width": 8, "height": 8 }));
+    assert_eq!((count("air"), count("ground")), (2, 2));
+}
+
+/// A patch renamed by a command is shown by its new name, also for a region shown before.
+#[test]
+fn a_spare_region_follows_a_renamed_patch() {
+    let (mut s, _) = two_region_session();
+    let names = |s: &mut Session, r: &str| -> Vec<String> {
+        let scene = s.scene(&json!({ "regions": [r] })).unwrap();
+        scene.objects.iter().flat_map(|o| o.classes.clone()).collect()
+    };
+    assert_eq!(names(&mut s, "air"), ["inlet"]);
+    assert_eq!(names(&mut s, "ground"), ["inlet"]);
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "patch": "inlet" }] })).unwrap();
+    s.execute("patch.set", &json!({ "name": "sides" })).unwrap();
+    assert_eq!(names(&mut s, "air"), ["sides"]);
+    assert_eq!(names(&mut s, "ground"), ["inlet"]);
+}
+
+/// A region in projected coordinates shown after one near the world's origin: the scene
+/// moves its origin to what it shows, so the far mesh's points stay precise in single precision,
+/// and the region kept from before moves with it.
+#[test]
+fn a_far_region_gets_an_origin_of_its_own() {
+    let mut fs = two_region_fs();
+    // Ground at (2 600 000, 1 200 000), as LV95 coordinates put it.
+    let h = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class vectorField;\n}\n";
+    let corners: String = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+        .iter()
+        .map(|(x, y, z)| format!("({} {} {z})\n", 2_600_000 + x, 1_200_000 + y))
+        .collect();
+    fs.insert("constant/ground/polyMesh/points", format!("{h}8\n(\n{corners})\n"));
+    let (mut s, _) = counting_session(fs);
+    assert!(s.scene(&json!({ "regions": ["air"] })).unwrap().origin.length() < 10.0);
+    let scene = s.scene(&json!({ "regions": ["ground"] })).unwrap();
+    assert!((scene.origin - umcf_geom::Vec3::new(2.6e6, 1.2e6, 0.0)).length() < 10.0, "{:?}", scene.origin);
+    // Exact: the points are within a metre of the origin.
+    let b = scene.bbox().unwrap();
+    assert_eq!((b.min.x, b.max.x, b.min.y, b.max.y), (2.6e6, 2_600_001.0, 1.2e6, 1_200_001.0));
+    // Both: air, kept from before and moved to the scene's origin, is still where it was.
+    let scene = s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();
+    let air = scene.objects.iter().find(|o| o.label() == "mesh air").unwrap().bbox(scene.origin).unwrap();
+    assert!(air.min.x.abs() < 0.5 && (air.max.x - 1.0).abs() < 0.5, "{air:?}");
+}
+
+/// Undo and redo of a rename in a region that is hidden in between show the right names.
+#[test]
+fn undo_and_redo_reach_hidden_regions() {
+    let (mut s, _) = two_region_session();
+    let names = |s: &mut Session, r: &str| -> Vec<String> {
+        s.scene(&json!({ "regions": [r] })).unwrap().objects.iter().flat_map(|o| o.classes.clone()).collect()
+    };
+    assert_eq!(names(&mut s, "air"), ["inlet"]);
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "patch": "inlet" }] })).unwrap();
+    s.execute("patch.set", &json!({ "name": "sides" })).unwrap();
+    assert_eq!(names(&mut s, "air"), ["sides"]);
+    assert_eq!(names(&mut s, "ground"), ["inlet"]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(names(&mut s, "ground"), ["inlet"]);
+    assert_eq!(names(&mut s, "air"), ["inlet"]);
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(names(&mut s, "ground"), ["inlet"]);
+    assert_eq!(names(&mut s, "air"), ["sides"]);
+}

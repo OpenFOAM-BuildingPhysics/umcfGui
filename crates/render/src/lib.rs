@@ -24,7 +24,7 @@
 
 use std::sync::OnceLock;
 
-use umcf_foam_mesh::PolyMesh;
+use umcf_foam_mesh::Boundary;
 use umcf_geom::bvh::{Bvh, Ray};
 use umcf_geom::stl::Stl;
 use umcf_geom::{BBox, Vec3};
@@ -134,11 +134,12 @@ impl Object {
 
     /// The boundary faces of `mesh`, by patch, each split into a fan of triangles from its first
     /// point. Faces with a point that is not finite are left out.
-    pub fn from_mesh(region: &str, mesh: &PolyMesh, origin: Vec3) -> Object {
+    pub fn from_mesh<M: Boundary + ?Sized>(region: &str, mesh: &M, origin: Vec3) -> Object {
         let mut o = Object::new(Source::Mesh { region: region.to_string() });
+        let points = mesh.points();
         // Mesh point → object point, filled as boundary faces use them.
-        let mut map: Vec<u32> = vec![u32::MAX; mesh.n_points()];
-        for (k, patch) in mesh.boundary.iter().enumerate() {
+        let mut map: Vec<u32> = vec![u32::MAX; points.len()];
+        for (k, patch) in mesh.patches().iter().enumerate() {
             let Ok(class) = u32::try_from(k) else { break };
             o.classes.push(patch.name.clone());
             o.kinds.push(patch.kind.clone());
@@ -149,7 +150,7 @@ impl Object {
                 for p in face {
                     let Some(slot) = map.get_mut(*p as usize) else { break };
                     if *slot == u32::MAX {
-                        let Some(w) = mesh.points.get(*p as usize) else { break };
+                        let Some(w) = points.get(*p as usize) else { break };
                         let r = relative(Vec3::new(w[0], w[1], w[2]), origin);
                         if !r.iter().all(|c| c.is_finite()) {
                             break;
@@ -205,9 +206,10 @@ impl Object {
 
     /// The box around the points `mesh`'s boundary faces use (points no boundary face uses
     /// don't move the scene's origin); `None` when there are none that are finite.
-    pub fn boundary_bounds(mesh: &PolyMesh) -> Option<BBox> {
-        let mut used = vec![false; mesh.n_points()];
-        for patch in &mesh.boundary {
+    pub fn boundary_bounds<M: Boundary + ?Sized>(mesh: &M) -> Option<BBox> {
+        let points = mesh.points();
+        let mut used = vec![false; points.len()];
+        for patch in mesh.patches() {
             for f in patch.faces() {
                 for p in mesh.face(f).unwrap_or_default() {
                     if let Some(u) = used.get_mut(*p as usize) {
@@ -216,7 +218,7 @@ impl Object {
                 }
             }
         }
-        BBox::of(mesh.points.iter().zip(&used).filter(|(_, u)| **u).map(|(p, _)| Vec3::new(p[0], p[1], p[2])))
+        BBox::of(points.iter().zip(&used).filter(|(_, u)| **u).map(|(p, _)| Vec3::new(p[0], p[1], p[2])))
     }
 
     /// A name for people: `mesh air`, `mesh` (single region), `surface constant/triSurface/x.stl`.
@@ -277,6 +279,21 @@ impl Object {
     /// The object's BVH, built the first time it is asked for.
     pub fn bvh(&self) -> &Bvh {
         self.bvh.get_or_init(|| Bvh::new(&self.points, &self.triangles))
+    }
+
+    /// The object's points made relative to `to` instead of `from` (a scene's new origin); its
+    /// BVH is built again when it is next needed. Points that no longer fit in single precision
+    /// are not finite then, as when the object is built at `to`.
+    pub fn rebase(&mut self, from: Vec3, to: Vec3) {
+        if from == to {
+            return;
+        }
+        let shift = from - to;
+        for p in &mut self.points {
+            let w = Vec3::from_f32(*p) + shift;
+            *p = [w.x as f32, w.y as f32, w.z as f32];
+        }
+        self.bvh = OnceLock::new();
     }
 }
 
