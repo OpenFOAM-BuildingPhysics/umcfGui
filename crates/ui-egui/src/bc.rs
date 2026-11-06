@@ -16,6 +16,10 @@ const SUGGESTIONS: usize = 10;
 const NOW: usize = 30;
 
 /// What the card holds while it is open.
+/// What a condition card was filled from: the field, the patches (region, patch), and whether
+/// the case's fields were read.
+pub(crate) type Filled = (String, Vec<(String, String)>, bool);
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BcForm {
     pub field: String,
@@ -27,7 +31,9 @@ pub struct BcForm {
     pub error: Option<String>,
     /// The field and patches the type and value were filled in for, from the first patch's
     /// condition.
-    pub(crate) filled_for: Option<(String, Vec<(String, String)>)>,
+    /// What it was filled from: the field, the patches, and whether the fields were read (it
+    /// fills again once they are).
+    pub(crate) filled_for: Option<Filled>,
     /// The value filled in. Unchanged, it is sent as a default: a patch that gets a new entry
     /// gets it, one that keeps its entry keeps its own value.
     pub(crate) filled_value: String,
@@ -130,6 +136,8 @@ impl App {
     /// the card stays where it is (egui moves a floating card that doesn't fit the window).
     pub(crate) fn bc_card(&mut self, ui: &mut Ui, width: f32, room: f32) -> (bool, bool) {
         let t = self.tokens.clone();
+        // Its command runs or waits: shown as it was sent, not to be changed till it's done.
+        let busy = self.card_busy(crate::jobs::Card::Bc);
         let patches = selected(&self.session);
         let fields = fields(&self.session, &patches);
         let (mut ok, mut close) = (false, false);
@@ -137,9 +145,16 @@ impl App {
         if form.field.is_empty() || !fields.iter().any(|(f, _)| *f == form.field) {
             form.field = fields.first().map(|(f, _)| f.clone()).unwrap_or_default();
         }
-        // Start from what the first patch has.
-        let key = (form.field.clone(), patches.clone());
-        if form.filled_for.as_ref() != Some(&key) {
+        // Start from what the first patch has, once the fields are read (a card opened before
+        // fills again when they are there).
+        let read = self.session.case().is_some_and(|c| !c.fields_pending);
+        let key = (form.field.clone(), patches.clone(), read);
+        // Typed into since it filled, before the fields were read: kept as typed once they are.
+        let typed = form.filled_for.as_ref().is_some_and(|(f, p, r)| *f == key.0 && *p == key.1 && !r)
+            && (!form.kind.is_empty() || form.value != form.filled_value || !form.more.is_empty());
+        if form.filled_for.as_ref() != Some(&key) && typed {
+            form.filled_for = Some(key);
+        } else if form.filled_for.as_ref() != Some(&key) {
             let b = patches.first().and_then(|(r, p)| current(&self.session, r, p, &form.field));
             form.kind = b.and_then(|b| b.kind.clone()).unwrap_or_default();
             form.value = b.and_then(|b| b.value.clone()).filter(|v| !v.starts_with("nonuniform")).unwrap_or_default();
@@ -151,6 +166,9 @@ impl App {
         let muted = Ink { line: t.text_muted, fill: t.accent };
         let card_top = ui.cursor().top();
         t.card_frame().show(ui, |ui| {
+            if busy {
+                ui.disable();
+            }
             ui.set_width(width);
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
@@ -301,7 +319,7 @@ impl App {
             ui.add_space(4.0);
             let row = vec2(ui.available_width(), 28.0);
             ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                let set = egui::Button::new(RichText::new("Set").color(Color32::WHITE).strong())
+                let set = egui::Button::new(RichText::new(if busy { "Setting…" } else { "Set" }).color(Color32::WHITE).strong())
                     .fill(t.accent)
                     .min_size(vec2(64.0, 26.0));
                 ok = ui.add(set).clicked();
@@ -316,8 +334,22 @@ impl App {
     pub(crate) fn set_bc(&mut self) {
         let Some(form) = self.bc.clone() else { return };
         match form.params() {
-            Ok(params) => self.start_card("bc.set", params, crate::jobs::Card::Bc),
+            // The patches the card shows: a selection changed meanwhile (waiting behind a job,
+            // say) doesn't change what the command sets.
+            Ok(params) => {
+                let params = with_patches(params, &selected(&self.session));
+                self.start_card("bc.set", params, crate::jobs::Card::Bc)
+            }
             Err(e) => self.card_error(crate::jobs::Card::Bc, e),
         }
     }
+}
+
+/// `params` with the patches a card shows, as the commands take them.
+pub(crate) fn with_patches(mut params: Value, patches: &[(String, String)]) -> Value {
+    if let Some(o) = params.as_object_mut() {
+        let list: Vec<Value> = patches.iter().map(|(r, p)| json!({ "region": r, "patch": p })).collect();
+        o.insert("patches".into(), Value::Array(list));
+    }
+    params
 }

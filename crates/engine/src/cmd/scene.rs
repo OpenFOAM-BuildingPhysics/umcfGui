@@ -68,7 +68,9 @@ impl Sel {
     }
 }
 
-/// The scene last built and what it was built from.
+/// The scene last built and what it was built from. Shared with the copy of the session the
+/// desktop app draws from while a job runs ([`Session::stand_in`]).
+#[derive(Clone)]
 pub(crate) struct Cached {
     opens: u64,
     regions: Vec<String>,
@@ -254,7 +256,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
     let reload = p.bool("reload")?.unwrap_or(false);
     let same = |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions);
-    if reload || !s.scene.as_ref().is_some_and(same) {
+    if reload || !s.scene.as_deref().is_some_and(same) {
         // What each object is built from. Objects of this case built before (shown or spare)
         // are taken as they are, unless `reload`; the others are read, in parallel.
         let mesh_key = |r: &str| {
@@ -372,6 +374,8 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         // there and isn't shown now is kept aside.
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
+                // Copied only while a copy of the session still holds it.
+                let c = std::sync::Arc::try_unwrap(c).unwrap_or_else(|shared| (*shared).clone());
                 c.keys.into_iter().zip(c.scene.objects).chain(c.spare).collect()
             }
             _ => Vec::new(),
@@ -397,7 +401,8 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         if reload {
             s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
         }
-        s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene, keys, spare: pool });
+        s.scene =
+            Some(std::sync::Arc::new(Cached { opens: s.opens, regions, surfaces: versions, scene, keys, spare: pool }));
     }
     Ok(())
 }

@@ -1532,3 +1532,32 @@ fn big_fields_are_read_for_their_conditions_without_their_numbers() {
     assert!(report.resized.contains(&"0/air/U".to_string()), "{report:?}");
     assert!(!report.fields.contains(&"0/air/U".to_string()), "{report:?}");
 }
+
+#[test]
+fn fields_can_be_read_after_the_case_opens() {
+    let mut fs = case();
+    // A field note, and a note opening makes after the fields: read later, the notes keep the
+    // order of reading at open.
+    fs.insert("0/air/bad", "FoamFile { class volScalarField; }\ninternalField nonuniform List<scalar> 5(1 2);\n");
+    fs.insert("constant/air/polyMesh/boundary", "2\n(\n broken");
+    let deferred = OpenOptions { defer_fields: true, ..OpenOptions::default() };
+    let mut c = Case::open_with(&fs, deferred).unwrap();
+    // Listed, not read: no conditions yet, and nothing to note about them.
+    assert!(c.fields_pending);
+    let t = c.region("air").unwrap().field("T").unwrap();
+    assert!(t.bcs.is_none() && !t.too_big);
+    assert!(!c.notes.iter().any(|n| n.path.starts_with("0/")), "{:?}", c.notes);
+    assert!(c.notes.iter().any(|n| n.path.ends_with("polyMesh/boundary")));
+    // Read now: as if read at open, the files counted.
+    let progress = umcf_core::Progress::default();
+    assert!(c.read_start_fields(&fs, Some(&progress)).unwrap());
+    let whole = Case::open(&fs).unwrap();
+    assert!(!c.fields_pending);
+    assert_eq!(c.regions, whole.regions);
+    assert_eq!(c.notes, whole.notes);
+    assert!(c.notes.iter().any(|n| n.path == "0/air/bad"));
+    let (done, total, _) = progress.get();
+    assert!(total > 0 && done == total, "{done} of {total}");
+    // Once only: an edited field isn't read back from disk.
+    assert!(!c.read_start_fields(&fs, None).unwrap());
+}

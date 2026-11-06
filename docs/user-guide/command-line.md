@@ -136,7 +136,8 @@ bad arguments.
 
 | Command | Does |
 |---|---|
-| `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files), `discard` (`true` opens even if the open case has unsaved changes) |
+| `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files, `"later"` lists them for `case.fields` to read), `discard` (`true` opens even if the open case has unsaved changes) |
+| `case.fields` | Reads the start-time field files of a case opened with `fields: "later"` |
 | `case.save` | Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each; a file a command wrote whole is refused when it is a symbolic link, checked once before anything is written ([Cases](cases.md#editing-and-saving)) |
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |

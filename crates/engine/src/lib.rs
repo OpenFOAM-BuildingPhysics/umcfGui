@@ -32,7 +32,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde_json::{Value, json};
-use umcf_core::CaseWrite;
+use umcf_core::{CaseFs, CaseWrite, FsError};
 use umcf_model::{Case, OpenOptions};
 
 mod cmd;
@@ -165,7 +165,7 @@ pub struct Session {
     /// target acts on. Set by the `select.*` commands; opening a case clears it.
     selection: Vec<Sel>,
     /// The 3D scene last built, for picking and snapshots.
-    scene: Option<cmd::scene::Cached>,
+    scene: Option<std::sync::Arc<cmd::scene::Cached>>,
     /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
     cancel: umcf_core::Cancel,
 }
@@ -425,6 +425,55 @@ impl Session {
 
     fn opened_mut(&mut self) -> Result<&mut Opened, Error> {
         self.opened.as_mut().ok_or_else(|| Error::Failed("no case is open".to_string()))
+    }
+
+    /// A copy to look at while this session is away, running a job on another thread: the
+    /// case, its location, the history, the selection and (`with_scene`) the 3D scene as they
+    /// are now, its cache shared, not copied. It reads no file: a command that needs one fails,
+    /// and a scene not in its cache can't be built.
+    pub fn stand_in(&self, with_scene: bool) -> Session {
+        let mut s = Session::with_backup(self.backup.clone());
+        s.opened = self.opened.as_ref().map(|o| Opened {
+            case: o.case.clone(),
+            fs: Box::new(Away),
+            location: o.location.clone(),
+        });
+        s.undo = self.undo.clone();
+        s.redo = self.redo.clone();
+        s.opens = self.opens;
+        s.selection = self.selection.clone();
+        s.scene = if with_scene { self.scene.clone() } else { None };
+        s
+    }
+}
+
+/// The files of a [`Session::stand_in`]: they are with the job.
+struct Away;
+
+impl Away {
+    fn away(rel: &str) -> FsError {
+        FsError::Io { path: rel.to_string(), source: std::io::Error::other("the case is busy with a job") }
+    }
+}
+
+impl CaseFs for Away {
+    fn read(&self, rel: &str, _limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        Err(Away::away(rel))
+    }
+    fn is_file(&self, _rel: &str) -> bool {
+        false
+    }
+    fn is_dir(&self, _rel: &str) -> bool {
+        false
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
+        Err(Away::away(rel))
+    }
+}
+
+impl CaseWrite for Away {
+    fn write(&mut self, rel: &str, _bytes: &[u8]) -> Result<(), FsError> {
+        Err(Away::away(rel))
     }
 }
 

@@ -50,7 +50,8 @@ The files are read in parallel, one per core and 16 at most. The Hong Kong proje
 latest time (16 fields of up to 600 MB, gzipped) in 2.6 s, against 11 s when each file was read
 whole one after the other. Its `U` and `phi` used to be listed without their boundary
 conditions. Decompressing is most of the time: a gzipped file of several GB takes seconds, and
-*Cancel* stops it.
+*Cancel* stops it. The desktop app opens a case first and reads its fields after, while the
+case is already shown ([Long work](desktop.md#long-work)).
 
 ## Setting boundary conditions
 

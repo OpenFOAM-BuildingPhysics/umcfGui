@@ -1,7 +1,10 @@
-//! Work that may take long (opening a case, a check, building the 3D scene) runs on a thread of
-//! its own, with the session moved there: the window keeps drawing, says what runs and for how
-//! long, and can cancel it ([`Session::canceller`]). The window waits a moment first
-//! ([`App::job_wait`]): work done by then looks as if it ran in place, with no busy card.
+//! Work that may take long (opening a case, reading its fields, a check, building the 3D scene, an
+//! edit) runs on a thread of its own, with the session moved there. The window draws meanwhile
+//! from a copy of it ([`Session::stand_in`]): it stays in use, with the job's progress in the
+//! status bar and *Cancel* for work that only reads ([`Session::canceller`]). What is asked
+//! meanwhile waits in a queue and runs after, in order. Opening and saving a case take the whole
+//! window (the busy screen): what is drawn would be of the case before. The window waits a
+//! moment first ([`App::job_wait`]): work done by then looks as if it ran in place.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -47,6 +50,27 @@ pub(crate) enum Card {
     NewPatch,
 }
 
+/// A job's progress, as the status bar shows it ([`App::progress`]).
+pub(crate) struct Progress {
+    pub label: String,
+    /// Done of the job's steps, when it knows them; else the bar only says it works.
+    pub fraction: Option<f32>,
+    pub detail: String,
+    pub cancellable: bool,
+    pub cancelling: bool,
+    /// Work waiting after it.
+    pub queued: usize,
+}
+
+/// `bytes` read, for people.
+fn megabytes(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GB read", b as f64 / f64::from(1u32 << 30)),
+        b if b >= 1 << 20 => format!("{:.0} MB read", b as f64 / f64::from(1u32 << 20)),
+        b => format!("{} kB read", b.div_ceil(1024)),
+    }
+}
+
 /// What came back.
 enum Done {
     Command(Result<Outcome, Error>),
@@ -65,6 +89,8 @@ pub(crate) struct Job {
     pub cancel: umcf_engine::Cancel,
     /// Whether it may be cancelled: work that only reads (a save is never cut short).
     pub cancellable: bool,
+    /// Whether it takes the whole window: opening or saving the case.
+    pub modal: bool,
     work: Work,
     done: Receiver<(Session, Done)>,
 }
@@ -119,9 +145,16 @@ pub(crate) fn cancellable(work: &Work) -> bool {
     }
 }
 
+/// Whether `work` takes the whole window while it runs: opening a case (what the window shows
+/// would be of the case before) and saving it.
+fn modal(work: &Work) -> bool {
+    matches!(work, Work::Command { id, .. } if id == "case.open" || id == "case.save")
+}
+
 fn label(work: &Work) -> String {
     match work {
         Work::Command { id, params, .. } => match id.as_str() {
+            "case.fields" => "Reading the field files".to_string(),
             "case.open" => match params.get("path").and_then(Value::as_str) {
                 Some(p) => format!("Opening {}", p.trim_end_matches('/').rsplit('/').next().unwrap_or(p)),
                 None => "Opening a case".to_string(),
@@ -143,43 +176,27 @@ fn id_of(work: &Work) -> String {
 }
 
 impl App {
-    /// Queues `work`: it starts at the top of the next frame ([`App::launch`]), before anything
-    /// draws, so no part of a frame draws from the stand-in session. While a job runs or waits,
-    /// another is refused, and the log says so; a scene only queued is dropped for it instead.
-    pub(crate) fn start(&mut self, work: Work) {
-        // A scene only queued gives way: the 3D view asks for it again on its next frame.
-        if matches!(self.pending, Some(Work::Scene { .. })) && !matches!(work, Work::Scene { .. }) {
-            self.pending = None;
+    /// Queues `work`: it starts at the top of a frame ([`App::launch`]), before anything draws,
+    /// once what was asked before it has run. A scene only queued gives way to other work: the 3D
+    /// view asks for it again once the case is as that work leaves it.
+    pub(crate) fn start(&mut self, mut work: Work) {
+        // The desktop app opens a case first and reads its fields after (see `after_open`),
+        // unless the open says otherwise.
+        if let Work::Command { id, params, .. } = &mut work
+            && id == "case.open"
+            && let Some(o) = params.as_object_mut()
+            && !o.contains_key("fields")
+        {
+            o.insert("fields".into(), serde_json::json!("later"));
         }
-        if let Some(label) = self.job.as_ref().map(|j| j.label.clone()).or_else(|| self.pending.as_ref().map(label)) {
-            self.log_entry(crate::Entry {
-                command: id_of(&work),
-                ok: false,
-                message: format!("not run: {} first", label.to_lowercase()),
-                data: Value::Null,
-            });
-            // What the work came from stays, to run again.
-            if let Work::Command { then, id, .. } = work {
-                match then {
-                    Then::Dialog(mut d) => {
-                        d.error = Some(format!("{id} can't run yet: {} first", label.to_lowercase()));
-                        self.dialog = Some(d);
-                    }
-                    Then::Open { path } => {
-                        let params =
-                            serde_json::to_string_pretty(&serde_json::json!({ "path": path })).unwrap_or_default();
-                        let error = Some(format!("not opened yet: {} first", label.to_lowercase()));
-                        self.dialog = Some(Dialog { id: "case.open", params, error });
-                    }
-                    Then::Card(card) => {
-                        self.card_error(card, format!("{id} can't run yet: {} first", label.to_lowercase()));
-                    }
-                    Then::Nothing => {}
-                }
+        if matches!(work, Work::Scene { .. }) {
+            if self.queue.iter().any(|w| matches!(w, Work::Scene { .. })) {
+                return;
             }
-            return;
+        } else {
+            self.queue.retain(|w| !matches!(w, Work::Scene { .. }));
         }
-        self.pending = Some(work);
+        self.queue.push_back(work);
     }
 
     /// Starts the queued work with the session moved to a thread of its own, and waits for it a
@@ -188,7 +205,7 @@ impl App {
         if self.job.is_some() {
             return;
         }
-        let Some(work) = self.pending.take() else { return };
+        let Some(work) = self.queue.pop_front() else { return };
         let cancel = self.session.canceller();
         cancel.reset();
         let (give, take) = std::sync::mpsc::channel::<(Session, Work)>();
@@ -222,7 +239,14 @@ impl App {
             return;
         }
         let case = self.case_name();
-        let stand_in = Session::with_backup(self.session.backup_dir());
+        // What the window draws from meanwhile: nothing while the case opens or saves, else the
+        // session as it is now (its scene too, unless the job builds the scene).
+        let modal = modal(&work);
+        let stand_in = if modal {
+            Session::with_backup(self.session.backup_dir())
+        } else {
+            self.session.stand_in(!matches!(work, Work::Scene { .. }))
+        };
         let session = std::mem::replace(&mut self.session, stand_in);
         let work_for_thread = match &work {
             Work::Command { id, params, .. } => {
@@ -241,13 +265,14 @@ impl App {
         #[allow(clippy::disallowed_methods)] // The desktop app is native only.
         let now = Instant::now();
         let cancellable = cancellable(&work);
-        self.job = Some(Job { label, case, started: now, cancel, cancellable, work, done });
+        self.job = Some(Job { label, case, started: now, cancel, cancellable, modal, work, done });
         self.poll(self.job_wait);
     }
 
     /// Takes the job's result when it is there (waiting up to `wait`), puts the session back and
     /// does what the work's outcome asks for. A job whose thread died without sending the session
-    /// back (it can't panic: the engine guards it) leaves an empty session, and says so.
+    /// back (it can't panic: the engine guards it) leaves the copy the window drew from, which
+    /// reads and saves nothing, and says so; what waited is dropped.
     pub(crate) fn poll(&mut self, wait: Duration) {
         let Some(job) = &self.job else { return };
         match job.done.recv_timeout(wait) {
@@ -262,11 +287,13 @@ impl App {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 let label = self.job.take().map_or(String::new(), |j| j.label);
+                // What waited was for the case that is gone.
+                self.queue.clear();
                 self.revision += 1;
                 self.log_entry(crate::Entry {
                     command: "job".to_string(),
                     ok: false,
-                    message: format!("{label}: its thread stopped; the case is closed"),
+                    message: format!("{label}: its thread stopped; the case can't be read or saved now: open it again"),
                     data: Value::Null,
                 });
                 self.reset_shown();
@@ -274,19 +301,61 @@ impl App {
         }
     }
 
-    /// Whether a job runs (the window shows it, and nothing else can start).
+    /// Whether a job runs (the session is away: the window draws from a copy of it).
     pub fn busy(&self) -> bool {
         self.job.is_some()
     }
 
-    /// Whether work that can't be cancelled (it writes) runs.
+    /// Whether opening or saving the case runs or waits: the window is taken from then on, so
+    /// that nothing asked meanwhile acts on the case it opens instead of the one shown.
+    pub fn modal_busy(&self) -> bool {
+        self.job.as_ref().is_some_and(|j| j.modal) || self.queue.iter().any(modal)
+    }
+
+    /// What takes the window once the job running ends (an open or save waiting behind it).
+    pub(crate) fn modal_waiting(&self) -> Option<String> {
+        self.queue.iter().find(|w| modal(w)).map(label)
+    }
+
+    /// Whether work that can't be cancelled (it writes) runs or waits.
     pub fn writing(&self) -> bool {
-        self.job.as_ref().is_some_and(|j| !j.cancellable) || self.pending.as_ref().is_some_and(|w| !cancellable(w))
+        self.job.as_ref().is_some_and(|j| !j.cancellable) || self.queue.iter().any(|w| !cancellable(w))
     }
 
     /// Whether work is queued or running.
     pub fn working(&self) -> bool {
-        self.job.is_some() || self.pending.is_some()
+        self.job.is_some() || !self.queue.is_empty()
+    }
+
+    /// Whether `card`'s command runs or waits: the card is shown but can't be changed.
+    pub(crate) fn card_busy(&self, card: Card) -> bool {
+        let of = |w: &Work| matches!(w, Work::Command { then: Then::Card(c), .. } if *c == card);
+        self.job.as_ref().is_some_and(|j| of(&j.work)) || self.queue.iter().any(of)
+    }
+
+    /// The job running, for the status bar: what it is, how far it is (a fraction where it
+    /// knows its steps), what it has read, whether *Cancel* applies and was pressed, and how
+    /// much waits after it.
+    pub(crate) fn progress(&self) -> Option<Progress> {
+        let job = self.job.as_ref()?;
+        let (done, total, bytes) = job.cancel.progress().get();
+        let fraction = (total > 0).then(|| (done as f32 / total as f32).clamp(0.0, 1.0));
+        let mut detail = Vec::new();
+        if total > 0 {
+            detail.push(format!("{done} of {total}"));
+        }
+        if bytes > 0 {
+            detail.push(megabytes(bytes));
+        }
+        detail.push(format!("{} s", job.started.elapsed().as_secs()));
+        Some(Progress {
+            label: job.label.clone(),
+            fraction,
+            detail: detail.join(" · "),
+            cancellable: job.cancellable,
+            cancelling: job.cancelling(),
+            queued: self.queue.len(),
+        })
     }
 
     /// Starts building the scene shown, as the 3D view would (tests).
@@ -307,11 +376,14 @@ impl App {
         self.finish(Work::History { done: 0 }, Done::History(steps));
     }
 
-    /// Starts what is queued and waits for it to finish (tests, screenshots).
+    /// Starts what is queued and waits till all of it has run (tests, screenshots).
     pub fn wait_for_job(&mut self) {
-        self.launch();
-        while self.job.is_some() {
-            self.poll(Duration::from_millis(50));
+        // A job that couldn't start a thread runs in place: the queue may still hold work.
+        while self.working() {
+            self.launch();
+            while self.job.is_some() {
+                self.poll(Duration::from_millis(50));
+            }
         }
     }
 
@@ -324,6 +396,9 @@ impl App {
                     self.scene_built = None;
                 }
                 let result = self.after(&id, result);
+                if id == "case.open" && result.is_ok() {
+                    self.after_open();
+                }
                 match (then, result) {
                     (Then::Nothing, _) => {}
                     // Cancelled on purpose: no card to say so again.
@@ -372,6 +447,20 @@ impl App {
             }
             // A job gives back what its work makes.
             (Work::Command { .. } | Work::Scene { .. } | Work::History { .. }, _) => {}
+        }
+    }
+
+    /// What follows opening a case whose fields are listed only: the 3D view's scene is read
+    /// first, so the case shows at once, then the fields, while the view is in use.
+    pub(crate) fn after_open(&mut self) {
+        if self.session.case().is_some_and(|c| c.fields_pending) {
+            // Before anything asked already: it is for the case opened.
+            self.queue.push_front(Work::Command {
+                id: "case.fields".into(),
+                params: serde_json::json!({}),
+                then: Then::Nothing,
+            });
+            self.queue.push_front(Work::Scene { params: self.shown() });
         }
     }
 

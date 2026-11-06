@@ -1433,3 +1433,12 @@ fn a_field_whose_length_differs_from_the_mesh_is_an_error() {
     fs.insert("constant/air/polyMesh/owner", owner("written by hand"));
     assert!(errors(&fs).iter().all(|d| d.code != "field.size"));
 }
+
+#[test]
+fn fields_not_read_yet_are_noted_not_judged() {
+    let fs = case();
+    let options = umcf_model::OpenOptions { defer_fields: true, ..Default::default() };
+    let c = Case::open_with(&complete(&fs), options).unwrap();
+    let codes: Vec<_> = check(&c).into_iter().map(|d| (d.level, d.code)).collect();
+    assert_eq!(codes, [(Level::Info, "fields.pending")]);
+}
