@@ -113,6 +113,7 @@ fn word<'a>(id: &str, what: &str, w: &'a str) -> Result<&'a str, Error> {
     Ok(w)
 }
 
+/// `patch.set`.
 fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SET.id;
     let p = Params::new(id, p, &["patches", "name", "type", "groups", "entries"])?;
@@ -326,6 +327,7 @@ fn patches(s: &Session, p: &Params) -> Result<Vec<(String, String)>, Error> {
     Ok(out)
 }
 
+/// `patch.create`.
 fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = CREATE.id;
     let p = Params::new(id, p, &["region", "name", "type", "groups", "entries", "faces", "box", "surface", "from"])?;

@@ -280,21 +280,6 @@ impl Object {
     pub fn bvh(&self) -> &Bvh {
         self.bvh.get_or_init(|| Bvh::new(&self.points, &self.triangles))
     }
-
-    /// The object's points made relative to `to` instead of `from` (a scene's new origin); its
-    /// BVH is built again when it is next needed. Points that no longer fit in single precision
-    /// are not finite then, as when the object is built at `to`.
-    pub fn rebase(&mut self, from: Vec3, to: Vec3) {
-        if from == to {
-            return;
-        }
-        let shift = from - to;
-        for p in &mut self.points {
-            let w = Vec3::from_f32(*p) + shift;
-            *p = [w.x as f32, w.y as f32, w.z as f32];
-        }
-        self.bvh = OnceLock::new();
-    }
 }
 
 impl Scene {

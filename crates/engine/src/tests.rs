@@ -1779,10 +1779,34 @@ fn a_far_region_gets_an_origin_of_its_own() {
     // Exact: the points are within a metre of the origin.
     let b = scene.bbox().unwrap();
     assert_eq!((b.min.x, b.max.x, b.min.y, b.max.y), (2.6e6, 2_600_001.0, 1.2e6, 1_200_001.0));
-    // Both: air, kept from before and moved to the scene's origin, is still where it was.
+    // Both: air is where it was.
     let scene = s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();
     let air = scene.objects.iter().find(|o| o.label() == "mesh air").unwrap().bbox(scene.origin).unwrap();
     assert!(air.min.x.abs() < 0.5 && (air.max.x - 1.0).abs() < 0.5, "{air:?}");
+}
+
+/// Shown, hidden while the origin is far away, and shown again: a region's points are as exact
+/// as the first time. It is read again, never moved away and back in single precision.
+#[test]
+fn a_region_back_from_far_away_is_exact() {
+    let mut fs = two_region_fs();
+    let h = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class vectorField;\n}\n";
+    let corners: String = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+        .iter()
+        .map(|(x, y, z)| format!("({} {} {z})\n", 2_600_000 + x, 1_200_000 + y))
+        .collect();
+    fs.insert("constant/ground/polyMesh/points", format!("{h}8\n(\n{corners})\n"));
+    // Air's points a fraction of a millimetre from whole numbers: lost at 2.6e6 m in f32.
+    let fine = umcf_core::CaseFs::read(&fs, "constant/air/polyMesh/points", 1 << 20).unwrap().unwrap();
+    fs.insert("constant/air/polyMesh/points", String::from_utf8(fine).unwrap().replace("(1 ", "(1.0003 "));
+    let (mut s, reads) = counting_session(fs);
+    let air_points = |s: &mut Session| s.scene(&json!({ "regions": ["air"] })).unwrap().objects[0].points.clone();
+    let first = air_points(&mut s);
+    // Relative to the origin (the box's middle): 1.0003 is 0.50015 from it.
+    assert!(first.iter().any(|p| p[0] == 0.50015_f32), "{first:?}");
+    s.scene(&json!({ "regions": ["ground"] })).unwrap();
+    assert_eq!(air_points(&mut s), first);
+    assert_eq!(reads.lock().unwrap().get("constant/air/polyMesh/points"), Some(&2));
 }
 
 /// Undo and redo of a rename in a region that is hidden in between show the right names.

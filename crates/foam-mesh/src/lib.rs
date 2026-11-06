@@ -62,6 +62,7 @@ pub struct Limits {
 }
 
 impl Default for Limits {
+    /// Limits for real meshes: 16 GB a file, as many elements as a label holds.
     fn default() -> Self {
         Limits { max_bytes: 16 << 30, max_elements: u32::MAX as usize, max_uniform: 1 << 20 }
     }
@@ -81,10 +82,12 @@ pub struct Patch {
 }
 
 impl Patch {
+    /// The labels of the patch's faces.
     pub fn faces(&self) -> std::ops::Range<usize> {
         self.start_face..self.start_face + self.n_faces
     }
 
+    /// The entry `key` of the patch (`neighbourRegion`, `samplePatch`, …), as compact text.
     pub fn param(&self, key: &str) -> Option<&str> {
         self.params.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
@@ -147,6 +150,7 @@ pub fn parse_set(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
     parse_set_text(path, bytes, limits)
 }
 
+/// A set file's text: its class and its labels.
 fn parse_set_text(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
     let (mut header, end) = umcf_foam_field::read_header_end(bytes)?;
     header.format = umcf_foam_field::Format::Ascii;
@@ -185,6 +189,7 @@ fn read_file(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<
     Ok(None)
 }
 
+/// The bytes of `dir/name` or `dir/name.gz`, decompressed; an error when neither exists.
 fn require(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<(String, Vec<u8>)> {
     read_file(fs, dir, name, limits)?.ok_or_else(|| Error::Missing { file: format!("{dir}/{name}") })
 }
@@ -198,6 +203,7 @@ fn open<'a>(path: &'a str, bytes: &'a [u8]) -> Result<(umcf_foam_field::Header, 
 }
 
 impl PolyMesh {
+    /// Reads and checks the mesh in `dir` (`constant/air/polyMesh`): every file, the internal faces and cells too.
     pub fn read(fs: &(dyn CaseFs + Sync), dir: &str, limits: &Limits) -> Result<PolyMesh> {
         let points = || -> Result<Vec<[f64; 3]>> {
             let (path, bytes) = require(fs, dir, "points", limits)?;
@@ -256,18 +262,22 @@ impl PolyMesh {
         Ok(mesh)
     }
 
+    /// How many points the mesh has.
     pub fn n_points(&self) -> usize {
         self.points.len()
     }
 
+    /// How many faces the mesh has.
     pub fn n_faces(&self) -> usize {
         self.face_offsets.len().saturating_sub(1)
     }
 
+    /// How many faces lie between two cells.
     pub fn n_internal_faces(&self) -> usize {
         self.neighbour.len()
     }
 
+    /// How many cells the mesh has.
     pub fn n_cells(&self) -> usize {
         self.n_cells
     }
@@ -279,10 +289,12 @@ impl PolyMesh {
         self.face_points.get(start..end)
     }
 
+    /// The patch called `name`.
     pub fn patch(&self, name: &str) -> Option<&Patch> {
         self.boundary.iter().find(|p| p.name == name)
     }
 
+    /// The cell zone called `name`.
     pub fn cell_zone(&self, name: &str) -> Option<&Zone> {
         self.cell_zones.iter().find(|z| z.name == name)
     }
@@ -517,22 +529,27 @@ fn list_start(text: &[u8], limits: &Limits) -> Result<Start> {
 /// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
 /// label in the whole mesh, and the patches.
 pub trait Boundary {
+    /// The mesh's points, by label.
     fn points(&self) -> &[[f64; 3]];
     /// The point labels of face `i` (a label in the whole mesh); `None` for a face this mesh
     /// doesn't hold.
     fn face(&self, i: usize) -> Option<&[u32]>;
+    /// The boundary patches, as `boundary` lists them.
     fn patches(&self) -> &[Patch];
 }
 
 impl Boundary for PolyMesh {
+    /// The mesh's points, by label.
     fn points(&self) -> &[[f64; 3]] {
         &self.points
     }
 
+    /// The point labels of face `i`.
     fn face(&self, i: usize) -> Option<&[u32]> {
         PolyMesh::face(self, i)
     }
 
+    /// The boundary patches.
     fn patches(&self) -> &[Patch] {
         &self.boundary
     }
@@ -554,6 +571,7 @@ pub struct BoundaryMesh {
 }
 
 impl BoundaryMesh {
+    /// Reads and checks the boundary of the mesh in `dir`: its patches, points and boundary faces.
     pub fn read(fs: &(dyn CaseFs + Sync), dir: &str, limits: &Limits) -> Result<BoundaryMesh> {
         let (_, bytes) = require(fs, dir, "boundary", limits)?;
         let boundary = parse_boundary(&bytes)?;
@@ -612,6 +630,7 @@ impl BoundaryMesh {
         Ok(mesh)
     }
 
+    /// How many points the mesh has.
     pub fn n_points(&self) -> usize {
         self.points.len()
     }
@@ -635,6 +654,7 @@ impl BoundaryMesh {
         self.face_points.get(start..end)
     }
 
+    /// The checks the boundary allows (see the type): `n_faces` is the faces file's count.
     fn check(&self, n_faces: usize) -> Result<()> {
         let bad = |m: String| Err(Error::Inconsistent(m));
         if self.first > n_faces {
@@ -667,14 +687,17 @@ impl BoundaryMesh {
 }
 
 impl Boundary for BoundaryMesh {
+    /// The mesh's points, by label.
     fn points(&self) -> &[[f64; 3]] {
         &self.points
     }
 
+    /// The point labels of face `i`.
     fn face(&self, i: usize) -> Option<&[u32]> {
         BoundaryMesh::face(self, i)
     }
 
+    /// The boundary patches.
     fn patches(&self) -> &[Patch] {
         &self.boundary
     }
