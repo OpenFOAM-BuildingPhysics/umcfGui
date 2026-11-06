@@ -37,6 +37,9 @@ impl CaseFs for Overlay {
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         self.disk.list(rel)
     }
+    fn is_link(&self, rel: &str) -> bool {
+        !self.written.contains_key(rel) && self.disk.is_link(rel)
+    }
     fn identity(&self, rel: &str) -> Option<std::path::PathBuf> {
         self.disk.identity(rel)
     }

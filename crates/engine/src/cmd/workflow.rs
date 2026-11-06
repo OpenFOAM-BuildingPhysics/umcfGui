@@ -92,7 +92,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "{PATH} is a link to another of the case's dictionaries: it isn't written over"
         )),
         umcf_model::Error::IsLink(_) => {
-            Error::Failed(format!("{PATH} is a link to another file: it isn't written over"))
+            Error::Failed(format!("{PATH} is a symbolic link (to a field, another file or nothing): it isn't written over"))
         }
         umcf_model::Error::NotLoaded { .. } => match elsewhere {
             OnDisk::NotOpen => Error::Failed(format!(

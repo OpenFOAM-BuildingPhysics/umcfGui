@@ -155,8 +155,8 @@ from another (the street canyon's vegetation) is not described yet: its steps ar
 `workflow.show` returns the description, read from the file or, when the case has none, as the
 import would write it; it also says when a file is there that doesn't load (not a dictionary, a
 directory, or over the size limit), or one the open case doesn't hold (written or undone since it was opened).
-`workflow.import` writes over neither, nor a file that is a link to another (a dictionary, a
-field: the save would change that file); with `replace` it writes over the case's own, whose
+`workflow.import` writes over neither, nor a symbolic link (to a dictionary, a field or
+nothing: the save would write the file it points to); with `replace` it writes over the case's own, whose
 comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
 commands show in the results card the problems and the import's notes first, then the settings
 (version, radiation, solver), then the regions with their meshes, steps and patch roles. The case
