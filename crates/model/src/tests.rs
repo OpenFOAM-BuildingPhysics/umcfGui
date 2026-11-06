@@ -616,6 +616,66 @@ fn files_put_by_commands_are_saved_with_checks_and_backups() {
     assert!(matches!(c.put_file(&fs, "system/controlDict", Vec::new()), Err(Error::IsDict(_))));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_file_isnt_put_through_a_link() {
+    let root = std::env::temp_dir().join(format!("umcf-model-put-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut fs = umcf_core::DirFs::new(&root);
+    std::fs::create_dir_all(root.join("constant/triSurface")).unwrap();
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write("0/air/U", b"the field").unwrap();
+    fs.write("shared/box.stl", b"solid box\nendsolid box\n").unwrap();
+    std::os::unix::fs::symlink("../../0/air/U", root.join("constant/triSurface/u.stl")).unwrap();
+    std::os::unix::fs::symlink("../../shared/box.stl", root.join("constant/triSurface/box.stl")).unwrap();
+    std::os::unix::fs::symlink("../../gone.stl", root.join("constant/triSurface/gone.stl")).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    let results: Vec<_> = ["u.stl", "box.stl", "gone.stl"]
+        .iter()
+        .map(|n| c.put_file(&fs, &format!("constant/triSurface/{n}"), b"solid x\nendsolid x\n".to_vec()))
+        .collect();
+    // A linked directory on the way is followed, as for any save.
+    std::os::unix::fs::symlink("../shared", root.join("constant/linked")).unwrap();
+    let through_dir = c.put_file(&fs, "constant/linked/new.stl", b"solid n\nendsolid n\n".to_vec());
+    let saved = c.save(&mut fs, None);
+    let u = std::fs::read(root.join("0/air/U")).unwrap();
+    let shared = std::fs::read(root.join("shared/box.stl")).unwrap();
+    let gone = root.join("gone.stl").exists();
+    let new = std::fs::read(root.join("shared/new.stl")).unwrap_or_default();
+    std::fs::remove_dir_all(&root).unwrap();
+    for r in &results {
+        assert!(matches!(r, Err(Error::IsLink(_))), "{r:?}");
+    }
+    assert!(through_dir.is_ok(), "{through_dir:?}");
+    assert_eq!(saved.unwrap(), ["constant/linked/new.stl"]);
+    assert_eq!(u, b"the field");
+    assert_eq!(shared, b"solid box\nendsolid box\n");
+    assert!(!gone);
+    assert_eq!(new, b"solid n\nendsolid n\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_isnt_saved_through_a_link_made_after_it_was_put() {
+    let root = std::env::temp_dir().join(format!("umcf-model-save-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut fs = umcf_core::DirFs::new(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write("constant/triSurface/box.stl", b"solid box\nendsolid box\n").unwrap();
+    fs.write("shared/box.stl", b"solid box\nendsolid box\n").unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.put_file(&fs, "constant/triSurface/box.stl", b"solid fixed\nendsolid fixed\n".to_vec()).unwrap();
+    // Replaced by hand with a link to a file of the same bytes: not a conflict, but a link.
+    std::fs::remove_file(root.join("constant/triSurface/box.stl")).unwrap();
+    std::os::unix::fs::symlink("../../shared/box.stl", root.join("constant/triSurface/box.stl")).unwrap();
+    let saved = c.save(&mut fs, None);
+    let shared = std::fs::read(root.join("shared/box.stl")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(saved, Err(Error::IsLink(_))), "{saved:?}");
+    assert_eq!(shared, b"solid box\nendsolid box\n");
+}
+
 #[test]
 fn a_file_changed_on_disk_after_undo_is_the_new_base() {
     let mut fs = case().with("constant/triSurface/box.stl", "v1");

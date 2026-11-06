@@ -68,7 +68,7 @@ pub enum Error {
     BadFile(String),
     #[error("{0} is one of the case's dictionaries: it is edited entry by entry, not replaced")]
     IsDict(String),
-    #[error("{0} is a link to another file: writing it would change that file")]
+    #[error("{0} is a symbolic link: writing it would write the file it points to")]
     IsLink(String),
     #[error("{0} is there already: give replace to write over it")]
     Exists(String),
@@ -187,6 +187,12 @@ struct Fingerprint {
     hash: u64,
 }
 
+/// Refuses `rel` when it is a symbolic link: what is put there is written to the file the link
+/// points to. A linked directory on the way is followed, as for any save.
+fn unlinked(fs: &dyn CaseFs, rel: &str) -> Result<()> {
+    if fs.is_link(rel) { Err(Error::IsLink(rel.to_string())) } else { Ok(()) }
+}
+
 fn fingerprint(bytes: &[u8]) -> Fingerprint {
     use std::hash::Hasher;
     // `DefaultHasher::new` has fixed keys: the same bytes hash the same within a session.
@@ -227,6 +233,9 @@ struct RawFile {
     /// The file on disk this one was made from (`None`: there was none). Saving over that file,
     /// or over what this session last saved there, is not a conflict.
     base: Option<Fingerprint>,
+    /// Put whole ([`Case::put_file`]), not an edit of the file there: never written through a
+    /// link, which the save checks again.
+    whole: bool,
 }
 
 /// The bytes a command edits a file from, and the fingerprint of the file they came from.
@@ -805,14 +814,9 @@ impl Case {
         if self.resolve(rel) != rel || self.aliases.values().any(|p| p == rel) {
             return Err(Error::IsDict(rel.to_string()));
         }
-        // A link to a file that isn't one of the loaded dictionaries (a field, a script): the
-        // save would write through it. Only the file at its own path is written.
-        let own = std::path::Path::new(rel).parent().zip(std::path::Path::new(rel).file_name());
-        if let Some(id) = fs.identity(rel)
-            && own.and_then(|(dir, name)| fs.identity(&dir.to_string_lossy()).map(|d| d.join(name))) != Some(id)
-        {
-            return Err(Error::IsLink(rel.to_string()));
-        }
+        // A link to a file that isn't one of the loaded dictionaries (a field, a script), or to
+        // nothing: the save would write through it.
+        unlinked(fs, rel)?;
         if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel) || fs.is_dir(rel)) {
             // On disk but not loaded (not a dictionary): not written over, with or without
             // `replace`; the file is mended or removed by hand.
@@ -968,6 +972,9 @@ impl Case {
     /// [`MAX_FILE_BYTES`].
     pub fn put_file(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
         self.puttable(rel)?;
+        // A whole new file, not an edit of the one there: a link (to a field, another surface,
+        // nothing) would carry it to another file.
+        unlinked(fs, rel)?;
         let base = match self.raw.get(rel) {
             Some(f) => f.base,
             None => match self.saved_over(rel) {
@@ -975,7 +982,11 @@ impl Case {
                 None => fs.read(rel, MAX_FILE_BYTES)?.map(|b| fingerprint(&b)),
             },
         };
-        self.put_based(rel, bytes, base)
+        self.put_based(rel, bytes, base)?;
+        if let Some(f) = self.raw.get_mut(rel) {
+            f.whole = true;
+        }
+        Ok(())
     }
 
     /// [`Case::put_file`] with the fingerprint of the file the new bytes were made from.
@@ -987,7 +998,9 @@ impl Case {
             );
         }
         let fingerprint = fingerprint(&bytes);
-        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base });
+        // An edit of a file put whole is still a file put whole.
+        let whole = self.raw.get(rel).is_some_and(|f| f.whole);
+        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base, whole });
         Ok(())
     }
 
@@ -2004,6 +2017,14 @@ impl Case {
         // 1. Check them all before writing anything.
         let mut plan = Vec::new();
         for rel in changed {
+            // A file put whole that became a link since (by hand, with the same bytes, so not a
+            // conflict): the save would write the file it points to. A description read from
+            // disk and edited entry by entry is a dictionary like the others: written through.
+            let new_description = rel == description::PATH && !lock(&self.disk).files.contains_key(&rel);
+            let whole = new_description || self.raw.get(&rel).is_some_and(|f| f.whole);
+            if whole && fs.is_link(&rel) {
+                return Err(Error::IsLink(rel));
+            }
             if let Some(doc) = self.files.get(&rel) {
                 let original = lock(&self.disk).files.get(&rel).map(|d| Arc::clone(&d.bytes));
                 let limit = self.options.dict_bytes.max(original.as_ref().map_or(0, |b| b.len() as u64));

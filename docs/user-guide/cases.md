@@ -100,6 +100,7 @@ Saving writes only the dictionaries that changed:
    the error names the files that were already saved.
 
 A symlinked dictionary is written through its link, but only if the link (or a linked
-directory on the way) points inside the case. A hard-linked file is replaced, so its other
-links keep the old text. Undo after a save shows the restored text as a change, to be saved
-again.
+directory on the way) points inside the case. A file a command writes whole (a surface, a face
+set, the description `workflow.import` writes) is never written through a link: it is refused.
+A hard-linked file is replaced, so its other links keep the old text. Undo after a save shows
+the restored text as a change, to be saved again.

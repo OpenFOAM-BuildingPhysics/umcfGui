@@ -144,6 +144,11 @@ after a backup of the file each replaces, and refuses to overwrite a file that c
 since the change was made from it. Until then, `edit.undo` takes a change back; after a save,
 undo doesn't put the old file back on disk.
 
+A surface that is a symbolic link (to a field, a shared surface, or nothing) is not written,
+neither by the command nor by the save if the link appeared since: the save would write the file
+it points to. A linked directory, such as a shared `constant/triSurface`, is followed as for any
+save.
+
 ## On the command line
 
 ```sh

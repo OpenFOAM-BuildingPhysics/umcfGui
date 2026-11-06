@@ -431,4 +431,38 @@ fn a_description_linked_to_another_dictionary_is_not_written() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(matches!(r, Err(crate::Error::IsLink(_))), "{r:?}");
     assert!(c.changed().is_empty());
+
+    // A link to nothing: not put, so the save can't fail on it or create the file it names.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    std::os::unix::fs::symlink("../0/air/gone", root.join(PATH)).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    let r = c.put_description(&fs, "regions { }\n", false);
+    let created = root.join("0/air/gone").exists();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(matches!(r, Err(crate::Error::IsLink(_))), "{r:?}");
+    assert!(c.changed().is_empty() && !created);
+
+    // A linked description read from disk is a dictionary like the others: an entry edit is
+    // saved through the link, with the other changes.
+    let root = std::env::temp_dir().join(format!("umcf-model-description-alias5-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut fs = DirFs::new(&root);
+    fs.write("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")).as_bytes()).unwrap();
+    fs.write("shared/umcfWorkflow", format!("{}version 8;\n", header("dictionary", "umcfWorkflow")).as_bytes())
+        .unwrap();
+    std::os::unix::fs::symlink("../shared/umcfWorkflow", root.join(PATH)).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.set(PATH, &["version"], "12").unwrap();
+    c.set("system/controlDict", &["endTime"], "2").unwrap();
+    let saved = c.save(&mut fs, None);
+    let shared = std::fs::read_to_string(root.join("shared/umcfWorkflow")).unwrap();
+    let linked = std::fs::symlink_metadata(root.join(PATH)).unwrap().file_type().is_symlink();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(saved.unwrap(), ["system/controlDict", PATH]);
+    assert!(shared.contains("version 12;") && linked, "{shared}");
 }

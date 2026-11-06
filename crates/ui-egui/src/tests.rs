@@ -392,6 +392,9 @@ impl CaseFs for Watched {
     fn is_dir(&self, rel: &str) -> bool {
         self.fs.is_dir(rel)
     }
+    fn is_link(&self, rel: &str) -> bool {
+        self.fs.is_link(rel)
+    }
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         self.surface(rel);
         if rel.starts_with("constant/triSurface") && self.unreadable.load(Ordering::SeqCst) {

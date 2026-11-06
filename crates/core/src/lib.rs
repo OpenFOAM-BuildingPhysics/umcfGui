@@ -69,6 +69,12 @@ pub trait CaseFs {
         Some(PathBuf::from(rel))
     }
 
+    /// Whether `rel` itself is a symbolic link, whether or not what it points to exists (a
+    /// linked directory on the way doesn't count).
+    fn is_link(&self, _rel: &str) -> bool {
+        false
+    }
+
     /// How many hard links the file has (1 for a plain file). A save replaces the file at one
     /// path, so the other links keep the old text.
     fn hard_links(&self, _rel: &str) -> u64 {
@@ -134,6 +140,10 @@ impl CaseFs for DirFs {
 
     fn identity(&self, rel: &str) -> Option<PathBuf> {
         std::fs::canonicalize(self.path(rel)?).ok()
+    }
+
+    fn is_link(&self, rel: &str) -> bool {
+        self.path(rel).and_then(|p| std::fs::symlink_metadata(p).ok()).is_some_and(|m| m.file_type().is_symlink())
     }
 
     #[cfg(unix)]
@@ -331,6 +341,9 @@ mod tests {
             std::fs::write(root.join("shared"), b"old").unwrap();
             std::os::unix::fs::symlink(root.join("shared"), root.join("system/link")).unwrap();
             d.write("system/link", b"new").unwrap();
+            assert!(d.is_link("system/link") && !d.is_link("shared") && !d.is_link("none"));
+            std::os::unix::fs::symlink("nowhere", root.join("system/dangling")).unwrap();
+            assert!(d.is_link("system/dangling"), "a link to nothing is a link");
             assert!(std::fs::symlink_metadata(root.join("system/link")).unwrap().file_type().is_symlink());
             assert_eq!(std::fs::read(root.join("shared")).unwrap(), b"new");
             // A link out of the case is refused, and the file it points to is untouched.

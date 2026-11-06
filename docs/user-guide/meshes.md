@@ -253,7 +253,8 @@ createPatch -region air -dict system/createPatchDict.umcf -overwrite       # Ope
   case) as `{ name …; patchInfo { type …; inGroups …; … } constructFrom set; set …; }`, after the
   patches prepared there before. That dictionary holds the patches prepared on the mesh as it is:
   a face set holds face labels, which hold for this mesh only. The case's own `createPatchDict`,
-  which its scripts may run after meshing, isn't touched.
+  which its scripts may run after meshing, isn't touched. A face set that is a symbolic link is
+  not written over.
 - **The mesh doesn't change yet**: the patches are made when `createPatch -region <region> -dict
   … -overwrite` runs, once, on this mesh; delete the dictionary then. The command says the line
   for the case's OpenFOAM version (`patch.run`): OpenFOAM-12 takes the path from the case
