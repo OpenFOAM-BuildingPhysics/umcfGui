@@ -957,8 +957,12 @@ fn malformed_points_make_the_whole_readers_error() {
     let text = points_text(50_000);
     let half = text.len() / 2;
     for bad in [
-        // A word for a number, deep in the file.
-        text.replacen(" 1e-7 1)", " 1e-7 x)", 2).replacen(" 1e-7 x)", " 1e-7 1)", 1),
+        // A word for a number, deep in the file (its last vector of that form, chunks in).
+        {
+            let at = text.rfind(" 1e-7 1)").unwrap();
+            assert!(at > 1 << 20);
+            format!("{} 1e-7 x){}", &text[..at], &text[at + " 1e-7 1)".len()..])
+        },
         // One vector fewer than the count, one more.
         text.replacen("50000\n", "50001\n", 1),
         text.replacen("50000\n", "49999\n", 1),

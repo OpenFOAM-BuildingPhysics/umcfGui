@@ -401,6 +401,7 @@ mod tests {
     fn a_reader_streams_the_file() {
         use std::io::Read;
         let root = std::env::temp_dir().join(format!("umcf-core-reader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("d")).unwrap();
         std::fs::write(root.join("d/f"), b"0123456789").unwrap();
         let fs = DirFs::new(&root);
@@ -427,10 +428,12 @@ mod tests {
     fn a_reader_doesnt_open_a_named_pipe() {
         // Opening a pipe for reading waits for a writer: it isn't a file, so it isn't opened.
         let root = std::env::temp_dir().join(format!("umcf-core-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let made = std::process::Command::new("mkfifo").arg(root.join("p")).status();
         if !made.is_ok_and(|s| s.success()) {
             eprintln!("SKIP a_reader_doesnt_open_a_named_pipe: no mkfifo");
+            let _ = std::fs::remove_dir_all(&root);
             return;
         }
         let fs = DirFs::new(&root);
