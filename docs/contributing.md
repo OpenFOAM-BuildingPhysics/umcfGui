@@ -12,7 +12,8 @@ The short version:
 - **The solver is the spec.** Read the urbanMicroclimateFoam source freely; ported code keeps
   its copyright line and names its source file and commit.
 - **Pull requests** target `main`, never another pull request; each push is first reviewed by
-  someone other than its author, a CodeRabbit review must cover the head, and the maintainer merges (AGENTS.md §9).
+  someone other than its author, a CodeRabbit review must cover the head, and the maintainer
+  merges (AGENTS.md §8).
 
 ## The solver source
 
