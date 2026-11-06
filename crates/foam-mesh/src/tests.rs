@@ -1013,3 +1013,84 @@ fn malformed_internal_faces_make_the_whole_readers_error() {
         assert!(a != "?" && a == b, "{a} / {b}");
     }
 }
+
+/// A file system whose readers hand out `step` bytes at a time, so that a chunk of the stream
+/// ends anywhere.
+struct Trickle {
+    fs: MemFs,
+    step: usize,
+}
+
+struct Drip {
+    bytes: std::io::Cursor<Vec<u8>>,
+    step: usize,
+}
+
+impl std::io::Read for Drip {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.step);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+impl CaseFs for Trickle {
+    fn read(&self, rel: &str, limit: u64) -> std::result::Result<Option<Vec<u8>>, umcf_core::FsError> {
+        self.fs.read(rel, limit)
+    }
+    fn reader(
+        &self,
+        rel: &str,
+        limit: u64,
+    ) -> std::result::Result<Option<Box<dyn std::io::Read + Send>>, umcf_core::FsError> {
+        let step = self.step;
+        Ok(self
+            .fs
+            .read(rel, limit)?
+            .map(|b| Box::new(Drip { bytes: std::io::Cursor::new(b), step }) as Box<dyn std::io::Read + Send>))
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> std::result::Result<Vec<String>, umcf_core::FsError> {
+        self.fs.list(rel)
+    }
+}
+
+#[test]
+fn streams_split_anywhere_read_as_the_whole_file() {
+    let d = "constant/air/polyMesh";
+    let points = "FoamFile { format ascii; class vectorField; object points; }\n// x\n/* y */ 2\n((1 2 3)\n(4 5 6) )\n";
+    let faces =
+        "FoamFile { format ascii; class faceList; object faces; }\n// x\n3\n(\n3(0 1 2)\n 4 (0 1 2 3)\n3(1 2 3)\n)\n";
+    let fs = MemFs::new().with(&format!("{d}/points"), points).with(&format!("{d}/faces"), faces);
+    let l = Limits::default();
+    for step in 1..40 {
+        let t = Trickle { fs: fs.clone(), step };
+        let mut s = stream::Stream::open(&t, d, "points", &l).unwrap().unwrap();
+        // Taken by the stream, wherever its chunks end, and the same as the whole file.
+        let got = stream::vectors(&mut s, &l).unwrap().unwrap_or_else(|| panic!("{step}: not streamed"));
+        assert_eq!(got, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "{step}");
+        for skip in 0..4 {
+            let mut s = stream::Stream::open(&t, d, "faces", &l).unwrap().unwrap();
+            let got =
+                stream::face_list_from(&mut s, skip, &l).unwrap().unwrap_or_else(|| panic!("{step}: not streamed"));
+            let want = open("f", faces.as_bytes()).unwrap().1.face_list_from(&l, skip).unwrap();
+            assert_eq!(got, want, "{step}, skip {skip}");
+        }
+    }
+}
+
+#[test]
+fn a_skipped_face_too_large_makes_the_whole_readers_error() {
+    let d = "constant/air/polyMesh";
+    let faces =
+        "FoamFile { format ascii; class faceList; object faces; }\n2\n(\n99999999999999999999999(0 1 2)\n3(1 2 3)\n)\n";
+    let l = Limits::default();
+    let fs = MemFs::new().with(&format!("{d}/faces"), faces);
+    let mut s = stream::Stream::open(&fs, d, "faces", &l).unwrap().unwrap();
+    assert!(matches!(stream::face_list_from(&mut s, 1, &l), Err(Error::Bad { .. })));
+    assert!(open("f", faces.as_bytes()).unwrap().1.face_list_from(&l, 1).is_err());
+}

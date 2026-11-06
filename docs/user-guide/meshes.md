@@ -14,8 +14,8 @@ such as a meshing step, has `constant/polyMesh`). umcfGui reads the files OpenFO
 ASCII and binary (any `arch`), gzip-compressed or not, from OpenFOAM-8 and OpenFOAM-12. ASCII
 `points` (and, for the 3D view, `faces`) with a `FoamFile` header are parsed as they are read,
 compressed or not, so a big mesh's file is never held in memory whole, nor the text of its points
-or internal faces; one without a header, or a malformed one, is read again whole (and the error
-names its line).
+or internal faces. One the stream doesn't take (no header, a comment among the internal faces, a
+uniform list) or a malformed one is read again whole, and the error names its line.
 
 ## Checked before use
 

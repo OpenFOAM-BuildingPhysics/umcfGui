@@ -123,8 +123,9 @@ pub(crate) fn vectors(s: &mut Stream, limits: &Limits) -> Result<Option<Vec<[f64
     let Some((header, mut buf, open, n)) = s.list(&["vectorField"], limits)? else { return Ok(None) };
     let plain = Header { class: Some("vectorField".into()), ..header };
     let mut out: Vec<[f64; 3]> = Vec::new();
-    // Not more than a chunk could hold up front: the count is the file's word.
-    out.try_reserve_exact(n.min(CHUNK)).map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: n })?;
+    // Not more than a chunk could hold up front (a vector takes 7 bytes of text or more): the
+    // count is the file's word.
+    out.try_reserve_exact(n.min(CHUNK / 7)).map_err(|_| Error::TooLarge { what: "list (out of memory)", limit: n })?;
     let mut at = open;
     while out.len() < n {
         // The whole vectors read so far: each ends at its `)`, and no more than are still due
@@ -196,6 +197,7 @@ pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Re
     let mut passed = 0usize;
     let mut at = open;
     let mut state = Skip::Between;
+    let mut size: u64 = 0;
     while passed < skip {
         let rest = buf.get(at..).unwrap_or_default();
         let mut found = None;
@@ -224,7 +226,16 @@ pub(crate) fn face_list_from(s: &mut Stream, skip: usize, limits: &Limits) -> Re
             }
             state = match (state, c) {
                 (Skip::Between, c) if c.is_ascii_whitespace() => Skip::Between,
-                (Skip::Between | Skip::Count, c) if c.is_ascii_digit() => Skip::Count,
+                (Skip::Between | Skip::Count, c) if c.is_ascii_digit() => {
+                    // The face's size, within what the whole-file reader takes.
+                    let d = u64::from(c - b'0');
+                    let before = if let Skip::Count = state { size } else { 0 };
+                    size = before.checked_mul(10).and_then(|v| v.checked_add(d)).unwrap_or(u64::MAX);
+                    if size > limits.max_elements as u64 {
+                        return Err(bad(s, "a face's size is too large"));
+                    }
+                    Skip::Count
+                }
                 (Skip::Count | Skip::Open, c) if c.is_ascii_whitespace() => Skip::Open,
                 (Skip::Count | Skip::Open, b'(') => Skip::Labels,
                 _ => return Err(bad(s, "expected a face `k(a b c …)`")),
@@ -291,6 +302,9 @@ fn list_start(text: &[u8], limits: &Limits) -> Result<Start> {
                 Some(e) => k += e + 4,
                 None => return Ok(Start::NeedMore),
             }
+        } else if text.get(k) == Some(&b'/') && text.get(k + 1).is_none() {
+            // A comment's start, split from the rest.
+            return Ok(Start::NeedMore);
         } else {
             break;
         }
