@@ -5,6 +5,10 @@
 //! it: every index in range, list lengths consistent, the boundary patches covering exactly the
 //! boundary faces, and `nCells` matching the `owner` header. A mesh that fails a check is an
 //! error, never a panic later.
+//!
+//! [`BoundaryMesh::read`] reads only what the boundary needs (points, the boundary faces and
+//! the patches) for drawing and picking: no `owner`, no `neighbour`, and the internal faces are
+//! passed over, not kept. Both are [`Boundary`]s.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -58,6 +62,7 @@ pub struct Limits {
 }
 
 impl Default for Limits {
+    /// Limits for real meshes: 16 GB a file, as many elements as a label holds.
     fn default() -> Self {
         Limits { max_bytes: 16 << 30, max_elements: u32::MAX as usize, max_uniform: 1 << 20 }
     }
@@ -77,10 +82,12 @@ pub struct Patch {
 }
 
 impl Patch {
+    /// The labels of the patch's faces.
     pub fn faces(&self) -> std::ops::Range<usize> {
         self.start_face..self.start_face + self.n_faces
     }
 
+    /// The entry `key` of the patch (`neighbourRegion`, `samplePatch`, …), as compact text.
     pub fn param(&self, key: &str) -> Option<&str> {
         self.params.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
@@ -143,6 +150,7 @@ pub fn parse_set(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
     parse_set_text(path, bytes, limits)
 }
 
+/// A set file's text: its class and its labels.
 fn parse_set_text(path: &str, bytes: &[u8], limits: &Limits) -> Result<Set> {
     let (mut header, end) = umcf_foam_field::read_header_end(bytes)?;
     header.format = umcf_foam_field::Format::Ascii;
@@ -181,6 +189,7 @@ fn read_file(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<
     Ok(None)
 }
 
+/// The bytes of `dir/name` or `dir/name.gz`, decompressed; an error when neither exists.
 fn require(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<(String, Vec<u8>)> {
     read_file(fs, dir, name, limits)?.ok_or_else(|| Error::Missing { file: format!("{dir}/{name}") })
 }
@@ -194,6 +203,7 @@ fn open<'a>(path: &'a str, bytes: &'a [u8]) -> Result<(umcf_foam_field::Header, 
 }
 
 impl PolyMesh {
+    /// Reads and checks the mesh in `dir` (`constant/air/polyMesh`): every file, the internal faces and cells too.
     pub fn read(fs: &(dyn CaseFs + Sync), dir: &str, limits: &Limits) -> Result<PolyMesh> {
         let points = || -> Result<Vec<[f64; 3]>> {
             let (path, bytes) = require(fs, dir, "points", limits)?;
@@ -220,7 +230,7 @@ impl PolyMesh {
         // after the other where they don't (wasm). A probe thread tells which: a failed spawn
         // drops its job, so the real jobs only go to threads once one has run.
         let (points, faces, owner, neighbour) = std::thread::scope(|s| -> Result<_> {
-            let threads = std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok());
+            let threads = threads(s);
             if !threads {
                 return Ok((points()?, faces()?, owner()?, neighbour()?));
             }
@@ -252,18 +262,22 @@ impl PolyMesh {
         Ok(mesh)
     }
 
+    /// How many points the mesh has.
     pub fn n_points(&self) -> usize {
         self.points.len()
     }
 
+    /// How many faces the mesh has.
     pub fn n_faces(&self) -> usize {
         self.face_offsets.len().saturating_sub(1)
     }
 
+    /// How many faces lie between two cells.
     pub fn n_internal_faces(&self) -> usize {
         self.neighbour.len()
     }
 
+    /// How many cells the mesh has.
     pub fn n_cells(&self) -> usize {
         self.n_cells
     }
@@ -275,10 +289,12 @@ impl PolyMesh {
         self.face_points.get(start..end)
     }
 
+    /// The patch called `name`.
     pub fn patch(&self, name: &str) -> Option<&Patch> {
         self.boundary.iter().find(|p| p.name == name)
     }
 
+    /// The cell zone called `name`.
     pub fn cell_zone(&self, name: &str) -> Option<&Zone> {
         self.cell_zones.iter().find(|z| z.name == name)
     }
@@ -354,6 +370,406 @@ impl PolyMesh {
             }
         }
         Ok(max_cell)
+    }
+}
+
+/// The faces of a mesh from one face on: the number of all faces, then compact offsets and
+/// point labels of the faces kept.
+type FaceTail = (usize, Vec<u32>, Vec<u32>);
+
+/// A gzip-compressed ASCII `faceList` from face `skip` on, as `Reader::face_list_from`,
+/// decompressed as a stream: the text of the faces before `skip` is passed over as it comes and
+/// never kept. `Ok(None)` when the file is not an ASCII `faceList`, or its list doesn't start
+/// within the first few megabytes (then it is read whole).
+fn gz_face_list_from(path: &str, gz: &[u8], skip: usize, limits: &Limits) -> Result<Option<FaceTail>> {
+    use std::io::Read;
+    /// How far into the file the header and the list's `N (` may be.
+    const PREAMBLE: usize = 4 << 20;
+    let mut decoder = flate2::read::MultiGzDecoder::new(gz);
+    let mut chunk = vec![0u8; 1 << 20];
+    // Every decompressed byte is counted here, against the limit.
+    let mut seen: u64 = 0;
+    let mut fill = |buf: &mut Vec<u8>| -> Result<bool> {
+        let n = decoder.read(&mut chunk).map_err(|e| Error::Field(umcf_foam_field::Error::Gzip(e.to_string())))?;
+        seen = seen.saturating_add(n as u64);
+        if seen > limits.max_bytes {
+            return Err(Error::Field(umcf_foam_field::Error::TooLarge {
+                what: "decompressed file",
+                limit: limits.max_bytes,
+            }));
+        }
+        buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
+        Ok(n > 0)
+    };
+    // The header, then `N (`.
+    let mut buf = Vec::new();
+    let (header, end) = loop {
+        let more = fill(&mut buf)?;
+        if let Ok((h, Some(end))) = umcf_foam_field::read_header_end(&buf) {
+            break (h, end);
+        }
+        if !more || buf.len() > PREAMBLE {
+            return Ok(None);
+        }
+    };
+    if header.format != umcf_foam_field::Format::Ascii || !matches!(header.class.as_deref(), Some("faceList") | None) {
+        return Ok(None);
+    }
+    let (n, open) = loop {
+        match list_start(buf.get(end..).unwrap_or_default(), limits)? {
+            Start::Found(n, at) => break (n, end + at),
+            Start::NotHere => return Ok(None),
+            Start::NeedMore => {
+                if buf.len() > PREAMBLE || !fill(&mut buf)? {
+                    return Ok(None);
+                }
+            }
+        }
+    };
+    // Each face is `k(a b c …)`: the faces before `skip` end at the first `skip` `)`s. The lines
+    // passed over are counted, so that an error names the file's own line.
+    let skip = skip.min(n);
+    // The newlines before the list's `(`, then those passed with the faces.
+    let mut lines = buf.get(..open).map_or(0, |h| h.iter().filter(|c| **c == b'\n').count());
+    let mut passed = 0usize;
+    let mut at = open;
+    loop {
+        if passed == skip {
+            break;
+        }
+        let rest = buf.get(at..).unwrap_or_default();
+        let mut found = None;
+        for (k, c) in rest.iter().enumerate() {
+            match c {
+                b'\n' => lines += 1,
+                b')' => {
+                    passed += 1;
+                    if passed == skip {
+                        found = Some(k + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(k) = found {
+            at += k;
+            continue;
+        }
+        buf.clear();
+        at = 0;
+        if !fill(&mut buf)? {
+            return Err(Error::Truncated { file: path.to_string() });
+        }
+    }
+    // The rest as a list of its own, `n - skip (` and the faces from `skip` on, in one buffer.
+    let mut text = format!("{}\n(", n - skip).into_bytes();
+    text.extend_from_slice(buf.get(at..).unwrap_or_default());
+    drop(buf);
+    while fill(&mut text)? {}
+    let plain = umcf_foam_field::Header { class: Some("faceList".into()), ..header };
+    let mut r = Reader::new(path, &text, 0, &plain);
+    match r.face_list_from(limits, 0) {
+        Ok((_, offsets, points)) => Ok(Some((n, offsets, points))),
+        // The re-made list's line 2 is the file's line `lines + 1`.
+        Err(Error::Bad { file, line, msg }) => Err(Error::Bad { file, line: (line + lines).saturating_sub(1), msg }),
+        Err(e) => Err(e),
+    }
+}
+
+/// Where a list starts: its count `N` and the index just after its `(`.
+enum Start {
+    Found(usize, usize),
+    /// Something else is there: not a list this reader takes.
+    NotHere,
+    /// The text ends before it is known.
+    NeedMore,
+}
+
+/// `N (` at the start of `text`, after whitespace and comments.
+fn list_start(text: &[u8], limits: &Limits) -> Result<Start> {
+    let mut k = 0;
+    loop {
+        while text.get(k).is_some_and(u8::is_ascii_whitespace) {
+            k += 1;
+        }
+        if text.get(k..k + 2) == Some(b"//") {
+            match text.get(k..).and_then(|r| r.iter().position(|c| *c == b'\n')) {
+                Some(e) => k += e,
+                None => return Ok(Start::NeedMore),
+            }
+        } else if text.get(k..k + 2) == Some(b"/*") {
+            match text.get(k + 2..).and_then(|r| r.windows(2).position(|w| w == b"*/")) {
+                Some(e) => k += e + 4,
+                None => return Ok(Start::NeedMore),
+            }
+        } else {
+            break;
+        }
+    }
+    let digits = text.get(k..).unwrap_or_default().iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut j = k + digits;
+    while text.get(j).is_some_and(u8::is_ascii_whitespace) {
+        j += 1;
+    }
+    match text.get(j) {
+        None => Ok(Start::NeedMore),
+        Some(b'(') if digits > 0 => {
+            let count = std::str::from_utf8(text.get(k..k + digits).unwrap_or_default()).unwrap_or("");
+            let n: usize = count.parse().map_err(|_| Error::TooLarge { what: "list", limit: limits.max_elements })?;
+            if n > limits.max_elements {
+                return Err(Error::TooLarge { what: "list", limit: limits.max_elements });
+            }
+            Ok(Start::Found(n, j + 1))
+        }
+        Some(_) => Ok(Start::NotHere),
+    }
+}
+
+/// Whether threads start here: a probe thread, as a failed spawn would drop its job (wasm has
+/// no threads).
+fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
+    std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok())
+}
+
+/// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
+/// them; `None` for each it doesn't (or no `owner`, or one without a header). Only the file's
+/// first 64 KB are read (on disk: only those bytes), compressed or not: the header is in the
+/// first few hundred. A header that can't be read, or a compressed start that can't be
+/// decompressed, is an error.
+fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
+    use std::io::Read;
+    const HEAD: usize = 64 << 10;
+    let (path, bytes) = match fs.read_prefix(&format!("{dir}/owner"), HEAD + 1, limits.max_bytes)? {
+        Some(b) => (format!("{dir}/owner"), b),
+        None => match fs.read_prefix(&format!("{dir}/owner.gz"), HEAD + 1, limits.max_bytes)? {
+            Some(b) => (format!("{dir}/owner.gz"), b),
+            None => return Ok((None, None)),
+        },
+    };
+    let head = if bytes.starts_with(&[0x1f, 0x8b]) {
+        // Decompressed as far as these bytes go. A file longer than them ends early here, and
+        // that alone is fine (what came out is the file's start); any other error, or an early
+        // end in a file that was read whole, is an error (deflate has no checksum of its own,
+        // so bytes before a failure may not be the file's).
+        // One byte more than is decompressed: a file of up to 64 KB was read whole.
+        let whole = bytes.len() <= HEAD;
+        let mut head = Vec::new();
+        let read = flate2::read::MultiGzDecoder::new(bytes.as_slice()).take(HEAD as u64).read_to_end(&mut head);
+        match read {
+            Ok(_) => {}
+            Err(e) if !whole && e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(e) => return Err(Error::Field(umcf_foam_field::Error::Gzip(format!("{path}: {e}")))),
+        }
+        head
+    } else {
+        bytes
+    };
+    // A header that can't be read is an error, as the whole mesh's reader makes it (a file with
+    // no header at all is plain data: no counts).
+    let (h, end) = umcf_foam_field::read_header_end(&head)
+        .map_err(|e| Error::Inconsistent(format!("{path}: its header can't be read: {e}")))?;
+    // `FoamFile {` without its `}` (the file cut short) reads as no header: here it is an error.
+    if end.is_none() && head.windows(8).any(|w| w == b"FoamFile") {
+        return Err(Error::Inconsistent(format!("{path}: its header can't be read: it ends before its `}}`")));
+    }
+    Ok((h.count("nFaces"), h.count("nInternalFaces")))
+}
+
+/// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
+/// label in the whole mesh, and the patches.
+pub trait Boundary {
+    /// The mesh's points, by label.
+    fn points(&self) -> &[[f64; 3]];
+    /// The point labels of face `i` (a label in the whole mesh); `None` for a face this mesh
+    /// doesn't hold.
+    fn face(&self, i: usize) -> Option<&[u32]>;
+    /// The boundary patches, as `boundary` lists them.
+    fn patches(&self) -> &[Patch];
+}
+
+impl Boundary for PolyMesh {
+    /// The mesh's points, by label.
+    fn points(&self) -> &[[f64; 3]] {
+        &self.points
+    }
+
+    /// The point labels of face `i`.
+    fn face(&self, i: usize) -> Option<&[u32]> {
+        PolyMesh::face(self, i)
+    }
+
+    /// The boundary patches.
+    fn patches(&self) -> &[Patch] {
+        &self.boundary
+    }
+}
+
+/// A mesh's boundary: its points, its boundary faces and its patches, read without `neighbour`,
+/// the internal faces or `owner` (only its header). It is checked as far as it goes: the patches
+/// cover the faces from the first boundary face to the last, where the `owner` header says the
+/// internal faces end, every face has 3 points or more, every point label is in range.
+#[derive(Debug, Clone)]
+pub struct BoundaryMesh {
+    pub points: Vec<[f64; 3]>,
+    /// The label of the first boundary face (the mesh's internal faces come before it).
+    first: usize,
+    /// Offsets and point labels of faces `first..`.
+    face_offsets: Vec<u32>,
+    face_points: Vec<u32>,
+    pub boundary: Vec<Patch>,
+}
+
+impl BoundaryMesh {
+    /// Reads and checks the boundary of the mesh in `dir`: its patches, points and boundary faces.
+    pub fn read(fs: &(dyn CaseFs + Sync), dir: &str, limits: &Limits) -> Result<BoundaryMesh> {
+        let (_, bytes) = require(fs, dir, "boundary", limits)?;
+        let boundary = parse_boundary(&bytes)?;
+        // The patches start where the internal faces end; none: no boundary faces.
+        let first = boundary.iter().map(|p| p.start_face).min();
+        // What the mesh says of its faces, to check the boundary against.
+        let counts = owner_counts(fs, dir, limits)?;
+        let points = || -> Result<Vec<[f64; 3]>> {
+            let (path, bytes) = require(fs, dir, "points", limits)?;
+            open(&path, &bytes)?.1.vectors(limits)
+        };
+        let faces = || -> Result<FaceTail> {
+            let skip = first.unwrap_or(usize::MAX);
+            // As `read_file` picks the file: `faces`, else `faces.gz`. A compressed ASCII
+            // faceList is decompressed as a stream: the internal faces are counted past and
+            // never held, decompressed, in memory.
+            let (path, bytes) = match fs.read(&format!("{dir}/faces"), limits.max_bytes)? {
+                Some(bytes) => (format!("{dir}/faces"), bytes),
+                None => {
+                    let gz = format!("{dir}/faces.gz");
+                    let bytes = fs
+                        .read(&gz, limits.max_bytes)?
+                        .ok_or_else(|| Error::Missing { file: format!("{dir}/faces") })?;
+                    if bytes.starts_with(&[0x1f, 0x8b])
+                        && let Some(tail) = gz_face_list_from(&gz, &bytes, skip, limits)?
+                    {
+                        return Ok(tail);
+                    }
+                    (gz, bytes)
+                }
+            };
+            let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
+                umcf_foam_field::gunzip(&bytes, limits.max_bytes)?
+            } else {
+                bytes
+            };
+            let (header, mut r) = open(&path, &bytes)?;
+            match header.class.as_deref() {
+                Some("faceCompactList") => r.face_compact_list_from(limits, skip),
+                _ => r.face_list_from(limits, skip),
+            }
+        };
+        // Points and faces in parallel where threads exist (see PolyMesh::read).
+        let (points, faces) = std::thread::scope(|s| -> Result<_> {
+            let threads = threads(s);
+            if !threads {
+                return Ok((points()?, faces()?));
+            }
+            let started = |e: std::io::Error| Error::Unsupported(format!("could not start a reader thread: {e}"));
+            let p = std::thread::Builder::new().spawn_scoped(s, points).map_err(started)?;
+            let f = faces();
+            let p = p.join().map_err(|_| Error::Inconsistent("a mesh reader thread failed".into()))?;
+            Ok((p?, f?))
+        })?;
+        let (n_faces, face_offsets, face_points) = faces;
+        let mesh = BoundaryMesh { points, first: first.unwrap_or(n_faces), face_offsets, face_points, boundary };
+        mesh.check(n_faces, counts)?;
+        Ok(mesh)
+    }
+
+    /// How many points the mesh has.
+    pub fn n_points(&self) -> usize {
+        self.points.len()
+    }
+
+    /// The faces of the whole mesh, internal ones too.
+    pub fn n_faces(&self) -> usize {
+        self.first + self.face_offsets.len().saturating_sub(1)
+    }
+
+    /// The label of the first boundary face: the number of internal faces.
+    pub fn first_boundary_face(&self) -> usize {
+        self.first
+    }
+
+    /// The point labels of boundary face `i` (its label in the whole mesh); `None` for an
+    /// internal face.
+    pub fn face(&self, i: usize) -> Option<&[u32]> {
+        let k = i.checked_sub(self.first)?;
+        let start = *self.face_offsets.get(k)? as usize;
+        let end = *self.face_offsets.get(k + 1)? as usize;
+        self.face_points.get(start..end)
+    }
+
+    /// The checks the boundary allows (see the type): `n_faces` is the faces file's count, and the
+    /// counts the `owner` header notes, when it does.
+    fn check(&self, n_faces: usize, (noted_faces, noted_internal): (Option<u64>, Option<u64>)) -> Result<()> {
+        let bad = |m: String| Err(Error::Inconsistent(m));
+        // A `boundary` left from another mesh: its patches don't start where this mesh's internal
+        // faces end, or the faces aren't as many as the mesh says.
+        if let Some(n) = noted_faces
+            && n != n_faces as u64
+        {
+            return bad(format!("the owner header says {n} faces, the faces file has {n_faces}"));
+        }
+        // Without patches the first boundary face is the last face: the owner must say there
+        // are no boundary faces either.
+        if let Some(n) = noted_internal
+            && n != self.first as u64
+        {
+            return bad(format!(
+                "the patches start at face {}, but the owner header says the mesh has {n} internal faces: is `boundary` from another mesh?",
+                self.first
+            ));
+        }
+        if self.first > n_faces {
+            return bad(format!("the patches start at face {}, the mesh has {n_faces}", self.first));
+        }
+        let n_points = self.n_points();
+        if let Some(p) = self.face_points.iter().find(|p| **p as usize >= n_points) {
+            return bad(format!("a face uses point {p}, the mesh has {n_points} points"));
+        }
+        if let Some(i) = (self.first..n_faces).find(|i| self.face(*i).is_none_or(|f| f.len() < 3)) {
+            return bad(format!("face {i} has fewer than 3 points"));
+        }
+        let mut next = self.first;
+        let mut patches: Vec<&Patch> = self.boundary.iter().collect();
+        patches.sort_by_key(|p| p.start_face);
+        for p in patches {
+            if p.start_face != next {
+                return bad(format!("patch {} starts at face {}, expected {next}", p.name, p.start_face));
+            }
+            next = match p.start_face.checked_add(p.n_faces) {
+                Some(n) if n <= n_faces => n,
+                _ => return bad(format!("patch {} runs past the last face", p.name)),
+            };
+        }
+        if next != n_faces {
+            return bad(format!("the patches cover faces up to {next}, the mesh has {n_faces}"));
+        }
+        Ok(())
+    }
+}
+
+impl Boundary for BoundaryMesh {
+    /// The mesh's points, by label.
+    fn points(&self) -> &[[f64; 3]] {
+        &self.points
+    }
+
+    /// The point labels of face `i`.
+    fn face(&self, i: usize) -> Option<&[u32]> {
+        BoundaryMesh::face(self, i)
+    }
+
+    /// The boundary patches.
+    fn patches(&self) -> &[Patch] {
+        &self.boundary
     }
 }
 

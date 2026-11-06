@@ -56,6 +56,15 @@ pub trait CaseFs {
     /// The file's bytes, `Ok(None)` if there is no such file. Files bigger than `limit` are an
     /// error, so a stray 10 GB file can't exhaust memory.
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError>;
+    /// At most the first `n` bytes of the file (a header), `Ok(None)` if there is no such file.
+    /// The default reads the whole file (within `limit`) and keeps its start; a file system that
+    /// can read part of a file (on disk) reads only those bytes, whatever the file's size.
+    fn read_prefix(&self, rel: &str, n: usize, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(self.read(rel, limit)?.map(|mut b| {
+            b.truncate(n);
+            b
+        }))
+    }
     fn is_file(&self, rel: &str) -> bool;
     fn is_dir(&self, rel: &str) -> bool;
     /// Names of the entries directly inside `rel` (files and directories), sorted. A path that
@@ -128,6 +137,22 @@ impl CaseFs for DirFs {
             return Err(FsError::TooLarge { path: rel.to_string(), size: meta.len(), limit });
         }
         std::fs::read(&path).map(Some).map_err(|source| FsError::Io { path: rel.to_string(), source })
+    }
+
+    fn read_prefix(&self, rel: &str, n: usize, _limit: u64) -> Result<Option<Vec<u8>>, FsError> {
+        use std::io::Read;
+        let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+        let io = |source| FsError::Io { path: rel.to_string(), source };
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io(source)),
+        }
+        let file = std::fs::File::open(&path).map_err(io)?;
+        let mut out = Vec::new();
+        file.take(n as u64).read_to_end(&mut out).map_err(io)?;
+        Ok(Some(out))
     }
 
     fn is_file(&self, rel: &str) -> bool {
@@ -317,6 +342,25 @@ impl CaseWrite for MemFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prefix_reads_only_the_start() {
+        let root = std::env::temp_dir().join(format!("umcf-core-prefix-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        std::fs::write(root.join("d/f"), b"0123456789").unwrap();
+        let fs = DirFs::new(&root);
+        assert_eq!(fs.read_prefix("d/f", 4, 0).unwrap().as_deref(), Some(&b"0123"[..]));
+        // The whole file when it is shorter; nothing for a missing file or a directory.
+        assert_eq!(fs.read_prefix("d/f", 64, 0).unwrap().as_deref(), Some(&b"0123456789"[..]));
+        assert_eq!(fs.read_prefix("d/missing", 4, 0).unwrap(), None);
+        assert_eq!(fs.read_prefix("d", 4, 0).unwrap(), None);
+        assert!(fs.read_prefix("../x", 4, 0).is_err());
+        // The default (in memory) the same.
+        let mut m = MemFs::new();
+        m.insert("d/f", b"0123456789".to_vec());
+        assert_eq!(m.read_prefix("d/f", 4, 1 << 20).unwrap().as_deref(), Some(&b"0123"[..]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn writes_replace_files_atomically_and_keep_links() {

@@ -141,6 +141,24 @@ fn read(fs: &MemFs) -> Result<PolyMesh> {
     PolyMesh::read(fs, &mesh_dir("air"), &Limits::default())
 }
 
+fn read_boundary_mesh(fs: &MemFs) -> Result<BoundaryMesh> {
+    BoundaryMesh::read(fs, &mesh_dir("air"), &Limits::default())
+}
+
+/// The boundary read alone is the whole mesh's boundary: the same points, patches and boundary
+/// faces, and no internal face.
+fn assert_same_boundary(b: &BoundaryMesh, m: &PolyMesh) {
+    assert_eq!(b.points, m.points);
+    assert_eq!(b.boundary, m.boundary);
+    assert_eq!((b.n_faces(), b.first_boundary_face()), (m.n_faces(), m.n_internal_faces()));
+    for i in 0..m.n_internal_faces() {
+        assert_eq!(b.face(i), None, "internal face {i}");
+    }
+    for i in m.n_internal_faces()..m.n_faces() + 1 {
+        assert_eq!(b.face(i), m.face(i), "face {i}");
+    }
+}
+
 fn assert_two_hexes(m: &PolyMesh) {
     assert_eq!((m.n_points(), m.n_faces(), m.n_internal_faces(), m.n_cells()), (12, 11, 1, 2));
     assert_eq!(m.points, points());
@@ -158,6 +176,7 @@ fn assert_two_hexes(m: &PolyMesh) {
 fn ascii_mesh_reads() {
     let m = read(&ascii_mesh()).unwrap();
     assert_two_hexes(&m);
+    assert_same_boundary(&read_boundary_mesh(&ascii_mesh()).unwrap(), &m);
     assert_eq!(m.cell_zone("both").map(|z| z.cells.clone()), Some(vec![0, 1]));
     assert_eq!(m.cell_zone("left").map(|z| z.cells.clone()), Some(vec![0]));
 }
@@ -170,6 +189,8 @@ fn binary_mesh_reads_in_every_arch() {
                 let a = Arch { big_endian, label_bytes, scalar_bytes };
                 let m = read(&binary_mesh(a)).unwrap_or_else(|e| panic!("{a:?}: {e}"));
                 assert_two_hexes(&m);
+                let b = read_boundary_mesh(&binary_mesh(a)).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+                assert_same_boundary(&b, &m);
                 assert!(m.cell_zones.is_empty());
             }
         }
@@ -203,6 +224,8 @@ fn polygon_faces_grow_past_the_quad_reservation() {
     let m = read(&fs).unwrap();
     assert_eq!(m.face(0).map(<[u32]>::len), Some(20));
     assert_eq!(m.face(10), Some(&[4, 10, 11, 5][..]));
+    // The 20-gon is internal: passed over, not read.
+    assert_same_boundary(&read_boundary_mesh(&fs).unwrap(), &m);
 }
 
 #[test]
@@ -218,8 +241,10 @@ fn gzip_files() {
     }
     fs2.insert(&format!("{d}/points.gz"), gz.finish().unwrap());
     assert_two_hexes(&read(&fs2).unwrap());
+    assert_same_boundary(&read_boundary_mesh(&fs2).unwrap(), &read(&fs2).unwrap());
     fs.insert(&format!("{d}/points"), "garbage");
     assert!(read(&fs).is_err());
+    assert!(read_boundary_mesh(&fs).is_err());
 }
 
 fn with(mut fs: MemFs, name: &str, contents: String) -> MemFs {
@@ -359,6 +384,13 @@ fn fuzz_mutations_never_panic() {
                 assert!(m.face(i).unwrap().iter().all(|p| (*p as usize) < m.n_points()));
             }
         }
+        if let Ok(b) = read_boundary_mesh(&fs) {
+            // The same for the boundary alone: every boundary face resolves, its points in range.
+            for i in b.first_boundary_face()..b.n_faces() {
+                let face = b.face(i).unwrap();
+                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.n_points()));
+            }
+        }
     }
 }
 
@@ -430,4 +462,441 @@ fn sets() {
     assert_eq!(read_set(&fs, d, "bin", &Limits::default()).unwrap().unwrap().labels, vec![5, 7]);
     fs.insert(&format!("{d}/sets/bad"), format!("{}2\n(\n1 -4\n)\n", header("ascii", "faceSet", None, "")));
     assert!(read_set(&fs, d, "bad", &Limits::default()).is_err());
+}
+
+#[test]
+fn boundary_mesh_needs_no_cells() {
+    // No owner, no neighbour: the boundary still reads.
+    let mut fs = MemFs::new();
+    let d = "constant/air/polyMesh";
+    for name in ["points", "faces", "boundary"] {
+        fs.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    let b = read_boundary_mesh(&fs).unwrap();
+    assert_eq!((b.first_boundary_face(), b.n_faces()), (1, 11));
+    assert!(read(&fs).is_err());
+}
+
+#[test]
+fn boundary_mesh_checks_what_it_reads() {
+    let h = |class| header("ascii", class, None, "");
+    let faces = |list: &str| with(ascii_mesh(), "faces", format!("{}{list}", h("faceList")));
+    // A boundary face with a point the mesh doesn't have.
+    let mut fcs: Vec<String> = faces_text();
+    fcs[3] = "4(0 3 4 99)".into();
+    assert!(read_boundary_mesh(&faces(&format!("11\n(\n{}\n)\n", fcs.join("\n")))).is_err());
+    // An internal face is passed over, so a bad label there doesn't matter to the boundary.
+    let mut fcs: Vec<String> = faces_text();
+    fcs[0] = "4(1 4 10 99)".into();
+    let fs = faces(&format!("11\n(\n{}\n)\n", fcs.join("\n")));
+    assert!(read(&fs).is_err());
+    assert!(read_boundary_mesh(&fs).is_ok());
+    // Fewer faces than the patches cover.
+    assert!(read_boundary_mesh(&faces(&format!("10\n(\n{}\n)\n", faces_text()[..10].join("\n")))).is_err());
+    // A face cut off before its `)`.
+    assert!(read_boundary_mesh(&faces("11\n(\n4(1 4 10 7")).is_err());
+}
+
+fn faces_text() -> Vec<String> {
+    faces()
+        .iter()
+        .map(|f| format!("{}({})", f.len(), f.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")))
+        .collect()
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(bytes).unwrap();
+    gz.finish().unwrap()
+}
+
+/// The two hexes with `extra` copies of the internal face before it: a faces file of a few
+/// megabytes, so that the stream passes the internal faces over in several chunks.
+fn long_mesh(extra: usize) -> MemFs {
+    let d = "constant/air/polyMesh";
+    let h = |class| header("ascii", class, None, "");
+    let mut fcs = String::new();
+    for _ in 0..extra {
+        fcs.push_str("4(1 4 10 7)\n");
+    }
+    for f in faces_text() {
+        fcs.push_str(&f);
+        fcs.push('\n');
+    }
+    let boundary = BOUNDARY
+        .replace("startFace       1;", &format!("startFace       {};", extra + 1))
+        .replace("startFace       2;", &format!("startFace       {};", extra + 2))
+        .replace("startFace       3;", &format!("startFace       {};", extra + 3));
+    // Points, faces and the boundary only: the two hexes' owner would note other counts.
+    let mut fs = MemFs::new();
+    fs.insert(&format!("{d}/points"), ascii_mesh().read(&format!("{d}/points"), 1 << 20).unwrap().unwrap());
+    fs.insert(&format!("{d}/faces"), format!("{}{}\n(\n{fcs})\n", h("faceList"), extra + 11));
+    fs.insert(&format!("{d}/boundary"), boundary);
+    fs
+}
+
+/// `fs` with its faces file gzip-compressed.
+fn faces_gz(fs: &MemFs) -> MemFs {
+    let d = "constant/air/polyMesh";
+    let mut out = MemFs::new();
+    for name in ["points", "boundary"] {
+        out.insert(&format!("{d}/{name}"), fs.read(&format!("{d}/{name}"), 1 << 30).unwrap().unwrap());
+    }
+    out.insert(&format!("{d}/faces.gz"), gzip(&fs.read(&format!("{d}/faces"), 1 << 30).unwrap().unwrap()));
+    out
+}
+
+fn same_boundary_meshes(a: &BoundaryMesh, b: &BoundaryMesh) -> bool {
+    a.points == b.points
+        && a.boundary == b.boundary
+        && (a.first_boundary_face(), a.n_faces()) == (b.first_boundary_face(), b.n_faces())
+        && (a.first_boundary_face()..a.n_faces() + 1).all(|i| a.face(i) == b.face(i))
+}
+
+#[test]
+fn compressed_faces_stream_past_the_internal_ones() {
+    for extra in [0, 3, 400_000] {
+        let plain = long_mesh(extra);
+        let a = read_boundary_mesh(&plain).unwrap();
+        let b = read_boundary_mesh(&faces_gz(&plain)).unwrap();
+        assert!(same_boundary_meshes(&a, &b), "{extra} internal faces");
+        assert_eq!((b.first_boundary_face(), b.n_faces()), (extra + 1, extra + 11));
+        assert_eq!(b.face(extra + 1), Some(&[0, 6, 9, 3][..]));
+    }
+    // The two hexes as they are, compressed: the same as the whole mesh's boundary.
+    assert_same_boundary(&read_boundary_mesh(&faces_gz(&ascii_mesh())).unwrap(), &read(&ascii_mesh()).unwrap());
+    // Binary faces (faceCompactList) are read whole, compressed or not.
+    let a = Arch { big_endian: false, label_bytes: 4, scalar_bytes: 8 };
+    let b = read_boundary_mesh(&faces_gz(&binary_mesh(a))).unwrap();
+    assert_same_boundary(&b, &read(&binary_mesh(a)).unwrap());
+}
+
+#[test]
+fn compressed_faces_that_end_early_are_errors() {
+    let d = "constant/air/polyMesh";
+    let plain = long_mesh(1000);
+    let text = plain.read(&format!("{d}/faces"), 1 << 30).unwrap().unwrap();
+    // Cut among the internal faces, among the boundary ones, and before the list's `)`.
+    for cut in [text.len() / 3, text.len() - 30, text.len() - 2] {
+        let mut fs = faces_gz(&plain);
+        fs.insert(&format!("{d}/faces.gz"), gzip(&text[..cut]));
+        assert!(read_boundary_mesh(&fs).is_err(), "cut at {cut}");
+    }
+}
+
+#[test]
+fn compressed_fuzz_mutations_never_panic() {
+    let d = "constant/air/polyMesh";
+    let base = long_mesh(20);
+    let text = base.read(&format!("{d}/faces"), 1 << 30).unwrap().unwrap();
+    let plain_boundary = |fs: &MemFs| read_boundary_mesh(fs);
+    let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n.max(1) as u64) as usize
+    };
+    let iters = std::env::var("UMCF_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000usize) / 3;
+    for _ in 0..iters {
+        let mut bytes = text.clone();
+        for _ in 0..1 + next(3) {
+            let i = next(bytes.len());
+            match next(3) {
+                0 => {
+                    bytes.remove(i);
+                }
+                1 => bytes.insert(i, b"0123456789(); /*"[next(16)]),
+                _ => bytes[i] = next(256) as u8,
+            }
+        }
+        let mut plain = base.clone();
+        plain.insert(&format!("{d}/faces"), bytes.clone());
+        let mut gz = faces_gz(&base);
+        gz.insert(&format!("{d}/faces.gz"), gzip(&bytes));
+        // Compressed or not, what reads is consistent; and when both read, they agree.
+        let (a, b) = (plain_boundary(&plain), plain_boundary(&gz));
+        if let Ok(b) = &b {
+            for i in b.first_boundary_face()..b.n_faces() {
+                let face = b.face(i).unwrap();
+                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.n_points()));
+            }
+        }
+        if let (Ok(a), Ok(b)) = (&a, &b) {
+            assert!(same_boundary_meshes(a, b));
+        }
+    }
+}
+
+/// `fs` with its faces file replaced by `text`, compressed.
+fn with_faces_gz(fs: &MemFs, text: &[u8]) -> MemFs {
+    let mut out = faces_gz(fs);
+    out.insert("constant/air/polyMesh/faces.gz", gzip(text));
+    out
+}
+
+fn faces_text_of(fs: &MemFs) -> Vec<u8> {
+    fs.read("constant/air/polyMesh/faces", 1 << 30).unwrap().unwrap()
+}
+
+#[test]
+fn compressed_faces_keep_the_size_limit() {
+    let plain = long_mesh(2000);
+    let gz = faces_gz(&plain);
+    let small = Limits { max_bytes: 2000, ..Limits::default() };
+    let e = BoundaryMesh::read(&gz, &mesh_dir("air"), &small).unwrap_err().to_string();
+    assert!(e.contains("exceeds the limit"), "{e}");
+    // Just enough is enough.
+    let size = faces_text_of(&plain).len() as u64;
+    let enough = Limits { max_bytes: size.max(1 << 16), ..Limits::default() };
+    assert!(BoundaryMesh::read(&gz, &mesh_dir("air"), &enough).is_ok());
+}
+
+#[test]
+fn compressed_faces_start_after_comments_and_across_chunks() {
+    let plain = long_mesh(10);
+    let text = faces_text_of(&plain);
+    let at = text.windows(4).position(|w| w == b"\n21\n").unwrap() + 1;
+    let want = read_boundary_mesh(&plain).unwrap();
+    // Comments and blank lines between the header and the count; the count just across the
+    // first and the second megabyte the stream reads.
+    for pad in [
+        b"// a comment\n/* and\nanother */\n\n".to_vec(),
+        vec![b' '; (1 << 20) - at - 1],
+        vec![b' '; (1 << 20) - at],
+        vec![b'\n'; (2 << 20) - at + 1],
+    ] {
+        let mut t = text[..at].to_vec();
+        t.extend_from_slice(&pad);
+        t.extend_from_slice(&text[at..]);
+        let got = read_boundary_mesh(&with_faces_gz(&plain, &t)).unwrap();
+        assert!(same_boundary_meshes(&got, &want), "{} bytes of padding", pad.len());
+    }
+}
+
+#[test]
+// A native test: the clock only guards against a hang.
+#[allow(clippy::disallowed_methods)]
+fn a_list_that_doesnt_start_soon_is_read_whole() {
+    // Megabytes of blanks (or an open comment) before the list: the stream gives up after a
+    // few megabytes and the file is read whole, the same mesh or the same error, quickly.
+    let plain = long_mesh(3);
+    let text = faces_text_of(&plain);
+    let at = text.windows(4).position(|w| w == b"\n14\n").unwrap() + 1;
+    let mut t = text[..at].to_vec();
+    t.extend(std::iter::repeat_n(b' ', 6 << 20));
+    t.extend_from_slice(&text[at..]);
+    let started = std::time::Instant::now();
+    let got = read_boundary_mesh(&with_faces_gz(&plain, &t)).unwrap();
+    assert!(same_boundary_meshes(&got, &read_boundary_mesh(&plain).unwrap()));
+    let mut open = text[..at].to_vec();
+    open.extend_from_slice(b"/* never closed");
+    open.extend(std::iter::repeat_n(b' ', 6 << 20));
+    assert!(read_boundary_mesh(&with_faces_gz(&plain, &open)).is_err());
+    assert!(started.elapsed().as_secs() < 20, "took {:?}", started.elapsed());
+}
+
+/// The line an error names, plain and compressed.
+fn error_lines(plain: &MemFs, text: &str) -> (String, String) {
+    let mut fs = plain.clone();
+    fs.insert("constant/air/polyMesh/faces", text.to_string());
+    let a = read_boundary_mesh(&fs).unwrap_err().to_string();
+    let b = read_boundary_mesh(&with_faces_gz(plain, text.as_bytes())).unwrap_err().to_string();
+    let line = |e: &str| e.split("line ").nth(1).and_then(|r| r.split(':').next()).unwrap_or("?").to_string();
+    (line(&a), line(&b))
+}
+
+#[test]
+fn compressed_errors_name_the_files_line() {
+    // Faces passed over within one chunk, and across several.
+    for extra in [5, 300_000] {
+        let plain = long_mesh(extra);
+        // A boundary face with a word for a label.
+        let text = String::from_utf8(faces_text_of(&plain)).unwrap().replacen("4(0 6 9 3)", "4(0 6 x 3)", 1);
+        let (a, b) = error_lines(&plain, &text);
+        assert!(a != "?" && a == b, "{extra}: {a} / {b}");
+    }
+    // Nothing passed over: a mesh without internal faces.
+    let h = header("ascii", "faceList", None, "");
+    let fcs: Vec<String> = faces_text()[1..].to_vec();
+    let boundary = BOUNDARY
+        .replace("startFace       1;", "startFace       0;")
+        .replace("startFace       2;", "startFace       1;")
+        .replace("startFace       3;", "startFace       2;");
+    // Without the two hexes' owner (it notes 11 faces with one internal).
+    let no_note = format!("{}10\n(\n0 0 0 0 0 0 0 0 0 0\n)\n", header("ascii", "labelList", None, ""));
+    let plain = with(
+        with(with(ascii_mesh(), "boundary", boundary), "owner", no_note),
+        "faces",
+        format!("{h}10\n(\n{}\n)\n", fcs.join("\n")),
+    );
+    assert_eq!(read_boundary_mesh(&plain).unwrap().first_boundary_face(), 0);
+    let text = String::from_utf8(faces_text_of(&plain)).unwrap().replacen("4(0 6 9 3)", "4(0 6 x 3)", 1);
+    let (a, b) = error_lines(&plain, &text);
+    assert!(a != "?" && a == b, "no internal faces: {a} / {b}");
+}
+
+#[test]
+fn boundaries_without_faces() {
+    let d = "constant/air/polyMesh";
+    let no_patches = "FoamFile { format ascii; class polyBoundaryMesh; object boundary; }\n0\n(\n)\n";
+    // No patches, and no owner to say otherwise: nothing to draw.
+    let mut fs = faces_gz(&ascii_mesh());
+    fs.insert(&format!("{d}/boundary"), no_patches);
+    let b = read_boundary_mesh(&fs).unwrap();
+    assert!(b.boundary.is_empty());
+    assert_eq!(b.face(10), None);
+    // No patches, but the owner header notes 10 boundary faces: they would go uncovered.
+    let mut fs = ascii_mesh();
+    fs.insert(&format!("{d}/boundary"), no_patches);
+    assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("1 internal faces"));
+    // A patch with no faces at the end, as OpenFOAM writes one.
+    let empty = BOUNDARY.replace(
+        "\n)\n",
+        "\n    unused\n    {\n        type            patch;\n        nFaces          0;\n        startFace       11;\n    }\n)\n",
+    );
+    let fs = with(ascii_mesh(), "boundary", empty.replacen("3\n(", "4\n(", 1));
+    let b = read_boundary_mesh(&fs).unwrap();
+    assert_eq!(b.boundary.len(), 4);
+    assert_same_boundary(&b, &read(&fs).unwrap());
+    assert!(read_boundary_mesh(&faces_gz(&fs)).is_ok());
+}
+
+#[test]
+fn ascii_compact_faces_from_a_face_on() {
+    let h = |class| header("ascii", class, None, "");
+    let mut offsets = vec![0u32];
+    let mut labels = Vec::new();
+    for f in faces() {
+        labels.extend(&f);
+        offsets.push(labels.len() as u32);
+    }
+    let list = |v: &[u32]| format!("{}\n({})\n", v.len(), v.iter().map(u32::to_string).collect::<Vec<_>>().join(" "));
+    let fs = with(ascii_mesh(), "faces", format!("{}{}{}", h("faceCompactList"), list(&offsets), list(&labels)));
+    assert_same_boundary(&read_boundary_mesh(&fs).unwrap(), &read(&fs).unwrap());
+    // Offsets that don't fit the labels.
+    let bad = with(ascii_mesh(), "faces", format!("{}{}{}", h("faceCompactList"), list(&offsets), list(&labels[1..])));
+    assert!(read_boundary_mesh(&bad).is_err());
+}
+
+#[test]
+fn corrupt_compressed_faces_are_errors() {
+    let mut fs = faces_gz(&long_mesh(1000));
+    let mut bytes = fs.read("constant/air/polyMesh/faces.gz", 1 << 30).unwrap().unwrap();
+    let n = bytes.len();
+    for i in (n / 3..n / 3 + 64).step_by(7) {
+        bytes[i] ^= 0x5a;
+    }
+    fs.insert("constant/air/polyMesh/faces.gz", bytes);
+    assert!(read_boundary_mesh(&fs).is_err());
+}
+
+#[test]
+fn a_boundary_from_another_mesh_is_an_error() {
+    let d = "constant/air/polyMesh";
+    // The patches start at face 0, the owner header notes 1 internal face.
+    let stale = BOUNDARY
+        .replace("nFaces          1;\n        startFace       1;", "nFaces          2;\n        startFace       0;");
+    let fs = with(ascii_mesh(), "boundary", stale);
+    let e = read_boundary_mesh(&fs).unwrap_err().to_string();
+    assert!(e.contains("internal faces") && e.contains("another mesh"), "{e}");
+    assert!(read(&fs).is_err());
+    // The same with a compressed owner, read only as far as its header.
+    let mut gz = fs.clone();
+    let owner = fs.read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    gz.insert(&format!("{d}/owner.gz"), gzip(&owner));
+    let mut only_gz = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        only_gz.insert(&format!("{d}/{name}"), gz.read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    only_gz.insert(&format!("{d}/owner.gz"), gzip(&owner));
+    assert!(read_boundary_mesh(&only_gz).unwrap_err().to_string().contains("another mesh"));
+    // A faces file with other faces than the owner notes.
+    let h = header("ascii", "faceList", None, "");
+    let more = with(ascii_mesh(), "faces", format!("{h}12\n(\n{}\n4(0 1 2 3)\n)\n", faces_text().join("\n")));
+    assert!(read_boundary_mesh(&more).unwrap_err().to_string().contains("owner header says 11 faces"));
+    // No note (an owner written without one): nothing to check against.
+    let plain = with(
+        ascii_mesh(),
+        "owner",
+        format!("{}11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n", header("ascii", "labelList", None, "")),
+    );
+    assert!(read_boundary_mesh(&plain).is_ok());
+}
+
+#[test]
+fn a_compressed_owner_header_that_cant_be_read_is_an_error() {
+    let d = "constant/air/polyMesh";
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    let mesh = |gz: Vec<u8>| {
+        let mut fs = MemFs::new();
+        for name in ["points", "faces", "boundary"] {
+            fs.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+        }
+        fs.insert(&format!("{d}/owner.gz"), gz);
+        fs
+    };
+    let mut gz = gzip(&owner);
+    assert!(read_boundary_mesh(&mesh(gz.clone())).is_ok());
+    // Cut inside the header (after `FoamFile {` began, before it ends): an error, not a mesh
+    // without counts.
+    let at = owner.windows(8).position(|w| w == b"FoamFile").unwrap() + 20;
+    let cut = gzip(&owner[..at]);
+    assert!(read_boundary_mesh(&mesh(cut[..cut.len() - 4].to_vec())).unwrap_err().to_string().contains("owner.gz"));
+    // A bad checksum: an error too (deflate itself has none, so what came before may be wrong).
+    let n = gz.len();
+    gz[n - 6] ^= 0xff;
+    assert!(read_boundary_mesh(&mesh(gz)).unwrap_err().to_string().contains("owner.gz"));
+}
+
+#[test]
+fn an_owner_header_cut_short_is_an_error() {
+    let d = "constant/air/polyMesh";
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    // The text cut inside `FoamFile { … }`: plain, and as a valid gzip file of that text.
+    let at = owner.windows(8).position(|w| w == b"FoamFile").unwrap() + 20;
+    let plain = with(ascii_mesh(), "owner", String::from_utf8(owner[..at].to_vec()).unwrap());
+    let e = read_boundary_mesh(&plain).unwrap_err().to_string();
+    assert!(e.contains("owner: its header can't be read"), "{e}");
+    let mut gz = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        gz.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    gz.insert(&format!("{d}/owner.gz"), gzip(&owner[..at]));
+    let e = read_boundary_mesh(&gz).unwrap_err().to_string();
+    assert!(e.contains("owner.gz: its header can't be read"), "{e}");
+    // An owner of plain data, without a header: nothing to check against.
+    let data = with(ascii_mesh(), "owner", "11\n(\n0 0 1 0 1 0 1 0 1 0 1\n)\n".to_string());
+    assert!(read_boundary_mesh(&data).is_ok());
+}
+
+#[test]
+fn a_long_compressed_owner_is_read_only_as_far_as_its_header() {
+    let d = "constant/air/polyMesh";
+    // An owner.gz of hundreds of kilobytes that barely compresses: its first 64 KB are a stream
+    // cut short, which is fine; its header (11 faces, 1 internal) fits the mesh.
+    let owner = ascii_mesh().read(&format!("{d}/owner"), 1 << 20).unwrap().unwrap();
+    let mut long = owner.clone();
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    long.extend(b"// ");
+    for _ in 0..400_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        long.push(b'a' + (x % 26) as u8);
+    }
+    long.push(b'\n');
+    let gz = gzip(&long);
+    assert!(gz.len() > 128 << 10, "{}", gz.len());
+    let mut fs = MemFs::new();
+    for name in ["points", "faces", "boundary"] {
+        fs.insert(&format!("{d}/{name}"), ascii_mesh().read(&format!("{d}/{name}"), 1 << 20).unwrap().unwrap());
+    }
+    fs.insert(&format!("{d}/owner.gz"), gz);
+    assert!(read_boundary_mesh(&fs).is_ok());
+    // And its header is still checked: a stale boundary is found.
+    let stale = BOUNDARY
+        .replace("nFaces          1;\n        startFace       1;", "nFaces          2;\n        startFace       0;");
+    fs.insert(&format!("{d}/boundary"), stale);
+    assert!(read_boundary_mesh(&fs).unwrap_err().to_string().contains("another mesh"));
 }

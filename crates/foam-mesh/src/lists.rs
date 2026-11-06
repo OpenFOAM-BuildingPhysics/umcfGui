@@ -233,6 +233,50 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
+    /// [`Self::labels`], keeping only the elements from `skip` on: the list's length and those
+    /// elements. Binary elements before `skip` aren't decoded; ASCII ones are parsed (each still
+    /// a label) but not kept.
+    pub fn labels_from(&mut self, limits: &Limits, skip: usize) -> Result<(usize, Vec<u32>), Error> {
+        let n = self.count(limits)?;
+        let keep = n.saturating_sub(skip);
+        self.skip_trivia();
+        if self.peek() == Some(b'{') {
+            if n > limits.max_uniform {
+                return Err(Error::TooLarge { what: "uniform list", limit: limits.max_uniform });
+            }
+            self.i += 1;
+            let v = self.label()?;
+            self.expect(b'}')?;
+            let mut out = alloc(keep)?;
+            out.resize(keep, v);
+            return Ok((n, out));
+        }
+        if self.empty_binary(n) {
+            return Ok((0, Vec::new()));
+        }
+        self.expect(b'(')?;
+        let out = if self.binary && n > 0 {
+            let width = self.arch.label_bytes;
+            let data = self.binary_block(n, width)?;
+            let mut out = alloc(keep)?;
+            for c in data.chunks_exact(width).skip(skip) {
+                out.push(self.binary_label(c)?);
+            }
+            out
+        } else {
+            let mut out = alloc(self.room(keep, 1))?;
+            for k in 0..n {
+                let l = self.label()?;
+                if k >= skip {
+                    out.push(l);
+                }
+            }
+            out
+        };
+        self.expect(b')')?;
+        Ok((n, out))
+    }
+
     /// `N ((x y z) …)` or, binary, `N(raw)`.
     pub fn vectors(&mut self, limits: &Limits) -> Result<Vec<[f64; 3]>, Error> {
         let n = self.count(limits)?;
@@ -295,6 +339,66 @@ impl<'a> Reader<'a> {
         }
         self.expect(b')')?;
         Ok((offsets, points))
+    }
+
+    /// ASCII `faceList` from face `skip` on: the number of faces, and compact offsets and point
+    /// labels of faces `skip..`. The faces before are passed over to their `)`, not read.
+    pub fn face_list_from(&mut self, limits: &Limits, skip: usize) -> Result<(usize, Vec<u32>, Vec<u32>), Error> {
+        if self.binary {
+            return Err(Error::Unsupported(format!(
+                "{}: binary faceList (OpenFOAM writes binary faces as faceCompactList)",
+                self.file
+            )));
+        }
+        let n = self.count(limits)?;
+        self.expect(b'(')?;
+        let keep = n.saturating_sub(skip);
+        let mut offsets = alloc(self.room(keep, 1).saturating_add(1))?;
+        let mut points = alloc(self.room(keep, 4))?;
+        offsets.push(0u32);
+        for i in 0..n {
+            let k = self.count(limits)?;
+            self.expect(b'(')?;
+            if i < skip {
+                let rest = self.b.get(self.i..).unwrap_or_default();
+                let end =
+                    rest.iter().position(|c| *c == b')').ok_or(Error::Truncated { file: self.file.to_string() })?;
+                self.i += end + 1;
+                continue;
+            }
+            grow(&mut points, k.min(self.room(k, 1)))?;
+            for _ in 0..k {
+                points.push(self.label()?);
+            }
+            self.expect(b')')?;
+            let end = u32::try_from(points.len())
+                .map_err(|_| Error::TooLarge { what: "face points", limit: u32::MAX as usize })?;
+            grow(&mut offsets, 1)?;
+            offsets.push(end);
+        }
+        self.expect(b')')?;
+        Ok((n, offsets, points))
+    }
+
+    /// `faceCompactList` from face `skip` on, as [`Self::face_list_from`]: all the offsets are
+    /// read (they say where face `skip` starts), the point labels only from there.
+    pub fn face_compact_list_from(
+        &mut self,
+        limits: &Limits,
+        skip: usize,
+    ) -> Result<(usize, Vec<u32>, Vec<u32>), Error> {
+        let offsets = self.labels(limits)?;
+        let n = offsets.len().saturating_sub(1);
+        let first = offsets.get(skip.min(n)).copied().unwrap_or(0);
+        let (total, points) = self.labels_from(limits, first as usize)?;
+        let well_formed = offsets.first() == Some(&0)
+            && offsets.windows(2).all(|w| w[0] <= w[1])
+            && offsets.last().is_some_and(|l| *l as usize == total);
+        if !well_formed {
+            return Err(self.bad("faceCompactList offsets don't match the point list"));
+        }
+        let tail = offsets.get(skip.min(n)..).unwrap_or_default().iter().map(|o| o - first).collect();
+        Ok((n, tail, points))
     }
 
     /// `faceCompactList`: the offsets list (N + 1 labels) then the point labels.

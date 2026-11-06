@@ -2,7 +2,7 @@
 //! patches from some of the boundary faces, for OpenFOAM's `createPatch` (`patch.create`).
 
 use serde_json::{Value, json};
-use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
+use umcf_foam_mesh::{BoundaryMesh, Limits, mesh_dir};
 use umcf_geom::{Vec3, near::near, stl};
 use umcf_model::{NewPatch, PatchChange};
 
@@ -113,6 +113,7 @@ fn word<'a>(id: &str, what: &str, w: &'a str) -> Result<&'a str, Error> {
     Ok(w)
 }
 
+/// `patch.set`.
 fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SET.id;
     let p = Params::new(id, p, &["patches", "name", "type", "groups", "entries"])?;
@@ -326,6 +327,7 @@ fn patches(s: &Session, p: &Params) -> Result<Vec<(String, String)>, Error> {
     Ok(out)
 }
 
+/// `patch.create`.
 fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = CREATE.id;
     let p = Params::new(id, p, &["region", "name", "type", "groups", "entries", "faces", "box", "surface", "from"])?;
@@ -593,7 +595,8 @@ fn centres(
     patches: &[umcf_model::Patch],
     from: &[String],
 ) -> Result<(Vec<u32>, Vec<Vec3>), Error> {
-    let mesh = PolyMesh::read(fs, &mesh_dir(region), &Limits::default())
+    // The boundary is enough: only patch faces and their points are used.
+    let mesh = BoundaryMesh::read(fs, &mesh_dir(region), &Limits::default())
         .map_err(|e| Error::Failed(format!("{id}: the mesh of region `{region}` can't be read: {e}")))?;
     if mesh.boundary.len() != patches.len() || mesh.boundary.iter().zip(patches).any(|(a, b)| a.faces() != b.faces()) {
         return Err(Error::Failed(format!(

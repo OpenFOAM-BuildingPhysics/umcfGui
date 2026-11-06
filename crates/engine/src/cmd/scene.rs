@@ -3,14 +3,19 @@
 //! pixel (or along a ray), `select.set` and `select.clear` set the selection directly.
 //!
 //! The selection is plain data in the session ([`Sel`]): what a command run without an explicit
-//! target acts on. The scene is built from the files the first time it is needed and kept until
-//! what it shows changes (another case, another set of objects, a surface a command changed); a
-//! mesh rewritten on disk by OpenFOAM is read again with `"reload": true`.
+//! target acts on. The scene is built from the files the first time it is needed, each region's
+//! mesh (only its boundary) and each surface read in parallel. Each object is kept with the
+//! versions of the files it came from, also while it isn't shown: showing other regions or
+//! surfaces reads only those not read yet, and a surface or patch list a command changed is read
+//! again. A mesh rewritten on disk by OpenFOAM is read again with `"reload": true`, which drops
+//! what was kept of hidden ones too. Points are single precision, relative to the scene's origin
+//! (the middle of what is shown); an object is never moved to another origin: when the middle
+//! moves more than 10 km, what is shown is read again around it and the kept ones are dropped.
 
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
+use umcf_foam_mesh::{BoundaryMesh, Limits, mesh_dir};
 use umcf_geom::BBox;
 use umcf_geom::bvh::Ray;
 use umcf_geom::stl;
@@ -36,6 +41,7 @@ pub enum Sel {
 }
 
 impl Sel {
+    /// The selected thing as the commands take and return it.
     pub fn to_json(&self) -> Value {
         match self {
             Sel::Patch { region, patch } => json!({ "region": region, "patch": patch }),
@@ -70,6 +76,91 @@ pub(crate) struct Cached {
     /// the same `Arc` until the file is put again), or `None` when it was read from disk.
     surfaces: Vec<(String, Option<Arc<Vec<u8>>>)>,
     scene: Scene,
+    /// What each of the scene's objects was built from, in their order.
+    keys: Vec<Key>,
+    /// Objects built for this case and not shown now: shown again without reading them again.
+    spare: Vec<(Key, Object)>,
+}
+
+/// What an object was built from: a region's mesh or a surface, with the versions of the files
+/// commands may have put (compared by identity; `None`: as on disk).
+#[derive(Debug, Clone)]
+pub(crate) struct Key {
+    source: Source,
+    files: Vec<(String, Option<Arc<Vec<u8>>>)>,
+}
+
+impl Key {
+    /// Whether `other` is the same source with the same file versions.
+    fn same(&self, other: &Key) -> bool {
+        self.source == other.source && same_files(&self.files, &other.files)
+    }
+}
+
+/// Whether two lists name the same files with the same versions (put bytes by identity).
+fn same_files(a: &[(String, Option<Arc<Vec<u8>>>)], b: &[(String, Option<Arc<Vec<u8>>>)]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|((f, x), (g, y))| {
+            f == g
+                && match (x, y) {
+                    (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+}
+
+/// Whether the case still has `version` put at `file`.
+fn case_put(s: &Session, file: &str, version: &Option<Arc<Vec<u8>>>) -> bool {
+    match (s.case().and_then(|c| c.put_bytes(file)), version) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// A job of [`parallel`].
+type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
+
+/// Runs `jobs` on up to one worker thread per core and on the calling thread, which takes
+/// jobs too (so they all run, one after the other, where no thread starts: wasm, or a thread
+/// limit); their results in order, or the first error. A job that panics is a `Panicked` error.
+fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
+    use std::sync::Mutex;
+    let n = jobs.len();
+    let queue: Mutex<Vec<(usize, Job<'_, T>)>> = Mutex::new(jobs.into_iter().enumerate().rev().collect());
+    let done: Mutex<Vec<Option<Result<T, Error>>>> = Mutex::new((0..n).map(|_| None).collect());
+    let work = || {
+        loop {
+            let next = match queue.lock() {
+                Ok(mut q) => q.pop(),
+                Err(_) => None,
+            };
+            let Some((k, job)) = next else { return };
+            // A panic is the engine's `Panicked`, as the guard around every command makes it.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|payload| {
+                Err(Error::Panicked { id: id.to_string(), message: crate::panic_message(payload.as_ref()) })
+            });
+            if let Ok(mut d) = done.lock()
+                && let Some(slot) = d.get_mut(k)
+            {
+                *slot = Some(r);
+            }
+        }
+    };
+    let workers = std::thread::available_parallelism().map_or(1, |c| c.get()).min(n).saturating_sub(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            if std::thread::Builder::new().spawn_scoped(scope, work).is_err() {
+                break;
+            }
+        }
+        work();
+    });
+    let done = done.into_inner().map_err(|_| Error::Failed(format!("{id}: a reader thread failed")))?;
+    done.into_iter()
+        .map(|r| r.unwrap_or_else(|| Err(Error::Failed(format!("{id}: a reader job did not run")))))
+        .collect()
 }
 
 /// The parameters that say what the scene shows.
@@ -82,11 +173,13 @@ const MAX_ITEMS: usize = 50_000_000;
 /// Most hits a pick lists.
 const MAX_HITS: usize = 64;
 
+/// `v` as a list of names, or a parameter error naming `key`.
 fn strings<'a>(id: &str, key: &str, v: &'a Value) -> Result<Vec<&'a str>, Error> {
     let bad = || Error::Params(format!("{id}: `{key}` is a list of names"));
     v.as_array().ok_or_else(bad)?.iter().map(|x| x.as_str().ok_or_else(bad)).collect()
 }
 
+/// The parameter `key`, when it was given.
 fn optional<'a>(p: &Params<'a>, key: &str) -> Result<Option<&'a Value>, Error> {
     match p.required(key) {
         Ok(v) => Ok(Some(v)),
@@ -160,59 +253,151 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     let versions: Vec<(String, Option<Arc<Vec<u8>>>)> =
         surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
     let reload = p.bool("reload")?.unwrap_or(false);
-    let same = |c: &Cached| {
-        c.opens == s.opens
-            && c.regions == regions
-            && c.surfaces.len() == versions.len()
-            && c.surfaces.iter().zip(&versions).all(|((f, a), (g, b))| {
-                f == g
-                    && match (a, b) {
-                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                        (None, None) => true,
-                        _ => false,
-                    }
-            })
-    };
+    let same = |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions);
     if reload || !s.scene.as_ref().is_some_and(same) {
-        let mut meshes = Vec::new();
-        for r in &regions {
-            let mut mesh = PolyMesh::read(fs, &mesh_dir(r), &Limits::default()).map_err(|e| {
-                let which = if r.is_empty() { String::new() } else { format!(" of region {r}") };
-                Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
-            })?;
-            // The patches as the case has them (renamed or retyped and not saved yet), when
-            // they are the same faces.
-            if let Some(patches) = case.region(r).and_then(|x| x.patches.as_ref())
-                && patches.len() == mesh.boundary.len()
-                && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
-            {
-                mesh.boundary = patches.clone();
+        // What each object is built from. Objects of this case built before (shown or spare)
+        // are taken as they are, unless `reload`; the others are read, in parallel.
+        let mesh_key = |r: &str| {
+            let b = format!("{}/boundary", mesh_dir(r));
+            Key {
+                source: Source::Mesh { region: r.to_string() },
+                files: [format!("{b}.gz"), b].into_iter().map(|f| (f.clone(), case.put_bytes(&f).cloned())).collect(),
             }
-            meshes.push((r, mesh));
+        };
+        let surface_key = |f: &str| Key {
+            source: Source::Surface { file: f.to_string() },
+            files: vec![(f.to_string(), case.put_bytes(f).cloned())],
+        };
+        let wanted: Vec<Key> =
+            regions.iter().map(|r| mesh_key(r)).chain(surfaces.iter().map(|f| surface_key(f))).collect();
+        let previous = s.scene.as_ref().filter(|c| c.opens == s.opens && !reload);
+        let have =
+            |k: &Key| previous.is_some_and(|c| c.keys.iter().chain(c.spare.iter().map(|(k, _)| k)).any(|x| x.same(k)));
+        let missing: Vec<&Key> = wanted.iter().filter(|k| !have(k)).collect();
+
+        // Read what is missing: meshes (only their boundary: drawing and picking need no
+        // cells) and surfaces.
+        enum Read {
+            Mesh(BoundaryMesh),
+            Surface(stl::Stl),
         }
-        let mut stls = Vec::new();
-        for f in &surfaces {
-            let bytes = case.file(fs, f)?.ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
-            let stl = stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
-            stls.push((f, stl));
-        }
-        let boxes = meshes
+        let jobs_for = |keys: &[&Key]| -> Vec<Job<'_, Read>> {
+            let mut jobs: Vec<Job<'_, Read>> = Vec::new();
+            for k in keys {
+                match &k.source {
+                    Source::Mesh { region } => {
+                        let r = region.clone();
+                        jobs.push(Box::new(move || {
+                            let mut mesh = BoundaryMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
+                                let which = if r.is_empty() { String::new() } else { format!(" of region {r}") };
+                                Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
+                            })?;
+                            // The patches as the case has them (renamed or retyped and not saved
+                            // yet), when they are the same faces.
+                            if let Some(patches) = case.region(&r).and_then(|x| x.patches.as_ref())
+                                && patches.len() == mesh.boundary.len()
+                                && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
+                            {
+                                mesh.boundary = patches.clone();
+                            }
+                            Ok(Read::Mesh(mesh))
+                        }));
+                    }
+                    Source::Surface { file } => {
+                        let f = file.clone();
+                        jobs.push(Box::new(move || {
+                            let bytes = case
+                                .file(fs, &f)?
+                                .ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
+                            let stl =
+                                stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
+                            Ok(Read::Surface(stl))
+                        }));
+                    }
+                }
+            }
+            jobs
+        };
+        let read = parallel(id, jobs_for(&missing))?;
+
+        // The origin: the middle of what is shown, so that points far from the world's origin
+        // (projected coordinates) stay precise in single precision. The previous scene's is kept
+        // while it is near that middle, so that the objects built before fit as they are.
+        // Otherwise they are not moved (in single precision that would lose what moving back
+        // can't restore): the shown ones are read again at the new origin, the hidden ones go.
+        const NEAR: f64 = 1.0e4;
+        let kept_box = |k: &Key| -> Option<BBox> {
+            let c = previous?;
+            let mut all = c.keys.iter().zip(&c.scene.objects).chain(c.spare.iter().map(|(k, o)| (k, o)));
+            all.find(|(x, _)| x.same(k)).and_then(|(_, o)| o.bbox(c.scene.origin))
+        };
+        let boxes: Vec<BBox> = read
             .iter()
-            .filter_map(|(_, m)| Object::boundary_bounds(m))
-            .chain(stls.iter().filter_map(|(_, s)| s.bbox()));
-        let mut scene = Scene::new(Scene::origin_for(boxes));
-        for (r, m) in &meshes {
-            scene.objects.push(Object::from_mesh(r, m, scene.origin));
+            .filter_map(|x| match x {
+                Read::Mesh(m) => Object::boundary_bounds(m),
+                Read::Surface(stl) => stl.bbox(),
+            })
+            .chain(wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).filter_map(kept_box))
+            .collect();
+        let middle = Scene::origin_for(boxes);
+        let origin = match previous {
+            Some(c) if (c.scene.origin - middle).length() <= NEAR => c.scene.origin,
+            _ => middle,
+        };
+        let moved = previous.is_some_and(|c| c.scene.origin != origin);
+        let mut missing = missing;
+        let mut read = read;
+        if moved {
+            let again: Vec<&Key> = wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).collect();
+            read.extend(parallel(id, jobs_for(&again))?);
+            missing.extend(again);
         }
-        for (f, stl) in &stls {
-            scene.objects.push(Object::from_stl(f, stl, scene.origin));
+        let built: Vec<Job<'_, Object>> = missing
+            .iter()
+            .zip(read)
+            .map(|(k, x)| -> Job<'_, Object> {
+                let source = k.source.clone();
+                Box::new(move || {
+                    Ok(match (source, x) {
+                        (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
+                        (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
+                        _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
+                    })
+                })
+            })
+            .collect();
+        let mut fresh: Vec<(Key, Object)> = missing.into_iter().cloned().zip(parallel(id, built)?).collect();
+
+        // The new scene: each object taken from what was read, else from before; what was
+        // there and isn't shown now is kept aside.
+        let mut pool: Vec<(Key, Object)> = match s.scene.take() {
+            Some(c) if c.opens == s.opens && !reload && !moved => {
+                c.keys.into_iter().zip(c.scene.objects).chain(c.spare).collect()
+            }
+            _ => Vec::new(),
+        };
+        let mut scene = Scene::new(origin);
+        let mut keys = Vec::new();
+        for k in wanted {
+            let found = fresh
+                .iter()
+                .position(|(x, _)| x.same(&k))
+                .map(|i| fresh.swap_remove(i))
+                .or_else(|| pool.iter().position(|(x, _)| x.same(&k)).map(|i| pool.swap_remove(i)));
+            let Some((k, o)) = found else {
+                return Err(Error::Failed(format!("{id}: an object of the scene was neither read nor kept")));
+            };
+            scene.objects.push(o);
+            keys.push(k);
         }
+        // An object of files a command has put since (another version) can't be shown again.
+        pool.retain(|(k, _)| k.files.iter().all(|(f, v)| case_put(s, f, v)));
         // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
         // the faces picked on it go.
         if reload {
             s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
         }
-        s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene });
+        s.scene = Some(Cached { opens: s.opens, regions, surfaces: versions, scene, keys, spare: pool });
     }
     Ok(())
 }
@@ -313,6 +498,7 @@ pub fn camera_json(c: &Camera) -> Value {
     })
 }
 
+/// `bytes` in base64 (standard alphabet, padded).
 fn base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let sym = |v: u32| char::from(ABC.get((v & 63) as usize).copied().unwrap_or(b'A'));
@@ -328,6 +514,7 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// What the scene holds, one entry per object: its source, patches or regions, triangles.
 fn objects_json(scene: &Scene) -> Value {
     scene
         .objects
@@ -347,13 +534,14 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. reload: true reads the files again (after OpenFOAM rewrote a mesh; faces picked on the meshes read again are taken out of the selection, as their labels may have changed). Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden; when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
     undoable: false,
 };
 
+/// `scene.snapshot`.
 fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SNAPSHOT.id;
     let mut allowed = WHICH.to_vec();
@@ -414,6 +602,7 @@ enum Mode {
     None,
 }
 
+/// The `mode` parameter, one of `allowed`.
 fn mode(id: &str, p: &Params, allowed: &[(&str, Mode)]) -> Result<Mode, Error> {
     match p.str("mode")? {
         None => Ok(Mode::Replace),
@@ -424,6 +613,7 @@ fn mode(id: &str, p: &Params, allowed: &[(&str, Mode)]) -> Result<Mode, Error> {
     }
 }
 
+/// Changes `selection` by `items` as `mode` says.
 fn apply(selection: &mut Vec<Sel>, mode: Mode, items: Vec<Sel>) {
     use std::collections::HashSet;
     if mode == Mode::Replace {
@@ -490,6 +680,7 @@ pub fn selected_faces(scene: &Scene, selection: &[Sel]) -> std::collections::Has
     out
 }
 
+/// The selection as the commands return it.
 fn selection_json(s: &[Sel]) -> Value {
     s.iter().map(Sel::to_json).collect()
 }
@@ -513,6 +704,7 @@ pub(super) const PICK: CommandSpec = CommandSpec {
     undoable: false,
 };
 
+/// `select.pick`.
 fn pick(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = PICK.id;
     let mut allowed = WHICH.to_vec();
@@ -645,6 +837,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
 /// Most items `select.rect` lists.
 const MAX_LISTED: usize = 1000;
 
+/// `select.rect`.
 fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = RECT.id;
     let mut allowed = WHICH.to_vec();
@@ -727,6 +920,7 @@ pub(super) const SELECT: CommandSpec = CommandSpec {
     undoable: false,
 };
 
+/// `select.set`.
 fn select(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SELECT.id;
     let p = Params::new(id, p, &["items", "mode"])?;
@@ -818,6 +1012,7 @@ pub(super) const CLEAR: CommandSpec = CommandSpec {
     undoable: false,
 };
 
+/// `select.clear`.
 fn clear(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Params::new(CLEAR.id, p, &[])?;
     s.selection.clear();

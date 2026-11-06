@@ -1,7 +1,8 @@
 //! Mesh reading over real cases.
 //!
 //! - `UMCF_CASES` (`:`-separated case directories): every `constant/<region>/polyMesh` (and
-//!   `constant/polyMesh`) reads and passes the consistency checks. Each case must have a mesh.
+//!   `constant/polyMesh`) reads and passes the consistency checks, and its boundary read alone
+//!   ([`BoundaryMesh`]) is the same as the whole mesh's. Each case must have a mesh.
 //! - `UMCF_FIELD_PAIR=<ascii case>:<binary case>`: a copy converted to binary by OpenFOAM's
 //!   `foamFormatConvert` reads back bit for bit the same mesh.
 
@@ -11,7 +12,7 @@
 use std::time::Instant;
 
 use umcf_core::{CaseFs, DirFs};
-use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
+use umcf_foam_mesh::{BoundaryMesh, Limits, PolyMesh, mesh_dir};
 
 /// Regions with a mesh: `constant/<r>/polyMesh` directories, and `""` for `constant/polyMesh`.
 fn mesh_regions(fs: &DirFs) -> Vec<String> {
@@ -42,18 +43,37 @@ fn reference_case_meshes() {
         }
         for r in regions {
             let started = Instant::now();
+            let boundary = BoundaryMesh::read(&fs, &mesh_dir(&r), &Limits::default());
+            let boundary_secs = started.elapsed().as_secs_f64();
+            let started = Instant::now();
             match PolyMesh::read(&fs, &mesh_dir(&r), &Limits::default()) {
-                Ok(m) => eprintln!(
-                    "{case} {}: {} cells, {} faces ({} internal), {} points, {} patches, {} cell zones, {:.1}s",
-                    if r.is_empty() { "(single region)" } else { &r },
-                    m.n_cells(),
-                    m.n_faces(),
-                    m.n_internal_faces(),
-                    m.n_points(),
-                    m.boundary.len(),
-                    m.cell_zones.len(),
-                    started.elapsed().as_secs_f64()
-                ),
+                Ok(m) => {
+                    match &boundary {
+                        Ok(b) => {
+                            let same = b.points == m.points
+                                && b.boundary == m.boundary
+                                && b.first_boundary_face() == m.n_internal_faces()
+                                && b.n_faces() == m.n_faces()
+                                && (m.n_internal_faces()..m.n_faces()).all(|i| b.face(i) == m.face(i));
+                            if !same {
+                                failures.push(format!("{case} {r}: the boundary read alone differs from the mesh's"));
+                            }
+                            eprintln!("    boundary alone: {boundary_secs:.1}s");
+                        }
+                        Err(e) => failures.push(format!("{case} {r}: boundary alone: {e}")),
+                    }
+                    eprintln!(
+                        "{case} {}: {} cells, {} faces ({} internal), {} points, {} patches, {} cell zones, {:.1}s",
+                        if r.is_empty() { "(single region)" } else { &r },
+                        m.n_cells(),
+                        m.n_faces(),
+                        m.n_internal_faces(),
+                        m.n_points(),
+                        m.boundary.len(),
+                        m.cell_zones.len(),
+                        started.elapsed().as_secs_f64()
+                    );
+                }
                 Err(e) => failures.push(format!("{case} {r}: {e}")),
             }
         }

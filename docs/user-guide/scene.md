@@ -43,9 +43,16 @@ the selection in orange (in front of a patch of another region in the same place
 | `reload` | `false` | Reads the files again (after OpenFOAM rewrote a mesh) |
 | `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
 
-The scene is built the first time it is needed and kept while the same things are shown, so a
-pick after a snapshot doesn't read the mesh again. It follows the surfaces commands change (a
-repair, an undo); a mesh rewritten on disk needs `reload`.
+The scene is built the first time it is needed: each region's mesh (only its boundary: its
+points, boundary faces and patches) and each surface is read once, the missing ones in parallel,
+and kept, also while it is hidden. So a pick after a snapshot, or showing a region again, reads
+nothing, while what is shown stays near where the scene is centred. Points are kept in single
+precision relative to the middle of what is shown; when that moves more than 10 km (a mesh in
+local and a surface in projected coordinates, say), what is shown is read again around the new
+middle and what was kept of hidden ones is dropped, so that nothing loses precision. The scene
+follows the surfaces and patch lists commands change (a repair, a rename, an undo). A mesh
+rewritten on disk (by OpenFOAM) is read again only with `reload`, which drops what was kept of
+every region and surface and reads what is shown again.
 
 ## Display modes
 
@@ -174,9 +181,11 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 
 ## Limits
 
-- Drawing a mesh reads all of it, not only its boundary: the 2.8-million-cell air region of
-  the 3×3 case takes about 5 s and 1.3 GB, almost all of it reading. Its 573 000 boundary
-  triangles are drawn and picked in well under a second.
+- Drawing a mesh reads its boundary only, but all of its points, and an uncompressed or binary
+  `faces` file whole while it is read: the 16-million-cell air region of the HK project takes
+  3.8 s and 1.8 GB the first time, all five of its regions 4.6 s and 2.8 GB, read in parallel
+  (each reader holds its region's files at once). Drawing and picking boundary triangles is
+  quick: the 573 000 of a 2.8-million-cell air region of a 3×3 street-grid case in 0.14 s.
 - No level of detail; the renderer draws every triangle on one core, and sorts transparent
   triangles one by one ([display modes](#display-modes)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
