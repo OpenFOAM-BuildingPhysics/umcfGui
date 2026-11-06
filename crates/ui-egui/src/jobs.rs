@@ -297,6 +297,13 @@ impl App {
         }
     }
 
+    /// Applies a history walk's steps as a job's end does (tests: an undo or redo can't be made
+    /// to fail through the session).
+    #[cfg(test)]
+    pub(crate) fn finish_history_for_test(&mut self, steps: Vec<(&'static str, Result<Outcome, Error>)>) {
+        self.finish(Work::History { done: 0 }, Done::History(steps));
+    }
+
     /// Starts what is queued and waits for it to finish (tests, screenshots).
     pub fn wait_for_job(&mut self) {
         self.launch();

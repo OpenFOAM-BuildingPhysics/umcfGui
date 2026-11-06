@@ -1174,3 +1174,16 @@ fn a_cards_set_takes_the_place_of_a_scene_only_queued() {
     assert!(app.bc.is_none(), "{:?}", app.bc);
     assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("bc.set", true)), "{:?}", app.log.last());
 }
+
+#[test]
+fn a_history_walk_that_fails_partway_logs_each_step_and_opens_the_results() {
+    let mut app = app();
+    app.results_open = false;
+    let undone = umcf_engine::Outcome::new("undone", json!({}));
+    let failed = umcf_engine::Error::Failed("the case changed on disk".into());
+    app.finish_history_for_test(vec![("edit.undo", Ok(undone)), ("edit.undo", Err(failed))]);
+    let last: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(last, [("edit.undo", false), ("edit.undo", true)]);
+    assert!(app.log.last().is_some_and(|e| e.message.contains("changed on disk")));
+    assert!(app.results_open, "a failure opens the results card");
+}
