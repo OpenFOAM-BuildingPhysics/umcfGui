@@ -147,8 +147,10 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
 ## 6. Quality gates (before every commit)
 
 `cargo xtask ci` runs fmt check, clippy `-D warnings`, tests, `layers`, `assets`, `catalog`,
-`wasm`, `docs` and `deny`. Only green states get committed. One task id per commit (`M1.2:
-material picker`).
+`wasm`, `docs` and `deny`. Locally, the site build and `deny` are skipped with a notice when
+Zensical or cargo-deny is not installed; on CI (`CI` set) a missing tool fails the gate. So a
+local pass counts only with both installed, or with `CI=1 cargo xtask ci`. Only green states get
+committed. One task id per commit (`M1.2: material picker`).
 
 **Every commit brings the docs up to date with it.** What the change touches is described in the
 same commit: the user guide (`docs/user-guide/`), the command's help (`CommandSpec::params`),
@@ -158,8 +160,10 @@ as it was, isn't done.
 
 ## 7. Running and looking at the app
 
-- `cargo run --release -p umcf-gui -- examples/of12/streetCanyon_CFDHAM --screenshot /tmp/shot.png`
-  writes a PNG of the window once it has drawn, then quits (under `xvfb-run` without a display).
+- `cargo run --release -p umcf-gui -- <case> --screenshot /tmp/shot.png` writes a PNG of the
+  window once it has drawn, then quits (under `xvfb-run` without a display). The examples carry
+  no mesh: for anything in the 3D view, mesh a scratch copy of one first, as in
+  `docs/getting-started.md`, and open the copy.
 - Planned (gaps: *No control channel yet*): `--control 7995`, driven with JSON lines on
   `127.0.0.1:7995`, e.g.
   `{"id":1,"method":"engine.execute","params":{"command":"bc.set","params":{"region":"air","patch":"inlet","field":"U","type":"fixedValue","value":[2,0,0]}}}`,
