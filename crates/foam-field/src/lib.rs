@@ -3,7 +3,9 @@
 //! [`Field::parse`] reads a field in ASCII or binary format, gzip-compressed or not. Its big
 //! `nonuniform List<T>` data is read straight into numbers ([`ListData`]); everything else
 //! (header, `dimensions`, the patches of `boundaryField`) is a [`Document`], so the small parts
-//! keep their full structure. [`times`] finds time and processor directories.
+//! keep their full structure. [`Field::outline`] reads the same as a stream, keeping of each list
+//! only its kind and length: a field's boundary conditions without holding its numbers.
+//! [`times`] finds time and processor directories.
 //!
 //! Reading only: rewriting big fields is not this crate's job yet. Small field files can be edited
 //! losslessly with `umcf-foam-dict` directly.
@@ -16,6 +18,7 @@
     clippy::unreachable
 )]
 
+mod outline;
 mod scan;
 pub mod times;
 
@@ -121,15 +124,28 @@ pub struct ListData {
     values: Vec<f64>,
     /// `N{value}`: one element stands for all `len`.
     repeated: bool,
+    /// The values were read ([`Field::outline`] counts them only).
+    stored: bool,
 }
 
 impl ListData {
     fn flat(kind: Kind, len: usize, values: Vec<f64>) -> Self {
-        ListData { kind, len, values, repeated: false }
+        ListData { kind, len, values, repeated: false, stored: true }
     }
 
     fn repeated(kind: Kind, len: usize, element: Vec<f64>) -> Self {
-        ListData { kind, len, values: element, repeated: true }
+        ListData { kind, len, values: element, repeated: true, stored: true }
+    }
+
+    /// A list whose elements were counted, not read.
+    fn counted(kind: Kind, len: usize) -> Self {
+        ListData { kind, len, values: Vec::new(), repeated: false, stored: false }
+    }
+
+    /// Whether the values were read: `false` for a list of [`Field::outline`] (other than an
+    /// `N{value}` one), whose elements have no values here ([`ListData::get`] gives `None`).
+    pub fn has_values(&self) -> bool {
+        self.stored
     }
 
     pub fn len(&self) -> usize {
@@ -155,16 +171,18 @@ impl ListData {
         self.values.get(start..start.checked_add(c)?)
     }
 
+    /// The elements; none for a list whose values weren't read ([`ListData::has_values`]).
     pub fn iter(&self) -> impl Iterator<Item = &[f64]> {
-        (0..self.len).filter_map(|i| self.get(i))
+        (0..if self.stored { self.len } else { 0 }).filter_map(|i| self.get(i))
     }
 
     /// The flat components, when every element is stored (not for `N{value}` lists).
     pub fn as_flat(&self) -> Option<&[f64]> {
-        (!self.repeated).then_some(self.values.as_slice())
+        (!self.repeated && self.stored).then_some(self.values.as_slice())
     }
 
-    /// Smallest and largest value of each component (`None` for an empty list).
+    /// Smallest and largest value of each component (`None` for an empty list, or one whose
+    /// values weren't read).
     pub fn component_range(&self) -> Option<Vec<(f64, f64)>> {
         let c = self.kind.components();
         let mut out = vec![(f64::INFINITY, f64::NEG_INFINITY); c];
@@ -264,6 +282,8 @@ pub struct Field {
     pub doc: Document,
     lists: Vec<ListData>,
     tag: scan::Tag,
+    /// The file's size, decompressed.
+    size: u64,
 }
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -330,7 +350,7 @@ impl Field {
         let scanned = scan::scan(bytes, header.format == Format::Binary, header.arch, limits)?;
         let doc = Document::parse_bytes(&scanned.text)?;
         scanned.tag.check(&doc, scanned.lists.len())?;
-        Ok(Field { header, doc, lists: scanned.lists, tag: scanned.tag })
+        Ok(Field { header, doc, lists: scanned.lists, tag: scanned.tag, size: bytes.len() as u64 })
     }
 
     /// Reads `rel` from a case, or `rel.gz` when only the compressed file exists.
@@ -341,6 +361,11 @@ impl Field {
             }
         }
         Ok(None)
+    }
+
+    /// The file's size in bytes, decompressed.
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     pub fn class(&self) -> Option<&str> {

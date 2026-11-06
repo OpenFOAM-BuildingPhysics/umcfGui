@@ -37,6 +37,21 @@ Reading runs at about 370 MB/s of field text and decompression at about 235 MB/s
 The largest file of a real project time step (597 MB of `U`, 16 million vectors) takes about
 four seconds.
 
+Opening a case reads only the **outline** of each start-time field file: the file is read as a
+stream, and of each list only its type and length are kept. Its numbers are still checked as
+they go by, as a whole read checks them. So a file's numbers are never held, whatever its size,
+and every field up to 8 GB (decompressed) has its boundary conditions. What is kept is
+bounded: 4 MB of text outside the lists (a real field's is kilobytes), counting 64 bytes for
+each list. A file over either limit, a hostile one say, is listed without its conditions.
+Commands still edit only files up to 256 MB (decompressed): a bigger one gets a note, `bc.set`
+refuses it, and `patch.set` and `patch.create` leave it out and say so.
+
+The files are read in parallel, one per core and 16 at most. The Hong Kong project opens at its
+latest time (16 fields of up to 600 MB, gzipped) in 2.6 s, against 11 s when each file was read
+whole one after the other. Its `U` and `phi` used to be listed without their boundary
+conditions. Decompressing is most of the time: a gzipped file of several GB takes seconds, and
+*Cancel* stops it.
+
 ## Setting boundary conditions
 
 `bc.set` sets the condition of one or more patches in a field of the start time (`0/air/U`),

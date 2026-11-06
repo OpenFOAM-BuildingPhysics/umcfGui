@@ -130,6 +130,20 @@ Notes:
 |---|---|---|
 | `field.missing` | Error | A field the solver or a selected model reads is not where it is read from. Only a Warning in a decomposed case, whose parallel run reads `processor*/`. Fields read from the start time are not reported for a region that has none there (`region.no-fields`); those read from `0` or `constant/<region>` still are |
 
+## Field sizes
+
+A `nonuniform` `internalField` has one value per cell of a volume field (`vol…Field`), per
+internal face of a surface field (`surface…Field`) and per point of a point field
+(`point…Field`). OpenFOAM stops on any other length. The check compares the list's length
+with the counts in the `owner` header of the mesh the run reads, which OpenFOAM writes there
+(`nPoints:… nCells:… nFaces:… nInternalFaces:…`): the region's mesh in the latest time
+directory up to the start time that has one (meshing without `-overwrite` writes one), else
+the one in `constant`. A mesh without that note is not checked.
+
+| Code | Level | What it means |
+|---|---|---|
+| `field.size` | Error | The `internalField` lists another number of values than the mesh has cells, internal faces or points: most often a field from another mesh (copied in, or left from before meshing again). Only a Warning in a decomposed case, whose parallel run reads `processor*/`, and Info in a copy (`field.object`) |
+
 ## Keywords the selected models need
 
 The vegetation, grass, solar load and radiation model selected in a region's dictionary

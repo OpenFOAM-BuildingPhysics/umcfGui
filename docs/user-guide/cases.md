@@ -72,13 +72,19 @@ Opening a case reads what an editor needs, and nothing more:
 - for each region, the patches of its mesh (`constant/<region>/polyMesh/boundary`) and, for
   every field of the start time, its class, its `internalField` and the boundary condition of
   each `boundaryField` entry (patch, group or quoted pattern). Field values are summarised:
-  `nonuniform List<scalar> 2400`, not 2400 numbers;
+  `nonuniform List<scalar> 2400`, not 2400 numbers. Only that much is read, in parallel
+  ([Fields](fields.md#safety-and-speed));
+- for each region, the sizes its mesh's `owner` header notes (points, cells, faces, internal
+  faces), from its first bytes, for the [field size check](checks.md#field-sizes);
 - every dictionary in `system/`, `constant/` and each region's `system/<region>/` and
   `constant/<region>/`, as an editable document.
 
 What can't be read is listed, and the case opens anyway:
 - a dictionary that doesn't parse, such as a half-edited backup file;
-- a field file too large to summarise;
+- a field file whose text outside its lists is over 4 MB (or over `field_bytes`, when that is
+  smaller), one over 8 GB decompressed, or one with a list of over two billion numbers;
+- a field file over 256 MB, decompressed: its boundary conditions are read and checked, but
+  commands don't edit it;
 - a start time without a directory;
 - a broken `boundary` file.
 

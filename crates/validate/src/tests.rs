@@ -1376,3 +1376,60 @@ fn description_partners_and_roles_are_checked_without_a_mesh() {
     assert!(m.iter().any(|x| x.contains("its partner nowhere/b is not in the case")), "{m:#?}");
     assert!(!m.iter().any(|x| x.contains("is not in its mesh")), "{m:#?}");
 }
+
+#[test]
+fn a_field_whose_length_differs_from_the_mesh_is_an_error() {
+    let owner =
+        |note: &str| format!("FoamFile\n{{\n    format ascii;\n    class labelList;\n    note \"{note}\";\n}}\n0()\n");
+    let list = |n: usize| format!("nonuniform List<scalar> {n}({})", vec!["300"; n].join(" "));
+    let mut fs = case();
+    fs.insert("constant/air/polyMesh/owner", owner("nPoints:30 nCells:4 nFaces:20 nInternalFaces:10"));
+    // As long as the mesh has cells: clean.
+    edit(&mut fs, "0/air/T", "internalField uniform 300;", &format!("internalField {};", list(4)));
+    assert_eq!(codes(&fs), []);
+    let c = Case::open(&fs).unwrap();
+    assert_eq!(c.region("air").unwrap().counts.cells, Some(4));
+    assert_eq!(c.region("air").unwrap().field("T").unwrap().internal_size, Some(4));
+    // One more value: OpenFOAM stops reading it.
+    edit(&mut fs, "0/air/T", &list(4), &list(5));
+    let e = errors(&fs);
+    assert_eq!(e.iter().map(|d| d.code).collect::<Vec<_>>(), ["field.size"]);
+    assert!(e[0].message.contains("5 values, the mesh has 4 cells"), "{}", e[0].message);
+    // A surface field against the internal faces, a point field against the points.
+    fs.insert("0/air/phi", format!("{}dimensions [1 0 -1 0 0 0 0];\ninternalField {};\nboundaryField {{ \".*\" {{ type calculated; value uniform 0; }} }}\n", header("surfaceScalarField"), list(9)));
+    fs.insert(
+        "0/air/pointDisplacement",
+        format!(
+            "{}dimensions [0 1 0 0 0 0 0];\ninternalField {};\nboundaryField {{ \".*\" {{ type calculated; }} }}\n",
+            header("pointScalarField"),
+            list(30)
+        ),
+    );
+    let sizes: Vec<_> = check(&Case::open(&complete(&fs)).unwrap())
+        .into_iter()
+        .filter(|d| d.code == "field.size")
+        .map(|d| d.path)
+        .collect();
+    assert_eq!(sizes, ["0/air/T", "0/air/phi"]);
+    // A mesh of the start time's own (meshing without `-overwrite`) is the one the run reads.
+    let mut moved = fs.clone();
+    moved.insert("0/air/polyMesh/owner", owner("nPoints:30 nCells:5 nFaces:20 nInternalFaces:9"));
+    assert_eq!(Case::open(&moved).unwrap().region("air").unwrap().counts.cells, Some(5));
+    assert!(errors(&moved).iter().all(|d| d.code != "field.size"), "{:?}", errors(&moved));
+    // Decomposed, the run reads `processor*/`: only a Warning.
+    let mut decomposed = fs.clone();
+    decomposed.insert("processor0/0/air/T", "kept for the test");
+    let c = Case::open(&complete(&decomposed)).unwrap();
+    let levels: Vec<_> = check(&c).into_iter().filter(|d| d.code == "field.size").map(|d| d.level).collect();
+    assert_eq!(levels, [Level::Warning, Level::Warning], "T and phi");
+    // The only mesh in the start time (no `constant` one): still checked.
+    let mut only = fs.clone();
+    only.insert("0/air/polyMesh/owner", owner("nPoints:30 nCells:4 nFaces:20 nInternalFaces:10"));
+    only.insert("constant/air/polyMesh/boundary", "2\n(\n broken");
+    let c = Case::open(&only).unwrap();
+    assert!(c.region("air").unwrap().patches.is_none());
+    assert!(check(&c).iter().any(|d| d.code == "field.size" && d.path == "0/air/T"), "{:?}", check(&c));
+    // Without the owner header's note, nothing to compare with.
+    fs.insert("constant/air/polyMesh/owner", owner("written by hand"));
+    assert!(errors(&fs).iter().all(|d| d.code != "field.size"));
+}

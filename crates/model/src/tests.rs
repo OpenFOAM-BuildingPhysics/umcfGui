@@ -1477,3 +1477,58 @@ fn a_rename_follows_into_a_compressed_view_factor_dictionary_and_searches_held_o
     assert!(text.contains("terrain\n{\n    nFacesInCoarsestLevel 15;"), "{text}");
     assert!(report.mentions.iter().any(|(f, _)| f == "system/air/createPatchDict.umcf"), "{:?}", report.mentions);
 }
+
+#[test]
+fn big_fields_are_read_for_their_conditions_without_their_numbers() {
+    // The bound is on the text outside the lists: a field file thousands of times over it,
+    // all of it list data, still has its boundary conditions, gzipped too.
+    let values = vec!["(1 0 0)"; 50_000].join("\n");
+    let src = format!(
+        "{}dimensions [0 1 -1 0 0 0 0];\ninternalField nonuniform List<vector> 50000({values});\nboundaryField\n{{\n    top {{ type fixedValue; value uniform (1 0 0); }}\n}}\n",
+        header("volVectorField", "U")
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, src.as_bytes()).unwrap();
+    let mut fs = case();
+    fs.insert("0/air/U", src.clone());
+    fs.insert("0/air/V.gz", gz.finish().unwrap());
+    let options = OpenOptions { field_bytes: 2000, ..OpenOptions::default() };
+    assert!(src.len() > 200 * 2000);
+    let c = Case::open_with(&fs, options).unwrap();
+    for name in ["U", "V"] {
+        let f = c.region("air").unwrap().field(name).unwrap();
+        assert_eq!(f.internal_size, Some(50_000), "{name}");
+        assert_eq!(f.internal.as_deref(), Some("nonuniform List<vector> 50000"), "{name}");
+        assert_eq!(f.bcs.as_ref().map(|b| b[0].kind.clone()), Some(Some("fixedValue".into())), "{name}");
+    }
+    assert_eq!(c.region("air").unwrap().field("V").unwrap().path, "0/air/V.gz");
+    // Read, but over the edit limit: checked, not edited (review finding: commands then failed
+    // on the file instead of passing it by).
+    assert!(c.region("air").unwrap().field("V").unwrap().too_big);
+    assert!(!c.region("air").unwrap().field("T").unwrap().too_big);
+    assert!(c.notes.iter().any(|n| n.path == "0/air/V.gz" && n.message.contains("not edited")), "{:?}", c.notes);
+    let mut c2 = c.clone();
+    let e = c2.set_bc(&fs, "air", "V", &["top"], &Condition { kind: "zeroGradient", entries: &[], defaults: &[] });
+    assert!(matches!(&e, Err(Error::Bc(m)) if m.contains("too large to be edited")), "{e:?}");
+    // A rename: a big file with an entry of its own keeps the old name, and says so; one
+    // without has nothing to change.
+    let change = PatchChange { name: Some("sky"), kind: None, groups: None, entries: &[] };
+    let report = c.clone().set_patch(&fs, "air", "top", &change).unwrap();
+    assert!(
+        report.unread.contains(&"0/air/U".to_string()) && report.unread.contains(&"0/air/V.gz".to_string()),
+        "{report:?}"
+    );
+    let change = PatchChange { name: Some("terrain"), kind: None, groups: None, entries: &[] };
+    let report = c.clone().set_patch(&fs, "air", "ground", &change).unwrap();
+    assert!(report.unread.is_empty(), "{report:?}");
+    // A new patch from faces of `top`, where the big file's list has a value per face: it must
+    // be made again (review finding: it was only "not read"), and it isn't edited.
+    let mut big = fs.clone();
+    let listed = src.replace("value uniform (1 0 0)", "value nonuniform List<vector> 2((1 0 0) (1 0 0))");
+    big.insert("0/air/U", listed);
+    let mut c = Case::open_with(&big, options).unwrap();
+    let new = NewPatch { name: "roof", kind: "patch", groups: &[], entries: &[], faces: &[14] };
+    let report = c.create_patch(&big, "air", &new).unwrap();
+    assert!(report.resized.contains(&"0/air/U".to_string()), "{report:?}");
+    assert!(!report.fields.contains(&"0/air/U".to_string()), "{report:?}");
+}

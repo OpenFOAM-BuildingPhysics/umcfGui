@@ -201,7 +201,7 @@ umcf-cli run --case my-case \
     `originalPatch`): a mapped patch of another region, the other half of a `cyclic` in the
     same region.
 - **The command says what it didn't change**:
-  - a field file too big to be read here (`patch.unread`);
+  - a field file too big to be edited here, over 256 MB decompressed (`patch.unread`);
   - one whose pattern entry or included text may name the old name (`patch.pattern`);
   - a file of `0.orig` or a `viewFactorsDict` that wasn't changed (`patch.unrenamed`): it has the
     new name already, the old one twice, or can't be read or written back here; or a `0.orig`

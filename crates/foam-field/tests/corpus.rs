@@ -3,7 +3,8 @@
 //! field of every region is read, and checked against the mesh: internal lists of volume fields
 //! have `nCells` elements (from the `owner` header), patch value lists have the patch's `nFaces`
 //! (from `boundary`). Every configured case must yield fields; a mesh that exists but can't be
-//! read is a failure, not a skipped check.
+//! read is a failure, not a skipped check. Each file's outline ([`Field::outline`]) is the
+//! whole read without its numbers.
 
 // Native-only test: timing with the clock is fine (the lint guards wasm builds).
 #![allow(clippy::disallowed_methods)]
@@ -163,6 +164,18 @@ fn reference_case_fields() {
                     };
                     files += 1;
                     values += f.lists().iter().map(|l| l.len()).sum::<usize>();
+                    // Its outline, read as a stream, is the same without the numbers.
+                    match Field::outline(&fs, &rel, &limits, u64::MAX) {
+                        Ok(Some(o)) => {
+                            let shape = |f: &Field| f.lists().iter().map(|l| (l.kind, l.len())).collect::<Vec<_>>();
+                            if o.header != f.header || o.doc.to_string() != f.doc.to_string() || shape(&o) != shape(&f)
+                            {
+                                failures.push(format!("{case}/{rel}: its outline differs from the whole read"));
+                            }
+                        }
+                        Ok(None) => failures.push(format!("{case}/{rel}: no outline")),
+                        Err(e) => failures.push(format!("{case}/{rel}: outline: {e}")),
+                    }
                     // Unedited, a rewrite gives each file back byte for byte, `T` and `T.gz` when both
                     // are there (files over 256 MB, also decompressed, are left out).
                     let small = Limits { max_bytes: REWRITE_LIMIT, ..limits };

@@ -308,7 +308,7 @@ fn read_list(
     }
 }
 
-fn check_count(n: usize, comps: usize, limits: &Limits) -> Result<(), Error> {
+pub(crate) fn check_count(n: usize, comps: usize, limits: &Limits) -> Result<(), Error> {
     match n.checked_mul(comps) {
         Some(v) if v <= limits.max_values => Ok(()),
         _ => Err(Error::TooLarge { what: "list", limit: limits.max_values as u64 }),
@@ -344,7 +344,7 @@ fn number(bytes: &[u8], i: usize) -> Result<(f64, usize), Error> {
 
 /// `n` ASCII elements: numbers for scalars and labels, `(a b c)` for vectors and tensors. An
 /// untyped list takes its component count from the first element.
-fn read_ascii_elements(
+pub(crate) fn read_ascii_elements(
     bytes: &[u8],
     mut i: usize,
     n: usize,

@@ -416,19 +416,28 @@ fn threads<'s>(s: &'s std::thread::Scope<'s, '_>) -> bool {
     std::thread::Builder::new().spawn_scoped(s, || ()).is_ok_and(|h| h.join().is_ok())
 }
 
-/// The face counts a mesh's `owner` header notes (`nFaces`, `nInternalFaces`), as OpenFOAM writes
-/// them; `None` for each it doesn't (or no `owner`, or one without a header). Only the file's
-/// first 64 KB are read (on disk: only those bytes), compressed or not: the header is in the
-/// first few hundred. A header that can't be read, or a compressed start that can't be
-/// decompressed, is an error.
-fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u64>, Option<u64>)> {
+/// What a mesh's `owner` header notes of its size, as OpenFOAM writes it
+/// (`nPoints:… nCells:… nFaces:… nInternalFaces:…`); `None` for each it doesn't say.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub points: Option<u64>,
+    pub cells: Option<u64>,
+    pub faces: Option<u64>,
+    pub internal_faces: Option<u64>,
+}
+
+/// The counts the `owner` header of the mesh in `dir` notes (all `None` for no `owner`, or one
+/// without a header). Only the file's first 64 KB are read (on disk: only those bytes),
+/// compressed or not: the header is in the first few hundred. A header that can't be read, or
+/// a compressed start that can't be decompressed, is an error.
+pub fn counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Counts> {
     use std::io::Read;
     const HEAD: usize = 64 << 10;
     let (path, bytes) = match fs.read_prefix(&format!("{dir}/owner"), HEAD + 1, limits.max_bytes)? {
         Some(b) => (format!("{dir}/owner"), b),
         None => match fs.read_prefix(&format!("{dir}/owner.gz"), HEAD + 1, limits.max_bytes)? {
             Some(b) => (format!("{dir}/owner.gz"), b),
-            None => return Ok((None, None)),
+            None => return Ok(Counts::default()),
         },
     };
     let head = if bytes.starts_with(&[0x1f, 0x8b]) {
@@ -457,7 +466,12 @@ fn owner_counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<(Option<u
     if end.is_none() && head.windows(8).any(|w| w == b"FoamFile") {
         return Err(Error::Inconsistent(format!("{path}: its header can't be read: it ends before its `}}`")));
     }
-    Ok((h.count("nFaces"), h.count("nInternalFaces")))
+    Ok(Counts {
+        points: h.count("nPoints"),
+        cells: h.count("nCells"),
+        faces: h.count("nFaces"),
+        internal_faces: h.count("nInternalFaces"),
+    })
 }
 
 /// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
@@ -512,7 +526,7 @@ impl BoundaryMesh {
         // The patches start where the internal faces end; none: no boundary faces.
         let first = boundary.iter().map(|p| p.start_face).min();
         // What the mesh says of its faces, to check the boundary against.
-        let counts = owner_counts(fs, dir, limits)?;
+        let counts = counts(fs, dir, limits)?;
         let points = || read_points(fs, dir, limits);
         let faces = || -> Result<FaceTail> {
             let skip = first.unwrap_or(usize::MAX);
@@ -572,7 +586,8 @@ impl BoundaryMesh {
 
     /// The checks the boundary allows (see the type): `n_faces` is the faces file's count, and the
     /// counts the `owner` header notes, when it does.
-    fn check(&self, n_faces: usize, (noted_faces, noted_internal): (Option<u64>, Option<u64>)) -> Result<()> {
+    fn check(&self, n_faces: usize, counts: Counts) -> Result<()> {
+        let (noted_faces, noted_internal) = (counts.faces, counts.internal_faces);
         let bad = |m: String| Err(Error::Inconsistent(m));
         // A `boundary` left from another mesh: its patches don't start where this mesh's internal
         // faces end, or the faces aren't as many as the mesh says.

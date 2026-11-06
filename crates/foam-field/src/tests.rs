@@ -315,6 +315,7 @@ fn fuzz_mutations_never_panic() {
                     _ => m.truncate(i),
                 }
             }
+            outline_agrees(&m, &[1, 1 << 20]);
             if let Ok(f) = Field::parse(&m) {
                 let _ = f.internal();
                 let _ = f.patches();
@@ -536,4 +537,284 @@ fn rewriting_gzip_and_refusing_placeholders() {
         d.set(&["boundaryField", "a"], &format!("{{ type fixedValue; value {word}; }}")).map_err(Error::from)
     });
     assert!(matches!(e, Err(Error::Unsupported(_))), "{e:?}");
+}
+
+/// A case whose readers hand out `step` bytes at a time, so a stream's chunks end anywhere.
+struct Trickle {
+    fs: umcf_core::MemFs,
+    step: usize,
+}
+
+struct Drip {
+    bytes: std::io::Cursor<Vec<u8>>,
+    step: usize,
+}
+
+impl std::io::Read for Drip {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.step);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+impl umcf_core::CaseFs for Trickle {
+    fn read(&self, rel: &str, limit: u64) -> std::result::Result<Option<Vec<u8>>, umcf_core::FsError> {
+        self.fs.read(rel, limit)
+    }
+    fn reader(
+        &self,
+        rel: &str,
+        limit: u64,
+    ) -> std::result::Result<Option<Box<dyn std::io::Read + Send>>, umcf_core::FsError> {
+        let step = self.step;
+        Ok(self
+            .fs
+            .read(rel, limit)?
+            .map(|b| Box::new(Drip { bytes: std::io::Cursor::new(b), step }) as Box<dyn std::io::Read + Send>))
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> std::result::Result<Vec<String>, umcf_core::FsError> {
+        self.fs.list(rel)
+    }
+}
+
+fn outline_of(bytes: &[u8], step: usize) -> Result<Field> {
+    let t = Trickle { fs: umcf_core::MemFs::new().with("0/T", bytes.to_vec()), step };
+    Field::outline(&t, "0/T", &Limits::default(), u64::MAX).map(|f| f.expect("the file is there"))
+}
+
+/// The outline of `bytes`, read in chunks of each of `steps` bytes, is what `Field::parse`
+/// reads without the values: the same header, the same document (placeholders included), the
+/// same lists by kind and length, and an error where it fails. The one difference: a list before
+/// the `FoamFile` header (no real file has one) is read as ASCII, where `Field::parse` reads it
+/// in the format the header gives later; in a binary file the outline may then fail.
+fn outline_agrees(bytes: &[u8], steps: &[usize]) {
+    let whole = Field::parse(bytes);
+    for &step in steps {
+        let got = outline_of(bytes, step);
+        let text = String::from_utf8_lossy(bytes);
+        if list_before_header(bytes) {
+            continue;
+        }
+        match (&whole, got) {
+            (Ok(w), Ok(o)) => {
+                assert_eq!(o.header, w.header, "{step}: {text}");
+                // The placeholders' tag is chosen from the text alone (list data that spells one
+                // can change it): the words are the same but for it.
+                let words = |f: &Field| f.doc.to_string().replace(f.tag.prefix(), "@");
+                assert_eq!(words(&o), words(w), "{step}: {text}");
+                let shape =
+                    |f: &Field| f.lists().iter().map(|l| (l.kind, l.len(), l.is_repeated())).collect::<Vec<_>>();
+                assert_eq!(shape(&o), shape(w), "{step}: {text}");
+                for (a, b) in o.lists().iter().zip(w.lists()) {
+                    // `N{value}` keeps its value; every other list is counted only.
+                    assert_eq!(a.has_values(), a.is_repeated() || a.is_empty(), "{step}: {text}");
+                    if a.is_repeated() {
+                        assert_eq!(a.get(0), b.get(0), "{step}: {text}");
+                    }
+                }
+            }
+            (Err(Error::BadList { line: a, .. }), Err(Error::BadList { line: b, .. })) => {
+                assert_eq!(*a, b, "{step}: the error's line: {text}")
+            }
+            (Err(_), Err(_)) => {}
+            (w, o) => panic!("{step}: whole {:?}, outline {:?}: {text}", w.as_ref().err(), o.err()),
+        }
+    }
+}
+
+/// Whether a `List<` comes before the `FoamFile` header, in a file that may be binary.
+fn list_before_header(bytes: &[u8]) -> bool {
+    let at = |w: &[u8]| bytes.windows(w.len()).position(|x| x == w);
+    at(b"binary").is_some() && at(b"List<").is_some_and(|l| at(b"FoamFile").is_none_or(|f| l < f))
+}
+
+#[test]
+fn an_outline_is_the_field_without_its_values() {
+    let h = |class| header("ascii", class, "");
+    let samples: Vec<Vec<u8>> = vec![
+        format!(
+            "{}dimensions      [0 0 0 1 0 0 0];\n\ninternalField   nonuniform List<scalar> \n4\n(\n290\n290.5\n-1e-3\n3e+02\n)\n;\n\n{BOUNDARY}",
+            h("volScalarField")
+        )
+        .into_bytes(),
+        format!(
+            "{}internalField   nonuniform List<vector> 2((1 0 0) ( 0.5 -2 3e1 ));\nboundaryField\n{{\n    in  {{ type fixedValue; value uniform (1.6852 0 0); }}\n    out {{ type fixedValue; value nonuniform List<vector> 3{{(0 0 1)}}; }}\n    e   {{ type empty; value nonuniform List<vector> 0(); }}\n    u   {{ type fixedValue; value nonuniform 2((1 2 3) (4 5 6)); }}\n}}\n",
+            h("volVectorField")
+        )
+        .into_bytes(),
+        format!("{}internalField nonuniform List<sphericalTensor> 2((1) (2));\n", h("volSphericalTensorField")).into_bytes(),
+        format!("{}internalField nonuniform 2((1) (2));\n", h("volSphericalTensorField")).into_bytes(),
+        format!("{}internalField nonuniform List<symmTensor> 1((1 2 3 4 5 6));\n", h("volSymmTensorField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 3(nan -inf 1e400);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 1(1.{});\n", h("volScalarField"), "0".repeat(200)).into_bytes(),
+        format!("{}a List<label> 2(0 1);\nb List<label> 0()1;\nc List<label> 3{{7}};\n", h("regIOobject")).into_bytes(),
+        format!(
+            "{}internalField uniform 1;\ncoeffs {{ a List<scalar> (1 2 3); b List<scalar> ; c List<scalar> 2($x $y); d List<vector> 3(1 \"a;}}\" 2); }}\n",
+            h("volScalarField")
+        )
+            .into_bytes(),
+        // Comments, strings and code blocks that spell lists are text.
+        format!(
+            "{}// nonuniform List<scalar> 2(1 2)\nnote \"nonuniform List<scalar> 1(5)\";\ncode #{{ nonuniform List<scalar> 1(5) #}};\n/* List<label> 1(3) */\ninternalField nonuniform List<scalar> 1(5);\n",
+            h("volScalarField")
+        )
+        .into_bytes(),
+        // Words that spell placeholders.
+        format!("{}w __umcfListA0;\ninternalField nonuniform List<scalar> 1(5);\n", h("volScalarField")).into_bytes(),
+        // No header at all.
+        b"internalField nonuniform List<scalar> 2(1 2);\n".to_vec(),
+        // Errors: too few, too many, a word, a short vector, an unclosed header, an unknown type.
+        format!("{}internalField nonuniform List<scalar> 5(1 2);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 1(1 2);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 2(1 x);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 2($a $b);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<vector> 1((1 2));\n", h("volVectorField")).into_bytes(),
+        format!("{}internalField nonuniform List<vector> 1((1 2 3 4));\n", h("volVectorField")).into_bytes(),
+        format!("{}internalField nonuniform List<word> 1(a);\n", h("volScalarField")).into_bytes(),
+        b"FoamFile { format ascii;\ninternalField nonuniform List<scalar> 1(1);\n".to_vec(),
+        format!("{}internalField nonuniform List<scalar> 3(1 2", h("volScalarField")).into_bytes(),
+        binary_field(Arch::default(), Kind::Vector, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        // Escaped quotes, wherever a chunk ends.
+        format!("{}note \"a\\\" nonuniform List<scalar> 1(5) \\\\\";\ninternalField uniform 1;\n", h("volScalarField")).into_bytes(),
+        // Errors on later lines name them.
+        format!("{}internalField nonuniform List<scalar> 2(1\nx\n);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar>\n\n2\n{{\nx}};\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar>\n\nx;\n", h("volScalarField")).into_bytes(),
+        // A bare list that stays text, before a binary file's header.
+        [b"x List<scalar> ;\n".to_vec(), binary_field(Arch::default(), Kind::Scalar, &[1.0])].concat(),
+        // A binary list of size 0 written as its size alone, a word right after it: not a token.
+        format!("{}x nonuniform List<scalar> 0List<scalar> 0;\n", header("binary", "volScalarField", "")).into_bytes(),
+        // A length with leading zeros, more than 20 digits of it.
+        format!("{}internalField nonuniform List<scalar> 0000000000000000000002(1 2);\n", h("volScalarField")).into_bytes(),
+        format!("{}internalField nonuniform List<scalar> 0000(\n);\n", h("volScalarField")).into_bytes(),
+        // Binary: an untyped list too long for the limit; data that ends where its `)` would be.
+        format!("{}internalField nonuniform 99999999999999999(", header("binary", "volScalarField", "")).into_bytes(),
+        [header("binary", "volScalarField", "").into_bytes(), b"internalField nonuniform List<scalar> 1(12345678".to_vec()].concat(),
+        // Binary data that spells a placeholder.
+        binary_field(Arch::default(), Kind::Scalar, &[f64::from_le_bytes(*b"__umcfLi"), f64::from_le_bytes(*b"stA0 x y")]),
+        binary_field(Arch { big_endian: true, label_bytes: 8, scalar_bytes: 4 }, Kind::Label, &[1.0, 2.0, 3.0]),
+        binary_field(
+            Arch::default(),
+            Kind::Scalar,
+            &[f64::from_le_bytes(*b")\";//}{("), f64::from_le_bytes(*b"nonunifo"), f64::from_le_bytes(*b"rm List<")],
+        ),
+        format!(
+            "{}internalField uniform (0 0 0);\nboundaryField\n{{\n    wall\n    {{\n        type fixedValue;\n        value nonuniform List<vector> \n0\n;\n    }}\n}}\n",
+            header("binary", "volVectorField", "")
+        )
+        .into_bytes(),
+    ];
+    for s in &samples {
+        outline_agrees(s, &[1, 2, 3, 7, 64, 1 << 20]);
+    }
+    // A truncated binary list.
+    let mut cut = binary_field(Arch::default(), Kind::Vector, &[1.0, 2.0, 3.0]);
+    cut.truncate(cut.len() - 200);
+    outline_agrees(&cut, &[1, 1 << 20]);
+}
+
+#[test]
+fn an_outline_reads_gzip_and_stays_within_its_limits() {
+    let src =
+        format!("{}internalField nonuniform List<scalar> 3(1 2 3);\n{BOUNDARY}", header("ascii", "volScalarField", ""));
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(src.as_bytes()).unwrap();
+    let gz = gz.finish().unwrap();
+    let fs = umcf_core::MemFs::new().with("0/T.gz", gz.clone());
+    let f = Field::outline(&fs, "0/T", &Limits::default(), u64::MAX).unwrap().unwrap();
+    assert_eq!(f.doc.to_string(), Field::parse(&gz).unwrap().doc.to_string());
+    assert_eq!(f.patch_type("ground").as_deref(), Some("fixedValue"));
+    assert!(Field::outline(&fs, "0/U", &Limits::default(), u64::MAX).unwrap().is_none());
+    // The file, decompressed, against `max_bytes`; what is kept (no list) against `max_text`.
+    let small = Limits { max_bytes: gz.len() as u64 + 1, ..Limits::default() };
+    assert!(src.len() > gz.len() + 1);
+    assert!(matches!(Field::outline(&fs, "0/T", &small, u64::MAX), Err(Error::TooLarge { .. })));
+    assert!(matches!(Field::outline(&fs, "0/T", &Limits::default(), 100), Err(Error::TooLarge { .. })));
+    // A big list costs nothing against `max_text`: only its placeholder is kept.
+    let many = (0..200_000).map(|i| format!("({i} 0 0)")).collect::<Vec<_>>().join("\n");
+    let big = format!(
+        "{}internalField nonuniform List<vector> 200000({many});\n{BOUNDARY}",
+        header("ascii", "volVectorField", "")
+    );
+    let fs = umcf_core::MemFs::new().with("0/U", big.clone());
+    let f = Field::outline(&fs, "0/U", &Limits::default(), 4096).unwrap().unwrap();
+    let Some(Value::List(l)) = f.internal() else { panic!() };
+    assert_eq!((l.kind, l.len(), l.has_values(), l.get(0), l.as_flat()), (Kind::Vector, 200_000, false, None, None));
+    assert!(big.len() > 2_000_000);
+    // And the list's length against `max_values`.
+    let few = Limits { max_values: 1000, ..Limits::default() };
+    assert!(matches!(Field::outline(&fs, "0/U", &few, u64::MAX), Err(Error::TooLarge { .. })));
+    // Errors name their line, as the whole reader's do.
+    let src = format!("{}internalField nonuniform List<scalar> 2(1\nx);\n", header("ascii", "volScalarField", ""));
+    let line = src.lines().position(|l| l == "x);").unwrap() + 1;
+    let e = outline_of(src.as_bytes(), 3).unwrap_err().to_string();
+    assert!(e.starts_with(&format!("line {line}:")), "{e}");
+}
+
+#[test]
+fn an_outline_bounds_comments_strings_and_failed_bare_lists() {
+    // Review findings: an unclosed comment, string or code block was kept whole, past the text
+    // bound; failed bare lists in a binary file read the same bytes ahead again and again.
+    let h = header("ascii", "volScalarField", "");
+    for open in ["/*", "\"", "#{", "//"] {
+        let src = format!("{h}internalField uniform 1;\n{open}{}", "x".repeat(200_000));
+        let fs = umcf_core::MemFs::new().with("0/T", src);
+        let got = Field::outline(&fs, "0/T", &Limits::default(), 1000);
+        assert!(matches!(got, Err(Error::TooLarge { .. })), "{open}: {:?}", got.err());
+    }
+    let mut src = header("binary", "volScalarField", "").into_bytes();
+    src.extend_from_slice(b"junk (");
+    for _ in 0..2_000 {
+        src.extend_from_slice(b" List<scalar> 100000 (");
+    }
+    src.extend(vec![b'x'; 1 << 20]);
+    let fs = umcf_core::MemFs::new().with("0/T", src.clone());
+    #[allow(clippy::disallowed_methods)]
+    let started = std::time::Instant::now();
+    let got = Field::outline(&fs, "0/T", &Limits::default(), 4 << 20);
+    // Each attempt reads up to 800 kB ahead: 2000 of them would be 1.6 GB, quadratic in the file.
+    assert!(matches!(got, Err(Error::TooLarge { .. })), "{:?}", got.err());
+    assert!(started.elapsed().as_secs() < 5);
+}
+
+#[test]
+fn failed_bare_lists_cost_linear_time_in_an_outline() {
+    // Review findings: each failed bare list searched the text so far for the header again, and
+    // `N{` attempts read ahead without counting it: minutes for a few MB.
+    #[allow(clippy::disallowed_methods)]
+    let started = std::time::Instant::now();
+    let src = "List<scalar> ;\n".repeat(200_000);
+    outline_agrees(src.as_bytes(), &[1 << 20]);
+    let src = format!("{}{}", header("ascii", "volScalarField", ""), "List<scalar> 1{".repeat(200_000));
+    let fs = umcf_core::MemFs::new().with("0/T", src);
+    let _ = Field::outline(&fs, "0/T", &Limits::default(), 16 << 20);
+    let src = format!("FoamFile {{ format ascii;\n{}", "List<scalar> ;\n".repeat(200_000));
+    let _ = outline_of(src.as_bytes(), 1 << 20);
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+}
+
+#[test]
+fn an_outline_bounds_what_its_lists_cost_and_reads_a_bad_header_once() {
+    // Review findings: a file of empty lists grew without bound (each list kept, nothing charged);
+    // a header that doesn't read was parsed again for every bare list after it.
+    let src = format!("{}a {}", header("ascii", "volScalarField", ""), "nonuniform 0()".repeat(100_000));
+    let fs = umcf_core::MemFs::new().with("0/T", src);
+    let got = Field::outline(&fs, "0/T", &Limits::default(), 100_000);
+    assert!(matches!(got, Err(Error::TooLarge { .. })), "{:?}", got.err());
+    #[allow(clippy::disallowed_methods)]
+    let started = std::time::Instant::now();
+    let src = format!(
+        "FoamFile {{ format ascii; arch \"bogus\"; /*{}*/ }}\n{}",
+        "x".repeat(1 << 20),
+        "List<scalar> ;\n".repeat(16_000)
+    );
+    let fs = umcf_core::MemFs::new().with("0/T", src);
+    assert!(Field::outline(&fs, "0/T", &Limits::default(), 16 << 20).is_err());
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
 }
