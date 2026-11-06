@@ -993,6 +993,14 @@ fn streamed_points_keep_the_size_limit() {
     assert!(points_of("points.gz", &gz, &small).unwrap_err().to_string().contains("limit"));
     let enough = Limits { max_bytes: text.len() as u64, ..Limits::default() };
     assert_eq!(points_of("points", text.as_bytes(), &enough).unwrap().len(), 10_000);
+    // What follows the list counts too: a compressed file whose list fits but whose whole
+    // doesn't is too large, as the whole-file reader finds it.
+    let mut padded = text.clone();
+    padded.push_str(&" ".repeat(4 << 20));
+    let gz = gzip(padded.as_bytes());
+    // (more than the first chunk read, less than the whole)
+    let small = Limits { max_bytes: text.len() as u64 + (2 << 20), ..Limits::default() };
+    assert!(points_of("points.gz", &gz, &small).unwrap_err().to_string().contains("limit"));
 }
 
 #[test]

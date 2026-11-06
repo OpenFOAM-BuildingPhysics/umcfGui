@@ -171,7 +171,15 @@ pub(crate) fn vectors(s: &mut Stream, limits: &Limits) -> Result<Option<Vec<[f64
     loop {
         let rest = buf.get(at..).unwrap_or_default();
         match rest.iter().position(|c| !c.is_ascii_whitespace()) {
-            Some(i) if rest.get(i) == Some(&b')') => return Ok(Some(out)),
+            Some(i) if rest.get(i) == Some(&b')') => {
+                // The rest of the file read too, not kept: its size counts against the limit, as
+                // it does for the whole-file reader.
+                buf.clear();
+                while s.fill(&mut buf)? {
+                    buf.clear();
+                }
+                return Ok(Some(out));
+            }
             Some(_) => return Err(bad(s, "expected `)`")),
             None => {
                 buf.clear();
