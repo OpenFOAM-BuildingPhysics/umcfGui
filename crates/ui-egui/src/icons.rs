@@ -56,6 +56,8 @@ pub enum Icon {
     Faces,
     /// Dragging a rectangle selects: a dashed box with a pointer.
     BoxSelect,
+    /// Painting selects: a brush and the swath it left.
+    Brush,
     /// A rectangle takes hidden things too: two boxes, one behind the other, and a ray.
     Through,
     /// A boundary condition: a patch with what flows in through it.
@@ -77,7 +79,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon, for the contact sheet.
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 53] = [
         Icon::Open,
         Icon::Save,
         Icon::Undo,
@@ -115,6 +117,7 @@ impl Icon {
         Icon::Patch,
         Icon::Faces,
         Icon::BoxSelect,
+        Icon::Brush,
         Icon::Through,
         Icon::Condition,
         Icon::Surface,
@@ -348,6 +351,13 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, ink: Ink) {
                 d.a2,
                 out,
             );
+        }
+        Icon::Brush => {
+            // The swath, then the brush: its handle, its ferrule, its tip in the accent.
+            d.line(&[(6.0, 57.0), (12.0, 51.0), (19.0, 53.0), (24.0, 47.0)], act * 1.8, d.a1);
+            d.line(&[(57.0, 7.0), (41.0, 23.0)], nav * 1.1, d.ink);
+            d.shape(&[(37.0, 17.0), (47.0, 27.0), (39.0, 35.0), (29.0, 25.0)], d.p2, out);
+            d.shape(&[(29.0, 25.0), (39.0, 35.0), (33.0, 45.0), (17.0, 50.0), (21.0, 35.0)], d.a2, out);
         }
         Icon::Through => {
             d.shape(&[(22.0, 8.0), (56.0, 8.0), (56.0, 38.0), (22.0, 38.0)], d.p3, out);

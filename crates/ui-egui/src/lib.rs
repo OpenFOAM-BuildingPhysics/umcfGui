@@ -1339,6 +1339,26 @@ impl App {
                 }
                 self.act("select.rect", p);
             }
+            Some(Action::Brush { camera, size, stroke, radius, mode, faces, through }) => {
+                let display = self.display_json();
+                let mut p = self.shown();
+                if let Some(o) = p.as_object_mut() {
+                    o.insert("camera".into(), umcf_engine::camera_json(&camera));
+                    o.insert("width".into(), json!(size[0]));
+                    o.insert("height".into(), json!(size[1]));
+                    o.insert("stroke".into(), json!(stroke));
+                    o.insert("radius".into(), json!(radius));
+                    if !display.as_array().is_none_or(Vec::is_empty) {
+                        o.insert("display".into(), display.clone());
+                    }
+                    o.insert("mode".into(), json!(mode));
+                    o.insert("faces".into(), json!(faces));
+                    if through {
+                        o.insert("through".into(), json!(true));
+                    }
+                }
+                self.act("select.brush", p);
+            }
             Some(Action::Fit(view)) => self.fit_view(Some(view)),
             None => {}
         }
@@ -1959,6 +1979,9 @@ impl App {
                     ) {
                         self.viewport.drag = Drag::Select;
                     }
+                    if b(ui, Icon::Brush, drag == Drag::Brush, "Brush", BRUSH_TIP) {
+                        self.viewport.drag = Drag::Brush;
+                    }
                     if b(ui, Icon::ZoomIn, false, "Zoom in", "Zoom in (wheel)") {
                         zoom = Some(0.8);
                     }
@@ -2018,7 +2041,7 @@ impl App {
                         Icon::Through,
                         through,
                         "Select through",
-                        "A rectangle takes everything in it, hidden too (the faces whose middle is in it), not only what is seen",
+                        "A rectangle or a brush stroke takes everything in it, hidden too (the faces whose middle is in it), not only what is seen",
                     ) {
                         self.viewport.through = !through;
                     }
@@ -2393,6 +2416,7 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
 }
 
 /// The view's guides' and background's tooltips.
+const BRUSH_TIP: &str = "Paint over what to select: what is seen under the stroke (Shift adds, Ctrl takes away; [ and ] change its size); a right or middle drag moves the view";
 const GRID_TIP: &str = "The grid on the ground (z = 0): its spacing follows the zoom; the scene hides it";
 const ORIGIN_TIP: &str = "The origin: its xy, xz and yz planes and its x, y and z axes, sized with the view";
 const DARK_TIP: &str = "A dark 3D view (else a light one), whatever the window's theme";

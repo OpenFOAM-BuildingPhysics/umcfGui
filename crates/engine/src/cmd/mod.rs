@@ -30,6 +30,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     scene::SNAPSHOT,
     scene::PICK,
     scene::RECT,
+    scene::BRUSH,
     scene::SELECT,
     scene::CLEAR,
     bc::SET,

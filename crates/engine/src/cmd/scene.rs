@@ -999,7 +999,7 @@ pub(super) const RECT: CommandSpec = CommandSpec {
     reads_only: false,
 };
 
-/// Most items `select.rect` lists.
+/// Most items `select.rect` and `select.brush` list.
 const MAX_LISTED: usize = 1000;
 
 /// `select.rect`.
@@ -1020,9 +1020,24 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let r = p.required("rect")?.as_array().filter(|a| a.len() == 4).ok_or_else(bad)?;
     let c = |i: usize| r.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
     let area = umcf_render::raster::Rect { a: [c(0)?, c(1)?], b: [c(2)?, c(3)?] };
+    select_in(s, id, &p, area.into(), faces, through, mode, "the rectangle")
+}
+
+/// Selects what `area` covers (`select.rect`, `select.brush`), `where_` naming it in the message.
+#[allow(clippy::too_many_arguments)]
+fn select_in(
+    s: &mut Session,
+    id: &str,
+    p: &Params,
+    area: umcf_render::raster::Area,
+    faces: bool,
+    through: bool,
+    mode: Mode,
+    where_: &str,
+) -> Result<Outcome, Error> {
     let selection = s.selection.clone();
-    let (entries, scene) = displayed(s, id, &p)?;
-    let (cam, width, height) = camera(id, &p, scene)?;
+    let (entries, scene) = displayed(s, id, p)?;
+    let (cam, width, height) = camera(id, p, scene)?;
     let style = Style {
         width,
         height,
@@ -1047,7 +1062,7 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
     }
     if keys.len() > MAX_ITEMS {
-        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items in the rectangle")));
+        return Err(Error::Params(format!("{id}: more than {MAX_ITEMS} items in {where_}")));
     }
     let items: Vec<Sel> = keys
         .into_iter()
@@ -1063,14 +1078,63 @@ fn rect(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let what = if faces { "face" } else { "item" };
     let message = match mode {
         Mode::Remove => format!(
-            "{} in the rectangle, {} taken off; {} selected",
+            "{} in {where_}, {} taken off; {} selected",
             count(n, what),
             before.saturating_sub(s.selection.len()),
             s.selection.len()
         ),
-        _ => format!("{} in the rectangle; {} selected", count(n, what), s.selection.len()),
+        _ => format!("{} in {where_}; {} selected", count(n, what), s.selection.len()),
     };
     Ok(Outcome::new(message, json!({ "in": n, "items": listed, "selected": s.selection.len() })))
+}
+
+pub(super) const BRUSH: CommandSpec = CommandSpec {
+    id: "select.brush",
+    label: "Select with a brush",
+    menu: "",
+    shortcut: None,
+    params: "Selects what is seen under a brush stroke over the view scene.snapshot draws with the same parameters: stroke, the points the brush went through ([[x, y], ...] in pixels from the top left, 1 to 4096; one point is a dab), and radius (pixels, default 10, at most 2048): a pixel is under it when its middle is within the radius of the stroke's path (at least the pixel under a point). faces (default true: the brush paints mesh faces, {\"region\", \"face\"}, surfaces passed over and hiding nothing; false: the patches and surface regions), through (every face whose middle lies in a pixel under the stroke, seen or hidden), mode (replace, the default, add, remove, or none), what, camera and display: as select.rect's. Returns how many were under it and up to 1000 of them (items).",
+    enabled: needs_case,
+    run: brush,
+    journal: true,
+    undoable: false,
+    reads_only: false,
+};
+
+/// Most points a brush stroke has, and its largest radius in pixels.
+const MAX_STROKE: usize = umcf_render::raster::MAX_STROKE;
+const MAX_RADIUS: f64 = 2048.0;
+
+/// `select.brush`.
+fn brush(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let id = BRUSH.id;
+    let mut allowed = WHICH.to_vec();
+    allowed.extend(CAMERA);
+    allowed.extend(["stroke", "radius", "through", "mode", "faces", "display"]);
+    let p = Params::new(id, p, &allowed)?;
+    let faces = p.bool("faces")?.unwrap_or(true);
+    let through = p.bool("through")?.unwrap_or(false);
+    let mode = mode(
+        id,
+        &p,
+        &[("replace", Mode::Replace), ("add", Mode::Add), ("remove", Mode::Remove), ("none", Mode::None)],
+    )?;
+    let bad = || Error::Params(format!("{id}: `stroke` is a list of 1 to {MAX_STROKE} points [x, y], finite numbers"));
+    let list = p.required("stroke")?.as_array().filter(|a| (1..=MAX_STROKE).contains(&a.len())).ok_or_else(bad)?;
+    let mut points = Vec::with_capacity(list.len());
+    for v in list {
+        let xy = v.as_array().filter(|a| a.len() == 2).ok_or_else(bad)?;
+        let c = |i: usize| xy.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(bad);
+        points.push([c(0)?, c(1)?]);
+    }
+    let radius = p.number("radius")?.unwrap_or(10.0);
+    if !(0.0..=MAX_RADIUS).contains(&radius) {
+        return Err(Error::Params(format!(
+            "{id}: `radius` is a number of pixels from 0 to {MAX_RADIUS}, not {radius}"
+        )));
+    }
+    let stroke = umcf_render::raster::Stroke { points, radius };
+    select_in(s, id, &p, stroke.into(), faces, through, mode, "the stroke")
 }
 
 pub(super) const SELECT: CommandSpec = CommandSpec {

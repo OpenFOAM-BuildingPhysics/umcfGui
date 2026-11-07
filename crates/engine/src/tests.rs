@@ -1300,6 +1300,42 @@ fn faces_are_picked_selected_and_made_a_patch() {
 }
 
 #[test]
+fn a_brush_selects_the_faces_seen_under_its_stroke() {
+    let mut s = scene_session();
+    // From above, a dab in the middle: the sky's face (faces by default); through it, the ground
+    // under it too.
+    let mut dab = json!({ "view": "top", "width": 100, "height": 100, "stroke": [[50, 50]], "radius": 3 });
+    let out = s.execute("select.brush", &dab).unwrap();
+    assert_eq!(out.data["items"], json!([{ "region": "air", "face": 1 }]));
+    assert_eq!(out.message, "1 face in the stroke; 1 selected");
+    dab["through"] = json!(true);
+    dab["mode"] = json!("add");
+    s.execute("select.brush", &dab).unwrap();
+    assert_eq!(s.selection().len(), 2);
+    // Patches, not faces; a stroke over the background only, with replace, clears.
+    let patches = json!({ "view": "top", "width": 100, "height": 100, "stroke": [[50, 50], [60, 60]], "faces": false });
+    let out = s.execute("select.brush", &patches).unwrap();
+    assert_eq!(out.data["items"], json!([{ "region": "air", "patch": "sky" }]));
+    let off = json!({ "view": "top", "width": 100, "height": 100, "stroke": [[1, 1], [1, 3]], "radius": 1 });
+    assert_eq!(s.execute("select.brush", &off).unwrap().data["in"], 0);
+    assert!(s.selection().is_empty());
+    for (p, says) in [
+        (json!({}), "`stroke`"),
+        (json!({ "stroke": [] }), "1 to 4096 points"),
+        (json!({ "stroke": [[0, 0, 0]] }), "1 to 4096 points"),
+        (json!({ "stroke": [[0, "a"]] }), "1 to 4096 points"),
+        (json!({ "stroke": vec![[0, 0]; 4097] }), "1 to 4096 points"),
+        (json!({ "stroke": [[0, 0]], "radius": -1 }), "`radius` is a number of pixels"),
+        (json!({ "stroke": [[0, 0]], "radius": 1e9 }), "`radius` is a number of pixels"),
+        (json!({ "stroke": [[0, 0]], "radius": "big" }), "`radius` is a number"),
+        (json!({ "stroke": [[0, 0]], "rect": [0, 0, 1, 1] }), "rect"),
+    ] {
+        let e = s.execute("select.brush", &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{p}: {e}");
+    }
+}
+
+#[test]
 fn a_rectangle_selects_what_is_seen_in_it_or_everything_through_it() {
     let mut s = scene_session();
     let all = json!({ "view": "top", "width": 100, "height": 100, "rect": [0, 0, 100, 100] });

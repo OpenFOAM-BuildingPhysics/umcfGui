@@ -7,7 +7,7 @@ use umcf_geom::stl::{Format, Stl, Triangle};
 use umcf_geom::{BBox, Vec3};
 
 use crate::camera::{Camera, View};
-use crate::raster::{Rect, SELECTED, Style, covered, draw, palette};
+use crate::raster::{Rect, SELECTED, Stroke, Style, covered, draw, palette};
 use crate::{Object, Scene, Source, png};
 
 /// A unit cube mesh at `at`, its bottom face patch `ground`, top `sky`, the sides `walls`.
@@ -293,6 +293,56 @@ fn faces_of(s: &Scene, hits: &[(usize, u32)]) -> Vec<(usize, u32)> {
     let mut f: Vec<(usize, u32)> = hits.iter().map(|(k, t)| (*k, s.objects[*k].origin_index[*t as usize])).collect();
     f.dedup();
     f
+}
+
+#[test]
+fn a_brush_stroke_covers_what_is_seen_under_it_or_everything_through_it() {
+    // Two cubes side by side, seen from above, as for the rectangle: their middles at about
+    // (69, 50) and (131, 50); the image's top rows are background.
+    let mut s = scene_of(&cube([0.0; 3]));
+    s.objects.push(Object::from_mesh("veg", &cube([2.0, 0.0, 0.0]), s.origin));
+    let b = BBox { min: Vec3::ZERO, max: Vec3::new(3.0, 1.0, 1.0) };
+    let cam = Camera::fit(View::Top, &b, 2.0);
+    let st = Style { width: 200, height: 100, ..Style::default() };
+    let all = |s: &Scene, area: Stroke, through: bool| faces_of(s, &covered(s, &cam, &st, area, through, &|_, _| true));
+    // A dab on the left cube: its sky seen; through it, its sky and its ground (whose middle,
+    // further, is seen a little nearer the image's middle).
+    let dab = Stroke { points: vec![[69.0, 50.0]], radius: 5.0 };
+    assert_eq!(all(&s, dab.clone(), false), [(0, 1)]);
+    assert_eq!(all(&s, dab, true), [(0, 0), (0, 1)]);
+    // A line across both: both skies.
+    let line = Stroke { points: vec![[60.0, 50.0], [140.0, 50.0]], radius: 2.0 };
+    let both = all(&s, line, false);
+    assert!(both.contains(&(0, 1)) && both.contains(&(1, 1)), "{both:?}");
+    // Up from the left cube's middle and right along the top row: its bounds hold the right
+    // cube, its path doesn't come near it.
+    let hook = Stroke { points: vec![[69.0, 50.0], [69.0, 1.0], [199.0, 1.0]], radius: 1.0 };
+    let left = all(&s, hook.clone(), false);
+    assert!(!left.is_empty() && left.iter().all(|(k, _)| *k == 0), "{left:?}");
+    // The same with both cubes half transparent (seen through, counted where they are
+    // blended): still the left one only, and its ground seen through its sky.
+    let mut glass = st.clone();
+    for k in 0..2 {
+        for c in 0..s.objects[k].classes.len() as u32 {
+            glass.display.insert((k, c), crate::raster::Display { mode: crate::raster::Mode::Surface, opacity: 0.5 });
+        }
+    }
+    let seen = faces_of(&s, &covered(&s, &cam, &glass, hook, false, &|_, _| true));
+    assert!(seen.contains(&(0, 0)) && seen.contains(&(0, 1)), "{seen:?}");
+    assert!(seen.iter().all(|(k, _)| *k == 0), "{seen:?}");
+    // The smallest stroke still takes the pixel under it; one with no points, or not finite,
+    // nothing.
+    assert_eq!(all(&s, Stroke { points: vec![[69.2, 50.3]], radius: 0.0 }, false), [(0, 1)]);
+    for empty in [
+        Stroke { points: vec![], radius: 5.0 },
+        Stroke { points: vec![[f64::NAN, 50.0]], radius: 5.0 },
+        Stroke { points: vec![[69.0, 50.0]], radius: f64::INFINITY },
+        Stroke { points: vec![[69.0, 50.0]; crate::raster::MAX_STROKE + 1], radius: 5.0 },
+    ] {
+        assert!(all(&s, empty.clone(), false).is_empty() && all(&s, empty, true).is_empty());
+    }
+    // Off the image: nothing.
+    assert!(all(&s, Stroke { points: vec![[300.0, 50.0]], radius: 5.0 }, false).is_empty());
 }
 
 #[test]
