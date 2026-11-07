@@ -128,9 +128,21 @@ pub const SELECTED: [f32; 3] = [1.0, 0.55, 0.1];
 /// The background's colours at the top and the bottom, where the style gives none.
 pub const TOP: [f32; 3] = [0.94, 0.95, 0.96];
 pub const BOTTOM: [f32; 3] = [0.78, 0.81, 0.85];
-/// How much outlines and edges darken.
+/// How much outlines darken.
 pub const OUTLINE: f32 = 0.55;
-const EDGE: f32 = 0.6;
+/// How much the faces' edges darken, and how near one (in pixels) a pixel's middle is to be on it.
+pub const EDGE: f32 = 0.6;
+pub const EDGE_REACH: f64 = 0.6;
+/// How much wireframes and points darken their class's colour.
+pub const LINE: f32 = 0.85;
+/// How much nearer (1/depth, relative) a surface is to hide an edge or a point: one a little
+/// behind it, as on it, is still seen.
+pub const AHEAD: f32 = 1e-4;
+
+/// The side of a point, in pixels, in an image `height` pixels high.
+pub fn dot_size(height: u32) -> f64 {
+    (f64::from(height) / 400.0).clamp(2.0, 4.0)
+}
 
 /// Colour number `i` of a palette whose neighbours differ (golden-ratio hues).
 pub fn palette(i: usize) -> [f32; 3] {
@@ -227,7 +239,7 @@ impl Target {
                 // Edge k (v[k] → v[k+1]) is opposite vertex k+2.
                 let near_edge = [(0b001, w2 * scale[2]), (0b010, w0 * scale[0]), (0b100, w1 * scale[1])]
                     .iter()
-                    .any(|(bit, dist)| edges & bit != 0 && *dist < 0.6);
+                    .any(|(bit, dist)| edges & bit != 0 && *dist < EDGE_REACH);
                 if alpha < 1.0 {
                     let k = if near_edge { EDGE } else { 1.0 };
                     self.blend(i, colour.map(|ch| ch * k), alpha);
@@ -265,7 +277,7 @@ impl Target {
     /// Whether something at `z` (1/depth) is in front of what pixel `i` holds; a little in front
     /// counts, so an edge or a point on a surface is seen on it.
     fn in_front(&self, i: usize, z: f64) -> bool {
-        self.depth.get(i).is_some_and(|d| (z as f32) * (1.0 + 1e-4) > *d)
+        self.depth.get(i).is_some_and(|d| (z as f32) * (1.0 + AHEAD) > *d)
     }
 
     fn inside(&self, x: f64, y: f64) -> Option<usize> {
@@ -325,8 +337,9 @@ impl Target {
         if !(p.x.is_finite() && p.y.is_finite()) {
             return;
         }
-        let (x0, y0) = ((p.x - r).round(), (p.y - r).round());
-        let n = size.round().max(1.0) as usize;
+        // Halves up, as the GPU view (`floor(x + 0.5)`; `round` takes -0.5 to -1).
+        let (x0, y0) = ((p.x - r + 0.5).floor(), (p.y - r + 0.5).floor());
+        let n = (size + 0.5).floor().max(1.0) as usize;
         for j in 0..n {
             for i in 0..n {
                 if let Some(at) = self.inside(x0 + i as f64 + 0.5, y0 + j as f64 + 0.5)
@@ -767,13 +780,13 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
     // Edges and points over the opaque surfaces, behind nothing nearer.
     for ([a, b], colour, alpha) in lines {
         if let Some((p, q)) = lens.segment(a, b) {
-            t.line(p, q, colour.map(|ch| ch * 0.85), alpha);
+            t.line(p, q, colour.map(|ch| ch * LINE), alpha);
         }
     }
-    let dot_size = ((hu as f64) / 400.0).clamp(2.0, 4.0);
+    let dot_size = dot_size(h);
     for (p, colour, alpha) in dots {
         if p[2] >= lens.near {
-            t.dot(lens.project(p), dot_size, colour.map(|ch| ch * 0.85), alpha);
+            t.dot(lens.project(p), dot_size, colour.map(|ch| ch * LINE), alpha);
         }
     }
     // Transparent surfaces last, the farthest first.

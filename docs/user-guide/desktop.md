@@ -107,17 +107,28 @@ for. Like *Edges*, the switch is a setting of the window, not a command: the com
   for the rest of the session and the tooltip says why.
 - **What it draws.** The same picture as the CPU: each patch or surface region in its colour,
   shaded per triangle with the light at the eye, outlines where patches meet, the selection in
-  orange in front of what lies in the same place, what is hidden left out. Where surfaces of two
-  regions lie in the same place, the region listed first is seen, as on the CPU.
-- **What the CPU still draws.** Edges, wireframes, points and transparent layers are drawn by
-  the CPU for now: with any of them on, the view is drawn by the CPU (the history bar says
-  so). Picking, *Box select* and `scene.snapshot` work on the CPU either way, on the same scene.
+  orange in front of what lies in the same place, what is hidden left out. *Edges* darkens the
+  faces' edges; wireframes and points go over the surfaces where nothing opaque is in front,
+  blended with their opacity, a selected face's in orange. Where surfaces of two regions lie in
+  the same place, the region listed first is seen, as on the CPU (where the CPU's depths round
+  otherwise, it can show a few of the other region's face edges through it, with *Edges* on; the
+  GPU doesn't). Wireframes and points are seen where no surface is in front, whether it is
+  selected or not, as on the CPU; only where a later region's surface lies a hair in front of an
+  earlier one's (within the margin that puts the earlier in front) are the earlier region's
+  wireframes and points seen through it. Lines one pixel wide can take a neighbouring
+  pixel here and there.
+- **What the CPU still draws.** Transparent layers are drawn by the CPU for now: with one on,
+  the view is drawn by the CPU (the history bar says so). Picking, *Box select* and
+  `scene.snapshot` work on the CPU either way, on the same scene.
 - **How fast.** The Hong Kong project's five regions (15 million triangles) at 1440 × 860:
   turning, panning and zooming take 3 to 8 ms a frame on an NVIDIA RTX 5060 Ti, against about a
   second on the CPU (which draws at half the resolution while the view moves). The first frame
   uploads the meshes (0.23 s); what the view shows stays on the GPU until it is hidden or read
   again. A new selection of patches or a display mode uploads only colours; picked faces upload
-  their triangles.
+  their triangles. Edges cost nothing more (3.5 ms a frame). The first wireframe or points layer
+  of a region finds its edges and points and uploads them (3.5 s for all five regions, as the CPU
+  takes on its first frame of them); with every region a third surfaces, a third wireframe and a
+  third points, with edges, a frame takes 8.4 ms, against 1.25 s on the CPU.
 
 ## Long work
 
@@ -202,11 +213,13 @@ about the new conditions.
 ## Limits
 
 - The CPU view is drawn at the window's resolution (at half of it while the view turns); it
-  keeps up with surfaces and meshes of a few hundred thousand boundary faces. The GPU view
-  draws opaque surfaces only: edges, wireframes, points and transparent layers bring the CPU view
-  back ([the GPU view](#the-gpu-view)). The GPU holds what the view shows (about 16 bytes per
-  triangle and 12 per point: 340 MB for the Hong Kong project); while a region's points don't fit
-  one of its buffers, the whole view is drawn by the CPU.
+  keeps up with surfaces and meshes of a few hundred thousand boundary faces. On the GPU view,
+  transparent layers bring the CPU view back ([the GPU view](#the-gpu-view)). The GPU holds what
+  the view shows (about 16 bytes per triangle and 12 per point: 340 MB for the Hong Kong project;
+  once a region was a wireframe or points, 12 bytes per edge and 8 per point more); while a
+  region's points don't fit one of its buffers, the whole view is drawn by the CPU. A region's
+  first wireframe or points layer is found on the window's thread, which waits for it (seconds
+  for millions of faces, on either view).
 - The 3D view reads regions at once and keeps hidden ones within a share of the memory free when
   the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
   dropped past it is read again when it is shown.
