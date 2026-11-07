@@ -456,9 +456,10 @@ fn shows(scene: &Scene, k: usize, style: &Style, mode: Mode) -> bool {
 /// selected faces' marked) when the selected faces change.
 type Marks = Vec<(wgpu::BindGroup, u32, wgpu::Buffer)>;
 
-/// Each of `obj`'s edges or points (`lines`) as the shader takes it: its triangle's class, the top
-/// bit set where its face is one of `faces` (sorted).
-fn marks(obj: &Object, lines: bool, faces: &[u32]) -> Vec<u32> {
+/// `obj`'s edges or points (`lines`) in `range` as the shader takes them, as bytes: each one's
+/// triangle's class, the top bit set where its face is one of `faces` (sorted). One chunk at a
+/// time, so that no copy of a whole object's is held.
+fn marks(obj: &Object, lines: bool, faces: &[u32], range: std::ops::Range<usize>) -> Vec<u8> {
     let wire = obj.wire();
     let word = |t: u32| {
         let class = obj.class.get(t as usize).copied().unwrap_or(0) & 0x7fff_ffff;
@@ -466,10 +467,11 @@ fn marks(obj: &Object, lines: bool, faces: &[u32]) -> Vec<u32> {
             !faces.is_empty() && obj.origin_index.get(t as usize).is_some_and(|f| faces.binary_search(f).is_ok());
         class | (u32::from(picked) << 31)
     };
+    let bytes = |w: u32| w.to_le_bytes();
     if lines {
-        wire.edges.iter().map(|e| word(e[2])).collect()
+        wire.edges.get(range).unwrap_or(&[]).iter().flat_map(|e| bytes(word(e[2]))).collect()
     } else {
-        wire.points.iter().map(|p| word(p[1])).collect()
+        wire.points.get(range).unwrap_or(&[]).iter().flat_map(|p| bytes(word(p[1]))).collect()
     }
 }
 
@@ -532,6 +534,9 @@ pub struct Gpu {
     objects: HashMap<u64, Uploaded>,
     /// The most a storage binding holds, bytes.
     binding: u64,
+    /// The most a chunk of triangles, edges or points holds, bytes: `binding` (smaller in tests,
+    /// to split a small object).
+    chunk: u64,
     target: Option<Target>,
     /// An error the device reported outside the scopes this view sets (wgpu's default panics).
     uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -814,6 +819,7 @@ impl Gpu {
             view_group,
             objects: HashMap::new(),
             binding,
+            chunk: binding,
             target: None,
             uncaptured,
             wake,
@@ -931,7 +937,7 @@ impl Gpu {
                     // Their edges and points in the selection's colour too.
                     for (m, lines) in [(&up.lines, true), (&up.dots, false)] {
                         if let Some(m) = m {
-                            self.write_marks(m, &marks(obj, lines, &faces));
+                            self.write_marks(obj, m, lines, &faces);
                         }
                     }
                 }
@@ -1130,7 +1136,7 @@ impl Gpu {
         };
         let uniforms = [uniform(), uniform(), uniform()];
         // Triangles per chunk: their corners (12 bytes each) within a binding.
-        let per = usize::try_from((self.binding / 12).max(1)).unwrap_or(usize::MAX);
+        let per = usize::try_from((self.chunk.min(self.binding) / 12).max(1)).unwrap_or(usize::MAX);
         let mut chunks = Vec::new();
         let n = obj.triangles.len().min(obj.class.len());
         let mut start = 0;
@@ -1181,7 +1187,7 @@ impl Gpu {
             .filter(|(_, ((_, f), _))| faces.binary_search(f).is_ok())
             .map(|(n, ((t, _), c))| (t, with_edges(*c, obj.edges.get(n).copied().unwrap_or(0))))
             .collect();
-        let per = usize::try_from((self.binding / 12).max(1)).unwrap_or(usize::MAX);
+        let per = usize::try_from((self.chunk.min(self.binding) / 12).max(1)).unwrap_or(usize::MAX);
         let [_, faces_uniform, _] = &up.uniforms;
         picked
             .chunks(per)
@@ -1200,40 +1206,45 @@ impl Gpu {
     /// `obj`'s edges (`lines`) or points as wireframes and points draw them, the selected faces
     /// `up` was last drawn with marked: in chunks whose ends fit a storage binding and whose
     /// vertices a draw's count.
+    ///
+    /// Built one chunk at a time: what is held besides the object is one chunk's bytes.
     fn upload_marks(&self, obj: &Object, up: &Uploaded, lines: bool) -> Marks {
         let wire = obj.wire();
-        let ends: Vec<u32> = if lines {
-            wire.edges.iter().flat_map(|e| [e[0], e[1]]).collect()
-        } else {
-            wire.points.iter().map(|p| p[0]).collect()
-        };
+        let count = if lines { wire.edges.len() } else { wire.points.len() };
         let (each, vertices): (u64, u64) = if lines { (2, 2) } else { (1, 6) };
-        let per = usize::try_from((self.binding / (4 * each)).min(u64::from(u32::MAX) / vertices).max(1))
-            .unwrap_or(usize::MAX);
-        let each = usize::try_from(each).unwrap_or(1);
-        let words = marks(obj, lines, &up.selected.0);
+        let per =
+            usize::try_from((self.chunk.min(self.binding) / (4 * each)).min(u64::from(u32::MAX) / vertices).max(1))
+                .unwrap_or(usize::MAX);
         let [shown, _, _] = &up.uniforms;
-        words
-            .chunks(per)
-            .enumerate()
-            .map(|(n, w)| {
-                let first = n.saturating_mul(per).saturating_mul(each);
-                let e = ends.get(first..first.saturating_add(w.len().saturating_mul(each))).unwrap_or(&[]);
-                let ends = self.storage("umcf ends", &bytes_u32(e));
-                let classes = self.storage("umcf marks", &bytes_u32(w));
+        (0..count)
+            .step_by(per)
+            .map(|first| {
+                let range = first..first.saturating_add(per).min(count);
+                let n = range.len();
+                let ends: Vec<u8> = if lines {
+                    let edges = wire.edges.get(range.clone()).unwrap_or(&[]);
+                    edges.iter().flat_map(|e| [e[0], e[1]]).flat_map(u32::to_le_bytes).collect()
+                } else {
+                    let points = wire.points.get(range.clone()).unwrap_or(&[]);
+                    points.iter().flat_map(|p| p[0].to_le_bytes()).collect()
+                };
+                let ends = self.storage("umcf ends", &ends);
+                let classes = self.storage("umcf marks", &marks(obj, lines, &up.selected.0, range));
                 let group = self.object_group(&up.points, &ends, &classes, &up.palette, shown);
-                (group, u32::try_from(w.len()).unwrap_or(u32::MAX), classes)
+                (group, u32::try_from(n).unwrap_or(u32::MAX), classes)
             })
             .collect()
     }
 
-    /// Writes `words` (as [`marks`] gives them) into `m`'s chunks.
-    fn write_marks(&self, m: &Marks, words: &[u32]) {
+    /// Writes `obj`'s edges or points (`lines`) into `m`'s chunks again with the selected
+    /// `faces` (sorted) marked, one chunk at a time.
+    fn write_marks(&self, obj: &Object, m: &Marks, lines: bool, faces: &[u32]) {
         let mut start = 0usize;
         for (_, n, buffer) in m {
             let end = start.saturating_add(*n as usize);
-            if let Some(w) = words.get(start..end).filter(|w| !w.is_empty()) {
-                self.queue.write_buffer(buffer, 0, &bytes_u32(w));
+            let bytes = marks(obj, lines, faces, start..end);
+            if !bytes.is_empty() {
+                self.queue.write_buffer(buffer, 0, &bytes);
             }
             start = end;
         }
@@ -1349,7 +1360,10 @@ mod tests {
 
     /// One device for every test, made once and kept: Vulkan's loader can crash when instances
     /// are made and dropped on several threads at once (seen with NVIDIA's driver, in
-    /// `loader_icd_scan`), as the tests run.
+    /// `loader_icd_scan`), as the tests run. Error scopes are per thread, so the tests' frames
+    /// don't see each other's; but each `Gpu::new` sets the device's handler of errors no scope
+    /// catches, so a test of such an error must make its own device (none does yet; the error
+    /// test sets the view's kept error itself).
     fn any_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
         static SHARED: std::sync::OnceLock<Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
             std::sync::OnceLock::new();
@@ -1788,6 +1802,30 @@ mod tests {
         style.selected = vec![(0, 0)];
         let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
         assert!(image.chunks(4).filter(|p| orange(p)).count() > a, "a selected patch's wireframe");
+    }
+
+    #[test]
+    fn triangles_edges_and_points_split_in_small_chunks_draw_the_same() {
+        // A binding of 16 bytes: one triangle, two edges or four points a chunk.
+        let Some((adapter, device, queue)) = device() else { return };
+        let scene = mesh_scene();
+        let size = [240u32, 180u32];
+        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 240.0 / 180.0);
+        let mut style = Style { width: size[0], height: size[1], edges: true, ..Style::default() };
+        style.display.insert((0, 0), Display { mode: Mode::Wireframe, opacity: 1.0 });
+        style.display.insert((0, 1), Display { mode: Mode::Points, opacity: 1.0 });
+        let mut whole = Gpu::new(&adapter, &device, &queue).unwrap();
+        let mut small = Gpu::new(&adapter, &device, &queue).unwrap();
+        small.chunk = 16;
+        for faces in [vec![], vec![(0, 0), (0, 2)]] {
+            style.selected_faces = faces.into_iter().collect();
+            let selection = next();
+            let a = read_back(&device, &queue, whole.draw(&scene, &camera, &style, size, selection).unwrap());
+            let b = read_back(&device, &queue, small.draw(&scene, &camera, &style, size, selection).unwrap());
+            assert_eq!(changed(&a, &b, 0), 0, "{:?}", style.selected_faces);
+        }
+        let up = small.objects.values().next().unwrap();
+        assert!(up.chunks.len() > 1 && up.lines.as_ref().unwrap().len() > 1 && up.dots.as_ref().unwrap().len() > 1);
     }
 
     #[test]
