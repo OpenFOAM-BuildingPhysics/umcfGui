@@ -2219,13 +2219,18 @@ pub struct Options {
 }
 
 /// What draws the 3D view at the start (`--renderer`). The window runs on a GPU device (wgpu)
-/// only when the GPU is asked for and there is one; then the view can be switched in it. Else it
-/// runs on OpenGL (glow), as it always did: a window that wgpu can't show (a remote session,
-/// some virtual machines) would not open, and eframe can't fall back once it has started.
+/// where there is a hardware one, and the view can then be switched in it; else, and with
+/// `--renderer cpu`, it runs on OpenGL (glow). A software device (lavapipe, llvmpipe, WARP: most
+/// remote sessions and virtual machines) is no faster than the CPU view and is passed over, as
+/// a window wgpu can't show would not open (eframe can't fall back once it has started); the
+/// error then names `--renderer cpu`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Start {
-    /// The CPU rasteriser.
+    /// The CPU, with the window on a hardware GPU where there is one, so that the view can be
+    /// switched to it (no `--renderer`).
     #[default]
+    Ready,
+    /// The CPU rasteriser, the window on OpenGL: no switch.
     Cpu,
     /// The GPU; the CPU, with a warning, where there is none.
     Gpu,
@@ -2422,11 +2427,9 @@ pub fn run(options: Options) -> Result<(), String> {
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     // The GPU only when asked for (see [`Start`]); `auto` passes a software one over.
     let probe: Result<(), String> = match options.renderer {
-        Start::Cpu => {
-            Err("started with --renderer cpu (the default): start with --renderer gpu or auto to switch".to_string())
-        }
+        Start::Cpu => Err("started with --renderer cpu: the window runs on OpenGL".to_string()),
         Start::Gpu => gpu_probe().map(|_| ()),
-        Start::Auto => match gpu_probe() {
+        Start::Auto | Start::Ready => match gpu_probe() {
             Ok(false) => Ok(()),
             Ok(true) => Err("the GPU device is a software one".to_string()),
             Err(e) => Err(e),
@@ -2453,9 +2456,10 @@ pub fn run(options: Options) -> Result<(), String> {
     let created = move |cc: &eframe::CreationContext<'_>| {
         let viewport = &mut desktop.app.viewport;
         let attached = match (&cc.wgpu_render_state, &probe) {
-            // `auto` takes a hardware device only: the window's own may differ from the probe's.
+            // `auto` and the default take a hardware device only: the window's own may differ from
+            // the probe's.
             (Some(state), _)
-                if start == Start::Auto
+                if matches!(start, Start::Auto | Start::Ready)
                     && state.adapter.get_info().device_type == eframe::egui_wgpu::wgpu::DeviceType::Cpu =>
             {
                 Err("the GPU device is a software one".to_string())
@@ -2476,7 +2480,14 @@ pub fn run(options: Options) -> Result<(), String> {
         }
         Ok(Box::new(desktop) as Box<dyn eframe::App>)
     };
-    eframe::run_native("umcfGui", native, Box::new(created)).map_err(|e| e.to_string())?;
+    let on_gpu = native.renderer == eframe::Renderer::Wgpu;
+    eframe::run_native("umcfGui", native, Box::new(created)).map_err(|e| {
+        if on_gpu {
+            format!("{e} (the window ran on the GPU device: start with --renderer cpu to run it on OpenGL)")
+        } else {
+            e.to_string()
+        }
+    })?;
     if let Some(e) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
         return Err(e);
     }

@@ -22,7 +22,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
-| `--renderer cpu\|gpu\|auto` | What draws the 3D view: the CPU (the default), the GPU, or the GPU where there is a hardware one; with `gpu` or `auto` the view can be switched in the window ([the GPU view](#the-gpu-view)) |
+| `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window on OpenGL, no switch (where a GPU window doesn't open) ([the GPU view](#the-gpu-view)) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does, or when the window gives no picture within half a minute |
 
 ## The window
@@ -89,9 +89,9 @@ whose command waits or runs: its outcome closes it).
 
 ## The GPU view
 
-The 3D view is drawn by the CPU, or on the GPU. Start the app with `--renderer gpu` (or `auto`,
-which takes a hardware GPU and passes a software one over); then *GPU* in the *View* tab's
-*Display* group and in the navigation bar switches between the two at any time, and so does a
+The 3D view is drawn by the CPU, or on the GPU. Where the machine has a hardware GPU, the app's
+window runs on it and the view starts on the CPU; *GPU* in the *View* tab's *Display* group and
+in the navigation bar switches between the two at any time, and so does a
 click on *GPU* or *CPU* at the right of the history bar. The label says which drew the view, its
 tooltip why the CPU did when the GPU was asked for; the click switches the setting, as *GPU*
 does (with the GPU on and a frame the CPU drew, *CPU* in amber, it turns the GPU view off).
@@ -99,13 +99,15 @@ Without a GPU view the label is only shown, not a switch. Like *Edges*, the swit
 of the window, not a command: the command line's `scene.snapshot` and `umcf-cli render` always
 draw on the CPU.
 
-- **When there is a GPU view.** Asked for it, the app looks for a GPU device it can draw on
+- **When there is a GPU view.** At the start the app looks for a GPU device it can draw on
   (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through
-  wgpu), and the whole window runs on it. Without one, and with the default `--renderer cpu`,
-  the window runs on OpenGL as it always did and the view is drawn by the CPU: *GPU* is grey in
-  the ribbon, its tooltip saying why (as `--renderer gpu` does), and left out of the navigation
-  bar. (A window wgpu can't show, in some remote sessions and virtual machines, would not open:
-  so the GPU is used only when asked for.)
+  wgpu), and the whole window runs on it. A software one (most remote sessions and virtual
+  machines) is passed over, as it is no faster than the CPU, unless `--renderer gpu` asks for
+  it. Without one, and with `--renderer cpu`, the window runs on OpenGL and the view is drawn
+  by the CPU: *GPU* is grey in the ribbon, its tooltip saying why, and left out of the
+  navigation bar. `--renderer gpu` or `auto` start the view on the GPU. A window wgpu can't
+  show would not open (the window's backend can't change once it has started): the error then
+  says to start with `--renderer cpu`.
 - **When the GPU fails** (out of its memory, a limit of the device), the view goes back to the CPU
   for the rest of the session and the tooltip says why.
 - **What it draws.** The same picture as the CPU: each patch or surface region in its colour,

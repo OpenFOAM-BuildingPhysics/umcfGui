@@ -1592,7 +1592,8 @@ mod tests {
         assert_eq!(Start::parse("gpu"), Some(Start::Gpu));
         assert_eq!(Start::parse("auto"), Some(Start::Auto));
         assert_eq!(Start::parse("GPU"), None);
-        assert_eq!(Start::default(), Start::Cpu);
+        // Without --renderer: the CPU, ready to be switched to a hardware GPU.
+        assert_eq!(Start::default(), Start::Ready);
     }
 
     #[test]
