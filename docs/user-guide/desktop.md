@@ -49,9 +49,10 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   or opacity is taken off the patches and patch groups that had their own (a patch group's off
   its patches, a surface's off its regions), so that all of them are drawn as it is; a patch set
   after that keeps what it set until its region, or a patch group it is in, sets the same again
-  (a patch in two groups is drawn as the group changed last). The row says how it is drawn when
-  that isn't the default, and *Reset* draws it as what it is part of again. What is hidden is
-  not picked.
+  (a patch in two groups is drawn as the group changed last). The row notes what was set on it
+  itself, when not the default (not what it takes from its region or groups; its menu shows how
+  it is drawn), and
+  *Reset* draws it as what it is part of again. What is hidden is not picked.
 - **The 3D view**: the meshes' boundary patches or the surfaces, each patch in its own colour,
   the selection in orange (see [3D scene and selection](scene.md)). Drag to turn the view (or
   pan, with the navigation bar's *Pan*); a right or middle drag pans; the wheel zooms. A click
