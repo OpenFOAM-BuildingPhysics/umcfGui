@@ -62,6 +62,29 @@ pub(crate) fn note(d: &DisplayEntry) -> String {
     parts.join(" ")
 }
 
+/// Whether an entry of `outer` applies to `inner` (`inner_groups`: its groups, if it is a patch):
+/// a region holds its patches and patch groups, a group its patches, a surface its regions. The
+/// one rule for what is drawn ([`App::layer_display`]) and what a change takes over
+/// ([`App::set_display`]); the engine's `display_style` applies the same to a scene's classes.
+fn holds(outer: &Layer, inner: &Layer, inner_groups: &[String]) -> bool {
+    match (outer, inner) {
+        (Layer::Region(r), Layer::Patch { region, .. } | Layer::Group { region, .. }) => r == region,
+        (Layer::Group { region: r, group }, Layer::Patch { region, .. }) => r == region && inner_groups.contains(group),
+        (Layer::Surface(f), Layer::Solid { file, .. }) => f == file,
+        _ => false,
+    }
+}
+
+/// How deep `layer` is: a region or surface holds groups and patches or surface regions, a
+/// group holds patches.
+fn depth(layer: &Layer) -> u8 {
+    match layer {
+        Layer::Region(_) | Layer::Surface(_) => 0,
+        Layer::Group { .. } => 1,
+        Layer::Patch { .. } | Layer::Solid { .. } => 2,
+    }
+}
+
 impl App {
     /// The entry of `layer` itself, if it has one.
     pub fn layer_entry(&self, layer: &Layer) -> Option<&DisplayEntry> {
@@ -72,14 +95,7 @@ impl App {
     /// groups).
     pub(crate) fn layer_display(&self, layer: &Layer, groups: &[String]) -> Display {
         let mut d = Display::default();
-        let applies = |e: &Layer| match (e, layer) {
-            (a, b) if a == b => true,
-            (Layer::Region(r), Layer::Patch { region, .. } | Layer::Group { region, .. }) => r == region,
-            (Layer::Group { region: r, group }, Layer::Patch { region, .. }) => r == region && groups.contains(group),
-            (Layer::Surface(f), Layer::Solid { file, .. }) => f == file,
-            _ => false,
-        };
-        for e in self.display.iter().filter(|e| applies(&e.layer)) {
+        for e in self.display.iter().filter(|e| e.layer == *layer || holds(&e.layer, layer, groups)) {
             if let Some(m) = e.mode {
                 d.mode = m;
             }
@@ -93,20 +109,21 @@ impl App {
     /// Changes how `layer` is drawn. What it sets governs what it holds: a region's mode or
     /// opacity is taken from the entries of its patches and patch groups (a group's from its
     /// patches', a surface's from its regions'), so that all of them are drawn as it is; an
-    /// entry left with nothing to set goes. The layer's entry goes last (the entries apply in
-    /// order), so that what was set last wins: a patch set after its region wins over it.
+    /// entry left with nothing to set goes. The entries apply in order: the layer's goes last among
+    /// those of its kind, after those that hold it, so that what was set last wins: a patch set
+    /// after its region keeps what it set until the region sets the same again. Two groups of
+    /// one patch hold neither the other: the one changed last wins, for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
         if let Change::Mode(_) | Change::Opacity(_) = change {
-            let groups = self.patch_groups();
-            let holds = |e: &Layer| match (&layer, e) {
-                (Layer::Region(r), Layer::Patch { region, .. } | Layer::Group { region, .. }) => r == region,
-                (Layer::Group { region: r, group }, Layer::Patch { region, patch }) => {
-                    r == region && groups.get(&(region.clone(), patch.clone())).is_some_and(|g| g.contains(group))
-                }
-                (Layer::Surface(f), Layer::Solid { file, .. }) => f == file,
-                _ => false,
+            // Only a group needs its patches' groups.
+            let groups = if matches!(layer, Layer::Group { .. }) { self.patch_groups() } else { Default::default() };
+            let groups_of = |e: &Layer| match e {
+                Layer::Patch { region, patch } => groups.get(&(region.clone(), patch.clone())).map(Vec::as_slice),
+                _ => None,
             };
-            for e in self.display.iter_mut().filter(|e| holds(&e.layer)) {
+            for e in
+                self.display.iter_mut().filter(|e| holds(&layer, &e.layer, groups_of(&e.layer).unwrap_or_default()))
+            {
                 match change {
                     Change::Mode(_) => e.mode = None,
                     Change::Opacity(_) => e.opacity = None,
@@ -139,6 +156,9 @@ impl App {
                 self.display.push(DisplayEntry { layer, mode, opacity });
             }
         }
+        // What holds before what it holds, the newest last among equals: what an entry still
+        // has was set after what holds it last set the same (that set took it off), so it wins.
+        self.display.sort_by_key(|e| depth(&e.layer));
         self.look += 1;
     }
 
