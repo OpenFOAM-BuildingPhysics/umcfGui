@@ -179,6 +179,12 @@ as it was, isn't done.
   in `docs/control-protocol.md` once it exists.
 - **For UI work, look at the result** (a headless snapshot PNG). Never send OS-level synthetic
   input.
+- **Every check of what the window shows comes with screenshots.** Checking a change to the 3D
+  view, a panel, a card or the bars makes headless screenshots of the result (`--screenshot`, on
+  the examples or the quick real cases; with `--renderer gpu` and `cpu` where the 3D view is
+  touched), and they go to the maintainer with the report, not only a description. A GPU
+  screenshot counts only where its history bar says *GPU* (the view can fall back to the CPU);
+  else the report says the GPU check could not be made, and why.
 - Headless: `umcf-cli check <case>`, `umcf-cli mesh <case>`, `umcf-cli surface <case>`,
   `umcf-cli render <case> --out shot.png`,
   `umcf-cli run --case <case> --cmd 'control.set={"endTime":3600}'`; `umcf-cli mcp` is planned.
