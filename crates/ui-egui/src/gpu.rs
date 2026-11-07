@@ -440,7 +440,8 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 /// Why the GPU view didn't draw a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDrawn {
-    /// The CPU draws this one (transparent layers on a device that can't blend half floats, an object too big for the
+    /// The CPU draws this one (transparent layers on a device that can't blend half floats, an
+    /// object too big for the
     /// device); the next may be the GPU's again.
     Here(String),
     /// The GPU failed (out of memory, a limit of the device): the view goes back to the CPU.
@@ -2057,7 +2058,8 @@ mod tests {
     fn a_transparent_layer_is_blended_as_on_the_cpu() {
         let scene = mesh_scene();
         let glass = |o: f32| Display { mode: Mode::Surface, opacity: o };
-        // The top patch at half opacity over the background; then every face (three layers that don't lie
+        // The top patch at half opacity over the background; then every face (three layers that
+        // don't lie
         // over each other here), with edges, at 0.3.
         let mut style = Style::default();
         style.display.insert((0, 0), glass(0.5));
@@ -2141,6 +2143,32 @@ mod tests {
         assert!(to_cpu < even_to_cpu * 0.6, "{to_cpu:.1} from the CPU's colours, an even mix {even_to_cpu:.1}");
         // Elsewhere the same.
         assert!(differing(&cpu, &both_gpu, 40) < 0.005);
+    }
+
+    #[test]
+    fn a_transparent_layer_on_a_selected_patch_is_behind_it_as_on_the_cpu() {
+        // The same box twice: the first opaque, its top selected; the second transparent, in
+        // the same place, split along the other diagonal (depths that differ a little across
+        // each face). The selection is a little nearer (as the CPU stores it), so the
+        // transparent top doesn't tint it.
+        let mut scene = mesh_scene();
+        scene.objects.extend(scene_split(true).objects);
+        let mut style = Style { selected: vec![(0, 0)], ..Style::default() };
+        let mut alone = style.clone();
+        for c in 0..3 {
+            style.display.insert((1, c), Display { mode: Mode::Surface, opacity: 0.5 });
+            alone.display.insert((1, c), Display { mode: Mode::Hidden, opacity: 1.0 });
+        }
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        let (cpu_alone, gpu_alone) = both(&scene, &mut alone).unwrap();
+        let orange_in = |v: &[u8]| v.chunks(4).filter(|p| orange(p)).count();
+        let (on_cpu, on_gpu) = (orange_in(&cpu), orange_in(&image));
+        assert!(on_cpu > 1000 && on_cpu.abs_diff(orange_in(&cpu_alone)) <= on_cpu / 100);
+        assert!(
+            on_gpu.abs_diff(orange_in(&gpu_alone)) <= on_gpu / 100,
+            "{on_gpu} orange with, {} without",
+            orange_in(&gpu_alone)
+        );
     }
 
     #[test]
