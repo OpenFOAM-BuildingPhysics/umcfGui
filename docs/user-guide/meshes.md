@@ -234,14 +234,15 @@ umcf-cli run --case my-case \
 
 `patch.create` prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's
 `createPatch` to make. The faces are the ones selected (picked in the view, `select.pick` or
-`select.rect` with `faces: true`, or `select.set`) when nothing else is given (all of one region; they leave the
-selection once prepared, and an undo doesn't bring them back: the selection isn't part of the
-undo history), or are given as labels (`faces`), as the ones whose centre is in a
-box (`box`), or as the ones whose centre is within a distance of an STL surface of the case, or
-of one solid of it (`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its
-triangles. A box or a surface takes faces from the patches named in `from`, else from the
-selected patches of the region, else from every patch of the region that is neither coupled nor
-of a constraint type (`empty`, `symmetry`, `symmetryPlane`, `wedge`).
+`select.rect` with `faces: true`, or `select.set`) when nothing else is given (all of one
+region), or are given as labels (`faces`), as the ones whose centre is in a box (`box`), or as
+the ones whose centre is within a distance of an STL surface of the case, or of one solid of it
+(`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its triangles. A box or
+a surface takes faces from the patches named in `from`, else from the selected patches of the
+region, else from every patch of the region that is neither coupled nor of a constraint type
+(`empty`, `symmetry`, `symmetryPlane`, `wedge`). Selected faces in the new patch leave the
+selection, however the faces were given, and an undo doesn't bring them back: the selection
+isn't part of the undo history. The desktop app's card sends the faces or patches it shows.
 
 ```sh
 umcf-cli run --case my-case \

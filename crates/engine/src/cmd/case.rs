@@ -18,7 +18,7 @@ pub(super) const OPEN: CommandSpec = CommandSpec {
     label: "Open case…",
     menu: "Case/Open…",
     shortcut: Some("Ctrl+O"),
-    params: "path: the case directory (required). fields: false to skip reading field files (faster; the boundary conditions are then not checked). discard: true to open even though the open case has unsaved changes.",
+    params: "path: the case directory (required). fields: false to skip reading field files (faster; the boundary conditions are then not checked), \"later\" to list them only and read them with case.fields (the desktop app's way: the case opens first). discard: true to open even though the open case has unsaved changes.",
     enabled: always,
     run: open,
     // Not journaled: a journal runs again on whichever case is open.
@@ -30,18 +30,63 @@ pub(super) const OPEN: CommandSpec = CommandSpec {
 fn open(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(OPEN.id, p, &["path", "fields", "discard"])?;
     let path = p.required_str("path")?;
-    let fields = p.bool("fields")?.unwrap_or(true);
+    let (fields, later) = match p.value("fields") {
+        Some(Value::String(s)) if s == "later" => (true, true),
+        _ => (
+            p.bool("fields")
+                .map_err(|_| Error::Params("case.open: `fields` is true, false or \"later\"".into()))?
+                .unwrap_or(true),
+            false,
+        ),
+    };
     let discard = p.bool("discard")?.unwrap_or(false);
     if !std::path::Path::new(path).is_dir() {
         return Err(Error::Failed(format!("{path} is not a directory")));
     }
-    let options = if fields { OpenOptions::default() } else { OpenOptions { field_bytes: 0, ..Default::default() } };
+    let options = match (fields, later) {
+        (_, true) => OpenOptions { defer_fields: true, ..Default::default() },
+        (true, false) => OpenOptions::default(),
+        (false, false) => OpenOptions { field_bytes: 0, ..Default::default() },
+    };
     // Its reads stop when the command running is cancelled (`Session::canceller`).
     s.open(Box::new(Cancellable::new(DirFs::new(path), s.canceller())), path, options, discard)?;
     let case = s.case().ok_or_else(|| Error::Failed("the case did not open".to_string()))?;
     let version = case.layout.version.map_or("unknown OpenFOAM version", |v| v.label());
     let message = format!("opened {path}: {version}, {} regions", case.regions.len());
     Ok(Outcome::new(message, info_data(s)))
+}
+
+pub(super) const FIELDS: CommandSpec = CommandSpec {
+    id: "case.fields",
+    label: "Read fields",
+    menu: "Case/Read fields",
+    shortcut: None,
+    params: "none. Reads the start-time field files of a case opened with fields: \"later\" (their boundary conditions and sizes, as case.open would have), in parallel; nothing to do when they were read already. Cancelled, the case stays as it was: listed, not read.",
+    enabled: needs_case,
+    run: fields,
+    journal: false,
+    undoable: false,
+    // It reads files only: cancelled, the case is put back as it was.
+    reads_only: true,
+};
+
+fn fields(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    Params::new(FIELDS.id, p, &[])?;
+    let progress = s.canceller().progress().clone();
+    let o = s.opened_mut()?;
+    let read = o.case.read_start_fields(o.fs.as_ref(), Some(&progress))?;
+    // The undo history's snapshots from before have the fields listed only: they take them, so
+    // an undo doesn't make them unread again.
+    if read {
+        let case = o.case.clone();
+        for step in s.undo.iter_mut().chain(s.redo.iter_mut()) {
+            step.case.adopt_fields(&case);
+        }
+    }
+    let case = s.case().ok_or_else(|| Error::Failed("no case is open".to_string()))?;
+    let n: usize = case.regions.iter().map(|r| r.fields.len()).sum();
+    let message = if read { format!("read {n} field files") } else { "the field files were read already".to_string() };
+    Ok(Outcome::new(message, json!({ "read": read, "fields": n })))
 }
 
 pub(super) const SAVE: CommandSpec = CommandSpec {

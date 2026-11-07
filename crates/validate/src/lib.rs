@@ -92,6 +92,15 @@ impl Diagnostic {
 pub fn check(case: &Case) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     notes(case, &mut out);
+    if case.fields_pending {
+        let at = case.start.as_ref().map_or(String::new(), |t| t.name.clone());
+        out.push(Diagnostic::new(
+            Level::Info,
+            "fields.pending",
+            at,
+            "the start-time field files are not read yet: their boundary conditions and sizes aren't checked",
+        ));
+    }
     controls(case, &mut out);
     let mut patterns = Patterns::default();
     for r in &case.regions {

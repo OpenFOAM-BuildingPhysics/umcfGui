@@ -19,7 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
-| `--open <id>` | Opens a command's card at the start, as its ribbon button does (`--open bc.set`) |
+| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
@@ -34,11 +34,11 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **The ribbon**: the commands in tabs and groups (Case, Geometry, Mesh, Boundary conditions,
   View). A command that can't run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
-  (`{"endTime": 7200}`); *OK* runs it. The checks and *Summary* run at once. Commands without a
-  place of their own are in a *More* group of their tab: *Workflow description* and *Write workflow
-  description* on *Case*, *Tree crowns* on *Geometry*.
+  (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
+  Commands without a place of their own are in a *More* group of their tab: *Read fields*,
+  *Workflow description* and *Write workflow description* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
-  that can run.
+  that can run, or opens its card when it asks for parameters, as its ribbon button does.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and
   its STL surfaces and their regions. The eye says whether the 3D view shows a region or a
   surface. A click selects a patch or a surface region; Ctrl+click adds it or takes it out. A
@@ -82,25 +82,42 @@ running shows no dialog at all, so install `zenity` or `xdg-desktop-portal` ther
 `umcf-gui <case>` opens a case from the command line on every system.
 
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
-check. Escape closes the parameter card, the condition card, the results and the search.
+check. Escape closes the parameter card, the condition card, the results and the search (not a card
+whose command waits or runs: its outcome closes it).
 
 ## Long work
 
-Opening a case, the ribbon's commands without parameters, a command card's *OK*, the *Set* of
-the boundary condition, patch and new patch cards, going back or forward in the history bar, and
-reading the meshes and surfaces the 3D view shows run beside the window, which keeps drawing.
-What takes more than a moment shows a card over the 3D view with what runs and for how long.
-Work that only reads (opening a case, the checks, the summary, reading what the view shows) has
-*Cancel*: the case's files are read no more, the work stops, and the case is as it was (a case
-being opened isn't opened; the one open stays). Work that changes the case (a save, an edit, an
-undo) runs to its end, and the window doesn't close before it has. A card whose *Set* runs stays
-open behind the busy card: it closes when the command worked, and shows the error when it
-didn't. Nothing else starts while it runs: what is asked meanwhile is refused, and the results
-card says so (a command card stays open, to run again); a folder picked to open waits for it. A
-reading of the 3D view that hasn't started yet gives way to a command asked at the same moment,
-and follows it. A check of a 16-million-cell mesh, or reading all five regions of a big case,
-can take a while: that's when this card shows. A case named on the command line
-(`umcf-gui <case>`) is opened before the window shows.
+Long work runs beside the window, which stays in use: you can turn the 3D view, browse the case,
+open cards and look at the results while it runs. The status bar shows what runs, how far it is
+and *Cancel*: a bar that fills as the files are done where the job knows how many (reading the
+field files: "21 of 30"), and the megabytes read so far and the seconds it has run. This holds
+for the ribbon's commands, a command card's *OK*, the *Set* of the boundary condition, patch and
+new patch cards, going back or forward in the history bar, reading the field files, and reading
+the meshes and surfaces the 3D view shows.
+
+What you ask for while a job runs waits, and runs after it, in order: a command, a card's *Set*
+(the card shows its values as sent, *Setting…*, and closes when the command worked or shows the
+error; it acts on the patches or faces the card shows, whatever is selected by the time it
+runs), a pick in the view, an undo. The status bar says how much waits. A reading of the 3D view
+not started yet gives way to other work and follows it.
+
+Work that only reads (the checks, the summary, reading the fields or what the view shows) has
+*Cancel*: the case's files are read no more, the work stops, and the case is as it was. Work
+that changes the case (an edit, an undo) runs to its end.
+
+Opening and saving a case take the whole window from the moment they are asked for (behind a
+job, too): what it would show is the case before, and what was asked meanwhile would act on the
+case opened. Opening has *Cancel* (the case open stays); a save runs to its end, and the window
+doesn't close before it has.
+
+A case opens quickly, with its field files listed only: the meshes and surfaces the view shows
+are read first, so the case shows at once, then the field files, as a job of their own. Until
+they are read, their boundary conditions aren't known (a check says so: `fields.pending`), and
+conditions and patches can't be changed (`bc.set`, `patch.set` and `patch.create` say to read
+them first): the field files change with them. *Read fields* (`case.fields`, in the *Case* tab's
+*More* group or the search) reads them after a *Cancel*. A case named on the command line
+(`umcf-gui <case>`) opens the same way; with `--cmd`, its fields are read as it opens, for the
+commands to act on.
 
 ## Patches
 
@@ -148,10 +165,10 @@ about the new conditions.
   a GPU view comes later.
 - A command's parameters are typed as JSON, apart from boundary conditions, which have a card
   of their own; forms for the others come with meshing.
-- *Cancel* stops reading a mesh's ASCII `points` or `faces`
-  and field files within a megabyte, but a file read whole (binary meshes, the mesh check's)
-  only once it is read; the card
-  shows the seconds a job has run, not how far it is.
+- *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,
+  but a file read whole (binary meshes, the mesh check's) only once it is read. The progress bar
+  counts the files of the field reading; other work shows the megabytes it has read and the
+  seconds it has run, not how far it is.
 - The window reads the case's files when it needs them, not when they change. An STL copied
   into `constant/triSurface` shows in the browser after the next command; a file changed outside
   the window shows when the case is opened again. A scene that failed to build (a mesh not

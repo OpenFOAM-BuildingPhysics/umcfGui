@@ -1028,23 +1028,27 @@ fn only_work_that_reads_can_be_cancelled() {
 }
 
 #[test]
-fn work_started_while_a_job_runs_is_refused_and_logged() {
+fn work_asked_while_a_job_runs_waits_and_runs_after_it() {
     let (mut app, hold, waiting) = held();
     app.start_scene_for_test();
     wait_until(&waiting);
+    // Not refused: queued, in order, and the window still draws from a copy of the session.
+    let logged = app.log.len();
     app.invoke("case.check");
-    assert!(app.log.last().is_some_and(|e| !e.ok && e.message.contains("first")), "{:?}", app.log.last());
-    // A card's OK refused: the card stays, with its parameters and why.
     let d = crate::Dialog { id: "control.set", params: "{\"endTime\": 7200}".into(), error: None };
     app.start(crate::jobs::Work::Command {
         id: "control.set".into(),
         params: json!({ "endTime": 7200 }),
         then: crate::jobs::Then::Dialog(d),
     });
-    let d = app.dialog.take().unwrap();
-    assert!(d.params.contains("7200") && d.error.is_some_and(|e| e.contains("first")));
+    assert_eq!(app.log.len(), logged, "nothing refused");
+    assert!(app.busy() && !app.modal_busy() && app.session().case().is_some());
+    assert_eq!(app.progress().map(|p| p.queued), Some(2));
     hold.store(false, Ordering::SeqCst);
     app.wait_for_job();
+    let ran: Vec<_> = app.log.iter().skip(logged).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(ran, [("case.check", true), ("control.set", true)]);
+    assert_eq!(app.session().case().unwrap().controls.end_time.as_deref(), Some("7200"));
 }
 
 /// Waits for `flag`, at most 30 s: a test fails rather than hangs.
@@ -1127,17 +1131,19 @@ fn a_cards_command_is_a_job_and_its_card_waits_for_it() {
     wait_until(&waiting);
     assert!(app.busy() && app.writing(), "a card's command changes the case: not cancellable");
     assert!(app.patch_form.is_some());
-    // Another card's OK meanwhile: refused, its card says why.
+    // Another card's *Set* meanwhile: it waits, its card with it.
     app.bc = Some(crate::bc::BcForm { field: "T".into(), kind: "zeroGradient".into(), ..Default::default() });
     app.set_bc();
-    assert!(app.bc.as_ref().and_then(|f| f.error.as_ref()).is_some_and(|e| e.contains("first")), "{:?}", app.bc);
-    app.bc = None;
+    assert!(app.card_busy(crate::jobs::Card::Bc) && app.bc.as_ref().is_some_and(|f| f.error.is_none()));
     hold.store(false, Ordering::SeqCst);
     app.wait_for_job();
     assert!(app.patch_form.is_none(), "it worked: the card closed");
     let case = app.session().case().unwrap();
     assert!(case.region("").unwrap().patches.as_ref().unwrap().iter().any(|p| p.name == "sky" && p.kind == "symmetry"));
-    assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("patch.set", true)));
+    // Both ran, the card's own first, the one asked meanwhile after it.
+    let ran: Vec<_> = app.log.iter().rev().take(2).map(|e| (e.command.as_str(), e.ok)).collect();
+    assert_eq!(ran, [("bc.set", true), ("patch.set", true)]);
+    assert!(app.bc.is_none());
     // A failure keeps the card, with the error.
     app.patch_form = Some(crate::patch::PatchForm { kind: "no such type".into(), ..form });
     app.set_patch();
@@ -1195,24 +1201,28 @@ fn a_history_walk_that_fails_partway_logs_each_step_and_opens_the_results() {
 }
 
 #[test]
-fn the_patch_cards_refuse_while_a_job_runs_and_say_why() {
-    // Review finding: they read the selection from the stand-in session first, and said
-    // "select the patches" instead of why they couldn't run.
+fn a_patch_card_set_while_a_job_runs_waits_with_its_card() {
+    // The card reads the selection from the copy of the session the window draws from, and
+    // its command waits for the job: the card shows it as sent, then closes.
     let (mut app, hold, waiting) = held();
     app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
     hold.store(true, Ordering::SeqCst);
     app.start_scene_for_test();
     wait_until(&waiting);
-    app.patch_form = Some(crate::patch::PatchForm { kind: "symmetry".into(), ..Default::default() });
+    let form = crate::patch::PatchForm {
+        name: "sky".into(),
+        kind: "symmetry".into(),
+        filled: ("sky".into(), "wall".into(), String::new()),
+        ..Default::default()
+    };
+    app.patch_form = Some(form);
     app.set_patch();
-    let e = app.patch_form.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
-    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
-    app.new_patch = Some(crate::newpatch::NewPatchForm::default());
-    app.create_patch();
-    let e = app.new_patch.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
-    assert!(e.contains("can't run yet") && e.contains("first"), "{e}");
+    assert!(app.card_busy(crate::jobs::Card::Patch) && app.patch_form.is_some());
     hold.store(false, Ordering::SeqCst);
     app.wait_for_job();
+    assert!(app.patch_form.is_none(), "{:?}", app.patch_form);
+    let case = app.session().case().unwrap();
+    assert!(case.region("").unwrap().patches.as_ref().unwrap().iter().any(|p| p.name == "sky" && p.kind == "symmetry"));
 }
 
 #[test]
@@ -1232,4 +1242,245 @@ fn the_history_bar_goes_forward_as_a_job_too() {
     app.go_to(5);
     app.wait_for_job();
     assert_eq!((app.session().history().0.len(), app.log.len()), (2, logged));
+}
+
+#[test]
+fn a_folder_opens_first_and_its_fields_are_read_after_as_a_job() {
+    // A case of each OpenFOAM version.
+    for example in [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of8/streetCanyon_CFD"),
+    ] {
+        let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+        app.open_folder(example);
+        // Opening takes the whole window; reading the fields after it doesn't.
+        app.job_wait = std::time::Duration::ZERO;
+        app.launch();
+        assert!(app.modal_busy(), "{example}");
+        while app.busy() {
+            app.poll(std::time::Duration::from_millis(20));
+        }
+        assert!(app.session().case().is_some_and(|c| c.fields_pending), "{example}");
+        // The view's scene first, so the case shows at once; then the fields.
+        app.launch();
+        assert!(app.busy() && !app.modal_busy(), "{example}: the scene is read as a job");
+        assert!(app.progress().is_some_and(|p| p.label.contains("meshes") && p.queued == 1));
+        while app.busy() {
+            app.poll(std::time::Duration::from_millis(20));
+        }
+        app.launch();
+        assert!(app.busy() && !app.modal_busy(), "{example}: the fields are read as a job");
+        assert!(app.progress().is_some_and(|p| p.label.contains("field") && p.cancellable));
+        app.wait_for_job();
+        let case = app.session().case().unwrap();
+        assert!(!case.fields_pending, "{example}");
+        assert!(case.regions.iter().flat_map(|r| &r.fields).any(|f| f.bcs.is_some()), "{example}");
+        assert_eq!(app.log.last().map(|e| (e.command.as_str(), e.ok)), Some(("case.fields", true)));
+    }
+}
+
+#[test]
+fn the_window_stays_in_use_while_a_job_runs() {
+    let (app, hold, waiting) = held();
+    let mut h = Harness::builder()
+        .with_size(vec2(1600.0, 900.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.state_mut().start_scene_for_test();
+    wait_until(&waiting);
+    h.run_steps(2);
+    // The ribbon, the browser and the status bar, with the job's progress and its Cancel.
+    assert!(h.state().busy());
+    let _ = h.get_by_role_and_label(egui::Role::Tab, "Mesh");
+    let _ = h.get_by_label("Browser");
+    let _ = h.get_by_label_contains("Reading the meshes");
+    let _ = h.get_by_role_and_label(egui::Role::ProgressIndicator, "Job progress");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().progress().is_some_and(|p| p.cancelling));
+    hold.store(false, Ordering::SeqCst);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    assert!(!h.state().busy());
+}
+
+#[test]
+fn a_condition_card_opened_before_the_fields_fills_when_they_are_read() {
+    // Review finding: it filled once, from fields not read yet, and stayed blank.
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let options = OpenOptions { defer_fields: true, ..OpenOptions::default() };
+    s.open(Box::new(case()), "mem", options, false).unwrap();
+    let mut app = App::new(s);
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    app.bc = Some(crate::bc::BcForm::default());
+    let mut h = harness(app);
+    h.run();
+    assert_eq!(h.state().bc.as_ref().map(|f| f.kind.as_str()), Some(""));
+    h.state_mut().after_open();
+    h.state_mut().wait_for_job();
+    h.run();
+    let f = h.state().bc.clone().unwrap();
+    assert_eq!((f.field.as_str(), f.kind.as_str(), f.value.as_str()), ("T", "fixedValue", "uniform 290"));
+}
+
+#[test]
+fn a_cards_set_names_the_patches_it_shows() {
+    // Review finding: sent without them, a selection changed while it waited was set instead.
+    let (mut app, hold, waiting) = held();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    // A click on another patch waits; the card still shows `sky`, and sets that.
+    app.act("select.set", json!({ "items": [{ "region": "", "patch": "ground" }] }));
+    app.bc = Some(crate::bc::BcForm { field: "T".into(), kind: "zeroGradient".into(), ..Default::default() });
+    app.set_bc();
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+    let case = app.session().case().unwrap();
+    let bcs = case.region("").unwrap().field("T").unwrap().bcs.clone().unwrap();
+    let kind = |p: &str| bcs.iter().find(|b| b.patch == p).and_then(|b| b.kind.clone());
+    assert_eq!(kind("sky").as_deref(), Some("zeroGradient"));
+    assert_eq!(kind("ground"), None, "ground keeps its condition from the pattern");
+    assert_eq!(app.session().selection().len(), 1);
+}
+
+#[test]
+fn a_condition_card_keeps_what_is_typed_while_the_fields_are_read() {
+    // Review finding: it filled again on every frame till the fields were read.
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let options = OpenOptions { defer_fields: true, ..OpenOptions::default() };
+    s.open(Box::new(case()), "mem", options, false).unwrap();
+    let mut app = App::new(s);
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    app.bc = Some(crate::bc::BcForm::default());
+    let mut h = harness(app);
+    h.run();
+    if let Some(f) = h.state_mut().bc.as_mut() {
+        f.kind = "inletOutlet".into();
+    }
+    h.run();
+    assert_eq!(h.state().bc.as_ref().map(|f| f.kind.as_str()), Some("inletOutlet"));
+    // Read now: what was typed stays.
+    h.state_mut().after_open();
+    h.state_mut().wait_for_job();
+    h.run();
+    assert_eq!(h.state().bc.as_ref().map(|f| f.kind.as_str()), Some("inletOutlet"));
+}
+
+#[test]
+fn a_case_opening_behind_a_job_takes_the_window_and_goes_first_after_it() {
+    // Review finding: work asked while an open waited ran on the case it opened.
+    let (mut app, hold, waiting) = held();
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    assert!(!app.modal_busy());
+    app.open_folder(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD"));
+    assert!(app.modal_busy(), "taken at once: nothing more can be asked of the case shown");
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+    let ran: Vec<_> = app.log.iter().rev().take(2).map(|e| e.command.as_str()).collect();
+    assert_eq!(ran, ["case.fields", "case.open"]);
+}
+
+#[test]
+fn the_ribbon_leaves_a_card_whose_command_waits() {
+    let (mut app, hold, waiting) = held();
+    app.run("select.set", json!({ "items": [{ "region": "", "patch": "sky" }] })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    app.start_scene_for_test();
+    wait_until(&waiting);
+    app.bc = Some(crate::bc::BcForm { field: "T".into(), kind: "zeroGradient".into(), ..Default::default() });
+    app.set_bc();
+    // Another card from the ribbon, and Escape: the waiting card stays.
+    app.invoke("patch.set");
+    assert!(app.bc.is_some() && app.patch_form.is_some());
+    app.invoke("control.set");
+    assert!(app.bc.is_some() && app.patch_form.is_none());
+    hold.store(false, Ordering::SeqCst);
+    app.wait_for_job();
+    assert!(app.bc.is_none(), "closed by its own command's outcome");
+}
+
+#[test]
+fn every_open_from_the_window_reads_the_fields_after() {
+    // Review finding: the Open card (no folder dialog, or a retry) read them at open.
+    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    app.start(crate::jobs::Work::Command {
+        id: "case.open".into(),
+        params: json!({ "path": path }),
+        then: crate::jobs::Then::Nothing,
+    });
+    app.launch();
+    while app.busy() {
+        app.poll(std::time::Duration::from_millis(20));
+    }
+    assert!(app.session().case().is_some_and(|c| c.fields_pending));
+    app.wait_for_job();
+    assert!(app.session().case().is_some_and(|c| !c.fields_pending));
+}
+
+#[test]
+fn a_newer_scene_request_takes_the_place_of_one_waiting() {
+    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+    app.start(crate::jobs::Work::Scene { params: json!({ "regions": ["air"] }) });
+    app.start(crate::jobs::Work::Scene { params: json!({ "regions": ["air", "ground"] }) });
+    assert_eq!(app.queue.len(), 1);
+    assert!(
+        matches!(&app.queue[0], crate::jobs::Work::Scene { params } if params["regions"] == json!(["air", "ground"]))
+    );
+}
+
+#[test]
+fn read_fields_runs_without_a_card() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut h = harness(App::new(s));
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::P);
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("Read fields");
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().dialog.is_none(), "no card");
+    h.state_mut().wait_for_job();
+    assert!(h.state().session().case().is_some_and(|c| !c.fields_pending));
+    assert_eq!(h.state().log.last().map(|e| (e.command.as_str(), e.ok)), Some(("case.fields", true)));
+}
+
+#[test]
+fn a_command_asked_for_at_start_up_leaves_the_first_scene_waiting() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("case.check")).unwrap();
+    let ids: Vec<String> = app
+        .queue
+        .iter()
+        .map(|w| match w {
+            crate::jobs::Work::Command { id, .. } => id.clone(),
+            crate::jobs::Work::Scene { .. } => "scene".to_string(),
+            crate::jobs::Work::History { .. } => "history".to_string(),
+        })
+        .collect();
+    assert_eq!(ids, ["scene", "case.fields", "case.check"]);
+}
+
+#[test]
+fn read_fields_asked_for_at_start_up_reads_them_once() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD");
+    s.execute("case.open", &json!({ "path": path, "fields": "later" })).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("case.fields")).unwrap();
+    assert_eq!(app.queue.len(), 2);
+    assert!(matches!(app.queue.back(), Some(crate::jobs::Work::Command { id, .. }) if id == "case.fields"));
+    app.wait_for_job();
+    assert!(app.session().case().is_some_and(|c| !c.fields_pending));
+    let reads: Vec<bool> = app.log.iter().filter(|e| e.command == "case.fields").map(|e| e.ok).collect();
+    assert_eq!(reads, [true]);
 }

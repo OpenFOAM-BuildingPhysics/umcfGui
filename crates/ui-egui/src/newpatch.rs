@@ -125,6 +125,8 @@ impl App {
     /// The card; returns whether Prepare or Close was pressed. `room` as for the condition card.
     pub(crate) fn new_patch_card(&mut self, ui: &mut Ui, width: f32, room: f32) -> (bool, bool) {
         let t = self.tokens.clone();
+        // Its command runs or waits: shown as it was sent, not to be changed till it's done.
+        let busy = self.card_busy(crate::jobs::Card::NewPatch);
         let patches = selected(&self.session);
         let faces = picked(&self.session);
         let (mut ok, mut close) = (false, false);
@@ -136,6 +138,9 @@ impl App {
         let muted = Ink { line: t.text_muted, fill: t.accent };
         let card_top = ui.cursor().top();
         t.card_frame().show(ui, |ui| {
+            if busy {
+                ui.disable();
+            }
             ui.set_width(width);
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
@@ -227,7 +232,8 @@ impl App {
             ui.add_space(4.0);
             let row = vec2(ui.available_width(), 28.0);
             ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                let set = egui::Button::new(RichText::new("Prepare").color(Color32::WHITE).strong())
+                let label = if busy { "Preparing…" } else { "Prepare" };
+                let set = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
                     .fill(t.accent)
                     .min_size(vec2(64.0, 26.0));
                 ok = ui.add(set).clicked();
@@ -240,10 +246,6 @@ impl App {
     /// Runs `patch.create` with the card's parameters, as a job; the card closes when it works,
     /// and stays open with the error when it doesn't.
     pub(crate) fn create_patch(&mut self) {
-        // While a job runs the session here is a stand-in: refused, and the card says why.
-        if self.busy() {
-            return self.start_card("patch.create", serde_json::json!({}), crate::jobs::Card::NewPatch);
-        }
         let Some(form) = self.new_patch.clone() else { return };
         let mut regions: Vec<String> = if form.source == Source::Picked {
             picked(&self.session).into_iter().map(|(r, _)| r).collect()
@@ -253,8 +255,26 @@ impl App {
         regions.sort();
         regions.dedup();
         let what = if form.source == Source::Picked { "faces" } else { "patches" };
+        // The faces or patches the card shows, not the selection when it runs (it may have
+        // changed meanwhile, waiting behind a job).
+        let shown = |r: &str| -> serde_json::Value {
+            if form.source == Source::Picked {
+                let faces: Vec<u32> =
+                    picked(&self.session).into_iter().filter(|(x, _)| x == r).map(|(_, f)| f).collect();
+                serde_json::json!({ "faces": faces })
+            } else {
+                let from: Vec<String> =
+                    selected(&self.session).into_iter().filter(|(x, _)| x == r).map(|(_, p)| p).collect();
+                serde_json::json!({ "from": from })
+            }
+        };
         let params = match regions.as_slice() {
-            [r] => form.params(Some(r)),
+            [r] => form.params(Some(r)).map(|mut p| {
+                if let (Some(o), serde_json::Value::Object(extra)) = (p.as_object_mut(), shown(r)) {
+                    o.extend(extra);
+                }
+                p
+            }),
             [] if form.source == Source::Picked => Err("Pick the faces in the view first.".to_string()),
             [] => Err("Select the patches to take faces from.".to_string()),
             _ => Err(format!("Select {what} of one region.")),

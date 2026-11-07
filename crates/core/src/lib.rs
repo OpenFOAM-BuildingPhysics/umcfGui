@@ -115,9 +115,54 @@ fn check_rel(rel: &str) -> Result<(), FsError> {
 }
 
 /// A flag that stops a long job: every [`Cancellable`] holding it fails its reads once it is set.
-/// Clones share the flag. It stays set until [`Cancel::reset`].
+/// Clones share the flag, and the job's [`Progress`]. It stays set until [`Cancel::reset`].
 #[derive(Debug, Clone, Default)]
-pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>, Progress);
+
+/// How far a job has come, for a progress bar: the bytes read from the case's files (counted by
+/// [`Cancellable`]), and the steps done of a total where the job knows one (files, objects).
+/// Clones share the counts; reading them never waits.
+#[derive(Debug, Clone, Default)]
+pub struct Progress(std::sync::Arc<Counts>);
+
+#[derive(Debug, Default)]
+struct Counts {
+    bytes: std::sync::atomic::AtomicU64,
+    done: std::sync::atomic::AtomicU64,
+    total: std::sync::atomic::AtomicU64,
+}
+
+impl Progress {
+    /// Sets the number of steps the job will take (0: it doesn't know), none done yet.
+    pub fn start(&self, total: u64) {
+        self.0.done.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.0.total.store(total, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// One more step done.
+    pub fn step(&self) {
+        self.0.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `n` more bytes read.
+    pub fn read(&self, n: u64) {
+        self.0.bytes.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Steps done, the total (0: unknown), and the bytes read.
+    pub fn get(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.0.done.load(Relaxed), self.0.total.load(Relaxed), self.0.bytes.load(Relaxed))
+    }
+
+    /// Back to nothing done, for the next job.
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.0.bytes.store(0, Relaxed);
+        self.0.done.store(0, Relaxed);
+        self.0.total.store(0, Relaxed);
+    }
+}
 
 impl Cancel {
     pub fn new() -> Self {
@@ -133,9 +178,15 @@ impl Cancel {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Lets reads go on again (before the next job starts).
+    /// Lets reads go on again, and counts from nothing (before the next job starts).
     pub fn reset(&self) {
         self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.1.reset();
+    }
+
+    /// The progress of the job this flag stops.
+    pub fn progress(&self) -> &Progress {
+        &self.1
     }
 
     fn check(&self, rel: &str) -> Result<(), FsError> {
@@ -143,7 +194,7 @@ impl Cancel {
     }
 }
 
-/// A case whose reads stop once its [`Cancel`] is set: each read and listing after that fails
+/// A case whose reads stop once its [`Cancel`] is set, and counted in its [`Progress`]: each read and listing after that fails
 /// with [`FsError::Cancelled`], and a stream ([`CaseFs::reader`]) between two of its reads, so a
 /// job reading a big file stops within a chunk of it. Writes
 /// aren't stopped, but a save reads files too: only work that writes nothing should be offered a
@@ -170,7 +221,9 @@ impl std::io::Read for CancelRead {
         if self.cancel.is_cancelled() {
             return Err(std::io::Error::other("cancelled"));
         }
-        self.inner.read(buf)
+        let n = self.inner.read(buf)?;
+        self.cancel.progress().read(n as u64);
+        Ok(n)
     }
 }
 
@@ -185,11 +238,15 @@ impl<F: CaseFs> CaseFs for Cancellable<F> {
     }
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
         self.cancel.check(rel)?;
-        self.inner.read(rel, limit)
+        let bytes = self.inner.read(rel, limit)?;
+        self.cancel.progress().read(bytes.as_ref().map_or(0, |b| b.len() as u64));
+        Ok(bytes)
     }
     fn read_prefix(&self, rel: &str, n: usize, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
         self.cancel.check(rel)?;
-        self.inner.read_prefix(rel, n, limit)
+        let bytes = self.inner.read_prefix(rel, n, limit)?;
+        self.cancel.progress().read(bytes.as_ref().map_or(0, |b| b.len() as u64));
+        Ok(bytes)
     }
     fn is_file(&self, rel: &str) -> bool {
         self.inner.is_file(rel)
@@ -577,6 +634,28 @@ mod tests {
         fs.write("d/g", b"x").unwrap();
         cancel.reset();
         assert_eq!(fs.read("d/g", 10).unwrap().as_deref(), Some(&b"x"[..]));
+    }
+
+    #[test]
+    fn a_cancellable_case_counts_what_it_reads() {
+        use std::io::Read;
+        let cancel = Cancel::new();
+        let fs = Cancellable::new(MemFs::new().with("d/f", b"0123456789".to_vec()), cancel.clone());
+        fs.read("d/f", 10).unwrap();
+        fs.read_prefix("d/f", 4, 10).unwrap();
+        let mut stream = fs.reader("d/f", 10).unwrap().unwrap();
+        let mut three = [0u8; 3];
+        stream.read_exact(&mut three).unwrap();
+        let p = cancel.progress();
+        assert_eq!(p.get(), (0, 0, 10 + 4 + 3));
+        // Steps, where the job knows how many.
+        p.start(4);
+        p.step();
+        assert_eq!(p.get(), (1, 4, 17));
+        // The next job counts from nothing; clones share the counts.
+        let shared = cancel.clone();
+        cancel.reset();
+        assert_eq!(shared.progress().get(), (0, 0, 0));
     }
 
     #[test]

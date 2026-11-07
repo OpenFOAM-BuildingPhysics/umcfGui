@@ -61,7 +61,7 @@ pub(super) const CREATE: CommandSpec = CommandSpec {
     label: "New patch",
     menu: "Mesh/New patch…",
     shortcut: None,
-    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched; a face set that is a symbolic link is not written. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches, or of the picked faces when they are the faces (they must all be of it, and leave the selection once in the patch). type: default patch. groups, entries: as patch.set. The faces, one of: the selected faces (select.pick with faces: true), when none of these is given; faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
+    params: "Prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's createPatch: the faces go into a face set (constant/<region>/polyMesh/sets/<name>) and the patch into system/<region>/createPatchDict.umcf (constructFrom set), the patches prepared on this mesh; the case's own createPatchDict isn't touched; a face set that is a symbolic link is not written. The mesh changes when `createPatch -region <region> -dict …createPatchDict.umcf -overwrite` runs, once (the line for the case's OpenFOAM version is in the result). name: the new patch (required). region: default the region of the selected patches, or of the picked faces when they are the faces (they must all be of it; selected faces leave the selection once in the patch). type: default patch. groups, entries: as patch.set. The faces, one of: the selected faces (select.pick with faces: true), when none of these is given; faces: [face labels]; box: {\"min\": [x, y, z], \"max\": [x, y, z]}, the faces whose centre is inside; surface: {\"file\": \"buildings.stl\", \"solid\": \"roof\", \"distance\": 0.5}, the faces whose centre is within distance of the surface (or of one solid of an ASCII file). from: [patch names] the faces are taken from (box and surface; default the selected patches of the region, else every patch that is neither coupled nor of a constraint type). When all faces come from one patch, the start-time fields get a copy of its entry for the new patch.",
     enabled: needs_case,
     run: create,
     journal: true,
@@ -513,10 +513,9 @@ fn create(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 .to_string(),
         ));
     }
-    // The picked faces are in the new patch now: they leave the selection.
-    if from_selection {
-        s.selection.retain(|x| !matches!(x, Sel::Face { region: r, .. } if *r == region));
-    }
+    // Selected faces in the new patch now leave the selection, however the faces were given.
+    let made: std::collections::HashSet<u32> = faces.iter().copied().collect();
+    s.selection.retain(|x| !matches!(x, Sel::Face { region: r, face } if *r == region && made.contains(face)));
     if !KNOWN.contains(&kind) {
         found.push(json!({ "level": "info", "code": "patch.type", "path": "", "region": null, "patch": null, "field": null, "message": format!("`{kind}` is not a patch type umcfGui knows: check its spelling") }));
     }

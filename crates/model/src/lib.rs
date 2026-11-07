@@ -95,11 +95,14 @@ pub struct OpenOptions {
     /// most): a file with more is listed without its boundary conditions. 0: field files are
     /// not read at all.
     pub field_bytes: u64,
+    /// The start-time fields are listed but not read: [`Case::read_start_fields`] reads them
+    /// later (the desktop app opens a case first, then reads them as a job of their own).
+    pub defer_fields: bool,
 }
 
 impl Default for OpenOptions {
     fn default() -> Self {
-        OpenOptions { dict_bytes: 4 << 20, field_bytes: 256 << 20 }
+        OpenOptions { dict_bytes: 4 << 20, field_bytes: 256 << 20, defer_fields: false }
     }
 }
 
@@ -506,6 +509,12 @@ pub struct Case {
     pub processors: usize,
     /// The case's scripts (`Allrun`, `Allprepare`, job scripts), read into steps.
     pub scripts: Vec<script::Script>,
+    /// The start-time fields are listed, not read yet ([`OpenOptions::defer_fields`]): their
+    /// boundary conditions aren't known until [`Case::read_start_fields`].
+    pub fields_pending: bool,
+    /// Where in [`Case::notes`] the fields' notes go when they are read later: where reading
+    /// them at open would have put them.
+    field_notes_at: usize,
     /// The paths in the case when it was opened (see [`Case::exists`]).
     paths: std::collections::BTreeSet<String>,
     files: BTreeMap<String, Arc<Document>>,
@@ -726,7 +735,8 @@ impl Case {
                 .collect(),
             None => Vec::new(),
         };
-        let mut fields = read_fields(fs, &field_dirs, options, &mut notes)?.into_iter();
+        let mut fields = read_fields(fs, &field_dirs, options, None, &mut notes)?.into_iter();
+        let field_notes_at = notes.len();
         let mut out = Vec::new();
         for (name, kind) in regions {
             let mesh = umcf_foam_mesh::mesh_dir(&name);
@@ -780,6 +790,7 @@ impl Case {
             description_saved: 0,
             whole: Default::default(),
         }));
+        let fields_pending = options.defer_fields && start.is_some();
         Ok(Case {
             layout,
             controls,
@@ -788,6 +799,8 @@ impl Case {
             notes,
             processors,
             scripts,
+            fields_pending,
+            field_notes_at,
             paths,
             files,
             raw: BTreeMap::new(),
@@ -796,6 +809,65 @@ impl Case {
             disk,
             options,
         })
+    }
+
+    /// Reads the start-time fields a case opened with [`OpenOptions::defer_fields`] listed
+    /// only, in parallel as at open, counting each file done in `progress`; their notes join the
+    /// case's. Nothing to do (`false`) when they were read already: a field edited since would
+    /// otherwise be read back from disk.
+    pub fn read_start_fields(
+        &mut self,
+        fs: &(dyn CaseFs + Sync),
+        progress: Option<&umcf_core::Progress>,
+    ) -> Result<bool> {
+        if !self.fields_pending {
+            return Ok(false);
+        }
+        let Some(t) = &self.start else {
+            self.fields_pending = false;
+            return Ok(true);
+        };
+        let dirs: Vec<String> = self
+            .regions
+            .iter()
+            .map(|r| if r.name.is_empty() { t.name.clone() } else { join(&t.name, &r.name) })
+            .collect();
+        let options = OpenOptions { defer_fields: false, ..self.options };
+        let mut notes = Vec::new();
+        let read = read_fields(fs, &dirs, options, progress, &mut notes)?;
+        for (region, fields) in self.regions.iter_mut().zip(read) {
+            region.fields = fields;
+        }
+        // In the order reading them at open gives.
+        let at = self.field_notes_at.min(self.notes.len());
+        self.notes.splice(at..at, notes);
+        self.fields_pending = false;
+        Ok(true)
+    }
+
+    /// An error while the start-time fields are listed only: commands that change the field
+    /// files with the mesh (renaming or adding a patch) wait for them.
+    fn fields_read(&self) -> Result<()> {
+        if self.fields_pending {
+            return Err(Error::Bc("the field files aren't read yet: Read fields (case.fields) first".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Takes the start-time fields `read` has read since this case (a snapshot of it from before,
+    /// in the undo history) was taken with them listed only: nothing can have edited a field
+    /// before it was read, so they are the same files. Nothing to do once its fields are read.
+    pub fn adopt_fields(&mut self, read: &Case) {
+        if !self.fields_pending || read.fields_pending {
+            return;
+        }
+        for region in &mut self.regions {
+            if let Some(r) = read.regions.iter().find(|r| r.name == region.name) {
+                region.fields = r.fields.clone();
+            }
+        }
+        self.notes = read.notes.clone();
+        self.fields_pending = false;
     }
 
     /// Whether `rel` (a file or directory) was in the case when it was opened. Covers the case
@@ -1112,6 +1184,12 @@ impl Case {
             .get(r)
             .and_then(|r| r.field(field))
             .ok_or_else(|| Error::Bc(format!("there is no field {which} at the start time")))?;
+        if self.fields_pending {
+            return Err(Error::Bc(format!(
+                "{}: the field files aren't read yet: Read fields (case.fields) first",
+                info.path
+            )));
+        }
         if info.bcs.is_none() || info.too_big {
             return Err(Error::Bc(format!("{}: too large to be edited here", info.path)));
         }
@@ -1259,6 +1337,8 @@ impl Case {
         patch: &str,
         change: &PatchChange,
     ) -> Result<PatchReport> {
+        // The field files follow a patch's name: they must be read to be followed.
+        self.fields_read()?;
         let r = self
             .regions
             .iter()
@@ -1729,6 +1809,8 @@ impl Case {
     /// type. [`Case::save`] writes it all.
     pub fn create_patch(&mut self, fs: &dyn CaseFs, region: &str, new: &NewPatch) -> Result<CreateReport> {
         use umcf_foam_dict::{Entry, Item, Node};
+        // The field files get the new patch's entry: they must be read to get it.
+        self.fields_read()?;
         let r = self
             .regions
             .iter()
@@ -2239,6 +2321,8 @@ enum Read {
     Info(FieldInfo),
     Missing,
     TooLarge(String),
+    /// Listed, to be read later ([`OpenOptions::defer_fields`]).
+    Later(String),
     Failed(String, String),
 }
 
@@ -2251,6 +2335,7 @@ fn read_fields(
     fs: &(dyn CaseFs + Sync),
     dirs: &[String],
     options: OpenOptions,
+    progress: Option<&umcf_core::Progress>,
     notes: &mut Vec<Note>,
 ) -> Result<Vec<Vec<FieldInfo>>> {
     let mut jobs = Vec::new();
@@ -2262,6 +2347,9 @@ fn read_fields(
     let read = |dir: &str, name: &str| -> Read {
         let plain = join(dir, name);
         let path = if fs.is_file(&plain) { plain.clone() } else { format!("{plain}.gz") };
+        if options.defer_fields {
+            return Read::Later(path);
+        }
         if options.field_bytes == 0 {
             return Read::TooLarge(path);
         }
@@ -2278,6 +2366,9 @@ fn read_fields(
             Err(e) => Read::Failed(path, e.to_string()),
         }
     };
+    if let Some(p) = progress {
+        p.start(jobs.len() as u64);
+    }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let work = || {
         let mut done = Vec::new();
@@ -2285,6 +2376,9 @@ fn read_fields(
             let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let Some((_, dir, name)) = jobs.get(i) else { break };
             done.push((i, read(dir, name)));
+            if let Some(p) = progress {
+                p.step();
+            }
         }
         done
     };
@@ -2350,6 +2444,20 @@ fn read_fields(
                     object: None,
                 });
             }
+            // Listed without its conditions until they are read.
+            Read::Later(path) => fields.push(FieldInfo {
+                name: name.clone(),
+                path,
+                class: None,
+                dimensions: None,
+                internal: None,
+                internal_size: None,
+                bcs: None,
+                too_big: false,
+                indirect: false,
+                boundary_field: false,
+                object: None,
+            }),
             Read::Failed(path, e) => notes.push(note(Severity::Warning, &path, e)),
         }
     }

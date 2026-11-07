@@ -1275,6 +1275,11 @@ fn faces_are_picked_selected_and_made_a_patch() {
     s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 3 }] })).unwrap();
     assert!(s.execute("patch.create", &json!({ "name": "again", "from": ["sky"] })).is_err());
     s.execute("edit.undo", &json!({})).unwrap();
+    // Given as labels, selected faces in the patch leave the selection too.
+    s.execute("select.set", &json!({ "items": [{ "region": "air", "face": 3 }] })).unwrap();
+    s.execute("patch.create", &json!({ "name": "given", "region": "air", "faces": [3] })).unwrap();
+    assert!(s.selection().is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
     // A mesh read again drops the faces picked on it.
     let mut reload = look.clone();
     reload["reload"] = json!(true);
@@ -2062,4 +2067,84 @@ fn a_cancel_stops_a_streamed_file_partway() {
     let e = s.scene(&json!({ "regions": ["air"] })).unwrap_err();
     assert!(matches!(e, Error::Cancelled { .. }), "{e}");
     assert_eq!(whole.load(std::sync::atomic::Ordering::SeqCst), 0, "read again whole");
+}
+
+#[test]
+fn fields_opened_later_are_read_by_case_fields_with_progress() {
+    // A case of each OpenFOAM version.
+    for example in [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of12/streetCanyon_CFD"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of8/streetCanyon_CFD"),
+    ] {
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.open", &json!({ "path": example, "fields": "later" })).unwrap();
+        assert!(s.case().unwrap().fields_pending, "{example}");
+        // Cancelled: the case is as it was, its fields still to read.
+        s.canceller().cancel();
+        let e = s.execute("case.fields", &json!({})).unwrap_err();
+        assert!(matches!(e, Error::Cancelled { .. }), "{example}: {e}");
+        assert!(s.case().unwrap().fields_pending);
+        s.canceller().reset();
+        // Read, each file counted.
+        let o = s.execute("case.fields", &json!({})).unwrap();
+        assert_eq!(o.data["read"], json!(true));
+        let (done, total, bytes) = s.canceller().progress().get();
+        assert!(total > 0 && done == total && bytes > 0, "{example}: {done}/{total}, {bytes} bytes");
+        let mut whole = Session::with_backup(".umcfgui/backup/test");
+        whole.execute("case.open", &json!({ "path": example })).unwrap();
+        assert_eq!(s.case().unwrap().regions, whole.case().unwrap().regions, "{example}");
+        // Again: nothing to do.
+        assert_eq!(s.execute("case.fields", &json!({})).unwrap().data["read"], json!(false));
+        // An edit made before they were read, undone: they stay read.
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.open", &json!({ "path": example, "fields": "later" })).unwrap();
+        s.execute("control.set", &json!({ "endTime": 7200 })).unwrap();
+        s.execute("case.fields", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.case().unwrap().fields_pending, "{example}");
+        assert_eq!(s.case().unwrap().regions, whole.case().unwrap().regions, "{example}");
+    }
+}
+
+#[test]
+fn a_stand_in_shows_the_session_and_reads_nothing() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(two_region_fs()), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("control.set", &json!({ "endTime": 7200 })).unwrap();
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    let copy = s.stand_in(true);
+    assert_eq!(copy.location(), Some("mem"));
+    assert_eq!(copy.case().map(|c| c.controls.end_time.clone()), s.case().map(|c| c.controls.end_time.clone()));
+    assert_eq!(copy.history().0.len(), 1);
+    // Its scene is the session's, shared: drawn from without reading.
+    let shared = |a: &Session, b: &Session| match (&a.scene, &b.scene) {
+        (Some(x), Some(y)) => std::sync::Arc::ptr_eq(x, y),
+        _ => false,
+    };
+    assert!(shared(&copy, &s));
+    let mut copy = copy;
+    assert!(copy.scene(&json!({ "regions": ["air"] })).is_ok(), "from the cache");
+    // What needs a file fails, and changes nothing of the session's.
+    assert!(copy.scene(&json!({ "regions": ["air"], "reload": true })).is_err());
+    assert!(s.stand_in(false).scene.is_none());
+    // The session builds on, its scene not copied while the copy is gone.
+    drop(copy);
+    s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();
+}
+
+#[test]
+fn patch_edits_wait_for_the_fields() {
+    // Renaming or adding a patch changes the field files with the mesh: not while they are
+    // listed only (a case opened with fields "later").
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let options = OpenOptions { defer_fields: true, ..OpenOptions::default() };
+    s.open(Box::new(two_region_fs()), "mem", options, false).unwrap();
+    let first = s.case().unwrap().region("air").unwrap().patches.as_ref().unwrap()[0].name.clone();
+    let rename = json!({ "patches": [{ "region": "air", "patch": first }], "name": "renamed" });
+    let e = s.execute("patch.set", &rename).unwrap_err().to_string();
+    assert!(e.contains("aren't read yet"), "{e}");
+    let e = s.execute("patch.create", &json!({ "name": "x", "region": "air", "faces": [3] })).unwrap_err().to_string();
+    assert!(e.contains("aren't read yet"), "{e}");
+    s.execute("case.fields", &json!({})).unwrap();
+    s.execute("patch.set", &rename).unwrap();
 }

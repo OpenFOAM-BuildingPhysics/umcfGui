@@ -78,6 +78,8 @@ impl App {
     /// The card; returns whether Set or Close was pressed. `room` as for the condition card.
     pub(crate) fn patch_card(&mut self, ui: &mut Ui, width: f32, room: f32) -> (bool, bool) {
         let t = self.tokens.clone();
+        // Its command runs or waits: shown as it was sent, not to be changed till it's done.
+        let busy = self.card_busy(crate::jobs::Card::Patch);
         let patches = selected(&self.session);
         let (mut ok, mut close) = (false, false);
         let Some(form) = &mut self.patch_form else { return (false, false) };
@@ -93,6 +95,9 @@ impl App {
         let muted = Ink { line: t.text_muted, fill: t.accent };
         let card_top = ui.cursor().top();
         t.card_frame().show(ui, |ui| {
+            if busy {
+                ui.disable();
+            }
             ui.set_width(width);
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
@@ -189,9 +194,11 @@ impl App {
             ui.add_space(4.0);
             let row = vec2(ui.available_width(), 28.0);
             ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                let set = egui::Button::new(RichText::new("Set").color(Color32::WHITE).strong())
-                    .fill(t.accent)
-                    .min_size(vec2(64.0, 26.0));
+                let set = egui::Button::new(
+                    RichText::new(if busy { "Setting…" } else { "Set" }).color(Color32::WHITE).strong(),
+                )
+                .fill(t.accent)
+                .min_size(vec2(64.0, 26.0));
                 ok = ui.add(set).clicked();
                 close |= ui.add(egui::Button::new("Cancel").min_size(vec2(64.0, 26.0))).clicked();
             });
@@ -202,14 +209,15 @@ impl App {
     /// Runs `patch.set` with the card's parameters, as a job; the card closes when it works, and
     /// stays open with the error when it doesn't.
     pub(crate) fn set_patch(&mut self) {
-        // While a job runs the session here is a stand-in: refused, and the card says why.
-        if self.busy() {
-            return self.start_card("patch.set", serde_json::json!({}), crate::jobs::Card::Patch);
-        }
-        let single = selected(&self.session).len() == 1;
+        let shown = selected(&self.session);
+        let single = shown.len() == 1;
         let Some(form) = self.patch_form.clone() else { return };
         match form.params(single) {
-            Ok(params) => self.start_card("patch.set", params, crate::jobs::Card::Patch),
+            // The patches the card shows (see `set_bc`).
+            Ok(params) => {
+                let params = crate::bc::with_patches(params, &shown);
+                self.start_card("patch.set", params, crate::jobs::Card::Patch)
+            }
             Err(e) => self.card_error(crate::jobs::Card::Patch, e),
         }
     }

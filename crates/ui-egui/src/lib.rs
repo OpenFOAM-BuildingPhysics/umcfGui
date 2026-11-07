@@ -135,7 +135,8 @@ pub struct App {
     /// The work running on a thread of its own, with the session (see [`jobs`]).
     job: Option<jobs::Job>,
     /// Work queued to start at the top of the next frame.
-    pending: Option<jobs::Work>,
+    /// Work asked for and not started yet, in order (see [`jobs`]).
+    queue: std::collections::VecDeque<jobs::Work>,
     /// The regions of the surfaces shown, as the browser listed them last.
     classes: Vec<(String, Vec<String>)>,
     /// *Fit* waits for the scene being read: the view it asked for.
@@ -167,8 +168,8 @@ pub fn shortcut(text: &str) -> Option<KeyboardShortcut> {
 }
 
 /// Commands whose parameters are all optional and whose defaults are what a button means:
-/// they run at once (their card is still there through the search, with Shift+click).
-const DIRECT: [&str; 4] = ["case.check", "case.info", "geometry.check", "mesh.check"];
+/// they run at once, from the ribbon, the search and `--open`.
+const DIRECT: [&str; 5] = ["case.check", "case.fields", "case.info", "geometry.check", "mesh.check"];
 
 /// Whether a command runs without asking for parameters.
 fn takes_none(spec: &CommandSpec) -> bool {
@@ -256,7 +257,7 @@ impl App {
             scene_error: None,
             scene_built: None,
             job: None,
-            pending: None,
+            queue: std::collections::VecDeque::new(),
             fit_pending: None,
             classes: Vec::new(),
             job_wait: std::time::Duration::from_millis(150),
@@ -410,6 +411,15 @@ impl App {
         self.after(id, result)
     }
 
+    /// Runs a quick command here, or, while a job has the session, after it (in the queue).
+    pub(crate) fn act(&mut self, id: &str, params: Value) {
+        if self.working() {
+            self.start(jobs::Work::Command { id: id.to_string(), params, then: jobs::Then::Nothing });
+        } else {
+            let _ = self.run(id, params);
+        }
+    }
+
     /// What follows a command, here or as a job: it is logged, the view draws again, and what
     /// is shown follows the case.
     fn after(&mut self, id: &str, result: Result<Outcome, umcf_engine::Error>) -> Result<Outcome, String> {
@@ -456,18 +466,37 @@ impl App {
         // Setting a condition and editing patches have forms of their own.
         if matches!(id, "bc.set" | "patch.set" | "patch.create") {
             self.dialog = None;
-            self.bc = (id == "bc.set").then(bc::BcForm::default);
-            self.patch_form = (id == "patch.set").then(patch::PatchForm::default);
-            self.new_patch = (id == "patch.create").then(newpatch::NewPatchForm::default);
+            self.close_idle_cards();
+            if self.bc.is_none() && id == "bc.set" {
+                self.bc = Some(bc::BcForm::default());
+            }
+            if self.patch_form.is_none() && id == "patch.set" {
+                self.patch_form = Some(patch::PatchForm::default());
+            }
+            if self.new_patch.is_none() && id == "patch.create" {
+                self.new_patch = Some(newpatch::NewPatchForm::default());
+            }
             return;
         }
         if takes_none(spec) {
             self.start(jobs::Work::Command { id: id.to_string(), params: json!({}), then: jobs::Then::Nothing });
         } else {
-            self.bc = None;
-            self.patch_form = None;
-            self.new_patch = None;
+            self.close_idle_cards();
             self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+        }
+    }
+
+    /// Closes the edit cards, apart from one whose command waits or runs: it stays till it is
+    /// done (its outcome closes it, or shows its error).
+    fn close_idle_cards(&mut self) {
+        if !self.card_busy(jobs::Card::Bc) {
+            self.bc = None;
+        }
+        if !self.card_busy(jobs::Card::Patch) {
+            self.patch_form = None;
+        }
+        if !self.card_busy(jobs::Card::NewPatch) {
+            self.new_patch = None;
         }
     }
 
@@ -478,9 +507,7 @@ impl App {
             Picked::Folder(path) => self.open_folder(&path),
             Picked::Cancelled => {}
             Picked::Unavailable => {
-                self.bc = None;
-                self.patch_form = None;
-                self.new_patch = None;
+                self.close_idle_cards();
                 let error = "No folder dialog on this system (a desktop portal or zenity): type the case's path.";
                 self.dialog = Some(Dialog {
                     id: "case.open",
@@ -496,7 +523,8 @@ impl App {
     pub fn open_folder(&mut self, path: &str) {
         let work = jobs::Work::Command {
             id: "case.open".to_string(),
-            params: json!({ "path": path }),
+            // Its fields are read after it opens, as a job of their own.
+            params: json!({ "path": path, "fields": "later" }),
             then: jobs::Then::Open { path: path.to_string() },
         };
         self.start(work);
@@ -509,9 +537,7 @@ impl App {
             self.dialog = None;
         }
         if let Err(e) = result {
-            self.bc = None;
-            self.patch_form = None;
-            self.new_patch = None;
+            self.close_idle_cards();
             let params = serde_json::to_string_pretty(&json!({ "path": path })).unwrap_or_default();
             self.dialog = Some(Dialog { id: "case.open", params, error: Some(e) });
         }
@@ -575,7 +601,7 @@ impl App {
         }
         self.poll(std::time::Duration::ZERO);
         self.launch();
-        if self.busy() {
+        if self.modal_busy() {
             self.busy_screen(ui);
             return;
         }
@@ -612,7 +638,7 @@ impl App {
             .show(ui, |ui| self.canvas(ui));
         self.workspace_popup(ui.ctx());
         // Queued work starts next frame, input or not.
-        if self.pending.is_some() {
+        if !self.queue.is_empty() {
             ui.ctx().request_repaint();
         }
     }
@@ -621,7 +647,11 @@ impl App {
     /// runs, for how long, and *Cancel*.
     fn busy_screen(&mut self, ui: &mut Ui) {
         let t = self.tokens.clone();
-        let Some(job) = &self.job else { return };
+        // An open or save waits for work to start (the next frame): ask for it.
+        let Some(job) = &self.job else {
+            ui.ctx().request_repaint();
+            return;
+        };
         let rect = ui.max_rect();
         let p = ui.painter();
         p.rect_filled(rect, CornerRadius::ZERO, t.chrome);
@@ -645,6 +675,7 @@ impl App {
             Color32::from_black_alpha(if t.dark { 110 } else { 50 }),
         );
         let (label, cancelling, secs) = (job.label.clone(), job.cancelling(), job.started.elapsed().as_secs());
+        let next = if job.modal { None } else { self.modal_waiting() };
         let cancellable = job.cancellable;
         let mut cancel = false;
         egui::Area::new(Id::unique("job")).pivot(Align2::CENTER_CENTER).fixed_pos(view.center()).fade_in(false).show(
@@ -660,6 +691,9 @@ impl App {
                         ui.label(RichText::new(format!("{label}…")).font(theme::strong(14.0)).color(t.text));
                         let status = if cancelling { "Cancelling…".to_string() } else { format!("{secs} s") };
                         ui.label(RichText::new(status).color(t.text_muted));
+                        if let Some(next) = &next {
+                            ui.label(RichText::new(format!("Then: {next}")).color(t.text_muted));
+                        }
                         ui.add_space(8.0);
                         if !cancellable {
                             ui.label(RichText::new("It changes the case: it runs to its end.").color(t.text_muted));
@@ -679,9 +713,8 @@ impl App {
         let typing = ctx.memory(|m| m.focused().is_some());
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.dialog = None;
-            self.bc = None;
-            self.patch_form = None;
-            self.new_patch = None;
+            // A card whose command waits or runs stays till it is done.
+            self.close_idle_cards();
             self.results_open = false;
             self.workspace_menu = false;
             self.search.clear();
@@ -1220,9 +1253,9 @@ impl App {
                         o.insert("faces".into(), json!(true));
                     }
                 }
-                // Here, not as a job: the view takes clicks only once its scene is built, so the
-                // pick reads nothing.
-                let _ = self.run("select.pick", p);
+                // Not as a job: the view takes clicks only once its scene is built, so the pick
+                // reads nothing. While a job runs it waits for it.
+                self.act("select.pick", p);
             }
             Some(Action::Rect { camera, size, rect, mode, faces, through }) => {
                 let display = self.display_json();
@@ -1243,7 +1276,7 @@ impl App {
                         o.insert("through".into(), json!(true));
                     }
                 }
-                let _ = self.run("select.rect", p);
+                self.act("select.rect", p);
             }
             Some(Action::Fit(view)) => self.fit_view(Some(view)),
             None => {}
@@ -1576,7 +1609,7 @@ impl App {
                 (true, false) => "add",
                 (false, _) => "replace",
             };
-            let _ = self.run("select.set", json!({ "items": [sel.to_json()], "mode": mode }));
+            self.act("select.set", json!({ "items": [sel.to_json()], "mode": mode }));
         }
     }
 
@@ -1768,7 +1801,7 @@ impl App {
             self.results_open = false;
         }
         if clear {
-            let _ = self.run("select.clear", json!({}));
+            self.act("select.clear", json!({}));
         }
         if run && let Some(mut d) = self.dialog.take() {
             match serde_json::from_str::<Value>(&d.params) {
@@ -1964,8 +1997,13 @@ impl App {
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Edit {}", k + 1)));
             r.on_hover_text(tip).clicked()
         };
+        let progress = self.progress();
         if nd + nu == 0 {
-            let text = "No edits yet: each change shows here, and a click goes back to it.";
+            let text = if progress.is_some() {
+                "No edits yet."
+            } else {
+                "No edits yet: each change shows here, and a click goes back to it."
+            };
             ui.label(RichText::new(text).size(12.0).color(t.text_muted));
         }
         let (done, undone): (Vec<_>, Vec<_>) = {
@@ -1974,7 +2012,9 @@ impl App {
         };
         // As many chips as fit beside the status text, around the marker: the newest done
         // edits, then the next ones to redo; "+k" says how many are left out on each side.
-        let room = ((ui.available_width() - 640.0) / 30.0).floor().max(4.0) as usize;
+        // A job's progress takes room of its own on the right.
+        let reserved = if progress.is_some() { 1000.0 } else { 640.0 };
+        let room = ((ui.available_width() - reserved) / 30.0).floor().max(4.0) as usize;
         let show_undone = nu.min(room / 3);
         let show_done = nd.min(room.saturating_sub(show_undone));
         let show_undone = nu.min(room.saturating_sub(show_done));
@@ -2003,8 +2043,20 @@ impl App {
             }
         }
         more(ui, nu - show_undone);
+        let mut cancel = false;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(e) = self.log.last() {
+            if let Some(p) = &progress {
+                if p.cancellable {
+                    let text = if p.cancelling { "Cancelling…" } else { "Cancel" };
+                    cancel = ui.add_enabled(!p.cancelling, egui::Button::new(text).small()).clicked();
+                }
+                progress_bar(ui, p.fraction, &t);
+                let waiting = if p.queued > 0 { format!(" · {} waiting", p.queued) } else { String::new() };
+                let text = format!("{}… {}{waiting}", p.label, p.detail);
+                ui.label(RichText::new(text).size(12.0).color(t.text));
+            }
+            // The last command's message, in the job's place once it is done.
+            if let Some(e) = self.log.last().filter(|_| progress.is_none()) {
                 let colour = if e.ok { t.text_muted } else { t.error };
                 // Short, so the chips keep their room; the whole message is in the tooltip and
                 // the results card.
@@ -2030,10 +2082,33 @@ impl App {
                 }
             }
         });
+        if cancel && let Some(job) = &self.job {
+            job.cancel.cancel();
+        }
         if let Some(k) = target {
             self.go_to(k);
         }
     }
+}
+
+/// A job's progress bar: filled by `fraction` where the job knows its steps, else a block going
+/// back and forth (the job works, how far it is isn't known).
+fn progress_bar(ui: &mut Ui, fraction: Option<f32>, t: &Tokens) {
+    let (rect, response) = ui.allocate_exact_size(vec2(160.0, 8.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 4.0, t.hover);
+    let fill = match fraction {
+        Some(f) => Rect::from_min_size(rect.min, vec2(rect.width() * f, rect.height())),
+        None => {
+            let phase = (ui.input(|i| i.time) * 0.8).fract() as f32;
+            let travel = 1.0 - 2.0 * (phase - 0.5).abs();
+            let w = rect.width() * 0.3;
+            Rect::from_min_size(pos2(rect.min.x + (rect.width() - w) * travel, rect.min.y), vec2(w, rect.height()))
+        }
+    };
+    p.rect_filled(fill, 4.0, t.accent);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ProgressIndicator, true, "Job progress"));
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
 }
 
 /// What the folder dialog gave.
@@ -2106,8 +2181,8 @@ impl eframe::App for Desktop {
             return;
         }
         let Some(path) = &self.screenshot else { return };
-        // The view as it is once what it shows has been read.
-        if self.app.busy() {
+        // The view as it is once what it shows (and the case's fields) has been read.
+        if self.app.working() {
             ui.ctx().request_repaint();
             return;
         }
@@ -2136,6 +2211,24 @@ impl eframe::App for Desktop {
     }
 }
 
+impl App {
+    /// What the window does once the case named on the command line is open: the card or
+    /// command of `--open` (`open`), then, ahead of it, the view's scene (of what `--show` asked
+    /// for) and the field files when they were listed only. The command is asked for first, as
+    /// other work would drop a scene already waiting.
+    pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
+        if let Some(id) = open {
+            let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
+            if let Some(tab) = ribbon::tab_of(self.workspace, spec.id) {
+                self.tab = tab;
+            }
+            self.invoke(spec.id);
+        }
+        self.after_open();
+        Ok(())
+    }
+}
+
 /// Opens the window and runs until it is closed.
 pub fn run(options: Options) -> Result<(), String> {
     let mut startup = Vec::new();
@@ -2148,7 +2241,17 @@ pub fn run(options: Options) -> Result<(), String> {
     if options.dark {
         app.tokens = Tokens::dark();
     }
-    for (id, params) in startup {
+    // A case named on the command line opens first, its fields read as the window shows; with
+    // commands to run, they are read at open, for the commands to act on.
+    let later = options.commands.is_empty();
+    for (id, mut params) in startup {
+        if later
+            && id == "case.open"
+            && let Some(o) = params.as_object_mut()
+            && !o.contains_key("fields")
+        {
+            o.insert("fields".into(), json!("later"));
+        }
         if let Err(e) = app.run(&id, params) {
             // A screenshot of a window whose case or commands failed would not show what was
             // asked for: stop with the error instead.
@@ -2175,13 +2278,7 @@ pub fn run(options: Options) -> Result<(), String> {
             eprintln!("umcf-gui: --show: no region with a mesh or surface named `{n}`");
         }
     }
-    if let Some(id) = &options.open {
-        let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
-        if let Some(tab) = ribbon::tab_of(app.workspace, spec.id) {
-            app.tab = tab;
-        }
-        app.invoke(spec.id);
-    }
+    app.start_up(options.open.as_deref())?;
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),

@@ -15,6 +15,7 @@ mod workflow;
 /// Every command, in menu order.
 pub static COMMANDS: &[CommandSpec] = &[
     case::OPEN,
+    case::FIELDS,
     case::SAVE,
     case::INFO,
     workflow::SHOW,
