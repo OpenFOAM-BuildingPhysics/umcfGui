@@ -181,7 +181,13 @@ pub struct Bc {
     /// The entry holds data lists (`value nonuniform List<scalar> 120(…)`), one value per face
     /// of the patch.
     pub lists: bool,
+    /// The condition's other entries that are one word (`qrNbr qr;`, `Tnbr T;`), at most
+    /// [`MAX_WORDS`] of them: what a check may need to know of how it is set.
+    pub words: Vec<(String, String)>,
 }
+
+/// Most one-word entries a [`Bc`] keeps.
+pub const MAX_WORDS: usize = 32;
 
 /// What is on disk for one dictionary, as read or last saved. Shared by every clone of a
 /// case, so an undo snapshot can't make the model forget what was saved.
@@ -2506,6 +2512,18 @@ fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
                         value: body.and_then(|b| b.get("value")).and_then(|v| short_entry(f, v)),
                         patch_type: body.and_then(|b| word(b, "patchType")),
                         lists: body.is_some_and(|b| b.to_string().contains(umcf_foam_field::PLACEHOLDER)),
+                        // One pass over the entries (a hostile file may have very many).
+                        words: body.map_or(Vec::new(), |b| {
+                            b.entries()
+                                .filter(|e| !matches!(e.key(), "type" | "value" | "patchType"))
+                                .filter_map(|e| {
+                                    let v = umcf_foam_dict::unquote(e.value_text()?.trim()).to_string();
+                                    (!v.is_empty() && !v.contains(char::is_whitespace))
+                                        .then(|| (e.key().to_string(), v))
+                                })
+                                .take(MAX_WORDS)
+                                .collect()
+                        }),
                     }
                 })
                 .collect()

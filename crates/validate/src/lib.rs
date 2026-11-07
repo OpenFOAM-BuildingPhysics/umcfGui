@@ -35,6 +35,7 @@ mod description;
 mod fields;
 mod keywords;
 pub mod mesh;
+mod needs;
 pub mod surface;
 mod utilities;
 mod workflow;
@@ -107,6 +108,7 @@ pub fn check(case: &Case) -> Vec<Diagnostic> {
         region(case, r, &mut patterns, &mut out);
     }
     coupling(case, &mut out);
+    needs::check(case, &mut out);
     model_types(case, &mut out);
     fields::check(case, &mut out);
     keywords::check(case, &mut out);

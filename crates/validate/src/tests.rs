@@ -50,7 +50,17 @@ fn case() -> MemFs {
         5,
         "        neighbourRegion air;\n        neighbourPatch air_to_street;\n",
     )]);
-    let vegetation = boundary(&[patch("air_to_vegetation", "mappedInternal", 3, 2, "        neighbourRegion air;\n")]);
+    // The vegetation patch the street reads its radiation from, named as the air's coupled one.
+    let vegetation = boundary(&[
+        patch("air_to_vegetation", "mappedInternal", 3, 2, "        neighbourRegion air;\n"),
+        patch(
+            "air_to_street",
+            "mappedWall",
+            2,
+            5,
+            "        neighbourRegion air;\n        neighbourPatch air_to_street;\n",
+        ),
+    ]);
     let t_air = field(
         "volScalarField",
         "    inlet { type fixedValue; value uniform 300; }\n    wall { type zeroGradient; }\n    air_to_street { type compressible::CFDHAMfluidTemperatureCoupledMixed; value uniform 300; }\n    frontAndBack { type empty; }\n",
@@ -74,11 +84,19 @@ fn case() -> MemFs {
         )
         .with("0/air/T", t_air)
         .with("0/air/Tambient", "(\n(0 290)\n(3600 295)\n)\n")
+        // Read by the solid temperature condition, by path, for the rain's temperature.
+        .with("0/air/wambient", "(\n(0 0.008)\n(3600 0.009)\n)\n")
         .with(
             "0/street/Ts",
             field("volScalarField", "    street_to_air { type compressible::CFDHAMsolidTemperatureCoupledMixed; }\n"),
         )
-        .with("0/vegetation/Tl", field("volScalarField", "    air_to_vegetation { type zeroGradient; }\n"))
+        .with(
+            "0/vegetation/Tl",
+            field(
+                "volScalarField",
+                "    air_to_vegetation { type zeroGradient; }\n    air_to_street { type zeroGradient; }\n",
+            ),
+        )
 }
 
 /// `fs` with the other fields the solver reads in each region (`field.missing`) added where
@@ -354,6 +372,8 @@ fn regions_without_mesh_or_fields() {
         "constant/air/polyMesh/boundary",
         "constant/street/polyMesh/boundary",
         "0/air/T",
+        "0/air/Tambient",
+        "0/air/wambient",
         "0/street/Ts",
     ] {
         text.insert(rel, fs.read(rel, 1 << 20).unwrap().unwrap());
@@ -429,6 +449,8 @@ fn of8_case() -> MemFs {
         "constant/air/vegetationProperties",
         "constant/street/transportProperties",
         "0/air/T",
+        "0/air/Tambient",
+        "0/air/wambient",
         "0/street/Ts",
         "0/vegetation/Tl",
     ] {
@@ -436,6 +458,13 @@ fn of8_case() -> MemFs {
         let text = String::from_utf8(text).unwrap();
         of8.insert(rel, text.replace("neighbourRegion", "sampleRegion").replace("neighbourPatch", "samplePatch"));
     }
+    // The canopy as OpenFOAM-8 has it: mappedWall sampling the air's cells.
+    edit(
+        &mut of8,
+        "constant/vegetation/polyMesh/boundary",
+        "type mappedInternal;",
+        "type mappedWall;\n        sampleMode nearestCell;",
+    );
     of8.insert("system/air/fvOptions", format!("{}\n", header("dictionary")));
     of8
 }
@@ -576,7 +605,9 @@ fn nearest_face_and_no_patch_sampling() {
         "        neighbourRegion air;\n",
         "        sampleMode nearestFace;\n        sampleRegion air;\n        samplePatch none;\n",
     );
-    assert_eq!(codes(&fs), []);
+    // No coupling finding; only the canopy, `mappedPatch` in an OpenFOAM-12 case, is not what
+    // the vegetation model needs.
+    assert_eq!(codes(&fs), [(Level::Error, "case.canopy")]);
 }
 
 #[test]
@@ -674,7 +705,8 @@ fn second_review_false_errors() {
         "type mappedPatch;\n        sampleMode nearestCell;",
     );
     edit(&mut fs, "0/vegetation/Tl", "air_to_vegetation { type zeroGradient; }", "mappedPatch { type zeroGradient; }");
-    assert_eq!(codes(&fs), []);
+    // The entry matches by group; only the canopy's type is not what OpenFOAM-12 needs.
+    assert_eq!(codes(&fs), [(Level::Error, "case.canopy")]);
 
     // A header `object` that differs: OpenFOAM reads the file by its name anyway.
     let mut fs = case();
@@ -787,8 +819,15 @@ fn many_patches_stay_fast() {
     let entries: String = (0..n).map(|i| format!("    b{i} {{ type zeroGradient; }}\n")).collect();
     let mut fs = case();
     fs.insert("constant/air/polyMesh/boundary", boundary(&patches));
-    // Without the air side of the coupling, the street side couples to nothing.
+    // Without the air side of the coupling, the street side couples to nothing (and has no
+    // coupled condition), and the vegetation region has only the canopy.
     fs.insert("constant/street/polyMesh/boundary", boundary(&[patch("street_to_air", "wall", 2, 5, "")]));
+    fs.insert("0/street/Ts", field("volScalarField", "    street_to_air { type zeroGradient; }\n"));
+    fs.insert(
+        "constant/vegetation/polyMesh/boundary",
+        boundary(&[patch("air_to_vegetation", "mappedInternal", 3, 2, "        neighbourRegion air;\n")]),
+    );
+    fs.insert("0/vegetation/Tl", field("volScalarField", "    air_to_vegetation { type zeroGradient; }\n"));
     for f in ["T", "U", "p", "k", "epsilon"] {
         fs.insert(&format!("0/air/{f}"), field("volScalarField", &entries));
     }
@@ -1441,4 +1480,218 @@ fn fields_not_read_yet_are_noted_not_judged() {
     let c = Case::open_with(&complete(&fs), options).unwrap();
     let codes: Vec<_> = check(&c).into_iter().map(|d| (d.level, d.code)).collect();
     assert_eq!(codes, [(Level::Info, "fields.pending")]);
+}
+
+/// What a case needs from its regions and patches ([`crate::needs`]), in both versions.
+#[test]
+fn what_a_case_needs_from_its_regions_and_patches() {
+    let has = |fs: &MemFs, code: &str| check(&Case::open(&complete(fs)).unwrap()).iter().any(|d| d.code == code);
+    let only = |fs: &MemFs| errors(fs).iter().map(|d| d.code).collect::<Vec<_>>();
+    let dict = |text: &str| format!("{}{text}", header("dictionary"));
+    // One fluid region (a warning: the solver loops over what is listed).
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "fluid (air);", "fluid (air wind);");
+    assert!(has(&fs, "case.fluid"));
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "fluid (air);", "fluid ();");
+    assert!(has(&fs, "case.fluid"));
+    // Named `air` when a fluid or vegetation region solves radiation with viewFactorSky.
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "fluid (air);", "fluid (wind);");
+    assert!(!has(&fs, "case.air"));
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    let e = errors(&fs);
+    let air = e.iter().find(|d| d.code == "case.air").unwrap();
+    assert!(air.message.contains("`wind`") && air.message.contains("`vegetation`"), "{}", air.message);
+    edit(&mut fs, "constant/vegetation/radiationProperties", "viewFactorSky", "fvDOM");
+    assert!(!has(&fs, "case.air"));
+    // ... not when a solid has a radiation dictionary (solids build no radiation model).
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "fluid (air);", "fluid (wind);");
+    fs.insert("constant/street/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    assert!(!has(&fs, "case.air"));
+    // The vegetation region named `vegetation`, and only one.
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "vegetation (vegetation);", "vegetation (trees);");
+    assert!(has(&fs, "case.vegetation"));
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "vegetation (vegetation);", "vegetation (vegetation hedges);");
+    assert!(has(&fs, "case.vegetation"));
+    // The outdoor tables the solid temperature conditions read by path, unless rainTemp is there.
+    let mut fs = case();
+    fs.remove("0/air/wambient");
+    assert_eq!(only(&fs), ["case.ambient"]);
+    assert_eq!(errors(&fs)[0].path, "0/air/wambient");
+    // rainTemp takes their place, but OpenFOAM-12's CoupledMixed never finds it (it looks at
+    // `$FOAM_CASE/0/air/rainTemp` unexpanded): TransferCoeff and OpenFOAM-8 do.
+    fs.insert("0/air/rainTemp", "(\n(0 285)\n)\n");
+    assert_eq!(only(&fs), ["case.ambient"]);
+    edit(&mut fs, "0/street/Ts", "CFDHAMsolidTemperatureCoupledMixed", "CFDHAMsolidTemperatureTransferCoeff");
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    let mut of8 = of8_case();
+    of8.remove("0/air/wambient");
+    assert!(errors(&of8).iter().any(|d| d.code == "case.ambient"));
+    of8.insert("0/air/rainTemp.gz", "");
+    assert!(!errors(&of8).iter().any(|d| d.code == "case.ambient"), "{:?}", errors(&of8));
+    // A compressed table is read in its place.
+    let mut fs = case();
+    fs.remove("0/air/wambient");
+    fs.insert("0/air/wambient.gz", "");
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    // The canopy, with simplifiedVegetation: there, and a surface.
+    let mut fs = case();
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "air_to_vegetation\n", "canopy\n");
+    edit(&mut fs, "0/vegetation/Tl", "air_to_vegetation {", "canopy {");
+    assert_eq!(only(&fs), ["case.canopy"]);
+    edit(
+        &mut fs,
+        "constant/air/vegetationProperties",
+        "vegetationModel simplifiedVegetation;",
+        "vegetationModel none;",
+    );
+    assert!(!has(&fs, "case.canopy"));
+    let mut fs = case();
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "type mappedInternal;", "type patch;");
+    assert_eq!(only(&fs), ["case.canopy"]);
+    // A mappedWall canopy is a surface in OpenFOAM-12 too.
+    let mut fs = case();
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "type mappedInternal;", "type mappedWall;");
+    assert!(!has(&fs, "case.canopy"));
+    // OpenFOAM-8: mappedInternal isn't a surface there.
+    let mut of8 = of8_case();
+    edit(
+        &mut of8,
+        "constant/vegetation/polyMesh/boundary",
+        "type mappedWall;\n        sampleMode nearestCell;",
+        "type mappedPatch;",
+    );
+    assert!(errors(&of8).iter().any(|d| d.code == "case.canopy"), "{:?}", errors(&of8));
+    // The vegetation patch a solid reads its radiation from: only with qrNbr or qsNbr set.
+    let only_canopy = || {
+        let mut fs = case();
+        fs.insert(
+            "constant/vegetation/polyMesh/boundary",
+            boundary(&[patch("air_to_vegetation", "mappedInternal", 3, 2, "        neighbourRegion air;\n")]),
+        );
+        fs.insert("0/vegetation/Tl", field("volScalarField", "    air_to_vegetation { type zeroGradient; }\n"));
+        fs
+    };
+    let mut fs = only_canopy();
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    edit(
+        &mut fs,
+        "0/street/Ts",
+        "CFDHAMsolidTemperatureCoupledMixed;",
+        "CFDHAMsolidTemperatureCoupledMixed; qrNbr qr; qsNbr none;",
+    );
+    assert_eq!(only(&fs), ["case.vegetation-patch"]);
+    let d = &errors(&fs)[0];
+    assert_eq!((d.path.as_str(), d.patch.as_deref()), ("0/street/Ts", Some("street_to_air")));
+    assert!(d.message.contains("`air_to_street`") && d.message.contains("qrNbr"), "{}", d.message);
+    // ... and in OpenFOAM-8, through samplePatch.
+    let mut of8 = of8_case();
+    of8.insert(
+        "constant/vegetation/polyMesh/boundary",
+        boundary(&[patch(
+            "air_to_vegetation",
+            "mappedWall",
+            3,
+            2,
+            "        sampleMode nearestCell;\n        sampleRegion air;\n",
+        )]),
+    );
+    of8.insert("0/vegetation/Tl", field("volScalarField", "    air_to_vegetation { type zeroGradient; }\n"));
+    edit(
+        &mut of8,
+        "0/street/Ts",
+        "CFDHAMsolidTemperatureCoupledMixed;",
+        "CFDHAMsolidTemperatureCoupledMixed; qsNbr qs;",
+    );
+    assert!(errors(&of8).iter().any(|d| d.code == "case.vegetation-patch"), "{:?}", errors(&of8));
+    // OpenFOAM-8's simpleGrass reads the vegetation patch named like each grass patch.
+    let grass = |list: &str| {
+        format!(
+            "{}grassModel simpleGrass;\nsimpleGrassCoeffs\n{{\n    grassPatches {list};\n}}\n",
+            header("dictionary")
+        )
+    };
+    let mut of8 = of8_case();
+    of8.insert("constant/air/grassProperties", grass("( air_to_street )"));
+    assert!(!errors(&of8).iter().any(|d| d.code == "case.vegetation-patch"), "{:?}", errors(&of8));
+    of8.insert("constant/air/grassProperties", grass("2(air_to_street ground)"));
+    let e = errors(&of8);
+    let d = e.iter().find(|d| d.code == "case.vegetation-patch").unwrap();
+    assert_eq!((d.path.as_str(), d.patch.as_deref()), ("constant/air/grassProperties", Some("ground")));
+    // OpenFOAM-12 falls back to the air's radiation.
+    let mut fs = case();
+    fs.insert("constant/air/grassProperties", grass("( ground )"));
+    assert!(!has(&fs, "case.vegetation-patch"));
+    // Sky and surface: only where the vegetation region solves radiation with viewFactorSky,
+    // a warning, with both ways named.
+    let mut fs = case();
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "type mappedWall;", "type mappedPatch;");
+    assert!(!has(&fs, "case.sky-surface"));
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    let c = check(&Case::open(&complete(&fs)).unwrap());
+    let d = c.iter().find(|d| d.code == "case.sky-surface").unwrap();
+    assert_eq!(d.level, Level::Warning);
+    assert!(d.message.contains("`air_to_street` is a surface in `air` (`mappedWall`) but sky"), "{}", d.message);
+    // A wall in one and a mapped wall in the other agree.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    edit(
+        &mut fs,
+        "constant/vegetation/polyMesh/boundary",
+        "        neighbourRegion air;\n        neighbourPatch air_to_street;\n",
+        "",
+    );
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "type mappedWall;", "type wall;");
+    assert!(!has(&fs, "case.sky-surface"), "{:?}", check(&Case::open(&complete(&fs)).unwrap()));
+    // The coupled conditions on patches that can carry them.
+    let mut fs = case();
+    edit(&mut fs, "constant/street/polyMesh/boundary", "type mappedWall;", "type wall;");
+    let e = errors(&fs);
+    let d = e.iter().find(|d| d.code == "bc.patch-type").unwrap();
+    assert_eq!(
+        (d.path.as_str(), d.field.as_deref(), d.patch.as_deref()),
+        ("0/street/Ts", Some("Ts"), Some("street_to_air"))
+    );
+    // `mappedPatch` is OpenFOAM-8's, not OpenFOAM-12's; OpenFOAM-8 takes it.
+    let mut fs = case();
+    edit(&mut fs, "constant/street/polyMesh/boundary", "type mappedWall;", "type mappedPatch;");
+    assert!(has(&fs, "bc.patch-type"));
+    let mut of8 = of8_case();
+    edit(&mut of8, "constant/street/polyMesh/boundary", "type mappedWall;", "type mappedPatch;");
+    assert!(!errors(&of8).iter().any(|d| d.code == "bc.patch-type"), "{:?}", errors(&of8));
+    // mappedLeafTemperature: mappedInternal in OpenFOAM-12, any mapped patch in OpenFOAM-8.
+    let mut fs = case();
+    edit(
+        &mut fs,
+        "0/vegetation/Tl",
+        "air_to_vegetation { type zeroGradient; }",
+        "air_to_vegetation { type mappedLeafTemperature; field Tl; }",
+    );
+    assert!(!has(&fs, "bc.patch-type"), "{:?}", errors(&fs));
+    edit(&mut fs, "constant/vegetation/polyMesh/boundary", "type mappedInternal;", "type mappedWall;");
+    assert!(has(&fs, "bc.patch-type"));
+    let mut of8 = of8_case();
+    edit(
+        &mut of8,
+        "0/vegetation/Tl",
+        "air_to_vegetation { type zeroGradient; }",
+        "air_to_vegetation { type mappedLeafTemperature; }",
+    );
+    assert!(!errors(&of8).iter().any(|d| d.code == "bc.patch-type"), "{:?}", errors(&of8));
+    edit(
+        &mut of8,
+        "constant/vegetation/polyMesh/boundary",
+        "type mappedWall;\n        sampleMode nearestCell;",
+        "type wall;",
+    );
+    assert!(errors(&of8).iter().any(|d| d.code == "bc.patch-type"), "{:?}", errors(&of8));
+    // The interior condition needs no mapped patch.
+    let mut fs = case();
+    edit(&mut fs, "constant/street/polyMesh/boundary", "type mappedWall;", "type wall;");
+    edit(&mut fs, "0/street/Ts", "CFDHAMsolidTemperatureCoupledMixed", "CFDHAMsolidTemperatureTransferCoeffInterior");
+    assert!(!has(&fs, "bc.patch-type"), "{:?}", errors(&fs));
 }
