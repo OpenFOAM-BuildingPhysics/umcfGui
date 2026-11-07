@@ -289,7 +289,7 @@ pub(crate) fn collapse(p: &str) -> String {
 /// uses the first that is there). Verified in the OpenFOAM-8 and 12 sources (systemDictIO,
 /// setSystemMeshDictionaryIO.H, setConstantMeshDictionaryIO.H, blockMesh.C, decomposePar.C) and
 /// the solver (`solarRayTracingGen`). Empty when the application reads none this knows.
-fn dictionary(r: &Run, version: OfVersion, is_dir: impl Fn(&str) -> bool) -> Vec<String> {
+pub(crate) fn dictionary(r: &Run, version: OfVersion, is_dir: impl Fn(&str) -> bool) -> Vec<String> {
     let reg = r.region.as_deref();
     let name = match r.app.as_str() {
         "blockMesh" => "blockMeshDict",

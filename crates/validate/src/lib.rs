@@ -450,6 +450,43 @@ fn merge(bcs: &[Bc]) -> Vec<Merged<'_>> {
     out
 }
 
+/// The condition type of field `f` on each patch of `r`, as OpenFOAM picks its entry (names,
+/// then groups, then the last matching pattern; see [`entry_for`]): `None` for a patch with no
+/// entry (or an `empty` one without), and nothing at all when the entries can't all be read
+/// here (an `#include`, a pattern that can't be read).
+pub(crate) fn kinds_by_patch<'a>(
+    case: &Case,
+    r: &'a Region,
+    f: &'a FieldInfo,
+) -> Option<Vec<(&'a str, Option<&'a str>)>> {
+    let patches = r.patches.as_deref()?;
+    let bcs = f.bcs.as_ref()?;
+    if f.indirect {
+        return None;
+    }
+    let mesh = Mesh::new(patches, case.layout.version, case.layout.mixed());
+    let mut merged = merge(bcs);
+    let mut cx = Patterns::default();
+    for m in merged.iter_mut().filter(|m| m.pattern) {
+        m.re = Some(cx.get(m.key).as_ref().ok()?.clone());
+    }
+    let names: std::collections::HashMap<&str, usize> =
+        merged.iter().enumerate().filter(|(_, m)| !m.pattern).map(|(i, m)| (m.key, i)).collect();
+    Some(
+        patches
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let kind = match entry_for(&mesh, k, &names, &merged) {
+                    Match::Entry(i, _) => merged.get(i).and_then(|m| m.kind),
+                    Match::Empty | Match::None => None,
+                };
+                (p.name.as_str(), kind)
+            })
+            .collect(),
+    )
+}
+
 fn entry_for(mesh: &Mesh, k: usize, names: &std::collections::HashMap<&str, usize>, merged: &[Merged]) -> Match {
     let Some(patch) = mesh.patches.get(k) else { return Match::None };
     if let Some(&i) = names.get(patch.name.as_str()) {

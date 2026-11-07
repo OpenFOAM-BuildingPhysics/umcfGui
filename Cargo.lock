@@ -3360,6 +3360,7 @@ dependencies = [
 name = "umcf-validate"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "regex",
  "umcf-core",
  "umcf-foam-dict",

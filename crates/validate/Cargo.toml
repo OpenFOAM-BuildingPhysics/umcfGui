@@ -17,6 +17,7 @@ regex.workspace = true
 
 [dev-dependencies]
 umcf-foam-field.workspace = true
+flate2.workspace = true
 
 [lints]
 workspace = true

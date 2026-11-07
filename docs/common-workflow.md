@@ -1,7 +1,7 @@
 # The common workflow
 
 A design, partly built (the description's format, its import from a case and its check: [the
-case workflow](user-guide/workflow.md#the-workflow-description)): what [gaps](gaps.md) rows 4–9
+case workflow](user-guide/workflow.md#the-workflow-description)): what [gaps](gaps.md) rows 3–8
 and 12 build towards. It answers one question: how does a case stay consistent when its patches,
 regions or surfaces change?
 
@@ -53,7 +53,7 @@ An OpenFOAM-style dictionary, so it travels with the case, reads with the same t
 edited by hand. What is built so far (regions, their kinds, the meshing steps as the scripts run
 them, patches with roles and partners, radiation and the solver) is described in [the case
 workflow](user-guide/workflow.md#the-workflow-description). A sketch of where it goes (the
-meshing keys settle as rows 6–8 are built):
+meshing keys settle as rows 5–7 are built):
 
 ```c++
 FoamFile { format ascii; class dictionary; object umcfWorkflow; }
@@ -108,7 +108,7 @@ named by the description too: a solid's materials, the tree zone.
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
 | `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` |
-| `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 10) or the user |
+| `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 9) or the user |
 | The materials' entries in `buildingMaterials` (`transportProperties` of each solid) | added with the material from a library of materials with their coefficients, then edited by the user |
 | `Allprepare`, `Allrun`, `Allclean` | generated, for the version in `umcfWorkflow` |
 | Solver dictionaries (`fvSchemes`, `fvSolution`, physical properties, run controls) | the user, as now (templates for a new case) |
@@ -212,8 +212,8 @@ In the order of the [gaps](gaps.md):
 
 | Row | |
 |---|---|
-| 4 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
-| 5 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
-| 6–8 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
-| 9 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
-| 12 | The runner: native, WSL, a VM or container, ssh and batch jobs |
+| 3 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
+| 4 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
+| 5–7 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
+| 8 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
+| 11 | The runner: native, WSL, a VM or container, ssh and batch jobs |
