@@ -112,8 +112,10 @@ for. Like *Edges*, the switch is a setting of the window, not a command: the com
   blended with their opacity, a selected face's in orange. Where surfaces of two regions lie in
   the same place, the region listed first is seen, as on the CPU (where the CPU's depths round
   otherwise, it can show a few of the other region's face edges through it, with *Edges* on; the
-  GPU doesn't). Wireframes and points are seen where no surface is in front, whichever region it
-  is in and whether it is selected, as on the CPU. Lines one pixel wide can take a neighbouring
+  GPU doesn't). Wireframes and points are seen where no surface is in front, whether it is
+  selected or not, as on the CPU; only where a later region's surface lies a hair in front of an
+  earlier one's (within the margin that puts the earlier in front) are the earlier region's
+  wireframes and points seen through it. Lines one pixel wide can take a neighbouring
   pixel here and there.
 - **What the CPU still draws.** Transparent layers are drawn by the CPU for now: with one on,
   the view is drawn by the CPU (the history bar says so). Picking, *Box select* and

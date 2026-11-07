@@ -240,6 +240,9 @@ fn fs(in: Out) -> Pixel {
 struct Mark {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) colour: vec4<f32>,
+    // Its distance in front of the eye: its depth is found from it, not from the position's
+    // (which GL without clip control maps less precisely).
+    @location(1) z: f32,
 };
 
 // Point `k` of a class `word` (as `classes` holds it) that draws when the class is `wanted`.
@@ -249,6 +252,7 @@ fn mark(k: u32, word: u32, wanted: u32) -> Mark {
     var out: Mark;
     out.pos = OUTSIDE;
     out.colour = vec4<f32>(0.0);
+    out.z = 1.0;
     if code(c) != wanted {
         return out;
     }
@@ -259,6 +263,7 @@ fn mark(k: u32, word: u32, wanted: u32) -> Mark {
     let v = at(k);
     out.pos = vec4<f32>(v.x * view.lens.x, v.y * view.lens.y, view.lens.z * (1.0 + AHEAD), v.z);
     out.colour = vec4<f32>(colour * LINE, texel(2u * which + 1u).r);
+    out.z = v.z;
     return out;
 }
 
@@ -292,9 +297,10 @@ fn vs_dot(@builtin(vertex_index) i: u32) -> Mark {
 
 @fragment
 fn fs_mark(in: Mark) -> @location(0) vec4<f32> {
-    // Its depth is near * (1 + AHEAD) / distance: the CPU view's test.
+    // Seen where its depth, a little nearer (AHEAD), is in front of the surface's: the CPU
+    // view's test.
     let under = bitcast<f32>(textureLoad(depths, vec2<i32>(in.pos.xy), 0).r);
-    if !(in.colour.a > 0.0) || !(in.pos.z > under) {
+    if !(in.colour.a > 0.0) || !(view.lens.z * (1.0 + AHEAD) / in.z > under) {
         discard;
     }
     return in.colour;
@@ -1363,6 +1369,7 @@ mod tests {
         let (device, queue) = pollster::block_on(
             adapter.request_device(&wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() }),
         )
+        .map_err(|e| eprintln!("SKIP: no device on the adapter: {e}"))
         .ok()?;
         Some((adapter, device, queue))
     }
