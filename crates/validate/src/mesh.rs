@@ -120,9 +120,54 @@ fn area_centre(ps: &[V]) -> (V, V) {
     (scale(0.5, sum_a), centre)
 }
 
+/// Faces between two progress steps and checks for a cancel.
+const CHUNK: usize = 1 << 16;
+
+/// The faces a check has gone through, for a progress bar ([`umcf_core::Progress`] steps, one per
+/// face of each pass), and whether it was cancelled: a pass checks every [`CHUNK`] faces.
+struct Work<'a> {
+    cancel: Option<&'a umcf_core::Cancel>,
+}
+
+impl Work<'_> {
+    /// After face `i` of a pass: `false` when the job was cancelled, to stop.
+    fn face(&self, i: usize) -> bool {
+        if !(i + 1).is_multiple_of(CHUNK) {
+            return true;
+        }
+        match self.cancel {
+            Some(c) => {
+                c.progress().advance(CHUNK as u64);
+                !c.is_cancelled()
+            }
+            None => true,
+        }
+    }
+
+    /// A pass over `n` faces ended: the steps of its last, partial chunk.
+    fn pass(&self, n: usize) {
+        if let Some(c) = self.cancel {
+            c.progress().advance((n % CHUNK) as u64);
+        }
+    }
+}
+
+/// The progress steps [`quality_with`] takes for `faces` faces: one per face of each pass over
+/// them (three, and one more for `checkMesh -allGeometry`'s checks).
+pub fn quality_steps(faces: u64, all_geometry: bool) -> u64 {
+    faces.saturating_mul(if all_geometry { 4 } else { 3 })
+}
+
 /// Cell centres and volumes (`primitiveMesh::makeCellCentresAndVols`). Face geometry is
 /// computed on the fly rather than stored: a 16-million-cell mesh has 50 million faces.
 pub fn cell_centres_volumes(mesh: &PolyMesh) -> (Vec<V>, Vec<f64>) {
+    let done = cell_centres_volumes_with(mesh, &Work { cancel: None });
+    done.unwrap_or_default()
+}
+
+/// [`cell_centres_volumes`], counting its two passes over the faces in `work`; `None` when
+/// cancelled.
+fn cell_centres_volumes_with(mesh: &PolyMesh, work: &Work) -> Option<(Vec<V>, Vec<f64>)> {
     let n_cells = mesh.n_cells();
     let (own, nei) = (&mesh.owner, &mesh.neighbour);
     let mut c_est = vec![[0.0; 3]; n_cells];
@@ -140,7 +185,11 @@ pub fn cell_centres_volumes(mesh: &PolyMesh) -> (Vec<V>, Vec<f64>) {
                 *k += 1;
             }
         }
+        if !work.face(i) {
+            return None;
+        }
     }
+    work.pass(mesh.n_faces());
     for (e, k) in c_est.iter_mut().zip(&n_faces) {
         if *k > 0 {
             *e = scale(1.0 / f64::from(*k), *e);
@@ -170,12 +219,16 @@ pub fn cell_centres_volumes(mesh: &PolyMesh) -> (Vec<V>, Vec<f64>) {
                 *v += pyr3;
             }
         }
+        if !work.face(i) {
+            return None;
+        }
     }
+    work.pass(mesh.n_faces());
     for ((cc, v), est) in centres.iter_mut().zip(vols.iter_mut()).zip(&c_est) {
         *cc = if v.abs() > V_SMALL { scale(1.0 / *v, *cc) } else { *est };
         *v /= 3.0;
     }
-    (centres, vols)
+    Some((centres, vols))
 }
 
 /// Labels of the faces or cells with one problem: the first [`MAX_LISTED`], and how many.
@@ -273,19 +326,42 @@ fn pyramid_volume(apex: V, area: V, centre: V) -> f64 {
 
 /// Runs the checks (see the module documentation).
 pub fn quality(mesh: &PolyMesh) -> Quality {
-    let (centres, vols) = cell_centres_volumes(mesh);
-    quality_of(mesh, &centres, &vols)
+    quality_or_stop(mesh, false, &Work { cancel: None }).unwrap_or_default()
 }
 
 /// Runs the checks and those `checkMesh -allGeometry` adds ([`Quality::all`]).
 pub fn quality_all(mesh: &PolyMesh) -> Quality {
-    let (centres, vols) = cell_centres_volumes(mesh);
-    let mut q = quality_of(mesh, &centres, &vols);
-    q.all = Some(all::all_geometry(mesh, &centres, &vols, q.directions));
-    q
+    quality_or_stop(mesh, true, &Work { cancel: None }).unwrap_or_default()
 }
 
-fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64]) -> Quality {
+/// [`quality`] (with `all_geometry`: [`quality_all`]) as a job: it counts the faces it goes
+/// through in `cancel`'s progress ([`quality_steps`] in all) and stops, `None`, soon after
+/// `cancel` is set.
+pub fn quality_with(mesh: &PolyMesh, all_geometry: bool, cancel: &umcf_core::Cancel) -> Option<Quality> {
+    quality_or_stop(mesh, all_geometry, &Work { cancel: Some(cancel) })
+}
+
+fn quality_or_stop(mesh: &PolyMesh, all_geometry: bool, work: &Work) -> Option<Quality> {
+    // Cancelled already: not started (a mesh of fewer faces than a chunk is never checked again).
+    if work.cancel.is_some_and(umcf_core::Cancel::is_cancelled) {
+        return None;
+    }
+    let (centres, vols) = cell_centres_volumes_with(mesh, work)?;
+    let mut q = quality_of(mesh, &centres, &vols, work)?;
+    if all_geometry {
+        q.all = Some(all::all_geometry(mesh, &centres, &vols, q.directions));
+        // The extra checks count as one pass, done at once.
+        if let Some(c) = work.cancel {
+            c.progress().advance(mesh.n_faces() as u64);
+            if c.is_cancelled() {
+                return None;
+            }
+        }
+    }
+    Some(q)
+}
+
+fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64], work: &Work) -> Option<Quality> {
     let n_cells = mesh.n_cells();
     let n_internal = mesh.n_internal_faces();
     let mut q = Quality {
@@ -311,6 +387,10 @@ fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64]) -> Quality {
     let (mut min_ortho, mut sum_ortho) = (f64::INFINITY, 0.0);
     let mut max_skew: f64 = 0.0;
     for i in 0..mesh.n_faces() {
+        // Counted before the face: the loop goes on with `continue`.
+        if !work.face(i) {
+            return None;
+        }
         face_points_into(mesh, i, &mut ps);
         let (a, fc) = area_centre(&ps);
         if !a.iter().chain(&fc).all(|x| x.is_finite()) || !mag(a).is_finite() {
@@ -374,6 +454,7 @@ fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64]) -> Quality {
             q.wrong_pyramids.add_n(i, wrong);
         }
     }
+    work.pass(mesh.n_faces());
     q.max_skewness = max_skew;
     if n_internal > 0 {
         let deg = |c: f64| c.clamp(-1.0, 1.0).acos().to_degrees();
@@ -420,7 +501,7 @@ fn quality_of(mesh: &PolyMesh, centres: &[V], vols: &[f64]) -> Quality {
     if q.n_faces == 0 {
         (q.min_face_area, q.max_face_area) = (0.0, 0.0);
     }
-    q
+    Some(q)
 }
 
 /// `faceSkewness` / `boundaryFaceSkewness`: `factor` is 0.2 inside, 0.4 on the boundary.

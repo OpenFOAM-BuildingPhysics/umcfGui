@@ -1556,7 +1556,7 @@ fn fields_can_be_read_after_the_case_opens() {
     assert_eq!(c.regions, whole.regions);
     assert_eq!(c.notes, whole.notes);
     assert!(c.notes.iter().any(|n| n.path == "0/air/bad"));
-    let (done, total, _) = progress.get();
+    let umcf_core::ProgressNow { done, total, .. } = progress.get();
     assert!(total > 0 && done == total, "{done} of {total}");
     // Once only: an edited field isn't read back from disk.
     assert!(!c.read_start_fields(&fs, None).unwrap());

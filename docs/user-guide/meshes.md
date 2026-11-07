@@ -145,7 +145,8 @@ Tested against `checkMesh`:
   skewness max 5.79 with 8 faces above 4.
 
 Checking that mesh takes about 40 seconds and 4 GB on one core: 13 seconds to read it, the rest
-to check it. It can't be cancelled once it has started.
+to check it. In the desktop app it runs as a job with a progress bar (the mesh files read, then
+the faces checked) and *Cancel*, which stops it within 65,536 faces.
 
 ### Layers
 

@@ -89,8 +89,15 @@ whose command waits or runs: its outcome closes it).
 
 Long work runs beside the window, which stays in use: you can turn the 3D view, browse the case,
 open cards and look at the results while it runs. The status bar shows what runs, how far it is
-and *Cancel*: a bar that fills as the files are done where the job knows how many (reading the
-field files: "21 of 30"), and the megabytes read so far and the seconds it has run. This holds
+and *Cancel*, with a bar that fills where the job can tell how far it is:
+
+- reading the field files: as the files are done ("21 of 30");
+- reading what the 3D view shows: as the bytes of its meshes' and surfaces' files are read
+  ("1.0 of 1.4 GB read"), and the regions and surfaces read and drawn;
+- the mesh check (*Check mesh*): as the bytes of the mesh files are read and the faces are
+  checked.
+
+Other work shows the megabytes read so far; all work shows the seconds it has run. This holds
 for the ribbon's commands, a command card's *OK*, the *Set* of the boundary condition, patch and
 new patch cards, going back or forward in the history bar, reading the field files, and reading
 the meshes and surfaces the 3D view shows.
@@ -169,9 +176,11 @@ about the new conditions.
 - A command's parameters are typed as JSON, apart from boundary conditions, which have a card
   of their own; forms for the others come with meshing.
 - *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,
-  but a file read whole (binary meshes, the mesh check's) only once it is read. The progress bar
-  counts the files of the field reading; other work shows the megabytes it has read and the
-  seconds it has run, not how far it is.
+  but a file read whole (binary meshes, the mesh check's) only once it is read; the mesh check's
+  computing stops within 65,536 faces. The bar of the 3D view and of the mesh check follows
+  the bytes of the files they expect to read, from the sizes on disk, and their steps; other
+  work besides the field reading shows the megabytes it has read and the seconds it has run, not
+  how far it is.
 - The window reads the case's files when it needs them, not when they change. An STL copied
   into `constant/triSurface` shows in the browser after the next command; a file changed outside
   the window shows when the case is opened again. A scene that failed to build (a mesh not

@@ -126,16 +126,41 @@ fn check_rel(rel: &str) -> Result<(), FsError> {
 pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>, Progress);
 
 /// How far a job has come, for a progress bar: the bytes read from the case's files (counted by
-/// [`Cancellable`]), and the steps done of a total where the job knows one (files, objects).
-/// Clones share the counts; reading them never waits.
+/// [`Cancellable`]) against the bytes the job expects to read, where it knows them, and the
+/// steps done of a total where the job knows one (files, faces). Clones share the counts;
+/// reading them never waits.
 #[derive(Debug, Clone, Default)]
 pub struct Progress(std::sync::Arc<Counts>);
 
 #[derive(Debug, Default)]
 struct Counts {
     bytes: std::sync::atomic::AtomicU64,
+    expected: std::sync::atomic::AtomicU64,
     done: std::sync::atomic::AtomicU64,
     total: std::sync::atomic::AtomicU64,
+}
+
+/// What a [`Progress`] has counted, at one moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProgressNow {
+    /// Steps done, of `total` (0: the job doesn't count steps).
+    pub done: u64,
+    pub total: u64,
+    /// Bytes read, of `expected` (0: the job doesn't say what it will read).
+    pub bytes: u64,
+    pub expected: u64,
+}
+
+impl ProgressNow {
+    /// How far the job is, from 0 to 1, where it can be told: the share of the expected bytes
+    /// read and the share of the steps done, the mean of both where the job counts both.
+    pub fn fraction(&self) -> Option<f64> {
+        let part = |n: u64, of: u64| (of > 0).then(|| (n as f64 / of as f64).clamp(0.0, 1.0));
+        match (part(self.bytes, self.expected), part(self.done, self.total)) {
+            (Some(r), Some(s)) => Some((r + s) / 2.0),
+            (r, s) => r.or(s),
+        }
+    }
 }
 
 impl Progress {
@@ -145,9 +170,24 @@ impl Progress {
         self.0.total.store(total, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// `n` more steps to take, besides those [`Progress::start`] set.
+    pub fn add_steps(&self, n: u64) {
+        self.0.total.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// One more step done.
     pub fn step(&self) {
-        self.0.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.advance(1);
+    }
+
+    /// `n` more steps done.
+    pub fn advance(&self, n: u64) {
+        self.0.done.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The job will read about `bytes` more (on top of what it said before).
+    pub fn expect(&self, bytes: u64) {
+        self.0.expected.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// `n` more bytes read.
@@ -155,16 +195,22 @@ impl Progress {
         self.0.bytes.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Steps done, the total (0: unknown), and the bytes read.
-    pub fn get(&self) -> (u64, u64, u64) {
+    /// What has been counted so far.
+    pub fn get(&self) -> ProgressNow {
         use std::sync::atomic::Ordering::Relaxed;
-        (self.0.done.load(Relaxed), self.0.total.load(Relaxed), self.0.bytes.load(Relaxed))
+        ProgressNow {
+            done: self.0.done.load(Relaxed),
+            total: self.0.total.load(Relaxed),
+            bytes: self.0.bytes.load(Relaxed),
+            expected: self.0.expected.load(Relaxed),
+        }
     }
 
     /// Back to nothing done, for the next job.
     pub fn reset(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         self.0.bytes.store(0, Relaxed);
+        self.0.expected.store(0, Relaxed);
         self.0.done.store(0, Relaxed);
         self.0.total.store(0, Relaxed);
     }
@@ -632,6 +678,25 @@ mod tests {
     }
 
     #[test]
+    fn progress_is_the_share_of_bytes_and_steps() {
+        let p = Progress::default();
+        assert_eq!(p.get().fraction(), None);
+        p.start(4);
+        p.advance(1);
+        assert_eq!(p.get().fraction(), Some(0.25));
+        p.expect(100);
+        p.read(50);
+        // The mean of a half and a quarter.
+        assert_eq!(p.get().fraction(), Some(0.375));
+        // More read than expected: whole, not more.
+        p.read(500);
+        p.add_steps(4);
+        assert_eq!(p.get().fraction(), Some((1.0 + 0.125) / 2.0));
+        p.reset();
+        assert_eq!(p.get(), ProgressNow::default());
+    }
+
+    #[test]
     fn a_cancelled_case_stops_reading_but_still_writes() {
         use std::io::Read;
         let cancel = Cancel::new();
@@ -664,15 +729,15 @@ mod tests {
         let mut three = [0u8; 3];
         stream.read_exact(&mut three).unwrap();
         let p = cancel.progress();
-        assert_eq!(p.get(), (0, 0, 10 + 4 + 3));
+        assert_eq!(p.get(), ProgressNow { bytes: 10 + 4 + 3, ..ProgressNow::default() });
         // Steps, where the job knows how many.
         p.start(4);
         p.step();
-        assert_eq!(p.get(), (1, 4, 17));
+        assert_eq!(p.get(), ProgressNow { done: 1, total: 4, bytes: 17, expected: 0 });
         // The next job counts from nothing; clones share the counts.
         let shared = cancel.clone();
         cancel.reset();
-        assert_eq!(shared.progress().get(), (0, 0, 0));
+        assert_eq!(shared.progress().get(), ProgressNow::default());
     }
 
     #[test]

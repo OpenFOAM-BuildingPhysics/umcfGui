@@ -135,6 +135,22 @@ fn close(a: f64, b: f64) -> bool {
 }
 
 #[test]
+fn the_quality_passes_count_their_faces_and_stop_when_cancelled() {
+    let m = block([3, 2, 2], false, &|p| p);
+    for all in [false, true] {
+        let cancel = umcf_core::Cancel::new();
+        let q = quality_with(&m, all, &cancel).unwrap();
+        assert_eq!(q, if all { quality_all(&m) } else { quality(&m) });
+        let now = cancel.progress().get();
+        assert_eq!(now.done, quality_steps(m.n_faces() as u64, all), "all_geometry {all}");
+        // Cancelled: stopped, no result.
+        let cancel = umcf_core::Cancel::new();
+        cancel.cancel();
+        assert_eq!(quality_with(&m, all, &cancel), None);
+    }
+}
+
+#[test]
 fn a_regular_block_is_clean() {
     let m = block([3, 2, 2], false, &|p| p);
     let q = quality(&m);
