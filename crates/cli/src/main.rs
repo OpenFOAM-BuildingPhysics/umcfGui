@@ -325,7 +325,10 @@ fn render(args: &[String]) -> Result<u8, String> {
     let picked = match pick {
         Some(px) => {
             let mut p = params.clone();
-            p.remove("edges");
+            // The style is the snapshot's: select.pick takes none of it.
+            for k in ["edges", "grid", "origin", "dark"] {
+                p.remove(k);
+            }
             p.insert("pixel".into(), px);
             if !select.is_empty() {
                 p.insert("mode".into(), json!("add"));

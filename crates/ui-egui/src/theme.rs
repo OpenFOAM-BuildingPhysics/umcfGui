@@ -50,6 +50,19 @@ pub struct Tokens {
     pub ribbon_height: f32,
     /// Gap between the window's edge and the floating cards, and between cards.
     pub gap: f32,
+    /// The icons' greys (`icons`).
+    pub icon: IconShades,
+}
+
+/// The greys the icons draw their objects in: the background their badges are cut out of, the
+/// light, middle and deep faces of a box, and the guide lines.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconShades {
+    pub paper: Color32,
+    pub light: Color32,
+    pub mid: Color32,
+    pub deep: Color32,
+    pub guide: Color32,
 }
 
 fn rgb(c: [f32; 3]) -> Color32 {
@@ -90,6 +103,13 @@ impl Tokens {
             bar_height: 34.0,
             ribbon_height: 122.0,
             gap: 7.0,
+            icon: IconShades {
+                paper: Color32::from_rgb(255, 255, 255),
+                light: Color32::from_rgb(230, 235, 241),
+                mid: Color32::from_rgb(190, 199, 210),
+                deep: Color32::from_rgb(150, 164, 180),
+                guide: Color32::from_rgb(120, 138, 156),
+            },
         }
     }
 
@@ -117,6 +137,13 @@ impl Tokens {
                 Color32::from_rgb(0x5c, 0xc0, 0x6c),
                 Color32::from_rgb(0x5c, 0x94, 0xf0),
             ],
+            icon: IconShades {
+                paper: Color32::from_rgb(22, 26, 32),
+                light: Color32::from_rgb(96, 107, 122),
+                mid: Color32::from_rgb(72, 82, 96),
+                deep: Color32::from_rgb(52, 60, 72),
+                guide: Color32::from_rgb(140, 154, 170),
+            },
             ..Tokens::light()
         }
     }

@@ -9,9 +9,12 @@
 //!   axis), sized with the view, with their edges and the axes (x red, y green, z blue): what
 //!   the scene shows in front of them hides them.
 //!
-//! The spacing, the extent, the fade and the colours follow SolidCraft's viewport (MIT or
-//! Apache-2.0; `crates/engine/src/view.rs` `grid_step`, `grid_ext`, `GridFade`, and
-//! `crates/ui-egui/src/selection.rs` `origin_size`, at commit 9325e3a).
+//! The spacing, the extent, the fade and the colours are ported from SolidCraft's viewport
+//! (<https://github.com/tangency-labs/solidcraft>, MIT or Apache-2.0, at commit 9325e3a:
+//! `crates/engine/src/view.rs` `grid_step`, `grid_ext`, `GridFade`, and
+//! `crates/ui-egui/src/selection.rs` `origin_size`). Those parts:
+//! Copyright (c) 2026 SolidCraft contributors, under the MIT licence
+//! (`assets/licenses/MIT-SolidCraft.txt`; `ATTRIBUTION.md`).
 
 use umcf_geom::Vec3;
 
@@ -70,10 +73,10 @@ const MOST: i64 = 300;
 /// The steps of the fade at each end of a line.
 const FADE_STEPS: usize = 12;
 /// The origin's squares and their edges.
-const PLANE: ([u8; 3], u8) = ([249, 184, 134], 94);
+pub const PLANE: ([u8; 3], u8) = ([249, 184, 134], 94);
 const PLANE_EDGE: ([u8; 3], u8) = ([214, 140, 84], 200);
 /// The axes, x, y and z.
-const AXES: [[u8; 3]; 3] = [[220, 60, 60], [60, 170, 60], [60, 100, 230]];
+pub const AXES: [[u8; 3]; 3] = [[220, 60, 60], [60, 170, 60], [60, 100, 230]];
 /// How long an axis is (it is dashed past the squares' side), in squares' sides.
 const AXIS_LENGTH: f64 = 1.8;
 

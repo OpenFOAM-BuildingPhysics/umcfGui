@@ -3,8 +3,10 @@
 //! in three greys outlined in the ink (isometric boxes for regions, patches, meshes and views; a
 //! triangulated sheet for surfaces; a document, a folder) with one cue in the accent: what the
 //! command does or checks. Strokes have round caps and joins, in three weights (outlines,
-//! actions, navigation). The roles' colours follow the theme (a light ink is a dark theme), and a
-//! faded ink fades the whole icon. In the spirit of SolidCraft's icons, drawn anew.
+//! actions, navigation). The ink and the accent come from `theme::Tokens` (through [`Ink`]), the
+//! greys from its `icon` shades (the dark theme's for a light ink), and the 3D view's colours (its
+//! dark background, the origin's planes and axes) from `umcf_render`. A faded ink fades the whole
+//! icon. In the spirit of SolidCraft's icons, drawn anew.
 
 use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2};
 
@@ -32,7 +34,7 @@ pub enum Icon {
     Edges,
     /// The 3D view drawn on the GPU: a chip with its pins.
     Gpu,
-    /// The grid on the ground: a lattice in perspective.
+    /// The grid on the ground: an isometric lattice.
     Grid,
     /// The origin: three axes from a point, with a square between two.
     Origin,
@@ -478,13 +480,15 @@ impl<'a> Draw<'a> {
         let dark = u32::from(r) + u32::from(g) + u32::from(b) > 3 * 128;
         let fade = f32::from(ink.line.a()) / 255.0;
         let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]).gamma_multiply(fade);
-        let pick = |light: [u8; 3], dark_: [u8; 3]| rgb(if dark { dark_ } else { light });
+        let rgbf = |c: [f32; 3]| rgb(c.map(|x| (x * 255.0).round().clamp(0.0, 255.0) as u8));
+        let shades = if dark { crate::theme::Tokens::dark() } else { crate::theme::Tokens::light() }.icon;
+        let pick = |c: Color32| c.gamma_multiply(fade);
         let accent = ink.fill;
         let mix = |a: Color32, b: Color32, t: f32| {
             let m = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
             Color32::from_rgba_premultiplied(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()), m(a.a(), b.a()))
         };
-        let paper = pick([255, 255, 255], [22, 26, 32]);
+        let paper = pick(shades.paper);
         Draw {
             p,
             o,
@@ -493,17 +497,18 @@ impl<'a> Draw<'a> {
             act: (4.2 * u).max(1.2),
             nav: (5.2 * u).max(1.3),
             ink: ink.line,
-            p1: pick([230, 235, 241], [96, 107, 122]),
-            p2: pick([190, 199, 210], [72, 82, 96]),
-            p3: pick([150, 164, 180], [52, 60, 72]),
-            guide: pick([120, 138, 156], [140, 154, 170]),
+            p1: pick(shades.light),
+            p2: pick(shades.mid),
+            p3: pick(shades.deep),
+            guide: pick(shades.guide),
             a1: mix(accent, paper, if dark { 0.45 } else { 0.68 }),
             a2: accent,
             a3: mix(accent, (if dark { Color32::WHITE } else { Color32::BLACK }).gamma_multiply(fade), 0.22),
             accent,
-            dark_view: rgb([46, 52, 64]),
-            origin_plane: rgb([249, 184, 134]),
-            axes: [rgb([220, 60, 60]), rgb([60, 170, 60]), rgb([60, 100, 230])],
+            // The 3D view's own colours: its dark background, the origin's planes and axes.
+            dark_view: rgbf(umcf_render::raster::TOP),
+            origin_plane: rgb(umcf_render::guides::PLANE.0),
+            axes: umcf_render::guides::AXES.map(rgb),
             gap: paper,
             white: rgb([255, 255, 255]),
             small: s < 26.0,
@@ -599,8 +604,8 @@ impl<'a> Draw<'a> {
         self.head(a, b, width, c);
     }
 
-    /// A point of an isometric box at `(cx, cy)` (the middle of its top's front corner… its
-    /// footprint's middle on the screen): x to the right and down, y to the left and down, z up.
+    /// Where the point `(x, y, z)` of an isometric box lies on the icon, the box's footprint
+    /// centred at `(cx, cy)`: x goes to the right and down, y to the left and down, z up.
     fn iso(cx: f32, cy: f32, x: f32, y: f32, z: f32) -> (f32, f32) {
         (cx + (x - y) * 0.866, cy + (x + y) * 0.5 - z)
     }
@@ -745,12 +750,14 @@ mod tests {
     use eframe::egui;
 
     /// Writes every icon, on the light and the dark theme's card, at the ribbon's size and a
-    /// small one, to the PNG named by `UMCF_ICON_SHEET` (`cargo test -p umcf-ui-egui --lib
+    /// small one, to the PNG named by `UMCF_ICON_SHEET`, else `umcf-icon-sheet.png` in the
+    /// system's temporary folder (`cargo test -p umcf-ui-egui --lib
     /// icon_sheet -- --ignored`): the contact sheet the icons are reviewed on.
     #[test]
     #[ignore = "writes a contact sheet for review; needs a GPU device (or lavapipe)"]
     fn icon_sheet() {
-        let path = std::env::var("UMCF_ICON_SHEET").unwrap_or_else(|_| "icon-sheet.png".to_string());
+        let path = std::env::var("UMCF_ICON_SHEET")
+            .unwrap_or_else(|_| std::env::temp_dir().join("umcf-icon-sheet.png").to_string_lossy().into_owned());
         const COLUMNS: usize = 10;
         let rows = Icon::ALL.len().div_ceil(COLUMNS);
         let cell = egui::vec2(96.0, 92.0);
