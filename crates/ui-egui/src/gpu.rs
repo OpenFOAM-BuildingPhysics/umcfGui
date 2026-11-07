@@ -1157,6 +1157,33 @@ mod tests {
     }
 
     #[test]
+    fn an_error_the_device_reported_fails_the_frame_whatever_the_style() {
+        let Some((adapter, device, queue)) = device() else { return };
+        let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        let scene = scene();
+        let size = [64u32, 48u32];
+        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 64.0 / 48.0);
+        let plain = Style { width: size[0], height: size[1], ..Style::default() };
+        // Edges: a style the GPU view hands to the CPU.
+        let edges = Style { edges: true, ..plain.clone() };
+        for style in [&plain, &edges] {
+            *gpu.uncaptured.lock().unwrap() = Some("the GPU device reported: lost".to_string());
+            assert!(gpu.failed());
+            let got = gpu.draw(&scene, &camera, style, size, next()).err();
+            assert_eq!(
+                got,
+                Some(NotDrawn::Failed("the GPU device reported: lost".to_string())),
+                "edges {}",
+                style.edges
+            );
+            assert!(!gpu.failed(), "the error is taken");
+        }
+        // Without one, the style decides again.
+        assert!(matches!(gpu.draw(&scene, &camera, &edges, size, next()).err(), Some(NotDrawn::Here(_))));
+        assert!(gpu.draw(&scene, &camera, &plain, size, next()).is_ok());
+    }
+
+    #[test]
     fn the_renderer_is_named_on_the_command_line() {
         use crate::Start;
         assert_eq!(Start::parse("cpu"), Some(Start::Cpu));
