@@ -92,8 +92,10 @@ pub struct Style {
     /// surface.
     pub display: std::collections::HashMap<(usize, u32), Display>,
     /// The background's colours at the top and the bottom (a vertical gradient); `None` for
-    /// the default light grey.
+    /// the default dark grey.
     pub background: Option<[[f32; 3]; 2]>,
+    /// The grid and the origin drawn beside the scene (none by default).
+    pub guides: crate::guides::Guides,
 }
 
 /// An image, rows from the top, 4 bytes (RGBA) per pixel.
@@ -126,8 +128,17 @@ impl Image {
 /// The selection colour.
 pub const SELECTED: [f32; 3] = [1.0, 0.55, 0.1];
 /// The background's colours at the top and the bottom, where the style gives none.
-pub const TOP: [f32; 3] = [0.94, 0.95, 0.96];
-pub const BOTTOM: [f32; 3] = [0.78, 0.81, 0.85];
+pub const TOP: [f32; 3] = [46.0 / 255.0, 52.0 / 255.0, 64.0 / 255.0];
+pub const BOTTOM: [f32; 3] = TOP;
+/// The light background the window offers instead (a vertical gradient).
+pub const LIGHT_TOP: [f32; 3] = [0.94, 0.95, 0.96];
+pub const LIGHT_BOTTOM: [f32; 3] = [0.78, 0.81, 0.85];
+
+/// Whether a background of `top` and `bottom` is dark (the guides take colours for it).
+pub fn is_dark(background: [[f32; 3]; 2]) -> bool {
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    (luma(background[0]) + luma(background[1])) * 0.5 < 0.5
+}
 /// How much outlines darken.
 pub const OUTLINE: f32 = 0.55;
 /// How much the faces' edges darken, and how near one (in pixels) a pixel's middle is to be on it.
@@ -141,6 +152,14 @@ pub const AHEAD: f32 = 1e-4;
 /// How much nearer (1/depth, relative) a selected surface is put, so that it is seen over what
 /// lies in the same place.
 pub const FRONT: f32 = 1e-5;
+/// How much nearer the origin's squares are put: seen on a surface they lie on, not on a
+/// selected one (half [`FRONT`], so that neither ties).
+pub const SQUARE_FRONT: f32 = FRONT * 0.5;
+
+/// The margin for a selected (`front`) surface or not.
+fn margin(front: bool) -> f32 {
+    if front { FRONT } else { 0.0 }
+}
 
 /// The side of a point, in pixels, in an image `height` pixels high.
 pub fn dot_size(height: u32) -> f64 {
@@ -203,7 +222,7 @@ impl Target {
     /// With `alpha` below 1 it is blended over what is there, behind nothing nearer, and leaves
     /// the depth and the ids as they were.
     #[allow(clippy::too_many_arguments)]
-    fn triangle(&mut self, v: &[Screen; 3], colour: [f32; 3], id: u32, edges: u8, front: bool, alpha: f32) {
+    fn triangle(&mut self, v: &[Screen; 3], colour: [f32; 3], id: u32, edges: u8, front: f32, alpha: f32) {
         let [a, b, c] = *v;
         let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
         if !area.is_finite() || area.abs() <= 1e-12 {
@@ -231,9 +250,7 @@ impl Target {
                     continue;
                 }
                 let mut z = (w0 * a.inv_z + w1 * b.inv_z + w2 * c.inv_z) as f32;
-                if front {
-                    z *= 1.0 + FRONT;
-                }
+                z *= 1.0 + front;
                 let i = py * self.w + px;
                 let Some(d) = self.depth.get_mut(i) else { continue };
                 if z <= *d {
@@ -291,6 +308,11 @@ impl Target {
 
     /// A line one pixel wide from `a` to `b`, blended with `alpha`, behind nothing nearer.
     fn line(&mut self, a: Screen, b: Screen, colour: [f32; 3], alpha: f32) {
+        self.line_tested(a, b, colour, alpha, true);
+    }
+
+    /// [`Target::line`], behind nothing nearer where `test`, else over everything drawn so far.
+    fn line_tested(&mut self, a: Screen, b: Screen, colour: [f32; 3], alpha: f32, test: bool) {
         // Only the part over the pixels drawn (Liang–Barsky), 1/depth cut with it.
         let (lo, hi) = ((self.x.0 as f64, self.y.0 as f64), (self.x.1 as f64 + 1.0, self.y.1 as f64 + 1.0));
         let (dx, dy) = (b.x - a.x, b.y - a.y);
@@ -321,15 +343,22 @@ impl Target {
             return;
         }
         let n = steps.max(1.0) as usize;
-        for k in 0..=n {
+        // A see-through line (a faded grid piece, a dashed axis, a half-opaque wireframe's
+        // edge) blends each pixel once and leaves its end pixel to the line that follows on
+        // from it, as the GPU draws lines: even where pieces meet end to end.
+        let last = if alpha < 1.0 { n - 1 } else { n };
+        let mut prev = None;
+        for k in 0..=last {
             let s = k as f64 / n as f64;
             let (x, y) = (a.x + dx * s, a.y + dy * s);
             // 1/depth is linear on the screen.
             let z = a.inv_z + (b.inv_z - a.inv_z) * s;
             if let Some(i) = self.inside(x, y)
-                && self.in_front(i, z)
+                && prev != Some(i)
+                && (!test || self.in_front(i, z))
             {
                 self.blend(i, colour, alpha);
+                prev = Some(i);
             }
         }
     }
@@ -425,16 +454,7 @@ impl Lens {
     /// Fills the triangle `verts` (view coordinates) into `t`, clipped against the near plane
     /// (the pieces of a clipped one get no edges).
     #[allow(clippy::too_many_arguments)]
-    fn fill(
-        &self,
-        t: &mut Target,
-        verts: [[f64; 3]; 3],
-        colour: [f32; 3],
-        id: u32,
-        edges: u8,
-        front: bool,
-        alpha: f32,
-    ) {
+    fn fill(&self, t: &mut Target, verts: [[f64; 3]; 3], colour: [f32; 3], id: u32, edges: u8, front: f32, alpha: f32) {
         let near = self.near;
         if verts.iter().all(|v| v[2] >= near) {
             t.triangle(&verts.map(|v| self.project(v)), colour, id, edges, front, alpha);
@@ -604,7 +624,7 @@ pub fn covered(
             let d = style.display_of(k, class);
             match d.mode {
                 Mode::Hidden => {}
-                _ if d.solid() => lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, front, 1.0),
+                _ if d.solid() => lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, margin(front), 1.0),
                 _ => {
                     if see_through.last() != Some(&k) {
                         see_through.push(k);
@@ -629,7 +649,7 @@ pub fn covered(
             let Some(id) = u32::try_from(n).ok().and_then(|n| base.checked_add(n)).filter(|id| *id != NONE) else {
                 break;
             };
-            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, false, 0.0);
+            lens.fill(&mut t, [a, b, c], [0.0; 3], id, 0, 0.0, 0.0);
         }
     }
     // Each triangle seen once: those reaching the rectangle's pixels (one per pixel for the
@@ -677,6 +697,15 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
         hits: None,
     };
     let lens = Lens::new(scene, camera, wu, hu);
+    let background = style.background.unwrap_or([TOP, BOTTOM]);
+    let guides = crate::guides::build(scene, camera, style.guides, is_dark(background));
+    // The grid first, under everything: what the scene shows hides it.
+    let view_of = |p: [f32; 3]| lens.point(Vec3::from_f32(p));
+    for g in &guides.grid {
+        if let Some((p, q)) = lens.segment(view_of(g.a), view_of(g.b)) {
+            t.line_tested(p, q, g.colour, g.alpha, false);
+        }
+    }
     let mut next_id: u32 = 0;
     // What is drawn after the opaque surfaces: (view points, colour, opacity[, depth]).
     let mut glass: Vec<Glass> = Vec::new();
@@ -731,7 +760,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                 Mode::Hidden => {}
                 Mode::Surface if d.opacity >= 1.0 => {
                     let edges = if style.edges { face_edges } else { 0 };
-                    lens.fill(&mut t, [a, b, c], colour, id, edges, front, 1.0);
+                    lens.fill(&mut t, [a, b, c], colour, id, edges, margin(front), 1.0);
                 }
                 Mode::Surface => {
                     let depth = (a[2] + b[2] + c[2]) / 3.0;
@@ -792,10 +821,23 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             t.dot(lens.project(p), dot_size, colour.map(|ch| ch * LINE), alpha);
         }
     }
+    // The origin's squares and lines, behind nothing nearer; a square on a surface (the
+    // origin at a corner of the domain) seen on it, but not on a selected one (put nearer).
+    for sq in &guides.squares {
+        let [a, b, c, d] = sq.corners.map(view_of);
+        for tri in [[a, b, c], [a, c, d]] {
+            lens.fill(&mut t, tri, sq.colour, NONE, 0, SQUARE_FRONT, sq.alpha);
+        }
+    }
+    for g in &guides.lines {
+        if let Some((p, q)) = lens.segment(view_of(g.a), view_of(g.b)) {
+            t.line(p, q, g.colour, g.alpha);
+        }
+    }
     // Transparent surfaces last, the farthest first.
     glass.sort_by(|a, b| b.3.total_cmp(&a.3));
     for (verts, colour, alpha, _, edges) in glass {
-        lens.fill(&mut t, verts, colour, NONE, edges, false, alpha);
+        lens.fill(&mut t, verts, colour, NONE, edges, 0.0, alpha);
     }
     // Outlines where one class meets another or the background.
     let mut rgba = Vec::with_capacity(wu * hu * 4);

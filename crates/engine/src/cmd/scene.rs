@@ -690,7 +690,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -703,9 +703,15 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SNAPSHOT.id;
     let mut allowed = WHICH.to_vec();
     allowed.extend(CAMERA);
-    allowed.extend(["edges", "colour_by", "display"]);
+    allowed.extend(["edges", "colour_by", "display", "grid", "origin", "dark"]);
     let p = Params::new(id, p, &allowed)?;
     let edges = p.bool("edges")?.unwrap_or(false);
+    let guides = umcf_render::guides::Guides {
+        grid: p.bool("grid")?.unwrap_or(true),
+        origin: p.bool("origin")?.unwrap_or(true),
+    };
+    let background = (!p.bool("dark")?.unwrap_or(true))
+        .then_some([umcf_render::raster::LIGHT_TOP, umcf_render::raster::LIGHT_BOTTOM]);
     let colour_by = match p.str("colour_by")? {
         None | Some("patch") => ColourBy::Class,
         Some("object") => ColourBy::Object,
@@ -721,7 +727,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let image = draw(
         scene,
         &cam,
-        &Style { width, height, edges, selected, selected_faces, colour_by, display, ..Style::default() },
+        &Style { width, height, edges, selected, selected_faces, colour_by, display, guides, background },
     );
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();

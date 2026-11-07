@@ -81,11 +81,13 @@ the case or file can't be opened.
 
 ```sh
 umcf-cli render path/to/case --out case.png [--view top] [--size 1600x1000] [--edges]
+                [--no-grid] [--no-origin] [--light]
                 [--region air] [--surface walls.stl] [--select air/inlet] [--pick 640,400] [--json]
 ```
 
 This draws the case's meshes (their boundary patches) or STL surfaces into a PNG file with the
-CPU renderer, and can select and pick patches first: see [3D scene and
+CPU renderer, over a dark background with the grid and the origin (`--light`, `--no-grid`,
+`--no-origin` leave them out), and can select and pick patches first: see [3D scene and
 selection](scene.md#on-the-command-line). The exit status is 0 when the image is written and 2
 when the case can't be opened or drawn. How many regions are read at once, and how much is kept
 of hidden ones, follows the memory free, or `UMCF_MEMORY` when it is set to a whole number of
@@ -150,7 +152,7 @@ bad arguments.
 | `geometry.check` | The [surface checks](surfaces.md#checks): `file` (one surface of the case), `path` (a file anywhere, no case needed), or neither (every STL surface in `constant/triSurface`) |
 | `geometry.repair` | The [repairs](surfaces.md#repairs) of one surface: `file` (required), `weld` (a distance in metres), `degenerate`, `orient` (`true`/`false`; without any of the three: `degenerate` and `orient`) |
 | `geometry.scale` | Multiplies a surface's coordinates: `file`, `factor` (both required) |
-| `scene.snapshot` | Draws the case in 3D into a PNG image (`png`, base64): `regions`, `surfaces`, `view`, `azimuth`, `elevation`, `zoom`, `width`, `height`, `edges`, `colour_by`, `reload`, `display` (layers as surfaces, wireframe, points or hidden, with an opacity: [display modes](scene.md#display-modes)), or `camera` as it returns it ([3D scene](scene.md#snapshots)) |
+| `scene.snapshot` | Draws the case in 3D into a PNG image (`png`, base64): `regions`, `surfaces`, `view`, `azimuth`, `elevation`, `zoom`, `width`, `height`, `edges`, `colour_by`, `reload`, `display` (layers as surfaces, wireframe, points or hidden, with an opacity: [display modes](scene.md#display-modes)), `grid`, `origin`, `dark` (each default `true`: [the grid, the origin and the dark view](desktop.md#the-grid-the-origin-and-the-dark-view)), or `camera` as it returns it ([3D scene](scene.md#snapshots)) |
 | `select.pick` | Selects the patch or surface region under a `pixel` of that image, or along a `ray`, and lists everything under it: `mode` (`replace`, `add`, `toggle`, `none`), `depth`, `faces` (`true`: the mesh face under it, not its patch), and the snapshot's parameters ([Picking](scene.md#picking)) |
 | `select.rect` | Selects what is in a `rect` (`[x0, y0, x1, y1]`) of that image, seen or (`through: true`) hidden too: `mode` (`replace`, `add`, `remove`, `none`), `faces`, and the snapshot's parameters ([Selecting in a rectangle](scene.md#selecting-in-a-rectangle)) |
 | `select.set`, `select.clear` | Sets the selection from `items` (`{"region", "patch"}`, `{"region", "face"}`, `{"surface", "solid"}`) with `mode` (`replace`, `add`, `remove`), or empties it |

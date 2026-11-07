@@ -467,3 +467,26 @@ fn surface_checks_and_repairs_stl_files() {
     assert_eq!(cli(&["surface", source, "--file", "x.stl"]).status.code(), Some(2));
     assert_eq!(cli(&["surface", "/nonexistent/x.stl"]).status.code(), Some(2));
 }
+
+/// `render --pick` with the style flags: they style the image, `select.pick` takes none of them.
+#[test]
+fn render_picks_with_the_style_flags() {
+    let dir = cube("render-pick", false);
+    let out = dir.join("shot.png");
+    let o = cli(&[
+        "render",
+        "--edges",
+        "--no-grid",
+        "--no-origin",
+        "--light",
+        "--size",
+        "64x48",
+        "--pick",
+        "32,24",
+        "--out",
+        out.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out.exists());
+}
