@@ -468,13 +468,15 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                 (
                     match &x {
                         // About two triangles a face (their corners, class, face and edges: 21
-                        // bytes each) and each kept point in single precision with its label.
+                        // bytes each), the 4-byte map of every point and, at most, each point
+                        // in single precision.
                         Read::Mesh(m) => {
                             let faces = m.n_faces().saturating_sub(m.first_boundary_face()) as u64;
                             faces.saturating_mul(42).saturating_add((m.points.len() as u64).saturating_mul(16))
                         }
-                        // Three points (12 bytes each) and 21 bytes a triangle.
-                        Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(57),
+                        // Three points (12 bytes each), 21 bytes a triangle, and its region
+                        // while the object is built.
+                        Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
                     },
                     Box::new(move || {
                         Ok(match (source, x) {
