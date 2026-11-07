@@ -92,7 +92,8 @@ fn cgroup_free(own: &str, mounts: &str, read: impl Fn(&str) -> Option<String>) -
                 let root: Vec<&str> = root.split('/').filter(|p| !p.is_empty()).collect();
                 parts.starts_with(&root).then_some((root.len(), *point))
             })
-            .max_by_key(|(n, _)| *n)
+            // The longest root; of equal ones, the first listed.
+            .min_by_key(|(n, _)| std::cmp::Reverse(*n))
             .map(|(n, point)| (point, parts.get(n..).unwrap_or(&[])))?
     };
     let point = point.trim_end_matches('/');
