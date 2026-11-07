@@ -71,6 +71,10 @@ pub struct Object {
     /// Faces or triangles left out: a coordinate that is not finite, or so far from the
     /// scene's origin that it doesn't fit in single precision.
     pub dropped: usize,
+    /// Tells this object from every other built in this process (a copy keeps it): a renderer
+    /// that keeps what it uploaded of an object finds it again by it. An object isn't changed
+    /// once built; what changes is built again, with an id of its own.
+    id: u64,
     bvh: OnceLock<Bvh>,
     wire: OnceLock<Wire>,
     /// The box around the points, relative to the scene's origin, found once.
@@ -129,6 +133,10 @@ impl Object {
             kinds: Vec::new(),
             groups: Vec::new(),
             dropped: 0,
+            id: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             bvh: OnceLock::new(),
             wire: OnceLock::new(),
             extent: OnceLock::new(),
@@ -283,6 +291,11 @@ impl Object {
     /// The object's BVH, built the first time it is asked for.
     pub fn bvh(&self) -> &Bvh {
         self.bvh.get_or_init(|| Bvh::new(&self.points, &self.triangles))
+    }
+
+    /// The object's id: see the field.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// About how many bytes the object holds: its lists, and its BVH and edges once they were

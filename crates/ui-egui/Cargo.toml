@@ -12,7 +12,9 @@ umcf-render.workspace = true
 umcf-geom.workspace = true
 umcf-model.workspace = true
 serde_json.workspace = true
-eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "accesskit", "clipboard"] }
+# Waits for the GPU adapter the GPU view probes for at start (wgpu is asynchronous).
+pollster = "1"
+eframe = { version = "0.37", default-features = false, features = ["glow", "wgpu", "x11", "wayland", "accesskit", "clipboard"] }
 
 [dev-dependencies]
 umcf-core.workspace = true

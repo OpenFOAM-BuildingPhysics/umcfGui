@@ -65,6 +65,8 @@ pub enum Item {
     View(View, &'static str, Icon),
     /// Face edges on or off.
     Edges,
+    /// The 3D view on the GPU or the CPU.
+    Renderer,
     /// Light or dark theme.
     Theme,
 }
@@ -172,7 +174,7 @@ const SETUP: &[Tab] = &[
                     Item::View(View::Right, "Right", Icon::ViewRight),
                 ],
             },
-            Group { name: "Display", items: &[Item::Edges, Item::Theme] },
+            Group { name: "Display", items: &[Item::Edges, Item::Renderer, Item::Theme] },
             Group { name: "Export", items: &[Item::Command("scene.snapshot", "Snapshot", Icon::Snapshot)] },
         ],
         note: None,

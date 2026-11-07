@@ -25,6 +25,8 @@ pub enum Icon {
     ViewFront,
     ViewRight,
     Edges,
+    /// The 3D view drawn on the GPU: a chip with its pins.
+    Gpu,
     Theme,
     Search,
     Home,
@@ -245,6 +247,15 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, ink: Ink) {
                 line(&[(-0.4, k), (0.4, k)]);
             }
             circle(0.0, 0.0, 0.08, ink.fill, Stroke::NONE);
+        }
+        Icon::Gpu => {
+            fill(&[(-0.26, -0.26), (0.26, -0.26), (0.26, 0.26), (-0.26, 0.26)], ink.fill);
+            for k in [-0.14f32, 0.0, 0.14] {
+                line(&[(k, -0.42), (k, -0.26)]);
+                line(&[(k, 0.26), (k, 0.42)]);
+                line(&[(-0.42, k), (-0.26, k)]);
+                line(&[(0.26, k), (0.42, k)]);
+            }
         }
         Icon::Theme => {
             circle(0.0, 0.0, 0.36, ink.fill, stroke);

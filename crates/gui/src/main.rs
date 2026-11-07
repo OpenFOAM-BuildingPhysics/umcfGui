@@ -10,17 +10,19 @@
 
 use std::process::ExitCode;
 
-use umcf_ui_egui::{Frame, Options, Picked, run};
+use umcf_ui_egui::{Frame, Options, Picked, Start, run};
 
 const USAGE: &str = "\
 usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id>] [--dark]
-                [--size <w>x<h>] [--screenshot <file.png>]
+                [--size <w>x<h>] [--renderer cpu|gpu|auto] [--screenshot <file.png>]
   <case>        a case directory to open
   --cmd         a command to run once the case is open (as umcf-cli run --cmd); repeat for more
   --show        a mesh region or surface (walls.stl) the 3D view shows first; repeat for more
   --open        a command whose card opens at the start, as its ribbon button opens it (bc.set)
   --dark        the dark theme
   --size        the window's size in points (default 1440x900)
+  --renderer    what draws the 3D view at the start: cpu (default), gpu, or auto (the GPU where
+                there is one); switched in the View tab when the window runs on a GPU device
   --screenshot  write a PNG of the window once it has drawn, then quit
 ";
 
@@ -79,6 +81,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--show" => o.show.push(value("--show")?),
             "--open" => o.open = Some(value("--open")?),
             "--screenshot" => o.screenshot = Some(value("--screenshot")?),
+            "--renderer" => {
+                let v = value("--renderer")?;
+                o.renderer = Start::parse(&v).ok_or(format!("--renderer is cpu, gpu or auto, not `{v}`"))?;
+            }
             "--size" => {
                 let v = value("--size")?;
                 let bad = || format!("--size is <width>x<height>, not `{v}`");
