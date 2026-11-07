@@ -23,7 +23,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--renderer cpu\|gpu\|auto` | What draws the 3D view: the CPU (the default), the GPU, or the GPU where there is a hardware one; with `gpu` or `auto` the view can be switched in the window ([the GPU view](#the-gpu-view)) |
-| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
+| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does, or when the window gives no picture within half a minute |
 
 ## The window
 

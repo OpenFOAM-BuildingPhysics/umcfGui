@@ -45,6 +45,15 @@ struct GpuView {
     texture: Option<(TextureId, [u32; 2])>,
 }
 
+impl Drop for GpuView {
+    /// The window's texture of the image goes with the view (switched off after a failure).
+    fn drop(&mut self) {
+        if let Some((id, _)) = self.texture.take() {
+            self.state.renderer.write().free_texture(&id);
+        }
+    }
+}
+
 impl GpuView {
     /// Draws into the GPU view's image, shown as a texture of the window; its id.
     fn draw(

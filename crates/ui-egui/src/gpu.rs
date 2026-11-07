@@ -331,6 +331,26 @@ impl Gpu {
         if limits.max_storage_buffers_per_shader_stage < 3 {
             return Err("the device has too few storage buffers per shader stage".to_string());
         }
+        // Errors not caught by a scope are kept, and logged, not a panic (wgpu's default): the
+        // next frame reports them, and the view goes back to the CPU. They may be egui's own
+        // (it shares the device): the message says the device reported them. A lost device (a
+        // driver reset) too.
+        let uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+        let kept = uncaptured.clone();
+        device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
+            eprintln!("umcf-gui: the GPU device reported: {e}");
+            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.get_or_insert_with(|| format!("the GPU device reported: {e}"));
+        }));
+        let kept = uncaptured.clone();
+        device.set_device_lost_callback(move |_, message| {
+            eprintln!("umcf-gui: the GPU device was lost: {message}");
+            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.get_or_insert_with(|| format!("the GPU device was lost: {message}"));
+        });
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umcf view"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -492,14 +512,18 @@ impl Gpu {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: view_buffer.as_entire_binding() }],
         });
         let binding = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
-        // Errors not caught by a scope are kept, not a panic (wgpu's default): the next frame
-        // reports them, and the view goes back to the CPU.
-        let uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
-        let kept = uncaptured.clone();
-        device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
-            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            slot.get_or_insert_with(|| e.to_string());
-        }));
+        // What went wrong while building it fails it (nothing was built).
+        let failed = [
+            pollster::block_on(internal.pop()),
+            pollster::block_on(validation.pop()),
+            pollster::block_on(memory.pop()),
+        ];
+        if let Some(e) = failed.into_iter().flatten().next() {
+            return Err(format!("the GPU view can't be built on this device: {e}"));
+        }
+        if let Some(e) = uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            return Err(format!("the GPU device reported: {e}"));
+        }
         Ok(Gpu {
             device: device.clone(),
             queue: queue.clone(),
@@ -552,13 +576,20 @@ impl Gpu {
             return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
         }
         if let Some(e) = self.uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            self.objects.clear();
+            self.target = None;
             return Err(NotDrawn::Failed(e));
         }
         // What the device reports while drawing (out of memory, a limit) fails the frame.
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         self.draw_unguarded(scene, camera, style, size);
-        let errors = [pollster::block_on(validation.pop()), pollster::block_on(memory.pop())];
+        let errors = [
+            pollster::block_on(internal.pop()),
+            pollster::block_on(validation.pop()),
+            pollster::block_on(memory.pop()),
+        ];
         if let Some(e) = errors.into_iter().flatten().next() {
             // What was uploaded may be part of the problem (memory): it goes.
             self.objects.clear();

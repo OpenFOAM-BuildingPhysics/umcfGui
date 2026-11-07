@@ -2250,6 +2250,8 @@ struct Desktop {
     app: App,
     screenshot: Option<String>,
     frames: u32,
+    /// When the screenshot was asked of the window.
+    asked: Option<std::time::Instant>,
     /// Set once the screenshot is written (or failed): the window closes.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the screenshot was not written, for [`run`] to return.
@@ -2287,8 +2289,8 @@ impl eframe::App for Desktop {
         self.frames += 1;
         ui.ctx().request_repaint();
         // A screenshot asked for and never written (a window format the capture doesn't take):
-        // fail, not wait.
-        if self.frames > 600 {
+        // fail after half a minute, not wait.
+        if self.asked.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(30)) {
             let mut f = self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             f.get_or_insert_with(|| format!("the screenshot {path} wasn't taken: the window's capture gave nothing"));
             self.done.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2296,6 +2298,9 @@ impl eframe::App for Desktop {
         }
         // A few frames for the panels to settle and the view to draw.
         if self.frames == 5 {
+            #[allow(clippy::disallowed_methods)]
+            let now = std::time::Instant::now();
+            self.asked = Some(now);
             let (path, done, failed, ctx) = (path.clone(), self.done.clone(), self.failed.clone(), ui.ctx().clone());
             let callback = egui::ScreenshotCallback::new(move |image| {
                 let [w, h] = image.size;
@@ -2407,12 +2412,25 @@ pub fn run(options: Options) -> Result<(), String> {
     let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let wanted = options.screenshot.clone();
     let done: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
-    let mut desktop =
-        Desktop { app, screenshot: options.screenshot, frames: 0, done: done.clone(), failed: failed.clone() };
+    let mut desktop = Desktop {
+        app,
+        screenshot: options.screenshot,
+        frames: 0,
+        asked: None,
+        done: done.clone(),
+        failed: failed.clone(),
+    };
     let start = options.renderer;
     let created = move |cc: &eframe::CreationContext<'_>| {
         let viewport = &mut desktop.app.viewport;
         let attached = match (&cc.wgpu_render_state, &probe) {
+            // `auto` takes a hardware device only: the window's own may differ from the probe's.
+            (Some(state), _)
+                if start == Start::Auto
+                    && state.adapter.get_info().device_type == eframe::egui_wgpu::wgpu::DeviceType::Cpu =>
+            {
+                Err("the GPU device is a software one".to_string())
+            }
             (Some(state), _) => viewport.attach_gpu(state),
             (None, Err(e)) => Err(e.clone()),
             (None, Ok(())) => Err("the window doesn't run on a GPU device".to_string()),
