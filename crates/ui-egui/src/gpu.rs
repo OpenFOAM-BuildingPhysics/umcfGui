@@ -1817,7 +1817,9 @@ mod tests {
         let mut whole = Gpu::new(&adapter, &device, &queue).unwrap();
         let mut small = Gpu::new(&adapter, &device, &queue).unwrap();
         small.chunk = 16;
-        for faces in [vec![], vec![(0, 0), (0, 2)]] {
+        // Faces of the wireframe, of the points and of the side's surface (its triangles, in
+        // chunks too, drawn in the selection's colour).
+        for faces in [vec![], vec![(0, 0), (0, 2), (0, 4)]] {
             style.selected_faces = faces.into_iter().collect();
             let selection = next();
             let a = read_back(&device, &queue, whole.draw(&scene, &camera, &style, size, selection).unwrap());
