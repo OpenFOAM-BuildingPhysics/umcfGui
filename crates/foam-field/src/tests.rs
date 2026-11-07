@@ -757,6 +757,11 @@ fn an_outline_reads_gzip_and_stays_within_its_limits() {
     assert!(e.starts_with(&format!("line {line}:")), "{e}");
 }
 
+/// The most the linear-time tests below may take. About a second here in a debug build; the
+/// quadratic cost they guard against took minutes. Loose, so that a slow CI runner of another
+/// system (macOS, Windows), running other tests at the same time, passes.
+const LINEAR_SECS: u64 = 30;
+
 #[test]
 fn an_outline_bounds_comments_strings_and_failed_bare_lists() {
     // Review findings: an unclosed comment, string or code block was kept whole, past the text
@@ -780,7 +785,7 @@ fn an_outline_bounds_comments_strings_and_failed_bare_lists() {
     let got = Field::outline(&fs, "0/T", &Limits::default(), 4 << 20);
     // Each attempt reads up to 800 kB ahead: 2000 of them would be 1.6 GB, quadratic in the file.
     assert!(matches!(got, Err(Error::TooLarge { .. })), "{:?}", got.err());
-    assert!(started.elapsed().as_secs() < 5);
+    assert!(started.elapsed().as_secs() < LINEAR_SECS, "{:?}", started.elapsed());
 }
 
 #[test]
@@ -796,7 +801,7 @@ fn failed_bare_lists_cost_linear_time_in_an_outline() {
     let _ = Field::outline(&fs, "0/T", &Limits::default(), 16 << 20);
     let src = format!("FoamFile {{ format ascii;\n{}", "List<scalar> ;\n".repeat(200_000));
     let _ = outline_of(src.as_bytes(), 1 << 20);
-    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    assert!(started.elapsed().as_secs() < LINEAR_SECS, "{:?}", started.elapsed());
 }
 
 #[test]
@@ -816,5 +821,5 @@ fn an_outline_bounds_what_its_lists_cost_and_reads_a_bad_header_once() {
     );
     let fs = umcf_core::MemFs::new().with("0/T", src);
     assert!(Field::outline(&fs, "0/T", &Limits::default(), 16 << 20).is_err());
-    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    assert!(started.elapsed().as_secs() < LINEAR_SECS, "{:?}", started.elapsed());
 }

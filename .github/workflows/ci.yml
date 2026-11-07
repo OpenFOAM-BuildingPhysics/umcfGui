@@ -82,4 +82,4 @@ jobs:
       - name: Build the desktop app
         run: cargo build -p umcf-gui --locked
       - name: Test everything
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast

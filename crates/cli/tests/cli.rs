@@ -433,7 +433,8 @@ fn surface_checks_and_repairs_stl_files() {
 
     // Imported, repaired and saved; then the case is clean.
     let case = dir.to_str().unwrap();
-    let import = format!("geometry.import={{\"path\": \"{source}\"}}");
+    // As JSON: a Windows path's backslashes are escaped.
+    let import = format!("geometry.import={}", serde_json::json!({ "path": source }));
     let o = cli(&[
         "run",
         "--case",
