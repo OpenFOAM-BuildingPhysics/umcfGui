@@ -384,8 +384,9 @@ fn fs_glass(in: Out) -> Glass {
     }
     let k = edging(in);
     // A tenth of the weight, which leaves the mean colour as it is: the half-float sums
-    // overflow (the pixel's layers are left out) only past thousands of near layers, while far
-    // ones (1e-3) stay within half-float precision.
+    // overflow (the pixel's layers are left out) only past thousands of near layers. Far ones
+    // (1e-3) keep about half-float precision down to opacities of a few percent (fainter and
+    // darker ones round more, to nothing where blending flushes subnormals).
     let w = clamp(pow(view.pixels.w / in.z, 4.0), 0.01, 100.0) * 0.1;
     var out: Glass;
     if obj.mode == 4u {
@@ -444,7 +445,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let id = textureLoad(ids, p, 0).r;
     var c = textureLoad(image, p, 0);
     // The transparent layers over what is behind them: one layer as the CPU view blends it.
-    // Sums that overflowed half floats (hundreds of near layers) are left out.
+    // Sums that overflowed half floats (thousands of near layers) are left out.
     let sum = textureLoad(sums, p, 0);
     let covered = 1.0 - exp(-textureLoad(through, p, 0).r);
     if covered > 0.0 && sum.a > 0.0 && all(abs(sum) < vec4<f32>(65000.0)) {
