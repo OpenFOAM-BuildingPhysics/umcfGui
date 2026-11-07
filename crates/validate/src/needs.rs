@@ -303,15 +303,12 @@ fn grass_reads(case: &Case, fluid: &Region, veg: &Region, out: &mut Vec<Diagnost
     }
 }
 
-/// Most cells a solid's materials are checked over (a byte each).
-const MAX_CELLS: u64 = 1 << 30;
-
 /// A solid region's materials against its cell zones, as the solver assigns them
 /// (`solid/updatebuildingMaterials.H`, both versions): each material's `name` is a cell zone,
 /// no cell is in two materials' zones (a material listed twice counts twice), and every cell is
 /// in one. Zones no material names don't count. The run stops on each.
 fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
-    for r in case.regions.iter().filter(|r| r.kind == RegionKind::Solid) {
+    'regions: for r in case.regions.iter().filter(|r| r.kind == RegionKind::Solid) {
         let Some(zones) = &r.cell_zones else { continue };
         let file = format!("constant/{}/transportProperties", r.name);
         let Some(list) = case.dict(&file).and_then(|d| d.get(&["buildingMaterials"])) else { continue };
@@ -349,73 +346,114 @@ fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
                 ),
             ));
         }
-        // Each cell's material (two bytes a cell), by the zones in the materials' order.
-        let Some(n) = r.counts.cells.filter(|n| *n <= MAX_CELLS) else { continue };
-        let mut owner: Vec<u16> = Vec::new();
-        if owner.try_reserve_exact(n as usize).is_err() || names.len() >= usize::from(u16::MAX) {
-            continue;
-        }
-        owner.resize(n as usize, 0);
-        let mut stop = None;
-        'materials: for (i, name) in names.iter().enumerate() {
-            let Some(z) = zone(name) else { continue };
-            let tag = u16::try_from(i + 1).unwrap_or(u16::MAX);
-            for &c in &z.cells {
-                let Some(slot) = owner.get_mut(c as usize) else {
-                    // The solver indexes past its cells and crashes.
-                    stop = Some((
-                        "case.material-zone",
-                        format!(
-                            "zone `{name}` lists cell {c}, and region `{}` has {n} cells: the run fails there",
-                            r.name
-                        ),
-                    ));
-                    break 'materials;
-                };
-                if *slot != 0 {
-                    let first = usize::from(*slot) - 1;
-                    let other = names.get(first).map_or("?", String::as_str);
-                    stop = Some((
-                        "case.material-overlap",
-                        if first == i {
-                            format!("zone `{name}` lists cell {c} twice: the solver stops on a cell assigned twice")
-                        } else if other == name {
-                            format!(
-                                "material `{name}` is listed twice, so its zone's cells (cell {c} first) get two \
-                             materials: the solver stops"
-                            )
-                        } else {
-                            format!(
-                                "cell {c} is in the zones of materials `{other}` and `{name}`: the solver stops on a cell \
-                             with two materials"
-                            )
-                        },
-                    ));
-                    break 'materials;
+        // Each label of the materials' zones with when the solver reaches it (the materials in
+        // order, each zone's labels in order): 8 bytes a label, as much as the zones hold, not a
+        // cell count from a header. Sorted by cell, a cell met twice is two neighbours. The solver
+        // goes no further than a material without a zone (it stops there) or one whose zone it
+        // has already assigned (it stops at that zone's first cell): neither do these.
+        let mut met: Vec<(u32, u32)> = Vec::new();
+        // Where each material's labels start, by when, to tell whose a label is.
+        let mut starts: Vec<(u32, usize)> = Vec::new();
+        let mut repeat = None;
+        for (i, name) in names.iter().enumerate() {
+            let Some(z) = zone(name) else { break };
+            let Ok(at) = u32::try_from(met.len()) else { continue 'regions };
+            if let Some(&(_, j)) = starts.iter().find(|(_, j)| names.get(*j) == Some(name)) {
+                if let Some(&c) = z.cells.first() {
+                    repeat = Some((c, at, j, i));
+                    break;
                 }
-                *slot = tag;
+                continue;
+            }
+            if met.try_reserve(z.cells.len()).is_err() || u32::try_from(met.len() + z.cells.len()).is_err() {
+                continue 'regions;
+            }
+            starts.push((at, i));
+            for (k, &c) in z.cells.iter().enumerate() {
+                met.push((c, at + k as u32));
             }
         }
+        let whose =
+            |t: u32| starts.get(starts.partition_point(|(s, _)| *s <= t).wrapping_sub(1)).map_or(0, |(_, i)| *i);
+        met.sort_unstable();
+        let n = r.counts.cells;
+        // Where the solver stops first: a cell past the region's (it indexes past them), a cell
+        // met a second time, or a material's zone assigned again.
+        let past = n.and_then(|n| met.iter().filter(|(c, _)| u64::from(*c) >= n).min_by_key(|(_, t)| *t).copied());
+        let again = met.windows(2).filter(|w| w[0].0 == w[1].0).map(|w| (w[0], w[1])).min_by_key(|(_, b)| b.1);
+        let mut events: Vec<(u32, (&'static str, String))> = Vec::new();
+        if let Some((c, t)) = past {
+            let name = names.get(whose(t)).map_or("?", String::as_str);
+            let cells = n.unwrap_or_default();
+            events.push((
+                t,
+                (
+                    "case.material-zone",
+                    format!(
+                        "zone `{name}` lists cell {c}, and region `{}` has {cells} cells: the run fails there",
+                        r.name
+                    ),
+                ),
+            ));
+        }
+        if let Some(((_, ta), (c, tb))) = again {
+            events.push((tb, overlap(&names, c, whose(ta), whose(tb))));
+        }
+        if let Some((c, t, j, i)) = repeat {
+            events.push((t, overlap(&names, c, j, i)));
+        }
+        let stop = events.into_iter().min_by_key(|(t, _)| *t).map(|(_, e)| e);
         if let Some((code, message)) = stop {
             out.push(diag(code, message));
             continue;
         }
-        if !missing.is_empty() || !judged {
+        if !missing.is_empty() || !judged || repeat.is_some() {
             continue;
         }
-        let none = owner.iter().filter(|m| **m == 0).count();
-        if none > 0 {
-            let first = owner.iter().position(|m| *m == 0).unwrap_or_default();
+        // Every cell once: as many distinct cells as the region has (none past them, none twice).
+        let Some(n) = n else { continue };
+        let covered = met.len() as u64;
+        if covered < n {
+            // The first cell no zone lists.
+            let mut first = 0u64;
+            for (c, ..) in &met {
+                if u64::from(*c) != first {
+                    break;
+                }
+                first += 1;
+            }
             out.push(diag(
                 "case.material-cover",
                 format!(
-                    "{none} of the {n} cells of region `{}` are in no material's zone (cell {first} first): the solver \
+                    "{} of the {n} cells of region `{}` are in no material's zone (cell {first} first): the solver \
                      stops unless every cell has a material",
+                    n - covered,
                     r.name
                 ),
             ));
         }
     }
+}
+
+/// The message for cell `c` the solver meets a second time, first for material `first` (by its
+/// index in `names`), then for `second`.
+fn overlap(names: &[String], c: u32, first: usize, second: usize) -> (&'static str, String) {
+    let name = |i: usize| names.get(i).map_or("?", String::as_str);
+    let message = if first == second {
+        format!("zone `{}` lists cell {c} twice: the solver stops on a cell assigned twice", name(first))
+    } else if name(first) == name(second) {
+        format!(
+            "material `{}` is listed twice, so its zone's cells (cell {c} first) get two materials: the solver stops",
+            name(first)
+        )
+    } else {
+        format!(
+            "cell {c} is in the zones of materials `{}` and `{}`: the solver stops on a cell with two materials",
+            name(first),
+            name(second)
+        )
+    };
+    ("case.material-overlap", message)
 }
 
 /// The patches by name, the first of a name kept (OpenFOAM stops on a name given twice).

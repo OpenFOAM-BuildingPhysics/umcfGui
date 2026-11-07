@@ -1540,8 +1540,19 @@ fn fields_can_be_read_after_the_case_opens() {
     // order of reading at open.
     fs.insert("0/air/bad", "FoamFile { class volScalarField; }\ninternalField nonuniform List<scalar> 5(1 2);\n");
     fs.insert("constant/air/polyMesh/boundary", "2\n(\n broken");
+    // A solid with a mesh and a cell zone: its zones are read with the fields.
+    fs.insert(
+        "constant/street/polyMesh/boundary",
+        "1\n(\n    street_to_air { type wall; nFaces 1; startFace 0; }\n)\n",
+    );
+    fs.insert(
+        "constant/street/polyMesh/cellZones",
+        "FoamFile { format ascii; class regIOobject; object cellZones; }\n1\n(\nbrick\n{\n    type cellZone;\n    cellLabels List<label> 2(0 1);\n}\n)\n",
+    );
     let deferred = OpenOptions { defer_fields: true, ..OpenOptions::default() };
     let mut c = Case::open_with(&fs, deferred).unwrap();
+    assert_eq!(c.region("street").unwrap().zones_from.as_deref(), Some("constant/street/polyMesh"));
+    assert!(c.region("street").unwrap().cell_zones.is_none());
     // Listed, not read: no conditions yet, and nothing to note about them.
     assert!(c.fields_pending);
     let t = c.region("air").unwrap().field("T").unwrap();
@@ -1554,10 +1565,24 @@ fn fields_can_be_read_after_the_case_opens() {
     let whole = Case::open(&fs).unwrap();
     assert!(!c.fields_pending);
     assert_eq!(c.regions, whole.regions);
+    let zones = c.region("street").unwrap().cell_zones.clone().unwrap();
+    assert_eq!((zones.len(), zones[0].name.as_str(), zones[0].cells.as_slice()), (1, "brick", &[0, 1][..]));
+    assert!(c.region("air").unwrap().cell_zones.is_none());
     assert_eq!(c.notes, whole.notes);
     assert!(c.notes.iter().any(|n| n.path == "0/air/bad"));
     let umcf_core::ProgressNow { done, total, .. } = progress.get();
     assert!(total > 0 && done == total, "{done} of {total}");
     // Once only: an edited field isn't read back from disk.
     assert!(!c.read_start_fields(&fs, None).unwrap());
+    // A cell zone file that doesn't read: its note where opening at once puts it.
+    fs.insert(
+        "constant/street/polyMesh/cellZones",
+        "FoamFile { class regIOobject; }\n1\n(\nbrick { type cellZone; }\n)\n",
+    );
+    let mut c = Case::open_with(&fs, deferred).unwrap();
+    c.read_start_fields(&fs, None).unwrap();
+    let whole = Case::open(&fs).unwrap();
+    assert!(whole.notes.iter().any(|n| n.path == "constant/street/polyMesh/cellZones"), "{:?}", whole.notes);
+    assert_eq!(c.notes, whole.notes);
+    assert!(c.region("street").unwrap().cell_zones.is_none());
 }
