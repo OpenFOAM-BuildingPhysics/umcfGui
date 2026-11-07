@@ -270,9 +270,9 @@ fn fs(in: Out) -> Pixel {
 }
 
 // The selection (selected classes, selected faces): as `fs`, its depth 1 + DEPTH_FRONT nearer
-// (CPU_FRONT, as the CPU view puts it, where the depth buffer keeps that precision), so that it is seen over what lies in the same place, and only there (a
-// bias that grows with the surface's slope would bring surfaces behind others to the front,
-// near their edges).
+// (CPU_FRONT, as the CPU view puts it, where the depth buffer keeps that precision), so that it
+// is seen over what lies in the same place, and only there (a bias that grows with the
+// surface's slope would bring surfaces behind others to the front, near their edges).
 struct Front {
     @location(0) colour: vec4<f32>,
     @location(1) id: u32,
