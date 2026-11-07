@@ -134,7 +134,8 @@ draw on the CPU.
   (weighted, blended transparency), where the CPU blends the farthest first. The colours there
   can differ much from the CPU's: two layers near each other at 90 % opacity are mixed about
   evenly on the GPU, where the CPU shows the nearer at 90 % and the farther at 9 %. The GPU's
-  don't depend on how triangles are cut or ordered.
+  blend doesn't depend on the order the triangles are drawn in (each triangle is still shaded
+  by its own middle, as on the CPU).
 - **What the CPU still draws.** On a device that can't blend half-float images (some OpenGL
   ES drivers), transparent layers bring the CPU view back (the history bar says so). Picking,
   *Box select* and `scene.snapshot` work on the CPU either way, on the same scene.
