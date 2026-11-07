@@ -128,7 +128,10 @@ mod tests {
         let read = groups(&[
             (&format!("{job}/memory.max"), "4294967296\n"),
             (&format!("{job}/memory.current"), "1073741824\n"),
-            (&format!("{job}/memory.stat"), "anon 1\nfile 805306368\nshmem 268435456\ninactive_file 2\n"),
+            (
+                &format!("{job}/memory.stat"),
+                "anon 1\nfile_mapped 999\nshmem_thp 999\nfile 805306368\nshmem 268435456\ninactive_file 2\n",
+            ),
             (&format!("{job}/step_0/user/task_0/memory.max"), "max\n"),
         ]);
         // 4 GB less 1 GB used, of which 0.75 GB is page cache, 0.25 GB of it shared memory that
