@@ -3,13 +3,15 @@
 //!
 //! Taken once per process, when the first session starts, from the memory free as Linux,
 //! Windows or macOS tell it (on Linux no more than the process's cgroup v2 groups leave: a
-//! container, a SLURM job; 8 GB where it can't be told), or from `UMCF_MEMORY` (a whole number
-//! of megabytes) when it is set; another value of it is ignored. Half of it is for reading at
+//! container, a SLURM job; half the total memory where the free can't be told, 1 GB where
+//! neither can), or from `UMCF_MEMORY` (a whole number of megabytes above 0) when it is set;
+//! another value of it is ignored. Half of it is for reading at
 //! once, a quarter for hidden scene objects. These are plans from estimates, not limits: a
 //! single read bigger than the budget still runs, alone.
 
-/// What [`Budget::system`] assumes where the free memory can't be told.
-const FALLBACK: u64 = 8 << 30;
+/// What [`Budget::system`] plans with where neither the free nor the total memory can be told:
+/// small, so that big reads run one at a time and hidden objects go, on every system alike.
+const FALLBACK: u64 = 1 << 30;
 
 /// How much memory the session plans for (bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,24 +35,27 @@ impl Budget {
     pub fn system() -> Budget {
         static SYSTEM: std::sync::OnceLock<Budget> = std::sync::OnceLock::new();
         *SYSTEM.get_or_init(|| {
-            let set = std::env::var("UMCF_MEMORY").ok().and_then(|v| v.trim().parse::<u64>().ok());
+            let set = std::env::var("UMCF_MEMORY").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|mb| *mb > 0);
             Budget::of(set.map_or_else(free_memory, |mb| mb.saturating_mul(1 << 20)))
         })
     }
 }
 
 /// The memory free now, as the system tells it (Linux, Windows, macOS), and on Linux no more
-/// than the process's control group leaves (see [`cgroup_free`]); else [`FALLBACK`]. A failure
+/// than the process's control group leaves (see [`cgroup_free`]); half the total memory when
+/// the free can't be told, else [`FALLBACK`]. A failure
 /// of the system's crate falls back too: the budget is a plan, never a reason to stop.
 fn free_memory() -> u64 {
     let system = std::panic::catch_unwind(|| {
         let mut system = sysinfo::System::new();
         system.refresh_memory();
-        system.available_memory()
+        (system.available_memory(), system.total_memory())
     });
+    // Free memory that can't be told: half the total, else the small fallback.
     let free = match system {
-        Ok(0) | Err(_) => FALLBACK,
-        Ok(n) => n,
+        Ok((0, 0)) | Err(_) => FALLBACK,
+        Ok((0, total)) => total / 2,
+        Ok((free, _)) => free,
     };
     #[cfg(target_os = "linux")]
     if let Some(own) = std::fs::read_to_string("/proc/self/cgroup").ok()

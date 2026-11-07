@@ -252,12 +252,12 @@ fn surface_need(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str)
 /// Drops the first of `spare` (the ones shown least recently) while they hold more than `budget`.
 fn trim_spare(spare: &mut Vec<(Key, Object)>, budget: u64) {
     let mut held: u64 = spare.iter().map(|(_, o)| o.bytes()).sum();
-    let mut drop = 0;
-    while held > budget && drop < spare.len() {
-        held = held.saturating_sub(spare.get(drop).map_or(0, |(_, o)| o.bytes()));
-        drop += 1;
+    let mut dropped = 0;
+    while held > budget && dropped < spare.len() {
+        held = held.saturating_sub(spare.get(dropped).map_or(0, |(_, o)| o.bytes()));
+        dropped += 1;
     }
-    spare.drain(..drop);
+    spare.drain(..dropped);
 }
 
 /// The parameters that say what the scene shows.
@@ -458,14 +458,24 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             read.extend(parallel(id, jobs_for(&again), budget.read)?);
             missing.extend(again);
         }
-        // Building an object reads nothing more: what it holds is the object's, kept anyway.
+        // Building an object reads nothing more; what it adds while it runs is the object, planned
+        // like the reads.
         let built: Vec<(u64, Job<'_, Object>)> = missing
             .iter()
             .zip(read)
             .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
                 (
-                    0,
+                    match &x {
+                        // About two triangles a face (their corners, class, face and edges: 21
+                        // bytes each) and each kept point in single precision with its label.
+                        Read::Mesh(m) => {
+                            let faces = m.n_faces().saturating_sub(m.first_boundary_face()) as u64;
+                            faces.saturating_mul(42).saturating_add((m.points.len() as u64).saturating_mul(16))
+                        }
+                        // Three points (12 bytes each) and 21 bytes a triangle.
+                        Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(57),
+                    },
                     Box::new(move || {
                         Ok(match (source, x) {
                             (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
@@ -1192,11 +1202,21 @@ mod tests {
     /// Jobs that note the estimates running together (saturating: [`UNKNOWN`] is the most there
     /// is); the most seen.
     fn run(costs: &[u64], budget: u64) -> (Vec<usize>, u64) {
-        run_with(costs, budget).0
+        let seen = run_with(costs, budget);
+        (seen.out, seen.most)
     }
 
-    /// [`run`], and the most jobs that ran together with an [`UNKNOWN`] one among them.
-    fn run_with(costs: &[u64], budget: u64) -> ((Vec<usize>, u64), usize) {
+    /// What [`run_with`] saw.
+    struct Seen {
+        /// The jobs' results.
+        out: Vec<usize>,
+        /// The most the estimates running together came to.
+        most: u64,
+        /// The most jobs that ran together with an [`UNKNOWN`] one among them.
+        together: usize,
+    }
+
+    fn run_with(costs: &[u64], budget: u64) -> Seen {
         use std::sync::Mutex;
         // What runs now: each job's estimate, by its index.
         let running: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
@@ -1227,7 +1247,7 @@ mod tests {
             })
             .collect();
         let out = parallel("test", jobs, budget).unwrap();
-        ((out, most.load(Ordering::SeqCst)), with_unknown.load(Ordering::SeqCst))
+        Seen { out, most: most.load(Ordering::SeqCst), together: with_unknown.load(Ordering::SeqCst) }
     }
 
     #[test]
@@ -1294,8 +1314,8 @@ mod tests {
 
     #[test]
     fn reads_of_unknown_size_run_alone() {
-        let ((out, _), together) = run_with(&[UNKNOWN, 10, UNKNOWN, 10], 100);
-        assert_eq!(out, [0, 1, 2, 3]);
-        assert_eq!(together, 1, "an unknown read ran with another");
+        let seen = run_with(&[UNKNOWN, 10, UNKNOWN, 10], 100);
+        assert_eq!(seen.out, [0, 1, 2, 3]);
+        assert_eq!(seen.together, 1, "an unknown read ran with another");
     }
 }

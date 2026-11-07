@@ -29,6 +29,7 @@ be reset and made again. [What a case needs](case-requirements.md) is the specif
 
 | Limit | Effect | Possible fix |
 |---|---|---|
+| A job's or container's memory limit is seen on Linux only | On Linux the memory budget stays within the cgroup v2 limits the app runs under (a SLURM job, a container). On Windows a job object's limit, and on macOS a container's or virtual machine's, are not looked for: the app plans with the memory the system says is free, which may be more than the job may use. `UMCF_MEMORY` sets it by hand | Read a Windows job object's limit (`QueryInformationJobObject`, through a crate) and what macOS offers for a process's limit |
 | The field files are read whole before a check can judge them | The desktop app reads them after the case opens, in the background (the Hong Kong project at its latest time: its view shows at once, its fields take 2.6 s more, most of it decompressing the 600 MB `U` and `phi`); the CLI still reads them before the case opens | Show each field's conditions as it is read, not all at the end |
 | `bc.set` sets the patch's own entry only | A condition given by a group or a pattern (`"(wall\|roof).*"`) isn't changed: the patch gets an entry of its own, which takes precedence; setting the group's entry needs `dict.set`-style editing of field files | A `bc.set` target for a group or pattern entry |
 | A same-type `bc.set` can add or change keys, not remove them | Removing a key from a condition means giving the patch another type and back, or editing the file | A `remove` list in `bc.set` |

@@ -64,8 +64,8 @@ jobs:
 
   desktop:
     # Windows and macOS, supported as Linux is (AGENTS.md §4): the desktop app built and every
-    # test run (the folder dialog is the system's own on each: IFileDialog, NSOpenPanel, the
-    # desktop portal; so are the free memory the session plans with, paths and links).
+    # test run. What the tests reach of the system differs on each: the folder dialog
+    # (IFileDialog, NSOpenPanel, the desktop portal), the free memory, paths and links.
     name: desktop (${{ matrix.os }})
     strategy:
       fail-fast: false

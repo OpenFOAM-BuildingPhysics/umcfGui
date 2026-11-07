@@ -187,16 +187,18 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 The session plans with the memory free when the program starts, as Linux, Windows or macOS
 tell it (on Linux no more than the control groups it runs in leave, with cgroup v2: a
 container, a SLURM job, `systemd-run -p MemoryMax=`; the page cache they can drop counts as
-free, shared memory doesn't), or with `UMCF_MEMORY` when that is set to a whole number of
-megabytes (`UMCF_MEMORY=4000 umcf-gui case`; another value is ignored):
+free, shared memory doesn't). Where the free memory can't be told it plans with half the
+total, and with 1 GB where neither can. `UMCF_MEMORY`, set to a whole number of megabytes
+above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is ignored):
 
 - **Half of it for reading at once.** Each region's read is estimated from the counts its
   `owner` header notes: about 32 bytes per point of the mesh and per boundary face, and for a
   binary mesh (read whole, not as a stream) 24 more per point and its `faces` file's size.
   Without the counts it is estimated from the sizes of its `points` and `faces` files, a
-  surface from its file's size; a read whose size can't be told runs alone. The biggest start first, and a
-  reader starts only while its estimate and those running fit. One always runs, so a region
-  bigger than the budget is read, alone.
+  surface from its file's size; a read whose size can't be told runs alone. The biggest start
+  first, and a reader starts only while its estimate and those running fit. One always runs,
+  so a region bigger than the budget is read, alone. Building the drawn objects from what was
+  read is planned the same way, from the size of each object.
 - **A quarter for what the scene keeps while it is hidden.** Past it, the regions and surfaces
   shown least recently are dropped, and read again when they are shown.
 
