@@ -111,8 +111,9 @@ impl App {
     /// patches', a surface's from its regions'), so that all of them are drawn as it is; an
     /// entry left with nothing to set goes. The entries apply in order: the layer's goes last among
     /// those of its kind, after those that hold it, so that what was set last wins: a patch set
-    /// after its region keeps what it set until the region sets the same again. Two groups of
-    /// one patch hold neither the other: the one changed last wins, for its mode and opacity.
+    /// after its region keeps what it set until the region, or a group of the patch, sets the
+    /// same again. Two groups of one patch hold neither the other: the one changed last wins,
+    /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
         if let Change::Mode(_) | Change::Opacity(_) = change {
             // Only a group needs its patches' groups.
