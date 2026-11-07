@@ -328,12 +328,14 @@ pub struct Gpu {
 }
 
 /// What wakes the window (egui's repaint), set when the view is attached to it.
-type Wake = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send>>>>;
+type Wake = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>;
 
 /// Keeps the first error the device reported, and wakes the window to show it.
 fn keep(slot: &std::sync::Mutex<Option<String>>, wake: &Wake, error: String) {
     slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert(error);
-    if let Some(w) = wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+    // Called outside the lock: a wake that set another one would wait for itself.
+    let w = wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if let Some(w) = w {
         w();
     }
 }
@@ -565,8 +567,8 @@ impl Gpu {
 
     /// Wakes the window with `wake` when the device reports an error, so that it is shown
     /// though nothing else changes.
-    pub fn wake_with(&self, wake: impl Fn() + Send + 'static) {
-        *self.wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(wake));
+    pub fn wake_with(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *self.wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(wake));
     }
 
     /// Whether this view draws `style` as the CPU view would: opaque surfaces, hidden layers,
