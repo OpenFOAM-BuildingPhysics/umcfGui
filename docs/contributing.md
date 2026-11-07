@@ -13,8 +13,8 @@ The short version:
   itself is reached through WSL, a virtual machine or a remote machine where it doesn't run);
   CI builds and tests on each.
 - **Checks of the window come with screenshots:** a change to what the window shows is checked
-  with headless screenshots (`--screenshot`, both renderers where the 3D view is touched), sent
-  with the report (AGENTS.md §7).
+  with headless screenshots (`--screenshot`, both renderers where the 3D view is touched; a GPU
+  one counts only where the history bar says *GPU*), sent with the report (AGENTS.md §7).
 - **The solver is the spec.** Read the urbanMicroclimateFoam source freely; ported code keeps
   its copyright line and names its source file and commit.
 - **Pull requests** target `main`, never another pull request; each push is first reviewed by

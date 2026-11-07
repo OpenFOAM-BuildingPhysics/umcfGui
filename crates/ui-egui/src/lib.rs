@@ -2128,6 +2128,11 @@ impl App {
                     Renderer::Gpu => "Click to turn the GPU view off (the CPU draws the view).",
                 };
                 let r = ui.add(label);
+                if can {
+                    // A switch: a button to screen readers, not a label.
+                    let name = by.name();
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+                }
                 let r = if can {
                     r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{tip}. {hint}"))
                 } else {
