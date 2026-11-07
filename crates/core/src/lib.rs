@@ -572,6 +572,11 @@ impl MemFs {
     pub fn insert(&mut self, rel: &str, contents: impl Into<Vec<u8>>) {
         self.files.insert(rel.trim_matches('/').to_string(), contents.into());
     }
+
+    /// Takes a file out; whether it was there.
+    pub fn remove(&mut self, rel: &str) -> bool {
+        self.files.remove(rel.trim_matches('/')).is_some()
+    }
 }
 
 impl CaseFs for MemFs {

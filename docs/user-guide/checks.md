@@ -81,6 +81,24 @@ checked further.
 A meshing step names regions that only exist once the steps are put together, so coupling is
 checked in solver cases only.
 
+## What urbanMicroclimateFoam needs from regions and patches
+
+The solver finds some regions, patches and files by name, and reads radiation and couples
+regions through patches of particular types ([what a case needs](../case-requirements.md#regions)).
+Most of these stop the run where the solver looks; a sky or surface mix-up runs, wrong, without a
+word. Checked in solver cases.
+
+| Code | Level | What it means |
+|---|---|---|
+| `case.fluid` | Warning | The case lists no fluid region, or more than one: urbanMicroclimateFoam cases have one, `air` |
+| `case.air` | Error | The fluid region is not named `air`, and a fluid or vegetation region solves radiation with `viewFactorSky`, which looks up the mesh `air` |
+| `case.ambient` | Error | A solid uses `CFDHAMsolidTemperatureCoupledMixed` or `…TransferCoeff`, and `0/air/Tambient` or `0/air/wambient` (or its `.gz`) is missing: the condition reads them by that path for the rain's temperature, whatever the fluid region is called. `0/air/rainTemp` takes their place, except for OpenFOAM-12's `CoupledMixed`, which looks for it at a path it never finds (`$FOAM_CASE` unexpanded) and always reads the two tables |
+| `case.vegetation` | Error | The vegetation region is not named `vegetation` (the solid temperature conditions, `simplifiedVegetation` and `calcLAI` find it by that name), or there is more than one |
+| `case.canopy` | Error | With `simplifiedVegetation`, the `vegetation` region has no `air_to_vegetation` patch (the trees' surface, found by name), or one the radiation takes as sky. The usual canopy types, both surfaces, are `mappedInternal` (OpenFOAM-12) and `mappedWall` (OpenFOAM-8) |
+| `case.vegetation-patch` | Error | A solid temperature condition with `qrNbr` or `qsNbr` reads the radiation from the `vegetation` patch named like its partner patch in the air, and there is no such patch; or, in OpenFOAM-8, `simpleGrass` reads it from the `vegetation` patch named like each of its `grassPatches` (OpenFOAM-12 falls back to the air's) |
+| `case.sky-surface` | Warning | With `viewFactorSky` in `vegetation`, a patch is a surface in the air and sky in `vegetation`, or the other way round. The radiation takes the wall types (`wall`, `mappedWall`, `mappedExtrudedWall` and `nonConformalMappedWall` in OpenFOAM-12; `wall`, `mappedWall`, `regionCoupledWall` and `mappedWallVariableThickness` in OpenFOAM-8) and, in OpenFOAM-12, `mappedInternal` as surfaces, every other patch as sky: the ground and buildings are surfaces, the domain's sides and top sky, so one of the two types is likely wrong |
+| `bc.patch-type` | Error | A condition on a patch that can't carry it: urbanMicroclimateFoam's coupled conditions (`compressible::CFDHAM…`, apart from `…TransferCoeffInterior`) need a mapped patch (`mapped`, `mappedWall`, `mappedExtrudedWall`, `nonConformalMappedWall` in OpenFOAM-12; `mappedPatch`, `mappedWall`, `mappedWallVariableThickness` in OpenFOAM-8), `mappedLeafTemperature` a `mappedInternal` patch in OpenFOAM-12 (a mapped one in OpenFOAM-8). The run stops where the condition is built. Only entries that name the patch are checked, not patterns or groups |
+
 ## Solver types
 
 The model types a region's dictionaries select are checked against the

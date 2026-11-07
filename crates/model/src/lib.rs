@@ -181,7 +181,18 @@ pub struct Bc {
     /// The entry holds data lists (`value nonuniform List<scalar> 120(…)`), one value per face
     /// of the patch.
     pub lists: bool,
+    /// The condition's other entries that are one word (`qrNbr qr;`, `Tnbr T;`): those in
+    /// [`KEPT_WORDS`] always, the others up to [`MAX_WORDS`]: what a check may need to know of
+    /// how it is set.
+    pub words: Vec<(String, String)>,
 }
+
+/// Most one-word entries a [`Bc`] keeps besides [`KEPT_WORDS`].
+pub const MAX_WORDS: usize = 32;
+
+/// The one-word entries a [`Bc`] keeps whatever comes before them, the last of a key given twice
+/// (as OpenFOAM reads it): those the case check reads.
+pub const KEPT_WORDS: [&str; 2] = ["qrNbr", "qsNbr"];
 
 /// What is on disk for one dictionary, as read or last saved. Shared by every clone of a
 /// case, so an undo snapshot can't make the model forget what was saved.
@@ -2506,6 +2517,38 @@ fn summarise(name: String, path: String, f: &Field) -> FieldInfo {
                         value: body.and_then(|b| b.get("value")).and_then(|v| short_entry(f, v)),
                         patch_type: body.and_then(|b| word(b, "patchType")),
                         lists: body.is_some_and(|b| b.to_string().contains(umcf_foam_field::PLACEHOLDER)),
+                        // One pass over the entries (a hostile file may have very many).
+                        words: body.map_or(Vec::new(), |b| {
+                            // The kept words as OpenFOAM reads them (the last of a key given twice
+                            // wins), and up to MAX_WORDS others.
+                            let mut kept: [Option<String>; KEPT_WORDS.len()] = Default::default();
+                            let mut others = Vec::new();
+                            for (k, v) in b
+                                .entries()
+                                .filter(|e| !matches!(e.key(), "type" | "value" | "patchType"))
+                                .filter_map(|e| {
+                                    let v = umcf_foam_dict::unquote(e.value_text()?.trim()).to_string();
+                                    (!v.is_empty() && !v.contains(char::is_whitespace))
+                                        .then(|| (e.key().to_string(), v))
+                                })
+                            {
+                                match KEPT_WORDS.iter().position(|w| *w == k) {
+                                    Some(i) => {
+                                        if let Some(slot) = kept.get_mut(i) {
+                                            *slot = Some(v);
+                                        }
+                                    }
+                                    None if others.len() < MAX_WORDS => others.push((k, v)),
+                                    None => {}
+                                }
+                            }
+                            KEPT_WORDS
+                                .iter()
+                                .zip(kept)
+                                .filter_map(|(k, v)| Some((k.to_string(), v?)))
+                                .chain(others)
+                                .collect()
+                        }),
                     }
                 })
                 .collect()
