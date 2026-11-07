@@ -206,6 +206,9 @@ struct Target {
     colour: Vec<[u8; 3]>,
     /// When there: the ids of the blended triangles' pixels, as they are drawn.
     hits: Option<std::collections::HashSet<u32>>,
+    /// When there: which of the pixels drawn count for `hits` (row by row over `x` and `y`);
+    /// else all of them.
+    mask: Option<Vec<bool>>,
 }
 
 fn bytes(c: [f32; 3]) -> [u8; 3] {
@@ -215,6 +218,14 @@ fn bytes(c: [f32; 3]) -> [u8; 3] {
 const NONE: u32 = u32::MAX;
 
 impl Target {
+    /// Whether pixel (`px`, `py`), one of those drawn, counts (see `mask`).
+    fn counts(&self, px: usize, py: usize) -> bool {
+        let Some(mask) = &self.mask else { return true };
+        let w = self.x.1.saturating_sub(self.x.0) + 1;
+        let (dx, dy) = (px.wrapping_sub(self.x.0), py.wrapping_sub(self.y.0));
+        dx < w && mask.get(dy.saturating_mul(w).saturating_add(dx)).copied().unwrap_or(false)
+    }
+
     /// Fills triangle `v` with `colour` where it is nearer than what is there; darkens the
     /// pixels within half a pixel of the edges set in `edges` (bit k: edge from v[k] to v[k+1]).
     /// A `front` triangle wins over one in the same place (a selected patch over the patch of
@@ -263,7 +274,10 @@ impl Target {
                 if alpha < 1.0 {
                     let k = if near_edge { EDGE } else { 1.0 };
                     self.blend(i, colour.map(|ch| ch * k), alpha);
-                    if let Some(h) = &mut self.hits {
+                    let counts = self.counts(px, py);
+                    if let Some(h) = &mut self.hits
+                        && counts
+                    {
                         h.insert(id);
                     }
                     continue;
@@ -506,7 +520,196 @@ impl Rect {
     }
 }
 
-/// What `rect` of the image [`draw`] makes of `scene` with `camera` and `style` covers, as
+/// Most points a [`Stroke`] has (`select.brush` and the desktop app's brush keep to it).
+pub const MAX_STROKE: usize = 4096;
+
+/// A brush stroke over an image, in pixels from its top left corner: what lies within `radius`
+/// of the path through `points` (one point: a dab). The radius is at least half a pixel's
+/// diagonal, so that the smallest stroke still takes the pixel under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stroke {
+    pub points: Vec<[f64; 2]>,
+    pub radius: f64,
+}
+
+impl Stroke {
+    fn reach(&self) -> f64 {
+        self.radius.max(std::f64::consts::FRAC_1_SQRT_2)
+    }
+
+    /// The segments of the path (a single point: one of no length).
+    fn segments(&self) -> impl Iterator<Item = ([f64; 2], [f64; 2])> + '_ {
+        let n = self.points.len();
+        (0..n.saturating_sub(1).max(usize::from(n > 0))).filter_map(move |i| {
+            let a = *self.points.get(i)?;
+            Some((a, self.points.get(i + 1).copied().unwrap_or(a)))
+        })
+    }
+
+    fn finite(&self) -> bool {
+        self.radius.is_finite() && !self.points.is_empty() && self.points.iter().flatten().all(|c| c.is_finite())
+    }
+}
+
+/// How far `p` is from the segment `a`–`b` (the tests check [`capsule_span`] with it).
+#[cfg(test)]
+fn distance_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let (ex, ey) = (p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+    (ex * ex + ey * ey).sqrt()
+}
+
+/// Where the horizontal line at `y` is within `r` of the segment `a`–`b`: one interval of x (the
+/// segment's reach is convex), or `None`.
+fn capsule_span(a: [f64; 2], b: [f64; 2], r: f64, y: f64) -> Option<(f64, f64)> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    // The discs at both ends.
+    for p in [a, b] {
+        let d = r * r - (y - p[1]) * (y - p[1]);
+        if d >= 0.0 {
+            let h = d.sqrt();
+            lo = lo.min(p[0] - h);
+            hi = hi.max(p[0] + h);
+        }
+    }
+    // The band between them: within r of the segment's line, its foot between the ends.
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len > 0.0 {
+        let (mut x0, mut x1) = (f64::NEG_INFINITY, f64::INFINITY);
+        // Distance to the line: |(x - ax) dy - (y - ay) dx| / len <= r.
+        let c = (y - a[1]) * dx;
+        if dy != 0.0 {
+            let (p, q) = (a[0] + (c - r * len) / dy, a[0] + (c + r * len) / dy);
+            (x0, x1) = (x0.max(p.min(q)), x1.min(p.max(q)));
+        } else if c.abs() > r * len {
+            return (lo <= hi).then_some((lo, hi));
+        }
+        // The foot: 0 <= ((x - ax) dx + (y - ay) dy) / len² <= 1.
+        let e = (y - a[1]) * dy;
+        if dx != 0.0 {
+            let (p, q) = (a[0] - e / dx, a[0] + (len * len - e) / dx);
+            (x0, x1) = (x0.max(p.min(q)), x1.min(p.max(q)));
+        } else if !(0.0..=len * len).contains(&e) {
+            x1 = f64::NEG_INFINITY;
+        }
+        if x0 <= x1 {
+            lo = lo.min(x0);
+            hi = hi.max(x1);
+        }
+    }
+    (lo <= hi && lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+/// A stroke's pixels ([`Area::mask`]) with the columns and rows (inclusive) they are over.
+type Mask = (Vec<bool>, (usize, usize), (usize, usize));
+
+/// What [`covered`] looks in: a rectangle or a brush stroke.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Area {
+    Rect(Rect),
+    Stroke(Stroke),
+}
+
+impl From<Rect> for Area {
+    fn from(r: Rect) -> Area {
+        Area::Rect(r)
+    }
+}
+
+impl From<Stroke> for Area {
+    fn from(s: Stroke) -> Area {
+        Area::Stroke(s)
+    }
+}
+
+impl Area {
+    fn finite(&self) -> bool {
+        match self {
+            Area::Rect(r) => r.a.iter().chain(&r.b).all(|c| c.is_finite()),
+            Area::Stroke(s) => s.finite(),
+        }
+    }
+
+    /// A rectangle around it (NaN corners when it isn't finite).
+    fn bounds(&self) -> Rect {
+        match self {
+            Area::Rect(r) => *r,
+            Area::Stroke(s) if s.finite() => {
+                let r = s.reach();
+                let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+                for p in &s.points {
+                    for i in 0..2 {
+                        lo[i] = lo[i].min(p[i] - r);
+                        hi[i] = hi[i].max(p[i] + r);
+                    }
+                }
+                Rect { a: lo, b: hi }
+            }
+            Area::Stroke(_) => Rect { a: [f64::NAN; 2], b: [f64::NAN; 2] },
+        }
+    }
+
+    /// Which of the pixels `xs` × `ys` (inclusive ranges) have their middle in it, row by row;
+    /// `None` for a rectangle (all of them). A stroke is made row by row: on each row, each
+    /// segment's reach (a capsule, convex) is one interval; they are merged and filled, so that the
+    /// work is the rows times the segments near them plus the pixels, however they overlap.
+    fn mask(&self, xs: (usize, usize), ys: (usize, usize)) -> Option<Vec<bool>> {
+        let Area::Stroke(s) = self else { return None };
+        let w = xs.1 - xs.0 + 1;
+        let mut mask = vec![false; w * (ys.1 - ys.0 + 1)];
+        let r = s.reach();
+        let segments: Vec<([f64; 2], [f64; 2])> = s.segments().collect();
+        let mut spans: Vec<(f64, f64)> = Vec::with_capacity(segments.len());
+        for py in ys.0..=ys.1 {
+            let y = py as f64 + 0.5;
+            spans.clear();
+            spans.extend(segments.iter().filter_map(|(a, b)| capsule_span(*a, *b, r, y)));
+            spans.sort_by(|p, q| p.0.total_cmp(&q.0));
+            let row = (py - ys.0) * w;
+            let mut filled_to = xs.0; // The first column not yet filled on this row.
+            for (lo, hi) in spans.iter().copied() {
+                // The pixels whose middle (i + 0.5) is in [lo, hi], within the columns.
+                let first = (lo - 0.5).ceil().max(filled_to as f64);
+                let last = (hi - 0.5).floor().min(xs.1 as f64);
+                if first > last {
+                    continue;
+                }
+                let (first, last) = (first as usize, last as usize);
+                if let Some(cells) = mask.get_mut(row + first - xs.0..=row + last - xs.0) {
+                    cells.fill(true);
+                }
+                filled_to = last + 1;
+            }
+        }
+        Some(mask)
+    }
+
+    /// Whether the point (`x`, `y`) of the image is in it; for a stroke, the pixel it lies in
+    /// is looked up in `mask` (made by [`Area::mask`] over `xs` × `ys`), so that the cost doesn't
+    /// grow with the stroke's length.
+    fn holds(&self, x: f64, y: f64, mask: Option<&Mask>) -> bool {
+        match (self, mask) {
+            (Area::Rect(r), _) => r.contains(x, y),
+            (Area::Stroke(_), Some((m, xs, ys))) => {
+                if !(x >= 0.0 && y >= 0.0) {
+                    return false;
+                }
+                let (px, py) = (x.floor() as usize, y.floor() as usize);
+                (xs.0..=xs.1).contains(&px)
+                    && (ys.0..=ys.1).contains(&py)
+                    && m.get((py - ys.0) * (xs.1 - xs.0 + 1) + (px - xs.0)).copied().unwrap_or(false)
+            }
+            (Area::Stroke(_), None) => false,
+        }
+    }
+}
+
+/// What `area` (a [`Rect`] or a brush [`Stroke`]) of the image [`draw`] makes of `scene` with
+/// `camera` and `style` covers, as
 /// (object index, triangle index) in order, each once. Of the style only the size and the
 /// selection count: selected classes and faces are in front where they lie on others, as drawn.
 /// Only the classes `keep` takes, (object index, class index), and not hidden by the style, are
@@ -515,29 +718,35 @@ impl Rect {
 /// front of them.
 ///
 /// - `through` false: the triangles seen in it, in front of everything else, at the middle of
-///   one of its pixels or more (a triangle smaller than a pixel may be missed).
+///   one of its pixels or more (a pixel is in it when its middle is; a triangle smaller than a
+///   pixel may be missed).
 /// - `through` true: the first triangle of each face (mesh face, STL triangle) whose middle (its
 ///   area-weighted centre) is inside it, on the image and in front of the camera, seen or
-///   hidden; a rectangle narrower than a pixel still takes the middles inside it.
+///   hidden; an area narrower than a pixel still takes the middles inside it.
 pub fn covered(
     scene: &Scene,
     camera: &Camera,
     style: &Style,
-    rect: Rect,
+    area: impl Into<Area>,
     through: bool,
     keep: &dyn Fn(usize, u32) -> bool,
 ) -> Vec<(usize, u32)> {
+    let area: Area = area.into();
     let (w, h) = size(style.width, style.height);
     let (wu, hu) = (w as usize, h as usize);
     let lens = Lens::new(scene, camera, wu, hu);
     let mut out = Vec::new();
     if through {
-        if !rect.a.iter().chain(&rect.b).all(|c| c.is_finite()) {
+        if !area.finite() {
             return out;
         }
-        // In the rectangle and on the image (a middle on its far edge is off it).
-        let on_image =
-            |x: f64, y: f64| rect.contains(x, y) && (0.0..wu as f64).contains(&x) && (0.0..hu as f64).contains(&y);
+        // A stroke's pixels, made once: a middle is under it when the pixel it lies in is.
+        let pixels = area.bounds().pixels(wu, hu);
+        let mask = pixels.and_then(|(xs, ys)| Some((area.mask(xs, ys)?, xs, ys)));
+        // On the image (a middle on its far edge is off it) and in the area.
+        let on_image = |x: f64, y: f64| {
+            (0.0..wu as f64).contains(&x) && (0.0..hu as f64).contains(&y) && area.holds(x, y, mask.as_ref())
+        };
         for (k, obj) in scene.objects.iter().enumerate() {
             let view = lens.view(obj);
             // The triangles of one face follow each other.
@@ -584,7 +793,11 @@ pub fn covered(
         }
         return out;
     }
-    let Some((xs, ys)) = rect.pixels(wu, hu) else { return out };
+    if !area.finite() {
+        return out;
+    }
+    let Some((xs, ys)) = area.bounds().pixels(wu, hu) else { return out };
+    let mask = area.mask(xs, ys);
     let mut t = Target {
         w: wu,
         x: xs,
@@ -593,6 +806,7 @@ pub fn covered(
         id: vec![NONE; wu * hu],
         colour: Vec::new(),
         hits: Some(std::collections::HashSet::new()),
+        mask,
     };
     // Each triangle's id: its object's first id plus its index.
     let mut first: Vec<u32> = Vec::with_capacity(scene.objects.len());
@@ -656,7 +870,8 @@ pub fn covered(
     // opaque surfaces, one per layer behind nothing opaque for the others), not the whole scene.
     let mut seen: std::collections::HashSet<u32> = t.hits.take().unwrap_or_default();
     for y in ys.0..=ys.1 {
-        seen.extend(t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]).iter().filter(|i| **i != NONE));
+        let row = t.id.get(y * wu + xs.0..=y * wu + xs.1).unwrap_or(&[]);
+        seen.extend(row.iter().enumerate().filter(|(x, i)| **i != NONE && t.counts(xs.0 + x, y)).map(|(_, i)| *i));
     }
     let mut ids: Vec<u32> = seen.into_iter().collect();
     ids.sort_unstable();
@@ -695,6 +910,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             })
             .collect(),
         hits: None,
+        mask: None,
     };
     let lens = Lens::new(scene, camera, wu, hu);
     let background = style.background.unwrap_or([TOP, BOTTOM]);
@@ -858,4 +1074,51 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
         }
     }
     Image { width: w, height: h, rgba }
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    use super::*;
+
+    /// The mask made row by row is the pixels whose middle is within reach of a segment, for
+    /// strokes of every slope, length and width, also past the image's edges.
+    #[test]
+    fn a_strokes_mask_is_the_pixels_within_its_reach() {
+        let mut seed = 7u64;
+        let mut rnd = |lo: f64, hi: f64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            lo + (hi - lo) * ((seed >> 11) as f64 / (1u64 << 53) as f64)
+        };
+        let (xs, ys): ((usize, usize), (usize, usize)) = ((0, 59), (0, 39));
+        let mut strokes = vec![
+            Stroke { points: vec![[10.0, 10.0]], radius: 0.0 },
+            Stroke { points: vec![[5.0, 20.0], [50.0, 20.0]], radius: 3.0 },
+            Stroke { points: vec![[30.0, 2.0], [30.0, 38.0]], radius: 2.5 },
+            Stroke { points: vec![[-10.0, -5.0], [70.0, 45.0], [70.0, 45.0]], radius: 4.0 },
+        ];
+        for _ in 0..40 {
+            let n = 1 + (rnd(0.0, 5.0) as usize);
+            let points = (0..n).map(|_| [rnd(-10.0, 70.0), rnd(-10.0, 50.0)]).collect();
+            strokes.push(Stroke { points, radius: rnd(0.0, 9.0) });
+        }
+        // Over the whole image, and over part of it (the mask's first pixel not the image's).
+        for (xs, ys) in [(xs, ys), ((7, 59), (3, 39))] {
+            let w = xs.1 - xs.0 + 1;
+            for s in &strokes {
+                let r = s.reach();
+                let mask = Area::Stroke(s.clone()).mask(xs, ys).unwrap();
+                for py in ys.0..=ys.1 {
+                    for px in xs.0..=xs.1 {
+                        let p = [px as f64 + 0.5, py as f64 + 0.5];
+                        let d = s.segments().map(|(a, b)| distance_to_segment(p, a, b)).fold(f64::INFINITY, f64::min);
+                        // Exactly on the edge either may round; elsewhere they agree.
+                        if (d - r).abs() > 1e-9 {
+                            let m = mask[(py - ys.0) * w + px - xs.0];
+                            assert_eq!(m, d <= r, "{s:?} at {px},{py}: {d} vs {r}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

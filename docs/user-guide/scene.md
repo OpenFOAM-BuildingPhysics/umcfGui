@@ -64,7 +64,7 @@ every region and surface and reads what is shown again.
 
 ## Display modes
 
-`display` (in `scene.snapshot`, `select.pick` and `select.rect`) says how each layer is drawn: a
+`display` (in `scene.snapshot`, `select.pick`, `select.rect` and `select.brush`) says how each layer is drawn: a
 list of entries, each naming a layer and giving it a `mode`, an `opacity`, or both:
 
 | Layer | Entry |
@@ -152,10 +152,27 @@ umcf-cli run --case my-case \
   --cmd 'patch.create={"name": "plaza", "type": "wall"}'
 ```
 
+## Selecting with a brush
+
+`select.brush` selects what is under a brush stroke over the same image: `stroke`, the points the
+brush went through (`[[x, y], ...]`, pixels from the top left, 1 to 4096 of them; one point is a
+dab), and `radius` (pixels, default 10, at most 2048). A pixel is under it when its middle is
+within the radius of the stroke's path, and the pixel under a point always is. It paints the mesh
+faces by default (surfaces passed over, as for a click); `faces: false` selects the patches and
+surface regions instead. `through`, `mode` and what it returns are as for
+[a rectangle](#selecting-in-a-rectangle): the faces seen at one of the stroke's pixels or more,
+or (`through: true`) every face whose middle lies in a pixel under it.
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'select.brush={"view": "top", "width": 1280, "height": 800, "stroke": [[300, 400], [500, 420], [700, 380]], "radius": 25}' \
+  --cmd 'patch.create={"name": "path", "type": "wall"}'
+```
+
 ## The camera
 
 `scene.snapshot` returns the camera it drew with (`camera`: `target`, `distance`, `azimuth`,
-`elevation`, `fov`). `select.pick` and `select.rect` (and `scene.snapshot` itself) take it back
+`elevation`, `fov`). `select.pick`, `select.rect` and `select.brush` (and `scene.snapshot` itself) take it back
 as `camera`, in place of `view`, `azimuth`, `elevation` and `zoom`, to work on exactly that
 view: the desktop app sends its own camera this way. `fov` may be left out (30°).
 
@@ -225,5 +242,5 @@ project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.
 - No level of detail; the CPU renderer draws every triangle on one core, and sorts transparent
   triangles one by one ([display modes](#display-modes)); the desktop app's GPU view draws them
   without sorting ([the GPU view](desktop.md#the-gpu-view)).
-- Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
-  by a rectangle (`select.rect`). A brush and picking cells are not there yet.
+- Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time, by
+  a rectangle (`select.rect`) or with a brush (`select.brush`). Picking cells is not there yet.

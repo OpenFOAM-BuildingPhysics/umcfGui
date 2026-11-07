@@ -55,7 +55,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 - **The axis triad** (top right): click an axis to look along it.
 - **The view's guides and background**: a grid on the ground and the origin's planes and axes,
   over a dark background ([below](#the-grid-the-origin-and-the-dark-view)).
-- **The navigation bar** (bottom): orbit, pan or *Box select*, zoom, fit, the standard views, the
+- **The navigation bar** (bottom): orbit, pan, *Box select* or *Brush*, zoom, fit, the standard views, the
   faces' edges, *Grid*, *Origin*, *Dark view*, *GPU* (where the window runs on a GPU device),
   *Pick faces* and *Select through*.
   - *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
@@ -63,8 +63,14 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   - *Box select*: a drag draws a rectangle that selects what is in it (`select.rect`): the
     patches, or with *Pick faces* the mesh faces. Shift adds to the selection, Ctrl takes away.
     A click still picks, and a right or middle drag still pans.
-  - *Select through*: the rectangle takes everything in it, hidden too (the faces whose middle is
-    in it), not only what is seen.
+  - *Brush*: a drag paints a stroke that selects what is seen under it (`select.brush`): with
+    *Pick faces* the mesh faces, the way to mark out a new patch (*New patch*, below); else the
+    patches. A click is a dab. Shift adds to the selection, Ctrl takes away; `[` and `]` make the
+    brush smaller and larger (its outline follows the cursor). A stroke keeps 4096 points (one
+    each third of the brush's radius moved): a longer one stops growing. A right or middle drag
+    still pans.
+  - *Select through*: the rectangle or the stroke takes everything in it, hidden too (the faces
+    whose middle is in it), not only what is seen.
 - **Properties** (right): the selected patches with their type, size and each field's boundary
   condition for them (by name or patch group; one given by a pattern is matched by the
   [case check](checks.md), not shown here), and the picked faces, counted by region.
@@ -162,7 +168,7 @@ draw on the CPU.
   by its own middle, as on the CPU).
 - **What the CPU still draws.** On a device that can't blend half-float images (some OpenGL
   ES drivers), transparent layers bring the CPU view back (the history bar says so). Picking,
-  *Box select* and `scene.snapshot` work on the CPU either way, on the same scene.
+  *Box select*, the *Brush* and `scene.snapshot` work on the CPU either way, on the same scene.
 - **How fast.** The Hong Kong project's five regions (15 million triangles) at 1440 × 860:
   turning, panning and zooming take 3 to 8 ms a frame on an NVIDIA RTX 5060 Ti, against about a
   second on the CPU (which draws at half the resolution while the view moves). The first frame
@@ -226,7 +232,8 @@ patch stays selected, and its field files follow.
 
 *New patch* (on the *Mesh* tab) opens a card that prepares a patch, as
 [`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the faces: those
-picked in the view (chosen when faces are picked), or, of the selected patches, those whose centre
+picked, selected in a rectangle or painted with the *Brush* in the view (chosen when faces are
+picked), or, of the selected patches, those whose centre
 is in a box (from x y z, to x y z) or within a distance of a surface of the case (one of its
 solids, or all of it). *Prepare* writes the face set and adds the
 patch to the dictionary of the patches prepared on this mesh; the mesh gets them when

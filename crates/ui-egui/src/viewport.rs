@@ -3,7 +3,8 @@
 //! (drag to turn, right or middle drag to pan, wheel to zoom), standard views, and picking. A
 //! click doesn't select anything itself: it becomes a `select.pick` command with the ray under
 //! the cursor, like every other change; a rectangle dragged in *Box select* becomes a
-//! `select.rect` with the camera and the rectangle in the image's pixels.
+//! `select.rect` with the camera and the rectangle in the image's pixels, and a stroke painted
+//! with the *Brush* a `select.brush` with the stroke's points and its radius in those pixels.
 
 use eframe::egui::{
     self, Color32, ColorImage, PointerButton, Pos2, Rect, Sense, TextureHandle, TextureId, TextureOptions, pos2, vec2,
@@ -116,7 +117,17 @@ pub struct Viewport {
     pub through: bool,
     /// Where the rectangle being dragged started, in points.
     corner: Option<Pos2>,
+    /// The brush's radius, in points.
+    pub brush: f32,
+    /// The stroke being painted, in points.
+    stroke: Vec<Pos2>,
 }
+
+/// The brush's smallest, default and largest radius, in points.
+pub const BRUSH: (f32, f32, f32) = (2.0, 12.0, 200.0);
+
+/// Most points a stroke keeps (as `select.brush` takes them): past them it stops growing.
+const STROKE_POINTS: usize = umcf_render::raster::MAX_STROKE;
 
 /// What a primary drag in the view does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -128,6 +139,8 @@ pub enum Drag {
     Pan,
     /// Draws a rectangle that selects what is in it.
     Select,
+    /// Paints a stroke that selects what is seen under it.
+    Brush,
 }
 
 impl Default for Viewport {
@@ -152,6 +165,8 @@ impl Default for Viewport {
             faces: false,
             through: false,
             corner: None,
+            brush: BRUSH.1,
+            stroke: Vec::new(),
         }
     }
 }
@@ -177,6 +192,17 @@ pub enum Action {
     Pick { ray: Ray, mode: &'static str, faces: bool },
     /// Select in `rect` (pixels of an image of `size` that `camera` sees): `select.rect`.
     Rect { camera: Camera, size: [u32; 2], rect: [f64; 4], mode: &'static str, faces: bool, through: bool },
+    /// Select under `stroke` with `radius` (pixels of an image of `size` that `camera` sees):
+    /// `select.brush`.
+    Brush {
+        camera: Camera,
+        size: [u32; 2],
+        stroke: Vec<[f64; 2]>,
+        radius: f64,
+        mode: &'static str,
+        faces: bool,
+        through: bool,
+    },
     /// Frame the scene from this view (the axis triad).
     Fit(View),
 }
@@ -289,13 +315,18 @@ impl Viewport {
 
         // Navigation.
         let primary = response.dragged_by(PointerButton::Primary);
-        let selecting = self.drag == Drag::Select && primary;
+        let selecting = matches!(self.drag, Drag::Select | Drag::Brush) && primary;
         // Drawing a rectangle doesn't move the view, so it is drawn at full resolution.
         let dragging = response.dragged() && !selecting;
         let other = response.dragged_by(PointerButton::Secondary) || response.dragged_by(PointerButton::Middle);
         if selecting {
             if response.drag_started_by(PointerButton::Primary) {
-                self.corner = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+                let start = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+                if self.drag == Drag::Brush {
+                    self.stroke = start.into_iter().collect();
+                } else {
+                    self.corner = start;
+                }
             }
         } else if primary && self.drag == Drag::Orbit {
             let d = response.drag_delta();
@@ -478,7 +509,9 @@ impl Viewport {
         if self.drag != Drag::Select {
             self.corner = None;
         }
-        if response.clicked()
+        if let Some(a) = self.brush_input(ui, &response, rect, &cam, shown, tokens) {
+            action = Some(a);
+        } else if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
             let m = ui.input(|i| i.modifiers);
@@ -492,6 +525,100 @@ impl Viewport {
             action = Some(Action::Pick { ray: ray_at(&cam, rect, p, shown), mode, faces: self.faces });
         }
         action
+    }
+
+    /// The brush: its size (`[` and `]`), its outline under the cursor, the stroke being painted;
+    /// let go (or a click, a dab), it selects (Shift adds, Ctrl takes away). Found up without a
+    /// release seen, the stroke is dropped.
+    fn brush_input(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: Rect,
+        cam: &Camera,
+        shown: [u32; 2],
+        tokens: &Tokens,
+    ) -> Option<Action> {
+        if self.drag != Drag::Brush {
+            self.stroke.clear();
+            return None;
+        }
+        if response.hovered() {
+            let (smaller, larger) =
+                ui.input(|i| (i.key_pressed(egui::Key::OpenBracket), i.key_pressed(egui::Key::CloseBracket)));
+            if smaller {
+                self.brush = (self.brush / 1.25).max(BRUSH.0);
+            }
+            if larger {
+                self.brush = (self.brush * 1.25).min(BRUSH.2);
+            }
+        }
+        let r = self.brush;
+        let painter = ui.painter().with_clip_rect(rect);
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let down = ui.input(|i| i.pointer.primary_down());
+        let released = response.drag_stopped();
+        if !self.stroke.is_empty()
+            && let Some(p) = pointer
+        {
+            // A point each third of the radius moved, up to what select.brush takes.
+            if self.stroke.last().is_none_or(|q| q.distance(p) >= r / 3.0) && self.stroke.len() < STROKE_POINTS {
+                self.stroke.push(p);
+            }
+        }
+        if self.stroke.len() > 1 {
+            painter.add(egui::Shape::line(
+                self.stroke.clone(),
+                egui::Stroke::new(2.0 * r, tokens.accent.gamma_multiply(0.25)),
+            ));
+        }
+        // Its round ends (one disc for a dab).
+        let ends = match self.stroke.as_slice() {
+            [] => vec![],
+            [one] => vec![*one],
+            [first, .., last] => vec![*first, *last],
+        };
+        for q in ends {
+            painter.circle_filled(q, r, tokens.accent.gamma_multiply(0.25));
+        }
+        if let Some(p) = response.hover_pos().or(pointer.filter(|_| !self.stroke.is_empty())) {
+            painter.circle_stroke(p, r, egui::Stroke::new(1.0, tokens.accent));
+        }
+        let m = ui.input(|i| i.modifiers);
+        let mode = if m.command {
+            "remove"
+        } else if m.shift {
+            "add"
+        } else {
+            "replace"
+        };
+        let dab = response.clicked().then(|| response.interact_pointer_pos()).flatten();
+        let points: Vec<Pos2> = if released {
+            std::mem::take(&mut self.stroke)
+        } else if let Some(p) = dab {
+            vec![p]
+        } else {
+            if !down {
+                self.stroke.clear();
+            }
+            return None;
+        };
+        if points.is_empty() {
+            return None;
+        }
+        // The radius in the image's pixels (the image is stretched over the view, its aspect
+        // kept but for rounding: the mean of the two scales).
+        let scale = (shown[0] as f32 / rect.width().max(1.0) + shown[1] as f32 / rect.height().max(1.0)) * 0.5;
+        let radius = f64::from(r * scale);
+        Some(Action::Brush {
+            camera: *cam,
+            size: shown,
+            stroke: points.iter().map(|p| pixel_at(rect, *p, shown)).collect(),
+            radius,
+            mode,
+            faces: self.faces,
+            through: self.through,
+        })
     }
 
     /// The axis triad in the top right corner: the world axes as the camera sees them; a click

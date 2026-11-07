@@ -236,7 +236,7 @@ umcf-cli run --case my-case \
 
 `patch.create` prepares a new patch from boundary faces of a region's mesh, for OpenFOAM's
 `createPatch` to make. The faces are the ones selected (picked in the view, `select.pick` or
-`select.rect` with `faces: true`, or `select.set`) when nothing else is given (all of one
+`select.rect` with `faces: true`, `select.brush`, or `select.set`) when nothing else is given (all of one
 region), or are given as labels (`faces`), as the ones whose centre is in a box (`box`), or as
 the ones whose centre is within a distance of an STL surface of the case, or of one solid of it
 (`surface`). A face's centre is OpenFOAM's: the area-weighted centre of its triangles. A box or

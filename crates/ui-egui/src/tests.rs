@@ -85,6 +85,43 @@ fn harness(mut app: App) -> Harness<'static, App> {
     h
 }
 
+#[test]
+fn a_stroke_painted_with_the_brush_selects_the_faces_under_it() {
+    let mut h = harness(app());
+    h.state_mut().fit_view(Some(View::Top));
+    h.run();
+    h.get_by_label("Brush").click();
+    h.run();
+    assert_eq!(h.state().viewport.drag, crate::viewport::Drag::Brush);
+    let camera = h.state().viewport.camera.unwrap();
+    let c = h.state().viewport.rect.unwrap().center();
+    // Over the middle of the cube, picking faces: the sky's face; the view didn't turn.
+    h.get_by_label("Pick faces").click();
+    h.run();
+    drag(&mut h, c - vec2(20.0, 0.0), c + vec2(20.0, 0.0), Modifiers::NONE);
+    let last = h.state().log.last().unwrap();
+    assert_eq!(last.command, "select.brush", "{}", last.message);
+    assert_eq!(h.state().session().selection(), [Sel::Face { region: String::new(), face: 1 }]);
+    assert_eq!(h.state().viewport.camera.unwrap(), camera);
+    // `]` makes the brush larger, `[` smaller, within its bounds.
+    let r = h.state().viewport.brush;
+    h.hover_at(c);
+    h.key_press(egui::Key::CloseBracket);
+    h.run();
+    assert!(h.state().viewport.brush > r);
+    for _ in 0..40 {
+        h.key_press(egui::Key::OpenBracket);
+        h.run();
+    }
+    assert_eq!(h.state().viewport.brush, crate::viewport::BRUSH.0);
+    // Ctrl takes away; a click is a dab, with the same modes.
+    drag(&mut h, c - vec2(20.0, 0.0), c + vec2(20.0, 0.0), Modifiers::COMMAND);
+    assert!(h.state().session().selection().is_empty());
+    click_at(&mut h, c, Modifiers::SHIFT);
+    assert_eq!(h.state().log.last().unwrap().command, "select.brush");
+    assert_eq!(h.state().session().selection(), [Sel::Face { region: String::new(), face: 1 }]);
+}
+
 fn click_at(h: &mut Harness<'_, App>, pos: Pos2, modifiers: Modifiers) {
     h.hover_at(pos);
     h.run();
