@@ -47,7 +47,13 @@ struct GpuView {
 
 impl GpuView {
     /// Draws into the GPU view's image, shown as a texture of the window; its id.
-    fn draw(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) -> Result<TextureId, String> {
+    fn draw(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        style: &Style,
+        size: [u32; 2],
+    ) -> Result<TextureId, crate::gpu::NotDrawn> {
         let target = self.gpu.draw(scene, camera, style, size)?;
         let filter = egui_wgpu::wgpu::FilterMode::Linear;
         let mut renderer = self.state.renderer.write();
@@ -332,8 +338,20 @@ impl Viewport {
                 background: Some(tokens.view_background()),
             };
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
+            use crate::gpu::NotDrawn;
             let on_gpu = match (self.renderer, &mut self.gpu) {
-                (Renderer::Gpu, Some(g)) => g.draw(scene, &cam, &style, size).map_err(Some),
+                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size) {
+                    Ok(id) => Ok(id),
+                    Err(NotDrawn::Here(why)) => Err(Some(why)),
+                    // The GPU failed: the view is the CPU's from now on, and says why.
+                    Err(NotDrawn::Failed(e)) => {
+                        let why = format!("the GPU failed: {e}");
+                        self.gpu = None;
+                        self.no_gpu = Some(why.clone());
+                        self.renderer = Renderer::Cpu;
+                        Err(Some(why))
+                    }
+                },
                 (Renderer::Gpu, None) => Err(self.no_gpu.clone()),
                 (Renderer::Cpu, _) => Err(None),
             };

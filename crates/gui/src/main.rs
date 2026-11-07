@@ -21,8 +21,8 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
   --open        a command whose card opens at the start, as its ribbon button opens it (bc.set)
   --dark        the dark theme
   --size        the window's size in points (default 1440x900)
-  --renderer    what draws the 3D view at the start: cpu (default), gpu, or auto (the GPU where
-                there is one); switched in the View tab when the window runs on a GPU device
+  --renderer    what draws the 3D view: cpu (default), gpu, or auto (a hardware GPU where there
+                is one); with gpu or auto it can be switched in the View tab
   --screenshot  write a PNG of the window once it has drawn, then quit
 ";
 

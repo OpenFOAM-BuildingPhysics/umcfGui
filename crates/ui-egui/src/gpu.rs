@@ -94,11 +94,10 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     let t = i / 3u;
     let v = corner(i);
     let which = classes[t];
-    var c: vec4<f32>;
-    if obj.mode == 1u {
+    var c = textureLoad(colours, vec2<i32>(i32(which % 1024u), i32(which / 1024u)), 0);
+    if obj.mode == 1u && c.a >= 0.25 {
+        // A selected face of a class shown: the selection's colour, in front.
         c = vec4<f32>(1.0, 0.55, 0.1, 1.0);
-    } else {
-        c = textureLoad(colours, vec2<i32>(i32(which % 1024u), i32(which / 1024u)), 0);
     }
     // Lambert with the light at the eye, both sides lit alike, for the whole triangle (its
     // normal against the direction to its middle), as the CPU view.
@@ -115,7 +114,8 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     let shade = 0.3 + 0.7 * cosine;
     var out: Out;
     // Alpha: 0 hidden, 1 selected, between: shown. Each pass draws its own (the others are
-    // put outside the view, never drawn): mode 0 the shown, mode 2 the selected.
+    // put outside the view, never drawn): mode 0 the shown, mode 2 the selected; mode 1 the
+    // selected faces of the classes not hidden.
     let selected = c.a > 0.75;
     var skip = c.a < 0.25;
     if obj.mode == 0u && selected {
@@ -200,6 +200,16 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Why the GPU view didn't draw a frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotDrawn {
+    /// The CPU draws this one (a style it doesn't draw yet, an object too big for the
+    /// device); the next may be the GPU's again.
+    Here(String),
+    /// The GPU failed (out of memory, a limit of the device): the view goes back to the CPU.
+    Failed(String),
+}
+
 /// Whether a wgpu adapter can draw this view: it needs storage buffers in the vertex shader.
 pub fn usable(adapter: &wgpu::Adapter) -> Result<(), String> {
     let caps = adapter.get_downlevel_capabilities();
@@ -268,14 +278,15 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[u8; 4]> {
 /// What an object of the scene is on the GPU.
 struct Uploaded {
     /// What draws it: for chunks of its triangles, a bind group for the classes shown and one
-    /// for the selected classes, and how many triangles each has.
+    /// for the selected classes (sharing the chunk's buffers), and how many triangles each has.
     chunks: Vec<(wgpu::BindGroup, wgpu::BindGroup, u32)>,
     palette: wgpu::Texture,
     points: wgpu::Buffer,
     /// Its uniforms, by mode: the classes shown, the selected faces, the selected classes.
     uniforms: [wgpu::Buffer; 3],
-    /// The selected faces' triangles, drawn over it in the selection's colour, for this set.
-    selected: Option<(Vec<u32>, wgpu::BindGroup, u32)>,
+    /// The selected faces it was last drawn with, and their triangles in chunks (none: no
+    /// triangle has them), drawn over it in the selection's colour.
+    selected: (Vec<u32>, Vec<(wgpu::BindGroup, u32)>),
 }
 
 /// The image drawn (`texture`) and what it is drawn from.
@@ -308,6 +319,8 @@ pub struct Gpu {
     /// The most a storage binding holds, bytes.
     binding: u64,
     target: Option<Target>,
+    /// An error the device reported outside the scopes this view sets (wgpu's default panics).
+    uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Gpu {
@@ -479,6 +492,14 @@ impl Gpu {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: view_buffer.as_entire_binding() }],
         });
         let binding = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
+        // Errors not caught by a scope are kept, not a panic (wgpu's default): the next frame
+        // reports them, and the view goes back to the CPU.
+        let uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+        let kept = uncaptured.clone();
+        device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
+            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.get_or_insert_with(|| e.to_string());
+        }));
         Ok(Gpu {
             device: device.clone(),
             queue: queue.clone(),
@@ -493,6 +514,7 @@ impl Gpu {
             objects: HashMap::new(),
             binding,
             target: None,
+            uncaptured,
         })
     }
 
@@ -514,18 +536,40 @@ impl Gpu {
         Ok(())
     }
 
-    /// Whether `obj`'s points fit what one storage binding holds (its triangles are split).
+    /// Whether `obj` fits the device: its points in one storage binding (its triangles are
+    /// split), its classes' colours in one texture.
     fn fits(&self, obj: &Object) -> bool {
+        let rows = (obj.classes.len() as u64).div_ceil(u64::from(PALETTE_WIDTH));
         (obj.points.len() as u64).saturating_mul(12) <= self.binding
+            && rows <= u64::from(self.device.limits().max_texture_dimension_2d)
     }
 
     /// Draws `scene` as `camera` sees it into an image of `size` pixels; the image, or why it
-    /// wasn't drawn (`style` not drawn here, an object too big for the device).
-    pub fn draw(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) -> Result<&Target, String> {
-        Gpu::draws(style).map_err(|what| format!("{what} are drawn by the CPU view"))?;
+    /// wasn't drawn.
+    pub fn draw(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) -> Result<&Target, NotDrawn> {
+        Gpu::draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
         if let Some(o) = scene.objects.iter().find(|o| !self.fits(o)) {
-            return Err(format!("{} has more points than the GPU holds in one buffer", o.label()));
+            return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
         }
+        if let Some(e) = self.uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            return Err(NotDrawn::Failed(e));
+        }
+        // What the device reports while drawing (out of memory, a limit) fails the frame.
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.draw_unguarded(scene, camera, style, size);
+        let errors = [pollster::block_on(validation.pop()), pollster::block_on(memory.pop())];
+        if let Some(e) = errors.into_iter().flatten().next() {
+            // What was uploaded may be part of the problem (memory): it goes.
+            self.objects.clear();
+            self.target = None;
+            return Err(NotDrawn::Failed(e.to_string()));
+        }
+        self.target.as_ref().ok_or_else(|| NotDrawn::Failed("no image to draw into".to_string()))
+    }
+
+    /// [`Gpu::draw`]'s work, its errors caught by the device's scopes around it.
+    fn draw_unguarded(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) {
         let max = self.device.limits().max_texture_dimension_2d;
         let size = [size[0].clamp(1, max), size[1].clamp(1, max)];
         // What is no longer shown goes; what is new is uploaded.
@@ -555,16 +599,15 @@ impl Gpu {
                 self.queue.write_buffer(u, 0, &bytes_u32(&[u32::try_from(mode).unwrap_or(0), base, 0, 0]));
             }
             base = base.saturating_add(u32::try_from(obj.classes.len()).unwrap_or(u32::MAX));
-            let had = up.selected.as_ref().map_or(&[][..], |(f, _, _)| f.as_slice());
-            if had != faces.as_slice() {
-                let group = self.selected_faces(obj, up, &faces);
+            if up.selected.0 != faces {
+                let groups = self.selected_faces(obj, up, &faces);
                 if let Some(up) = self.objects.get_mut(&obj.id()) {
-                    up.selected = group.map(|(g, n)| (faces, g, n));
+                    up.selected = (faces, groups);
                 }
             }
         }
         self.ensure_target(size);
-        let Some(target) = &self.target else { return Err("no image to draw into".to_string()) };
+        let Some(target) = &self.target else { return };
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("umcf view") });
         let attachment = |view| {
@@ -612,7 +655,7 @@ impl Gpu {
                         pass.draw(0..n.saturating_mul(3), 0..1);
                     }
                 }
-                if let Some((_, group, n)) = &up.selected {
+                for (group, n) in &up.selected.1 {
                     pass.set_bind_group(1, group, &[]);
                     pass.draw(0..n.saturating_mul(3), 0..1);
                 }
@@ -632,7 +675,6 @@ impl Gpu {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        self.target.as_ref().ok_or_else(|| "no image to draw into".to_string())
     }
 
     fn ensure_target(&mut self, size: [u32; 2]) {
@@ -709,19 +751,21 @@ impl Gpu {
             let corners: Vec<u32> = obj.triangles.get(start..end).unwrap_or(&[]).iter().flatten().copied().collect();
             let classes = obj.class.get(start..end).unwrap_or(&[]);
             let [shown, _, selected] = &uniforms;
-            let group = self.object_group(&points, &corners, classes, &palette, shown);
-            let front = self.object_group(&points, &corners, classes, &palette, selected);
+            let corners = self.storage("umcf corners", &bytes_u32(&corners));
+            let classes = self.storage("umcf classes", &bytes_u32(classes));
+            let group = self.object_group(&points, &corners, &classes, &palette, shown);
+            let front = self.object_group(&points, &corners, &classes, &palette, selected);
             chunks.push((group, front, u32::try_from(end - start).unwrap_or(u32::MAX)));
             start = end;
         }
-        Uploaded { chunks, palette, points, uniforms, selected: None }
+        Uploaded { chunks, palette, points, uniforms, selected: (Vec::new(), Vec::new()) }
     }
 
-    /// The bind group of the selected `faces` (sorted) of `obj`: their triangles, drawn in the
-    /// selection's colour; `None` without any.
-    fn selected_faces(&self, obj: &Object, up: &Uploaded, faces: &[u32]) -> Option<(wgpu::BindGroup, u32)> {
+    /// The bind groups of the selected `faces` (sorted) of `obj`, in chunks a storage binding
+    /// holds, and how many triangles each has: their triangles, drawn in the selection's colour.
+    fn selected_faces(&self, obj: &Object, up: &Uploaded, faces: &[u32]) -> Vec<(wgpu::BindGroup, u32)> {
         if faces.is_empty() {
-            return None;
+            return Vec::new();
         }
         let picked: Vec<(&[u32; 3], u32)> = obj
             .triangles
@@ -731,27 +775,30 @@ impl Gpu {
             .filter(|((_, f), _)| faces.binary_search(f).is_ok())
             .map(|((t, _), c)| (t, *c))
             .collect();
-        if picked.is_empty() {
-            return None;
-        }
-        let corners: Vec<u32> = picked.iter().flat_map(|(t, _)| **t).collect();
-        // Their own classes: the outlines are those of the patches, as in the CPU view.
-        let classes: Vec<u32> = picked.iter().map(|(_, c)| *c).collect();
+        let per = usize::try_from((self.binding / 12).max(1)).unwrap_or(usize::MAX);
         let [_, faces_uniform, _] = &up.uniforms;
-        let group = self.object_group(&up.points, &corners, &classes, &up.palette, faces_uniform);
-        Some((group, u32::try_from(picked.len()).unwrap_or(u32::MAX)))
+        picked
+            .chunks(per)
+            .map(|chunk| {
+                let corners: Vec<u32> = chunk.iter().flat_map(|(t, _)| **t).collect();
+                // Their own classes: the outlines are those of the patches, as in the CPU view.
+                let classes: Vec<u32> = chunk.iter().map(|(_, c)| *c).collect();
+                let corners = self.storage("umcf corners", &bytes_u32(&corners));
+                let classes = self.storage("umcf classes", &bytes_u32(&classes));
+                let group = self.object_group(&up.points, &corners, &classes, &up.palette, faces_uniform);
+                (group, u32::try_from(chunk.len()).unwrap_or(u32::MAX))
+            })
+            .collect()
     }
 
     fn object_group(
         &self,
         points: &wgpu::Buffer,
-        corners: &[u32],
-        classes: &[u32],
+        corners: &wgpu::Buffer,
+        classes: &wgpu::Buffer,
         palette: &wgpu::Texture,
         uniform: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        let corners = self.storage("umcf corners", &bytes_u32(corners));
-        let classes = self.storage("umcf classes", &bytes_u32(classes));
         let view = palette.create_view(&wgpu::TextureViewDescriptor::default());
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("umcf object"),
@@ -787,7 +834,7 @@ const BACKGROUND: [[f32; 3]; 2] = [[0.94, 0.95, 0.96], [0.78, 0.81, 0.85]];
 
 fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[u8; 4]]) {
     let size = palette.size();
-    let mut bytes = vec![0u8; (size.width * size.height * 4) as usize];
+    let mut bytes = vec![0u8; (size.width as usize).saturating_mul(size.height as usize).saturating_mul(4)];
     for (px, c) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(colours) {
         *px = *c;
     }
@@ -961,7 +1008,9 @@ mod tests {
                 .count()
         };
         assert!(of(&cpu, 0) > 1000 && of(&cpu, 1) == 0);
-        assert_eq!((of(&image, 0), of(&image, 1)), (of(&cpu, 0), 0));
+        // A few pixels may be rasterised otherwise on another device.
+        let (seen, under) = (of(&image, 0), of(&image, 1));
+        assert!(seen.abs_diff(of(&cpu, 0)) <= of(&cpu, 0) / 100 && under <= of(&cpu, 0) / 200, "{seen} {under}");
         let off = differing(&cpu, &image, 6);
         assert!(off < 0.01, "{:.1}% of the pixels differ", off * 100.0);
     }
@@ -980,9 +1029,33 @@ mod tests {
         let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
         let selected = image.chunks(4).filter(|p| orange(p)).count();
         assert!(selected > 1000, "{selected} pixels of the selection");
-        assert_eq!(selected, cpu.chunks(4).filter(|p| orange(p)).count());
+        let on_cpu = cpu.chunks(4).filter(|p| orange(p)).count();
+        assert!(selected.abs_diff(on_cpu) <= on_cpu / 100, "{selected} against {on_cpu}");
         let off = differing(&cpu, &image, 6);
         assert!(off < 0.01, "{:.1}% of the pixels differ", off * 100.0);
+    }
+
+    #[test]
+    fn selected_faces_of_a_hidden_patch_stay_hidden() {
+        let Some((adapter, device, queue)) = device() else { return };
+        let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        let scene = scene();
+        let size = [160u32, 120u32];
+        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 160.0 / 120.0);
+        // Both triangles of the top (class 0), selected as faces, and the top hidden.
+        let mut style = Style {
+            width: size[0],
+            height: size[1],
+            selected_faces: [(0, 0), (0, 1)].into_iter().collect(),
+            ..Style::default()
+        };
+        let shown = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        assert!(shown.chunks(4).any(orange), "the selected faces are drawn while the top is shown");
+        style.display.insert((0, 0), Display { mode: Mode::Hidden, opacity: 1.0 });
+        let cpu = draw(&scene, &camera, &style).rgba;
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        assert!(!image.chunks(4).any(orange) && !cpu.chunks(4).any(orange));
+        assert!(differing(&cpu, &image, 6) < 0.01);
     }
 
     #[test]

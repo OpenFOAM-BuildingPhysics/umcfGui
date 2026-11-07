@@ -22,7 +22,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
-| `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start: the CPU (the default), the GPU, or the GPU where there is one ([the GPU view](#the-gpu-view)) |
+| `--renderer cpu\|gpu\|auto` | What draws the 3D view: the CPU (the default), the GPU, or the GPU where there is a hardware one; with `gpu` or `auto` the view can be switched in the window ([the GPU view](#the-gpu-view)) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
 
 ## The window
@@ -89,17 +89,21 @@ whose command waits or runs: its outcome closes it).
 
 ## The GPU view
 
-The 3D view is drawn by the CPU, or on the GPU: *GPU* in the *View* tab's *Display* group and in
-the navigation bar switches between them, and `--renderer` picks one at the start. The history
-bar says which drew the view (*GPU* or *CPU*); its tooltip says why the CPU did when the GPU was
-asked for.
+The 3D view is drawn by the CPU, or on the GPU. Start the app with `--renderer gpu` (or `auto`,
+which takes a hardware GPU and passes a software one over); then *GPU* in the *View* tab's
+*Display* group and in the navigation bar switches between the two at any time. The history bar
+says which drew the view (*GPU* or *CPU*); its tooltip says why the CPU did when the GPU was asked
+for.
 
-- **When there is a GPU view.** At the start the app looks for a GPU device it can draw on
+- **When there is a GPU view.** Asked for it, the app looks for a GPU device it can draw on
   (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through
-  wgpu). With one, the whole window runs on it, and *GPU* can be switched on and off at any time;
-  without one, the window runs on OpenGL as before and the view is drawn by the CPU: *GPU* is grey
-  in the ribbon, its tooltip saying why (as `--renderer gpu` does), and left out of the
-  navigation bar.
+  wgpu), and the whole window runs on it. Without one, and with the default `--renderer cpu`,
+  the window runs on OpenGL as it always did and the view is drawn by the CPU: *GPU* is grey in
+  the ribbon, its tooltip saying why (as `--renderer gpu` does), and left out of the navigation
+  bar. (A window wgpu can't show, in some remote sessions and virtual machines, would not open:
+  so the GPU is used only when asked for.)
+- **When the GPU fails** (out of its memory, a limit of the device), the view goes back to the CPU
+  for the rest of the session and the tooltip says why.
 - **What it draws.** The same picture as the CPU: each patch or surface region in its colour,
   shaded per triangle with the light at the eye, outlines where patches meet, the selection in
   orange in front of what lies in the same place, what is hidden left out. Where surfaces of two
@@ -111,7 +115,8 @@ asked for.
   turning, panning and zooming take 3 to 8 ms a frame on an NVIDIA RTX 5060 Ti, against about a
   second on the CPU (which draws at half the resolution while the view moves). The first frame
   uploads the meshes (0.23 s); what the view shows stays on the GPU until it is hidden or read
-  again, and a new selection or display mode uploads nothing but colours.
+  again. A new selection of patches or a display mode uploads only colours; picked faces upload
+  their triangles.
 
 ## Long work
 
@@ -199,8 +204,8 @@ about the new conditions.
   keeps up with surfaces and meshes of a few hundred thousand boundary faces. The GPU view
   draws opaque surfaces only: edges, wireframes, points and transparent layers bring the CPU view
   back ([the GPU view](#the-gpu-view)). The GPU holds what the view shows (about 16 bytes per
-  triangle and 12 per point: 340 MB for the Hong Kong project), and a region whose points don't
-  fit one of its buffers is drawn by the CPU.
+  triangle and 12 per point: 340 MB for the Hong Kong project); while a region's points don't fit
+  one of its buffers, the whole view is drawn by the CPU.
 - The 3D view reads regions at once and keeps hidden ones within a share of the memory free when
   the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
   dropped past it is read again when it is shown.
