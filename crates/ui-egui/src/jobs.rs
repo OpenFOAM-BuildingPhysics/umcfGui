@@ -71,6 +71,18 @@ fn megabytes(bytes: u64) -> String {
     }
 }
 
+/// `bytes` read of `expected`, in the unit of `expected`.
+fn of_megabytes(bytes: u64, expected: u64) -> String {
+    let bytes = bytes.min(expected);
+    if expected >= 1 << 30 {
+        let gb = |b: u64| b as f64 / f64::from(1u32 << 30);
+        format!("{:.1} of {:.1} GB read", gb(bytes), gb(expected))
+    } else {
+        let mb = |b: u64| b.div_ceil(1 << 20);
+        format!("{} of {} MB read", mb(bytes), mb(expected))
+    }
+}
+
 /// What came back.
 enum Done {
     Command(Result<Outcome, Error>),
@@ -342,14 +354,18 @@ impl App {
     /// much waits after it.
     pub(crate) fn progress(&self) -> Option<Progress> {
         let job = self.job.as_ref()?;
-        let (done, total, bytes) = job.cancel.progress().get();
-        let fraction = (total > 0).then(|| (done as f32 / total as f32).clamp(0.0, 1.0));
+        let now = job.cancel.progress().get();
+        let fraction = now.fraction().map(|f| f as f32);
         let mut detail = Vec::new();
-        if total > 0 {
-            detail.push(format!("{done} of {total}"));
+        // Steps by count (files) where the job doesn't say what it reads; where it does, the
+        // bytes read of those expected.
+        if now.total > 0 && now.expected == 0 {
+            detail.push(format!("{} of {}", now.done, now.total));
         }
-        if bytes > 0 {
-            detail.push(megabytes(bytes));
+        if now.expected > 0 {
+            detail.push(of_megabytes(now.expected_read(), now.expected));
+        } else if now.bytes > 0 {
+            detail.push(megabytes(now.bytes));
         }
         detail.push(format!("{} s", job.started.elapsed().as_secs()));
         Some(Progress {

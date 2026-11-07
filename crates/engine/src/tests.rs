@@ -445,8 +445,13 @@ fn mesh_check_goes_on_after_an_unreadable_region() {
     assert_eq!(Session::new().enabled("mesh.check"), Err("no case is open".to_string()));
     let mut fs = fs();
     fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));
-    // air: only its boundary file (unreadable); wall: a whole cube.
+    // air: only its boundary file and an owner header noting its size (unreadable); wall: a
+    // whole cube.
     cube_mesh(&mut fs, "constant/wall/polyMesh");
+    fs.insert(
+        "constant/air/polyMesh/owner",
+        "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class labelList;\n    note \"nPoints:8 nCells:1 nFaces:6 nInternalFaces:0\";\n    object owner;\n}\n6\n(\n0 0 0 0 0 0\n)\n",
+    );
     fs.insert(
         "0/wall/Ts",
         "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\ninternalField uniform 300;\nboundaryField\n{\n    inlet { type zeroGradient; }\n}\n",
@@ -454,6 +459,9 @@ fn mesh_check_goes_on_after_an_unreadable_region() {
     let mut s = Session::with_backup(".umcfgui/backup/test");
     s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
     let out = s.execute("mesh.check", &Value::Null).unwrap();
+    // Every quality pass of the readable region counted; the files it expected to read named.
+    let now = s.canceller().progress().get();
+    assert!(now.total > 0 && now.done == now.total && now.expected > 0, "{now:?}");
     assert_eq!(out.data["errors"], json!(1), "{}", out.data);
     let regions = out.data["regions"].as_array().unwrap();
     assert_eq!(regions.len(), 2);
@@ -1682,6 +1690,9 @@ struct CountingFs {
 }
 
 impl umcf_core::CaseFs for CountingFs {
+    fn size(&self, rel: &str) -> Option<u64> {
+        self.inner.size(rel)
+    }
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
         if rel.ends_with("/points") || rel.ends_with(".stl") {
             *self.reads.lock().unwrap().entry(rel.to_string()).or_default() += 1;
@@ -1729,6 +1740,17 @@ fn counting_session(fs: MemFs) -> (Session, Reads) {
 
 fn two_region_session() -> (Session, Reads) {
     counting_session(two_region_fs())
+}
+
+/// Building the scene counts a step for each object read and each built, and expects the bytes
+/// of the files it reads.
+#[test]
+fn the_scene_counts_its_progress() {
+    let (mut s, _) = two_region_session();
+    s.scene(&json!({})).unwrap();
+    let now = s.canceller().progress().get();
+    assert_eq!((now.done, now.total), (4, 4), "{now:?}");
+    assert!(now.expected > 0, "{now:?}");
 }
 
 /// Showing fewer regions and then all again reads no mesh twice; `reload` reads them again.
@@ -2131,7 +2153,7 @@ fn fields_opened_later_are_read_by_case_fields_with_progress() {
         // Read, each file counted.
         let o = s.execute("case.fields", &json!({})).unwrap();
         assert_eq!(o.data["read"], json!(true));
-        let (done, total, bytes) = s.canceller().progress().get();
+        let umcf_core::ProgressNow { done, total, bytes, .. } = s.canceller().progress().get();
         assert!(total > 0 && done == total && bytes > 0, "{example}: {done}/{total}, {bytes} bytes");
         let mut whole = Session::with_backup(".umcfgui/backup/test");
         whole.execute("case.open", &json!({ "path": example })).unwrap();

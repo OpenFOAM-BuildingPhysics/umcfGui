@@ -133,7 +133,12 @@ type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
 /// job runs alone when nothing else runs, whatever its estimate. [`UNKNOWN`] (a read whose size
 /// can't be told) runs alone, unless `budget` is `u64::MAX` (only tests pass that; a session's
 /// is at most half of it).
-fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Result<Vec<T>, Error> {
+fn parallel<T: Send>(
+    id: &str,
+    jobs: Vec<(u64, Job<'_, T>)>,
+    budget: u64,
+    progress: &umcf_core::Progress,
+) -> Result<Vec<T>, Error> {
     use std::sync::{Condvar, Mutex};
     struct State<'a, T> {
         /// The jobs not started, the biggest first.
@@ -189,6 +194,7 @@ fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Res
                 st.held = st.held.saturating_sub(cost);
                 st.running = st.running.saturating_sub(1);
             }
+            progress.step();
             changed.notify_all();
         }
     };
@@ -239,6 +245,21 @@ fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
             (Some(p), f) => p.saturating_mul(2).saturating_add(f.unwrap_or(p)),
             (None, _) => UNKNOWN,
         },
+    }
+}
+
+/// About how many bytes of the case's files reading `source` reads: a mesh's `boundary`,
+/// `points` and `faces` (plain or compressed, as on disk), a surface's file unless a command put
+/// it (then it is in memory). 0 where the sizes can't be told.
+fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Source) -> u64 {
+    let size = |f: &str| fs.size(f).or_else(|| fs.size(&format!("{f}.gz"))).unwrap_or(0);
+    match source {
+        Source::Mesh { region } => {
+            let dir = mesh_dir(region);
+            ["boundary", "points", "faces"].iter().map(|n| size(&format!("{dir}/{n}"))).fold(0, u64::saturating_add)
+        }
+        Source::Surface { file } if case.put_bytes(file).is_none() => fs.size(file).unwrap_or(0),
+        Source::Surface { .. } => 0,
     }
 }
 
@@ -424,7 +445,12 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             }
             jobs
         };
-        let read = parallel(id, jobs_for(&missing), budget.read)?;
+        // The progress bar: the files' bytes read of those expected, and a step for each object
+        // read and each built.
+        let progress = s.cancel.progress();
+        progress.start(2 * missing.len() as u64);
+        progress.expect(missing.iter().map(|k| read_bytes(case, fs, &k.source)).fold(0u64, u64::saturating_add));
+        let read = parallel(id, jobs_for(&missing), budget.read, progress)?;
 
         // The origin: the middle of what is shown, so that points far from the world's origin
         // (projected coordinates) stay precise in single precision. The previous scene's is kept
@@ -455,7 +481,9 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         let mut read = read;
         if moved {
             let again: Vec<&Key> = wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).collect();
-            read.extend(parallel(id, jobs_for(&again), budget.read)?);
+            progress.add_steps(2 * again.len() as u64);
+            progress.expect(again.iter().map(|k| read_bytes(case, fs, &k.source)).fold(0u64, u64::saturating_add));
+            read.extend(parallel(id, jobs_for(&again), budget.read, progress)?);
             missing.extend(again);
         }
         // Building an object reads nothing more; what it adds while it runs is the object, planned
@@ -489,7 +517,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             })
             .collect();
         let mut fresh: Vec<(Key, Object)> =
-            missing.into_iter().cloned().zip(parallel(id, built, budget.read)?).collect();
+            missing.into_iter().cloned().zip(parallel(id, built, budget.read, progress)?).collect();
 
         // The new scene: each object taken from what was read, else from before; what was
         // there and isn't shown now is kept aside, the ones shown least recently first (those
@@ -1248,7 +1276,7 @@ mod tests {
                 )
             })
             .collect();
-        let out = parallel("test", jobs, budget).unwrap();
+        let out = parallel("test", jobs, budget, &umcf_core::Progress::default()).unwrap();
         Seen { out, most: most.load(Ordering::SeqCst), together: with_unknown.load(Ordering::SeqCst) }
     }
 
@@ -1308,10 +1336,13 @@ mod tests {
             (5, Box::new(|| Err(Error::Failed("no".into())))),
             (5, Box::new(|| panic!("boom"))),
         ];
-        assert!(parallel("test", jobs, 5).is_err());
+        assert!(parallel("test", jobs, 5, &umcf_core::Progress::default()).is_err());
         // A panic alone is the engine's `Panicked`.
         let jobs: Vec<(u64, Job<'_, u32>)> = vec![(5, Box::new(|| panic!("boom")))];
-        assert!(matches!(parallel("test", jobs, 5), Err(Error::Panicked { .. })), "a panic is `Panicked`");
+        assert!(
+            matches!(parallel("test", jobs, 5, &umcf_core::Progress::default()), Err(Error::Panicked { .. })),
+            "a panic is `Panicked`"
+        );
     }
 
     #[test]

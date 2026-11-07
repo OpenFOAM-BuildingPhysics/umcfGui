@@ -5,8 +5,8 @@ use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
 use umcf_validate::mesh::{
     AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf, SnappyLog,
-    checkmesh_log_diagnostics, diagnostics, layer_diagnostics, parse_checkmesh_log, parse_snappy_log, quality,
-    quality_all, soften_for_vegetation, stale_set, unreadable,
+    checkmesh_log_diagnostics, diagnostics, layer_diagnostics, parse_checkmesh_log, parse_snappy_log, quality_steps,
+    quality_with, soften_for_vegetation, stale_set, unreadable,
 };
 use umcf_validate::{Diagnostic, Level};
 
@@ -19,7 +19,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     label: "Check mesh",
     menu: "Mesh/Check",
     shortcut: None,
-    params: "region: one region (default: every region with a mesh). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
+    params: "region: one region (default: every region with a mesh). Counts its progress (the mesh files' bytes read, then the faces checked) and stops when cancelled, within 65,536 faces (all_geometry's own checks only at their end). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
     enabled: needs_case,
     run: check,
     journal: false,
@@ -314,6 +314,19 @@ fn quality_json(q: &Quality) -> Value {
     })
 }
 
+/// About how many bytes reading region `region`'s whole mesh reads: its files as on disk
+/// (plain or compressed).
+fn mesh_bytes(fs: &dyn CaseFs, region: &str) -> u64 {
+    let dir = mesh_dir(region);
+    ["boundary", "points", "faces", "owner", "neighbour"]
+        .iter()
+        .map(|n| {
+            let f = format!("{dir}/{n}");
+            fs.size(&f).or_else(|| fs.size(&format!("{f}.gz"))).unwrap_or(0)
+        })
+        .fold(0, u64::saturating_add)
+}
+
 fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(CHECK.id, p, &["region", "all_geometry"])?;
     let region = p.str("region")?;
@@ -367,14 +380,25 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             ));
         }
     }
+    // The progress bar: the mesh files' bytes read of those expected, and the faces each quality
+    // pass has gone through (from the counts `owner` notes; a mesh without them adds its own once
+    // read).
+    let progress = s.cancel.progress();
+    let noted: Vec<Option<u64>> = names
+        .iter()
+        .map(|r| umcf_foam_mesh::counts(fs, &mesh_dir(r), &Limits::default()).ok().and_then(|c| c.faces))
+        .collect();
+    progress.start(noted.iter().flatten().map(|f| quality_steps(*f, all_geometry)).fold(0, u64::saturating_add));
+    progress.expect(names.iter().map(|r| mesh_bytes(fs, r)).fold(0, u64::saturating_add));
     let mut regions = Vec::new();
     let mut lines = Vec::new();
     let (mut errors, mut warnings) = (0, 0);
-    for r in &names {
+    for (r, noted) in names.iter().zip(&noted) {
         let name = if r.is_empty() { "mesh" } else { r.as_str() };
         let candidates: Vec<&CheckMeshLog> = logs.iter().filter(|l| &l.region == r).collect();
         let mut d: Vec<Diagnostic> = Vec::new();
         // A mesh that doesn't read is that region's error; the others are still checked.
+        let before = progress.get().bytes;
         let mesh = PolyMesh::read(fs, &mesh_dir(r), &Limits::default());
         // A log is about this mesh when it checked as many cells (a run over the meshes of
         // other times, or an older mesh, checked another one); a log that doesn't say is kept.
@@ -412,12 +436,30 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         let (q, sets) = match &mesh {
             Ok(mesh) => {
-                let q = if all_geometry { quality_all(mesh) } else { quality(mesh) };
+                // The steps of the faces it has, not of those its `owner` notes (a stale note).
+                let faces = mesh.n_faces() as u64;
+                if *noted != Some(faces) {
+                    progress.add_steps(quality_steps(faces, all_geometry));
+                    if let Some(f) = noted {
+                        progress.advance(quality_steps(*f, all_geometry));
+                    }
+                }
+                let q = quality_with(mesh, all_geometry, &s.cancel)
+                    .ok_or_else(|| Error::Cancelled { id: CHECK.id.to_string() })?;
                 d.extend(diagnostics(&q, r));
                 let sets = checkmesh_sets(fs, r, mesh, &mut d);
                 (Some(q), sets)
             }
+            // A read stopped by a cancel: the command stops, not the region.
+            Err(_) if s.cancel.is_cancelled() => return Err(Error::Cancelled { id: CHECK.id.to_string() }),
             Err(e) => {
+                // Its quality steps, counted up front, are done: there is nothing to check; so are
+                // the bytes of its files that weren't read.
+                if let Some(f) = noted {
+                    progress.advance(quality_steps(*f, all_geometry));
+                }
+                let read = progress.get().bytes.saturating_sub(before);
+                progress.read(mesh_bytes(fs, r).saturating_sub(read));
                 d.insert(0, unreadable(r, &e.to_string()));
                 (None, Vec::new())
             }
