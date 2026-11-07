@@ -1883,13 +1883,27 @@ fn every_cell_of_a_solid_has_one_material() {
             materials(&names.iter().map(|m| material(m)).collect::<String>()),
         );
         let c = Case::open(&complete(&fs)).unwrap();
-        // A native test, off wasm: the clock is there.
-        #[allow(clippy::disallowed_methods)]
-        let t = std::time::Instant::now();
-        let d = check(&c);
-        let took = t.elapsed().as_secs_f64();
-        assert!(d.iter().all(|d| !d.code.starts_with("case.material")), "{:?}", d.iter().take(3).collect::<Vec<_>>());
-        took
+        let checked = || {
+            let d = check(&c);
+            assert!(
+                d.iter().all(|d| !d.code.starts_with("case.material")),
+                "{:?}",
+                d.iter().take(3).collect::<Vec<_>>()
+            );
+        };
+        // Timed only off wasm, where there is a clock; the findings are checked everywhere.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[allow(clippy::disallowed_methods)]
+            let t = std::time::Instant::now();
+            checked();
+            t.elapsed().as_secs_f64()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            checked();
+            0.0
+        }
     };
     let (small, large) = (timed(15_000), timed(60_000));
     assert!(large < 8.0 * small + 0.2, "15 000 in {small:.3} s, 60 000 in {large:.3} s");
