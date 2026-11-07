@@ -24,7 +24,8 @@ use std::collections::HashMap;
 use eframe::egui_wgpu::wgpu;
 use umcf_render::camera::Camera;
 use umcf_render::raster::{
-    AHEAD, BOTTOM, ColourBy, EDGE, EDGE_REACH, LINE, Mode, OUTLINE, SELECTED, Style, TOP, dot_size, palette,
+    AHEAD, BOTTOM, ColourBy, EDGE, EDGE_REACH, FRONT as CPU_FRONT, LINE, Mode, OUTLINE, SELECTED, Style, TOP, dot_size,
+    palette,
 };
 use umcf_render::{Object, Scene};
 
@@ -256,7 +257,13 @@ fn fs(in: Out) -> Pixel {
     var out: Pixel;
     out.colour = vec4<f32>(in.colour.rgb * k, 1.0);
     out.id = in.id;
-    out.depth = bitcast<u32>(view.lens.z / in.z);
+    // The selection a little nearer, as the CPU view stores it: what lies in the same place
+    // (a transparent layer, a wireframe) is behind it.
+    var depth = view.lens.z / in.z;
+    if obj.mode == 1u || obj.mode == 2u {
+        depth = depth * (1.0 + CPU_FRONT);
+    }
+    out.depth = bitcast<u32>(depth);
     return out;
 }
 
@@ -335,8 +342,10 @@ fn fs_mark(in: Mark) -> @location(0) vec4<f32> {
 
 // Transparent layers, in any order (weighted, blended: order-independent): what each adds to
 // the sum of the layers' colours (weighted by opacity, and by nearness so that the nearer
-// counts more where layers of different colours lie over each other), and how much of what is
-// behind it each lets through. Seen where no surface is nearer, as in the CPU view.
+// counts more where layers of different colours lie over each other), and to the sum of
+// -log(1 - opacity), from which what they let through together is found (both sums added, so
+// the two images blend alike, which every device can). Seen where no surface is nearer, as in
+// the CPU view.
 struct Glass {
     @location(0) sum: vec4<f32>,
     @location(1) through: f32,
@@ -358,7 +367,7 @@ fn fs_glass(in: Out) -> Glass {
         out.through = 0.0;
     } else {
         out.sum = vec4<f32>(in.colour.rgb * k * a * w, a * w);
-        out.through = a;
+        out.through = -log(1.0 - min(a, 0.9999));
     }
     return out;
 }
@@ -408,9 +417,10 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let id = textureLoad(ids, p, 0).r;
     var c = textureLoad(image, p, 0);
     // The transparent layers over what is behind them: one layer as the CPU view blends it.
+    // Sums that overflowed half floats (hundreds of near layers) are left out.
     let sum = textureLoad(sums, p, 0);
-    let covered = 1.0 - textureLoad(through, p, 0).r;
-    if covered > 0.0 && sum.a > 0.0 {
+    let covered = 1.0 - exp(-textureLoad(through, p, 0).r);
+    if covered > 0.0 && sum.a > 0.0 && all(abs(sum) < vec4<f32>(65000.0)) {
         c = vec4<f32>(sum.rgb / sum.a * covered + c.rgb * (1.0 - covered), 1.0);
     }
     var outline = false;
@@ -430,7 +440,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 /// Why the GPU view didn't draw a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDrawn {
-    /// The CPU draws this one (a style it doesn't draw yet, an object too big for the
+    /// The CPU draws this one (transparent layers on a device that can't blend half floats, an object too big for the
     /// device); the next may be the GPU's again.
     Here(String),
     /// The GPU failed (out of memory, a limit of the device): the view goes back to the CPU.
@@ -477,7 +487,8 @@ fn view_uniform(scene: &Scene, camera: &Camera, size: [u32; 2], background: [[f3
 }
 
 /// Each class's two texels in the GPU view: its colour (or the selection's) with what it is (one
-/// of the `CODE`s: hidden, a surface, a selected surface, a wireframe, points), then its opacity.
+/// of the `CODE`s: hidden, a surface, a selected surface, a wireframe, points, a transparent
+/// surface), then its opacity.
 /// A wireframe or points of opacity 0 are hidden (the CPU view doesn't draw them).
 fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
     let Some(obj) = scene.objects.get(k) else { return Vec::new() };
@@ -496,6 +507,8 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
             let d = style.display_of(k, c32);
             let code = match d.mode {
                 Mode::Hidden => CODE_HIDDEN,
+                // Not drawn (the CPU view would draw it opaque, without outlines; the window's
+                // display card only takes opacities from 0 to 1).
                 Mode::Surface if d.opacity.is_nan() => CODE_HIDDEN,
                 // Transparent (an opacity of 0 is drawn as one, and adds nothing, as on the CPU).
                 Mode::Surface if d.opacity < 1.0 => CODE_GLASS,
@@ -840,8 +853,9 @@ impl Gpu {
             none,
             Some(wgpu::PrimitiveTopology::TriangleList),
         );
-        // The transparent layers: their weighted colours added up, what they let through
-        // multiplied, where the device can render and blend half floats.
+        // The transparent layers: their weighted colours and what they let through (as
+        // -log) added up, where the device can render and blend half floats; one blend for
+        // both images (no independent blending needed).
         let blends = |f: wgpu::TextureFormat| {
             let features = adapter.get_texture_format_features(f);
             features.allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -851,11 +865,6 @@ impl Gpu {
             let add = wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
                 dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            };
-            let let_through = wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::OneMinusSrc,
                 operation: wgpu::BlendOperation::Add,
             };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -882,7 +891,7 @@ impl Gpu {
                         }),
                         Some(wgpu::ColorTargetState {
                             format: THROUGH,
-                            blend: Some(wgpu::BlendState { color: let_through, alpha: let_through }),
+                            blend: Some(wgpu::BlendState { color: add, alpha: add }),
                             write_mask: wgpu::ColorWrites::ALL,
                         }),
                     ],
@@ -1200,10 +1209,9 @@ impl Gpu {
                 })
             };
             let none = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
-            let all = wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("umcf transparent layers"),
-                color_attachments: &[clear(&target.sums, none), clear(&target.through, all)],
+                color_attachments: &[clear(&target.sums, none), clear(&target.through, none)],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1276,7 +1284,7 @@ impl Gpu {
         };
         let sums = view_of_texture(&make("umcf transparent layers", sums_format, drawn));
         let through = view_of_texture(&make("umcf let through", through_format, drawn));
-        let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let view_of = view_of_texture;
         let (view, scene, ids, depth) = (view_of(&texture), view_of(&scene), view_of(&ids), view_of(&depth));
         let depths = view_of(&depths);
         let marks = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1495,7 +1503,7 @@ fn with_constants(source: &str) -> String {
     format!(
         "const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n\
          const EDGE: f32 = {EDGE:?};\nconst EDGE_REACH: f32 = {reach:?};\nconst LINE: f32 = {LINE:?};\n\
-         const AHEAD: f32 = {AHEAD:?};\n{source}"
+         const AHEAD: f32 = {AHEAD:?};\nconst CPU_FRONT: f32 = {CPU_FRONT:?};\n{source}"
     )
 }
 
@@ -1800,6 +1808,10 @@ mod tests {
     fn styles_the_gpu_view_doesnt_draw_are_named() {
         let Some((adapter, device, queue)) = device() else { return };
         let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        if gpu.glass.is_none() {
+            eprintln!("SKIP: the device can't blend half floats");
+            return;
+        }
         let mut style = Style { edges: true, ..Style::default() };
         for mode in [Mode::Wireframe, Mode::Points, Mode::Hidden, Mode::Surface] {
             style.display.insert((0, 0), Display { mode, opacity: 0.5 });
@@ -2045,7 +2057,7 @@ mod tests {
     fn a_transparent_layer_is_blended_as_on_the_cpu() {
         let scene = mesh_scene();
         let glass = |o: f32| Display { mode: Mode::Surface, opacity: o };
-        // The top half opaque over the background; then every face (three layers that don't lie
+        // The top patch at half opacity over the background; then every face (three layers that don't lie
         // over each other here), with edges, at 0.3.
         let mut style = Style::default();
         style.display.insert((0, 0), glass(0.5));
@@ -2089,22 +2101,63 @@ mod tests {
     #[test]
     fn transparent_layers_over_each_other_mix_the_nearer_more() {
         // Two transparent boxes, one inside the other, of their own colours: the CPU blends the
-        // farther first; the GPU weighs them (order-independent), the nearer more.
+        // farther first; the GPU weighs them (order-independent), the nearer more. Where they
+        // lie over each other, the GPU's colour is nearer the CPU's (the outer box's faces in
+        // front) than an even mix of the two would be.
         let mut scene = mesh_scene();
         scene.objects.push(mesh_box(&scene, 0.5));
-        let mut style = Style { colour_by: ColourBy::Object, ..Style::default() };
-        for k in 0..2 {
+        let a = 0.5f32;
+        let glass = Display { mode: Mode::Surface, opacity: a };
+        let hidden = Display { mode: Mode::Hidden, opacity: 1.0 };
+        let with = |outer: Display, inner: Display| {
+            let mut style = Style { colour_by: ColourBy::Object, ..Style::default() };
             for c in 0..3 {
-                style.display.insert((k, c), Display { mode: Mode::Surface, opacity: 0.5 });
+                style.display.insert((0, c), outer);
+                style.display.insert((1, c), inner);
+            }
+            style
+        };
+        let Some((cpu, both_gpu)) = both(&scene, &mut with(glass, glass)) else { return };
+        let (_, outer) = both(&scene, &mut with(glass, hidden)).unwrap();
+        let (_, inner) = both(&scene, &mut with(hidden, glass)).unwrap();
+        let (_, none) = both(&scene, &mut with(hidden, hidden)).unwrap();
+        let (mut to_cpu, mut even_to_cpu, mut n) = (0.0f64, 0.0f64, 0usize);
+        for i in 0..cpu.len() / 4 {
+            let px = |v: &[u8], k: usize| f32::from(v[i * 4 + k]) / 255.0;
+            if (0..3).all(|k| px(&outer, k) == px(&none, k)) || (0..3).all(|k| px(&inner, k) == px(&none, k)) {
+                continue;
+            }
+            n += 1;
+            for k in 0..3 {
+                let under = px(&none, k);
+                // Each box's own colour, from its layer alone over what is behind it.
+                let (o, c) = ((px(&outer, k) - under * (1.0 - a)) / a, (px(&inner, k) - under * (1.0 - a)) / a);
+                let even = (o + c) / 2.0 * (1.0 - (1.0 - a) * (1.0 - a)) + under * (1.0 - a) * (1.0 - a);
+                to_cpu += f64::from((px(&both_gpu, k) - px(&cpu, k)).abs());
+                even_to_cpu += f64::from((even - px(&cpu, k)).abs());
             }
         }
-        let Some((cpu, image)) = both(&scene, &mut style.clone()) else { return };
-        // Where the two lie over each other the colours are near the CPU's (within a sixth of
-        // the range), and elsewhere the same.
-        let near = differing(&cpu, &image, 40);
-        assert!(near < 0.005, "{:.2}% differ by more than 40", near * 100.0);
-        let exact = differing(&cpu, &image, 3);
-        assert!(exact < 0.2, "{:.2}% differ", exact * 100.0);
+        assert!(n > 500, "{n} pixels where both boxes are");
+        assert!(to_cpu < even_to_cpu * 0.6, "{to_cpu:.1} from the CPU's colours, an even mix {even_to_cpu:.1}");
+        // Elsewhere the same.
+        assert!(differing(&cpu, &both_gpu, 40) < 0.005);
+    }
+
+    #[test]
+    fn a_transparent_layer_behind_an_opaque_surface_is_not_seen() {
+        // The small box transparent, inside the big one, opaque: hidden on both views.
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 0.5));
+        let mut style = Style::default();
+        let mut hidden = Style::default();
+        for c in 0..3 {
+            style.display.insert((1, c), Display { mode: Mode::Surface, opacity: 0.5 });
+            hidden.display.insert((1, c), Display { mode: Mode::Hidden, opacity: 1.0 });
+        }
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        let (cpu_hidden, gpu_hidden) = both(&scene, &mut hidden).unwrap();
+        assert_eq!(changed(&cpu, &cpu_hidden, 0), 0);
+        assert_eq!(changed(&image, &gpu_hidden, 0), 0, "a transparent layer seen through an opaque surface");
     }
 
     #[test]

@@ -138,6 +138,9 @@ pub const LINE: f32 = 0.85;
 /// How much nearer (1/depth, relative) a surface is to hide an edge or a point: one a little
 /// behind it, as on it, is still seen.
 pub const AHEAD: f32 = 1e-4;
+/// How much nearer (1/depth, relative) a selected surface is put, so that it is seen over what
+/// lies in the same place.
+pub const FRONT: f32 = 1e-5;
 
 /// The side of a point, in pixels, in an image `height` pixels high.
 pub fn dot_size(height: u32) -> f64 {
@@ -229,7 +232,7 @@ impl Target {
                 }
                 let mut z = (w0 * a.inv_z + w1 * b.inv_z + w2 * c.inv_z) as f32;
                 if front {
-                    z *= 1.0 + 1e-5;
+                    z *= 1.0 + FRONT;
                 }
                 let i = py * self.w + px;
                 let Some(d) = self.depth.get_mut(i) else { continue };
