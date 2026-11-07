@@ -184,12 +184,16 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 
 ## Memory
 
-The session plans with the memory free when it starts, as Linux, Windows or macOS tell it, or
-with `UMCF_MEMORY` (megabytes) when that is set (`UMCF_MEMORY=4000 umcf-gui case`):
+The session plans with the memory free when the program starts, as Linux, Windows or macOS
+tell it (on Linux no more than its control group allows: a container, a SLURM job), or with
+`UMCF_MEMORY` when that is set to a whole number of megabytes (`UMCF_MEMORY=4000 umcf-gui
+case`; another value is ignored):
 
 - **Half of it for reading at once.** Each region's read is estimated from the counts its
-  `owner` header notes (about 32 bytes per point of the mesh and per boundary face), or from the
-  size of its `points` file; a surface from its file's size. The biggest start first, and a
+  `owner` header notes: about 32 bytes per point of the mesh and per boundary face, and for a
+  binary mesh (read whole, not as a stream) 24 more per point and its `faces` file's size.
+  Without the counts it is estimated from the sizes of its `points` and `faces` files, a
+  surface from its file's size. The biggest start first, and a
   reader starts only while its estimate and those running fit. One always runs, so a region
   bigger than the budget is read, alone.
 - **A quarter for what the scene keeps while it is hidden.** Past it, the regions and surfaces

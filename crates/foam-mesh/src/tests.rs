@@ -196,6 +196,15 @@ fn ascii_mesh_reads() {
 }
 
 #[test]
+fn counts_tell_a_binary_mesh() {
+    let a = Arch { big_endian: false, label_bytes: 4, scalar_bytes: 8 };
+    let d = mesh_dir("air");
+    assert!(counts(&binary_mesh(a), &d, &Limits::default()).unwrap().binary);
+    assert!(!counts(&ascii_mesh(), &d, &Limits::default()).unwrap().binary);
+    assert!(!counts(&MemFs::new(), &d, &Limits::default()).unwrap().binary);
+}
+
+#[test]
 fn binary_mesh_reads_in_every_arch() {
     for big_endian in [false, true] {
         for label_bytes in [4, 8] {

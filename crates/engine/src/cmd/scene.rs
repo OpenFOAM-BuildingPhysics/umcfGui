@@ -205,19 +205,31 @@ fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Res
         .collect()
 }
 
-/// About how much memory reading region `region`'s boundary holds while it runs: every point
-/// of the mesh (read whole, then only the boundary's kept) and the boundary faces, from the
-/// counts the `owner` header notes; without them, from the size of the points file.
+/// About how much memory reading region `region`'s boundary holds while it runs, from the
+/// counts the `owner` header notes: every point of the mesh (read whole, then only the
+/// boundary's kept) and the boundary faces. A binary mesh is read whole, not as a stream: its
+/// `points` file is held besides its points, and its `faces` file whole. Without the counts, from
+/// the sizes of the `points` and `faces` files.
 fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
     let dir = mesh_dir(region);
+    // A file's size, about four times that when compressed (its bytes and what they decompress to).
+    let size = |name: &str| {
+        let plain = fs.size(&format!("{dir}/{name}"));
+        plain.or_else(|| fs.size(&format!("{dir}/{name}.gz")).map(|n| n.saturating_mul(4))).unwrap_or(0)
+    };
     let counts = umcf_foam_mesh::counts(fs, &dir, &Limits::default()).unwrap_or_default();
-    if let Some(points) = counts.points {
-        let boundary = counts.faces.zip(counts.internal_faces).map_or(0, |(f, i)| f.saturating_sub(i));
-        return points.saturating_mul(32).saturating_add(boundary.saturating_mul(32));
+    match counts.points {
+        Some(points) => {
+            let boundary = counts.faces.zip(counts.internal_faces).map_or(0, |(f, i)| f.saturating_sub(i));
+            let streamed = points.saturating_mul(32).saturating_add(boundary.saturating_mul(32));
+            if counts.binary {
+                streamed.saturating_add(points.saturating_mul(24)).saturating_add(size("faces"))
+            } else {
+                streamed
+            }
+        }
+        None => size("points").saturating_mul(2).saturating_add(size("faces")),
     }
-    let plain = fs.size(&format!("{dir}/points")).map(|n| n.saturating_mul(2));
-    let gz = || fs.size(&format!("{dir}/points.gz")).map(|n| n.saturating_mul(3));
-    plain.or_else(gz).unwrap_or(0)
 }
 
 /// About how much memory reading surface `file` holds while it runs: its bytes, what is read of

@@ -88,8 +88,8 @@ This draws the case's meshes (their boundary patches) or STL surfaces into a PNG
 CPU renderer, and can select and pick patches first: see [3D scene and
 selection](scene.md#on-the-command-line). The exit status is 0 when the image is written and 2
 when the case can't be opened or drawn. How many regions are read at once, and how much is kept
-of hidden ones, follows the memory free, or `UMCF_MEMORY` in megabytes when it is set
-([memory](scene.md#memory)).
+of hidden ones, follows the memory free, or `UMCF_MEMORY` when it is set to a whole number of
+megabytes ([memory](scene.md#memory)).
 
 ## Running commands
 

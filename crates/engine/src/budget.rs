@@ -1,10 +1,12 @@
 //! The memory a session plans with: how much what is read at once may take, and how much the
 //! 3D scene keeps of what isn't shown.
 //!
-//! Taken from the memory free when the first session starts, as Linux, Windows or macOS tell
-//! it (8 GB where it can't be told), or from `UMCF_MEMORY` (megabytes) when it is set. Half of
-//! it is for reading at once, a quarter for hidden scene objects. These are plans from
-//! estimates, not limits: a single read bigger than the budget still runs, alone.
+//! Taken once per process, when the first session starts, from the memory free as Linux,
+//! Windows or macOS tell it (no more than a Linux control group allows: a container, a SLURM
+//! job; 8 GB where it can't be told), or from `UMCF_MEMORY` (a whole number of megabytes) when
+//! it is set; another value of it is ignored. Half of it is for reading at once, a quarter for
+//! hidden scene objects. These are plans from estimates, not limits: a single read bigger than
+//! the budget still runs, alone.
 
 /// What [`Budget::system`] assumes where the free memory can't be told.
 const FALLBACK: u64 = 8 << 30;
@@ -35,20 +37,21 @@ impl Budget {
             Budget::of(set.map_or_else(free_memory, |mb| mb.saturating_mul(1 << 20)))
         })
     }
-
-    /// The budget as the commands report it: megabytes.
-    pub fn to_json(self) -> serde_json::Value {
-        serde_json::json!({ "read_mb": self.read >> 20, "spare_mb": self.spare >> 20 })
-    }
 }
 
-/// The memory free now, as the system tells it (Linux, Windows, macOS), else [`FALLBACK`].
+/// The memory free now, as the system tells it (Linux, Windows, macOS), and no more than the
+/// control group allows where one limits it (Linux: a container, a SLURM job); else
+/// [`FALLBACK`].
 fn free_memory() -> u64 {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
-    match system.available_memory() {
+    let free = match system.available_memory() {
         0 => FALLBACK,
         n => n,
+    };
+    match system.cgroup_limits() {
+        Some(limits) if limits.free_memory > 0 => free.min(limits.free_memory),
+        _ => free,
     }
 }
 

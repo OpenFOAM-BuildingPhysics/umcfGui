@@ -424,6 +424,9 @@ pub struct Counts {
     pub cells: Option<u64>,
     pub faces: Option<u64>,
     pub internal_faces: Option<u64>,
+    /// Whether `owner` is written in binary (OpenFOAM writes a mesh's files in one format, its
+    /// `writeFormat`); `false` without a header.
+    pub binary: bool,
 }
 
 /// The counts the `owner` header of the mesh in `dir` notes (all `None` for no `owner`, or one
@@ -471,16 +474,18 @@ pub fn counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Counts> {
         cells: h.count("nCells"),
         faces: h.count("nFaces"),
         internal_faces: h.count("nInternalFaces"),
+        binary: end.is_some() && h.format == umcf_foam_field::Format::Binary,
     })
 }
 
-/// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
-/// label in the whole mesh, and the patches.
+/// What drawing or picking a mesh's boundary needs: points, a face's points by the face's label
+/// in the whole mesh, and the patches.
 pub trait Boundary {
-    /// The mesh's points, by label.
+    /// The points the faces use, by the labels [`Boundary::face`] gives (the mesh's own labels
+    /// for a [`PolyMesh`], labels into the kept points for a [`BoundaryMesh`]).
     fn points(&self) -> &[[f64; 3]];
-    /// The point labels of face `i` (a label in the whole mesh); `None` for a face this mesh
-    /// doesn't hold.
+    /// The points of face `i` (a label in the whole mesh), as labels into
+    /// [`Boundary::points`]; `None` for a face this mesh doesn't hold.
     fn face(&self, i: usize) -> Option<&[u32]>;
     /// The boundary patches, as `boundary` lists them.
     fn patches(&self) -> &[Patch];
@@ -670,12 +675,12 @@ impl BoundaryMesh {
 }
 
 impl Boundary for BoundaryMesh {
-    /// The mesh's points, by label.
+    /// The points the boundary faces use (see [`BoundaryMesh`]).
     fn points(&self) -> &[[f64; 3]] {
         &self.points
     }
 
-    /// The point labels of face `i`.
+    /// The points of boundary face `i`, as labels into the kept points.
     fn face(&self, i: usize) -> Option<&[u32]> {
         BoundaryMesh::face(self, i)
     }

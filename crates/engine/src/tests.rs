@@ -1770,17 +1770,22 @@ fn hidden_regions_are_kept_within_the_budget() {
     s.scene(&json!({ "regions": ["air"] })).unwrap();
     s.scene(&json!({})).unwrap();
     assert_eq!((count("air"), count("ground"), count("roofs")), (1, 2, 1));
+    // Roofs is hidden first, then ground: ground, hidden more recently, is kept, roofs goes.
+    s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    s.scene(&json!({})).unwrap();
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 2, 2));
     // No room: every hidden region goes.
     s.set_budget(Budget { read: u64::MAX, spare: 0 });
     s.scene(&json!({ "regions": ["air"] })).unwrap();
     s.scene(&json!({})).unwrap();
-    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 3, 2));
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 3, 3));
 }
 
-/// With a read budget smaller than any read, the regions are read one at a time, and the scene
-/// is the same.
+/// A read budget smaller than any read (the regions read one at a time: see the scheduler's
+/// own tests) draws the same scene.
 #[test]
-fn a_small_read_budget_reads_one_region_at_a_time() {
+fn a_small_read_budget_draws_the_same_scene() {
     let (mut s, _) = two_region_session();
     let all = s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap().data["camera"].clone();
     let (mut t, _) = two_region_session();
