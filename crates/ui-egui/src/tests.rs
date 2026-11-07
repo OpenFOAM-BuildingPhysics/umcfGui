@@ -1484,3 +1484,16 @@ fn read_fields_asked_for_at_start_up_reads_them_once() {
     let reads: Vec<bool> = app.log.iter().filter(|e| e.command == "case.fields").map(|e| e.ok).collect();
     assert_eq!(reads, [true]);
 }
+
+#[test]
+fn without_a_gpu_view_the_status_bar_label_is_no_switch() {
+    // No GPU device here (the window runs on OpenGL): the label says CPU, and a click leaves it.
+    // (The switch itself is `toggle_renderer`, as *GPU* in the ribbon; the harness has no GPU.)
+    let mut h = harness(app());
+    h.run();
+    h.get_by_label("CPU").click();
+    h.run();
+    assert_eq!(h.state().viewport.renderer, crate::viewport::Renderer::Cpu);
+    assert!(!h.state().viewport.has_gpu());
+    h.get_by_label("CPU");
+}
