@@ -757,8 +757,8 @@ fn an_outline_reads_gzip_and_stays_within_its_limits() {
     assert!(e.starts_with(&format!("line {line}:")), "{e}");
 }
 
-/// The most the linear-time tests below may take. About a second here in a debug build; the
-/// quadratic cost they guard against took minutes. Loose, so that a slow CI runner of another
+/// The most the linear-time tests below may take where the quadratic cost they guard against
+/// took minutes. About a second here in a debug build. Loose, so that a slow CI runner of another
 /// system (macOS, Windows), running other tests at the same time, passes.
 const LINEAR_SECS: u64 = 30;
 
@@ -785,7 +785,9 @@ fn an_outline_bounds_comments_strings_and_failed_bare_lists() {
     let got = Field::outline(&fs, "0/T", &Limits::default(), 4 << 20);
     // Each attempt reads up to 800 kB ahead: 2000 of them would be 1.6 GB, quadratic in the file.
     assert!(matches!(got, Err(Error::TooLarge { .. })), "{:?}", got.err());
-    assert!(started.elapsed().as_secs() < LINEAR_SECS, "{:?}", started.elapsed());
+    // Tighter than `LINEAR_SECS`: re-reading 1.6 GB may take seconds, not minutes (about 0.1 s
+    // here, within this on macOS CI).
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
 }
 
 #[test]
