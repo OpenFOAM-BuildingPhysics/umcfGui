@@ -146,7 +146,7 @@ Tested against `checkMesh`:
 
 Checking that mesh takes about 40 seconds and 4 GB on one core: 13 seconds to read it, the rest
 to check it. In the desktop app it runs as a job with a progress bar (the mesh files read, then
-the faces checked) and *Cancel*, which stops it within 65,536 faces; the checks `--all-geometry`
+the faces checked) and *Cancel*, which stops it within 65,536 faces; the checks `all_geometry`
 adds stop only at their end.
 
 ### Layers

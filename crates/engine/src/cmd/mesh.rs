@@ -398,6 +398,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         let candidates: Vec<&CheckMeshLog> = logs.iter().filter(|l| &l.region == r).collect();
         let mut d: Vec<Diagnostic> = Vec::new();
         // A mesh that doesn't read is that region's error; the others are still checked.
+        let before = progress.get().bytes;
         let mesh = PolyMesh::read(fs, &mesh_dir(r), &Limits::default());
         // A log is about this mesh when it checked as many cells (a run over the meshes of
         // other times, or an older mesh, checked another one); a log that doesn't say is kept.
@@ -435,8 +436,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         let (q, sets) = match &mesh {
             Ok(mesh) => {
-                if noted.is_none() {
-                    progress.add_steps(quality_steps(mesh.n_faces() as u64, all_geometry));
+                // The steps of the faces it has, not of those its `owner` notes (a stale note).
+                let faces = mesh.n_faces() as u64;
+                if *noted != Some(faces) {
+                    progress.add_steps(quality_steps(faces, all_geometry));
+                    if let Some(f) = noted {
+                        progress.advance(quality_steps(*f, all_geometry));
+                    }
                 }
                 let q = quality_with(mesh, all_geometry, &s.cancel)
                     .ok_or_else(|| Error::Cancelled { id: CHECK.id.to_string() })?;
@@ -445,10 +451,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 (Some(q), sets)
             }
             Err(e) => {
-                // Its quality steps, counted up front, are done: there is nothing to check.
+                // Its quality steps, counted up front, are done: there is nothing to check; so are
+                // the bytes of its files that weren't read.
                 if let Some(f) = noted {
                     progress.advance(quality_steps(*f, all_geometry));
                 }
+                let read = progress.get().bytes.saturating_sub(before);
+                progress.read(mesh_bytes(fs, r).saturating_sub(read));
                 d.insert(0, unreadable(r, &e.to_string()));
                 (None, Vec::new())
             }
