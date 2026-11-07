@@ -2240,6 +2240,8 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
             required_limits: adapter.limits(),
             ..Default::default()
         }),
+        // The adapter the probe looked at (two GPUs: the faster).
+        power_preference: wgpu::PowerPreference::HighPerformance,
         ..WgpuSetupCreateNew::without_display_handle()
     };
     WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() }

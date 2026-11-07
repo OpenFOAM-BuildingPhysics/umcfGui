@@ -125,10 +125,11 @@ impl Image {
 
 /// The selection colour.
 pub const SELECTED: [f32; 3] = [1.0, 0.55, 0.1];
-const TOP: [f32; 3] = [0.94, 0.95, 0.96];
-const BOTTOM: [f32; 3] = [0.78, 0.81, 0.85];
+/// The background's colours at the top and the bottom, where the style gives none.
+pub const TOP: [f32; 3] = [0.94, 0.95, 0.96];
+pub const BOTTOM: [f32; 3] = [0.78, 0.81, 0.85];
 /// How much outlines and edges darken.
-const OUTLINE: f32 = 0.55;
+pub const OUTLINE: f32 = 0.55;
 const EDGE: f32 = 0.6;
 
 /// Colour number `i` of a palette whose neighbours differ (golden-ratio hues).

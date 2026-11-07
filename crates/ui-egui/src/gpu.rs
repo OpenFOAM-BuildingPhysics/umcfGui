@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::wgpu;
 use umcf_render::camera::Camera;
-use umcf_render::raster::{ColourBy, Mode, SELECTED, Style, palette};
+use umcf_render::raster::{BOTTOM, ColourBy, Mode, OUTLINE, SELECTED, Style, TOP, palette};
 use umcf_render::{Object, Scene};
 
 /// Depth-bias steps of the objects after the first (the last one for the rest), and how much
@@ -97,7 +97,7 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     var c = textureLoad(colours, vec2<i32>(i32(which % 1024u), i32(which / 1024u)), 0);
     if obj.mode == 1u && c.a >= 0.25 {
         // A selected face of a class shown: the selection's colour, in front.
-        c = vec4<f32>(1.0, 0.55, 0.1, 1.0);
+        c = vec4<f32>(SELECTED, 1.0);
     }
     // Lambert with the light at the eye, both sides lit alike, for the whole triangle (its
     // normal against the direction to its middle), as the CPU view.
@@ -171,7 +171,7 @@ fn fs_back(in: Back) -> Pixel {
 "#;
 
 /// Darkens the pixels where one class meets another or the background, as the CPU view.
-const OUTLINE: &str = r#"
+const OUTLINES: &str = r#"
 @group(0) @binding(0) var image: texture_2d<f32>;
 @group(0) @binding(1) var ids: texture_2d<u32>;
 
@@ -194,7 +194,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         if p.y > 0 && textureLoad(ids, p - vec2<i32>(0, 1), 0).r != id { outline = true; }
     }
     if outline {
-        return vec4<f32>(c.rgb * 0.55, 1.0);
+        return vec4<f32>(c.rgb * OUTLINE, 1.0);
     }
     return c;
 }
@@ -287,6 +287,8 @@ struct Uploaded {
     /// The selected faces it was last drawn with, and their triangles in chunks (none: no
     /// triangle has them), drawn over it in the selection's colour.
     selected: (Vec<u32>, Vec<(wgpu::BindGroup, u32)>),
+    /// The selection its selected faces were last looked at for.
+    looked: Option<u64>,
 }
 
 /// The image drawn (`texture`) and what it is drawn from.
@@ -353,11 +355,11 @@ impl Gpu {
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umcf view"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(with_constants(SHADER).into()),
         });
         let outline_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umcf outlines"),
-            source: wgpu::ShaderSource::Wgsl(OUTLINE.into()),
+            source: wgpu::ShaderSource::Wgsl(with_constants(OUTLINES).into()),
         });
         let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
             binding,
@@ -570,7 +572,17 @@ impl Gpu {
 
     /// Draws `scene` as `camera` sees it into an image of `size` pixels; the image, or why it
     /// wasn't drawn.
-    pub fn draw(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) -> Result<&Target, NotDrawn> {
+    ///
+    /// `selection` numbers the selection: an object's selected faces are looked at again only
+    /// when it changes (a frame of a view that turns doesn't sort them again).
+    pub fn draw(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        style: &Style,
+        size: [u32; 2],
+        selection: u64,
+    ) -> Result<&Target, NotDrawn> {
         Gpu::draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
         if let Some(o) = scene.objects.iter().find(|o| !self.fits(o)) {
             return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
@@ -584,7 +596,7 @@ impl Gpu {
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
-        self.draw_unguarded(scene, camera, style, size);
+        self.draw_unguarded(scene, camera, style, size, selection);
         let errors = [
             pollster::block_on(internal.pop()),
             pollster::block_on(validation.pop()),
@@ -600,7 +612,7 @@ impl Gpu {
     }
 
     /// [`Gpu::draw`]'s work, its errors caught by the device's scopes around it.
-    fn draw_unguarded(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2]) {
+    fn draw_unguarded(&mut self, scene: &Scene, camera: &Camera, style: &Style, size: [u32; 2], selection: u64) {
         let max = self.device.limits().max_texture_dimension_2d;
         let size = [size[0].clamp(1, max), size[1].clamp(1, max)];
         // What is no longer shown goes; what is new is uploaded.
@@ -621,19 +633,23 @@ impl Gpu {
         let mut base: u32 = 0;
         for (k, obj) in scene.objects.iter().enumerate() {
             let colours = class_colours(scene, k, style);
-            let mut faces: Vec<u32> = style.selected_faces.iter().filter(|(o, _)| *o == k).map(|(_, f)| *f).collect();
-            faces.sort_unstable();
-            faces.dedup();
             let Some(up) = self.objects.get(&obj.id()) else { continue };
             write_palette(&self.queue, &up.palette, &colours);
             for (mode, u) in up.uniforms.iter().enumerate() {
                 self.queue.write_buffer(u, 0, &bytes_u32(&[u32::try_from(mode).unwrap_or(0), base, 0, 0]));
             }
             base = base.saturating_add(u32::try_from(obj.classes.len()).unwrap_or(u32::MAX));
-            if up.selected.0 != faces {
-                let groups = self.selected_faces(obj, up, &faces);
+            if up.looked != Some(selection) {
+                let mut faces: Vec<u32> =
+                    style.selected_faces.iter().filter(|(o, _)| *o == k).map(|(_, f)| *f).collect();
+                faces.sort_unstable();
+                faces.dedup();
+                let groups = (up.selected.0 != faces).then(|| self.selected_faces(obj, up, &faces));
                 if let Some(up) = self.objects.get_mut(&obj.id()) {
-                    up.selected = (faces, groups);
+                    up.looked = Some(selection);
+                    if let Some(groups) = groups {
+                        up.selected = (faces, groups);
+                    }
                 }
             }
         }
@@ -746,8 +762,9 @@ impl Gpu {
     /// `obj` on the GPU: its points, its triangles' corners and classes in chunks a storage
     /// binding holds, and a texture for its classes' colours.
     fn upload(&self, obj: &Object) -> Uploaded {
-        let points: Vec<f32> = obj.points.iter().flatten().copied().collect();
-        let points = self.storage("umcf points", &bytes_f32(&points));
+        // Straight to bytes: no copy of the points in between (millions of them).
+        let points: Vec<u8> = obj.points.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
+        let points = self.storage("umcf points", &points);
         let classes = u32::try_from(obj.classes.len()).unwrap_or(u32::MAX).max(1);
         let palette = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("umcf colours"),
@@ -779,17 +796,18 @@ impl Gpu {
         let mut start = 0;
         while start < n {
             let end = start.saturating_add(per).min(n);
-            let corners: Vec<u32> = obj.triangles.get(start..end).unwrap_or(&[]).iter().flatten().copied().collect();
+            let triangles = obj.triangles.get(start..end).unwrap_or(&[]);
+            let corners: Vec<u8> = triangles.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
             let classes = obj.class.get(start..end).unwrap_or(&[]);
             let [shown, _, selected] = &uniforms;
-            let corners = self.storage("umcf corners", &bytes_u32(&corners));
+            let corners = self.storage("umcf corners", &corners);
             let classes = self.storage("umcf classes", &bytes_u32(classes));
             let group = self.object_group(&points, &corners, &classes, &palette, shown);
             let front = self.object_group(&points, &corners, &classes, &palette, selected);
             chunks.push((group, front, u32::try_from(end - start).unwrap_or(u32::MAX)));
             start = end;
         }
-        Uploaded { chunks, palette, points, uniforms, selected: (Vec::new(), Vec::new()) }
+        Uploaded { chunks, palette, points, uniforms, selected: (Vec::new(), Vec::new()), looked: None }
     }
 
     /// The bind groups of the selected `faces` (sorted) of `obj`, in chunks a storage binding
@@ -811,10 +829,10 @@ impl Gpu {
         picked
             .chunks(per)
             .map(|chunk| {
-                let corners: Vec<u32> = chunk.iter().flat_map(|(t, _)| **t).collect();
+                let corners: Vec<u8> = chunk.iter().flat_map(|(t, _)| **t).flat_map(u32::to_le_bytes).collect();
                 // Their own classes: the outlines are those of the patches, as in the CPU view.
                 let classes: Vec<u32> = chunk.iter().map(|(_, c)| *c).collect();
-                let corners = self.storage("umcf corners", &bytes_u32(&corners));
+                let corners = self.storage("umcf corners", &corners);
                 let classes = self.storage("umcf classes", &bytes_u32(&classes));
                 let group = self.object_group(&up.points, &corners, &classes, &up.palette, faces_uniform);
                 (group, u32::try_from(chunk.len()).unwrap_or(u32::MAX))
@@ -861,7 +879,14 @@ impl Gpu {
 }
 
 /// The CPU view's background, top and bottom, where the style gives none.
-const BACKGROUND: [[f32; 3]; 2] = [[0.94, 0.95, 0.96], [0.78, 0.81, 0.85]];
+const BACKGROUND: [[f32; 3]; 2] = [TOP, BOTTOM];
+
+/// `source` with the CPU view's constants it uses (the selection's colour, the outlines'
+/// darkening) written in, so that the two views share them.
+fn with_constants(source: &str) -> String {
+    let [r, g, b] = SELECTED;
+    format!("const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n{source}")
+}
 
 fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[u8; 4]]) {
     let size = palette.size();
@@ -896,6 +921,12 @@ mod tests {
     use umcf_geom::Vec3;
     use umcf_render::camera::View;
     use umcf_render::raster::{Display, draw};
+
+    /// A new selection number for each frame: the tests change the style between them.
+    fn next() -> u64 {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
 
     /// A device to draw on, when this machine has one the view can use (else the test is skipped).
     fn device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
@@ -995,7 +1026,7 @@ mod tests {
         style.selected = vec![(0, 0)];
         style.display.insert((0, 2), Display { mode: Mode::Hidden, opacity: 1.0 });
         let cpu = draw(&scene, &camera, &style).rgba;
-        let target = gpu.draw(&scene, &camera, &style, size).unwrap();
+        let target = gpu.draw(&scene, &camera, &style, size, next()).unwrap();
         let image = read_back(&device, &queue, target);
         // The same picture, but for pixels on the triangles' edges (rasterised a little
         // otherwise) and the shading across a triangle (per pixel here, per triangle there).
@@ -1005,7 +1036,7 @@ mod tests {
         assert!(image.chunks(4).any(orange), "no selection");
         // Drawn again with the selection gone: no orange, nothing uploaded again.
         style.selected.clear();
-        let target = gpu.draw(&scene, &camera, &style, size).unwrap();
+        let target = gpu.draw(&scene, &camera, &style, size, next()).unwrap();
         let image = read_back(&device, &queue, target);
         assert!(!image.chunks(4).any(orange), "the selection is still drawn");
         assert_eq!(gpu.objects.len(), 1);
@@ -1026,7 +1057,7 @@ mod tests {
         let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 160.0 / 120.0);
         let style = Style { width: size[0], height: size[1], colour_by: ColourBy::Object, ..Style::default() };
         let cpu = draw(&scene, &camera, &style).rgba;
-        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
         // The share of an image's pixels of object `k`'s colour, shaded.
         let of = |img: &[u8], k: usize| {
             let c = palette(k);
@@ -1057,7 +1088,7 @@ mod tests {
         // The second object's top: under the first's, but selected.
         let style = Style { width: size[0], height: size[1], selected: vec![(1, 0)], ..Style::default() };
         let cpu = draw(&scene, &camera, &style).rgba;
-        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
         let selected = image.chunks(4).filter(|p| orange(p)).count();
         assert!(selected > 1000, "{selected} pixels of the selection");
         let on_cpu = cpu.chunks(4).filter(|p| orange(p)).count();
@@ -1080,11 +1111,11 @@ mod tests {
             selected_faces: [(0, 0), (0, 1)].into_iter().collect(),
             ..Style::default()
         };
-        let shown = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        let shown = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
         assert!(shown.chunks(4).any(orange), "the selected faces are drawn while the top is shown");
         style.display.insert((0, 0), Display { mode: Mode::Hidden, opacity: 1.0 });
         let cpu = draw(&scene, &camera, &style).rgba;
-        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size).unwrap());
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
         assert!(!image.chunks(4).any(orange) && !cpu.chunks(4).any(orange));
         assert!(differing(&cpu, &image, 6) < 0.01);
     }

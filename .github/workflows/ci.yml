@@ -56,6 +56,8 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install -r requirements_docs.txt
+      - name: A software Vulkan driver (lavapipe), for the GPU view's tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
       - name: cargo xtask ci
         run: cargo xtask ci
       - name: The example cases are what their generator makes

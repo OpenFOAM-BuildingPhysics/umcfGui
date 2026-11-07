@@ -93,7 +93,8 @@ The 3D view is drawn by the CPU, or on the GPU. Start the app with `--renderer g
 which takes a hardware GPU and passes a software one over); then *GPU* in the *View* tab's
 *Display* group and in the navigation bar switches between the two at any time. The history bar
 says which drew the view (*GPU* or *CPU*); its tooltip says why the CPU did when the GPU was asked
-for.
+for. Like *Edges*, the switch is a setting of the window, not a command: the command line's
+`scene.snapshot` and `umcf-cli render` always draw on the CPU.
 
 - **When there is a GPU view.** Asked for it, the app looks for a GPU device it can draw on
   (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through

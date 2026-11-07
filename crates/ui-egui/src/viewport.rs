@@ -62,8 +62,9 @@ impl GpuView {
         camera: &Camera,
         style: &Style,
         size: [u32; 2],
+        revision: u64,
     ) -> Result<TextureId, crate::gpu::NotDrawn> {
-        let target = self.gpu.draw(scene, camera, style, size)?;
+        let target = self.gpu.draw(scene, camera, style, size, revision)?;
         let filter = egui_wgpu::wgpu::FilterMode::Linear;
         let mut renderer = self.state.renderer.write();
         let device = &self.state.device;
@@ -349,7 +350,7 @@ impl Viewport {
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
             use crate::gpu::NotDrawn;
             let on_gpu = match (self.renderer, &mut self.gpu) {
-                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size) {
+                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size, revision) {
                     Ok(id) => Ok(id),
                     Err(NotDrawn::Here(why)) => Err(Some(why)),
                     // The GPU failed: the view is the CPU's from now on, and says why.
