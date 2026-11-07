@@ -1865,25 +1865,34 @@ fn every_cell_of_a_solid_has_one_material() {
     // A material listed many times costs one pass over its zone.
     let many = vec!["brick"; 1000];
     says(&first(&[("brick", "4(0 1 2 3)")], &many), "case.material-overlap", "listed twice");
-    // Many materials and zones stay quick (names are looked up, not scanned).
-    let n = 20_000;
-    let names: Vec<String> = (0..n).map(|i| format!("m{i}")).collect();
-    let cells: Vec<String> = (0..n).map(|i| format!("1({i})")).collect();
-    let zs: Vec<(&str, &str)> = names.iter().map(String::as_str).zip(cells.iter().map(String::as_str)).collect();
-    let mut fs = case();
-    fs.insert(
-        "constant/street/polyMesh/owner",
-        format!("FoamFile\n{{\n    format ascii;\n    class labelList;\n    note \"nCells:{n}\";\n}}\n0()\n"),
-    );
-    fs.insert("constant/street/polyMesh/cellZones", zones(&zs));
-    fs.insert("constant/street/transportProperties", materials(&names.iter().map(|m| material(m)).collect::<String>()));
-    let c = Case::open(&complete(&fs)).unwrap();
-    // A native test, off wasm: the clock is there.
-    #[allow(clippy::disallowed_methods)]
-    let t = std::time::Instant::now();
-    let d = check(&c);
-    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
-    assert!(d.iter().all(|d| !d.code.starts_with("case.material")), "{:?}", d.iter().take(3).collect::<Vec<_>>());
+    // Many materials and zones stay quick: names are looked up, not scanned for each other. Four
+    // times as many take about four times as long, not sixteen (a scan of 60 000 names for each
+    // takes seconds in a debug build); a ratio, so a loaded machine slows both alike.
+    let timed = |n: usize| {
+        let names: Vec<String> = (0..n).map(|i| format!("m{i}")).collect();
+        let cells: Vec<String> = (0..n).map(|i| format!("1({i})")).collect();
+        let zs: Vec<(&str, &str)> = names.iter().map(String::as_str).zip(cells.iter().map(String::as_str)).collect();
+        let mut fs = case();
+        fs.insert(
+            "constant/street/polyMesh/owner",
+            format!("FoamFile\n{{\n    format ascii;\n    class labelList;\n    note \"nCells:{n}\";\n}}\n0()\n"),
+        );
+        fs.insert("constant/street/polyMesh/cellZones", zones(&zs));
+        fs.insert(
+            "constant/street/transportProperties",
+            materials(&names.iter().map(|m| material(m)).collect::<String>()),
+        );
+        let c = Case::open(&complete(&fs)).unwrap();
+        // A native test, off wasm: the clock is there.
+        #[allow(clippy::disallowed_methods)]
+        let t = std::time::Instant::now();
+        let d = check(&c);
+        let took = t.elapsed().as_secs_f64();
+        assert!(d.iter().all(|d| !d.code.starts_with("case.material")), "{:?}", d.iter().take(3).collect::<Vec<_>>());
+        took
+    };
+    let (small, large) = (timed(15_000), timed(60_000));
+    assert!(large < 8.0 * small + 0.2, "15 000 in {small:.3} s, 60 000 in {large:.3} s");
     // Without a cell count, overlaps are still found (coverage isn't judged).
     let mut fs = case();
     fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "2(0 1)"), ("concrete", "1(1)")]));
