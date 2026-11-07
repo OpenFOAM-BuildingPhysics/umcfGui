@@ -327,7 +327,7 @@ pub struct Gpu {
     wake: Wake,
 }
 
-/// What wakes the window (egui's repaint), set once the view is shown.
+/// What wakes the window (egui's repaint), set when the view is attached to it.
 type Wake = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send>>>>;
 
 /// Keeps the first error the device reported, and wakes the window to show it.
@@ -608,14 +608,15 @@ impl Gpu {
         size: [u32; 2],
         selection: u64,
     ) -> Result<&Target, NotDrawn> {
-        Gpu::draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
-        if let Some(o) = scene.objects.iter().find(|o| !self.fits(o)) {
-            return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
-        }
+        // An error the device reported first: the view goes back to the CPU, whatever it shows.
         if let Some(e) = self.uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             self.objects.clear();
             self.target = None;
             return Err(NotDrawn::Failed(e));
+        }
+        Gpu::draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
+        if let Some(o) = scene.objects.iter().find(|o| !self.fits(o)) {
+            return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
         }
         // What the device reports while drawing (out of memory, a limit) fails the frame.
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
