@@ -2251,9 +2251,6 @@ impl Start {
     }
 }
 
-/// Whether this machine has a GPU device the 3D view can be drawn on (wgpu with storage buffers
-/// in vertex shaders), and whether it is passed over (software: lavapipe, llvmpipe, WARP; or a
-/// virtual machine's); why not.
 /// What makes the window's app: takes the app from `slot` (once), attaches the GPU view where
 /// the window runs on a device it can use, and sets what draws the 3D view at the start.
 fn creator(
@@ -2299,6 +2296,9 @@ fn passed_over(kind: eframe::egui_wgpu::wgpu::DeviceType) -> bool {
     matches!(kind, DeviceType::Cpu | DeviceType::VirtualGpu)
 }
 
+/// Whether this machine has a GPU device the 3D view can be drawn on (wgpu with storage buffers
+/// in vertex shaders), and whether it is passed over (software: lavapipe, llvmpipe, WARP; or a
+/// virtual machine's); why not.
 fn gpu_probe() -> Result<bool, String> {
     use eframe::egui_wgpu::wgpu;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2506,16 +2506,19 @@ pub fn run(options: Options) -> Result<(), String> {
     let on_gpu = probe.is_ok();
     let renderer = if on_gpu { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow };
     let mut result = eframe::run_native("umcfGui", native(renderer), creator(slot.clone(), start, probe));
+    // Whether the last run was on the GPU (the hint below is for that one only).
+    let mut last_on_gpu = on_gpu;
     if on_gpu && let Err(e) = &result {
         let waiting = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
         if waiting {
             let why = format!("the window didn't open on the GPU device ({e}): it runs on OpenGL");
             eprintln!("umcf-gui: {why}");
+            last_on_gpu = false;
             result = eframe::run_native("umcfGui", native(eframe::Renderer::Glow), creator(slot, start, Err(why)));
         }
     }
     result.map_err(|e| {
-        if on_gpu {
+        if last_on_gpu {
             format!("{e} (the window ran on the GPU device: start with --renderer cpu to run it on OpenGL)")
         } else {
             e.to_string()
