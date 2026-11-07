@@ -1,24 +1,28 @@
 //! The GPU view: the scene drawn with wgpu into a texture the window shows, as the CPU
-//! rasteriser's image is shown. It draws what the CPU view draws for opaque surfaces: each class
-//! in its colour (the selection orange, in front of what lies in the same place), flat-shaded
-//! with the light at the eye (per triangle, as the CPU view), outlines where one class meets
-//! another or the background, over the background's gradient, with an infinite far plane.
-//! Edges, wireframes, points and transparent layers are drawn by the CPU view for now
-//! ([`Gpu::draws`] says which styles this one draws).
+//! rasteriser's image is shown. It draws what the CPU view draws for opaque surfaces, wireframes
+//! and points: each class in its colour (the selection orange, in front of what lies in the same
+//! place), flat-shaded with the light at the eye (per triangle, as the CPU view), the faces'
+//! edges when asked for, wireframes and points over the surfaces (seen where nothing opaque is in
+//! front, blended with their opacity), outlines where one class meets another or the background,
+//! over the background's gradient, with an infinite far plane. Transparent layers are drawn by
+//! the CPU view for now ([`Gpu::draws`] says which styles this one draws).
 //!
 //! Each object is uploaded once, as it is (its points, its triangles' corners and classes,
-//! split into chunks a storage binding holds), and kept while the scene shows it; what changes
-//! from frame to frame is small: the camera, and a colour per class (the selection, what is
-//! hidden). The vertex shader reads the corners from storage buffers (vertex pulling), so a
-//! point shared by triangles of several classes is stored once, and each vertex sees its whole
-//! triangle, to shade it as one. Picking stays on the CPU (the scene's BVH), as do snapshots on
-//! the command line.
+//! split into chunks a storage binding holds), and kept while the scene shows it; its edges and
+//! points as wireframes and points draw them the first time a class shows them. What changes
+//! from frame to frame is small: the camera, and a colour and a mode per class (the selection,
+//! what is hidden, what is a wireframe). The vertex shader reads the corners from storage buffers
+//! (vertex pulling), so a point shared by triangles of several classes is stored once, and each
+//! vertex sees its whole triangle, to shade it as one and to find its edges on the screen.
+//! Picking stays on the CPU (the scene's BVH), as do snapshots on the command line.
 
 use std::collections::HashMap;
 
 use eframe::egui_wgpu::wgpu;
 use umcf_render::camera::Camera;
-use umcf_render::raster::{BOTTOM, ColourBy, Mode, OUTLINE, SELECTED, Style, TOP, palette};
+use umcf_render::raster::{
+    AHEAD, BOTTOM, ColourBy, EDGE, EDGE_REACH, LINE, Mode, OUTLINE, SELECTED, Style, TOP, dot_size, palette,
+};
 use umcf_render::{Object, Scene};
 
 /// Depth-bias steps of the objects after the first (the last one for the rest), and how much
@@ -31,14 +35,24 @@ const SLOPE: f32 = 2.0;
 const FRONT: i32 = 128;
 const FRONT_SLOPE: f32 = 32.0;
 
-/// The colours' texture's width: classes past it go on the next rows (the shader's 1024).
+/// The colours' texture's width: texels past it go on the next rows (the shader's 1024). Each
+/// class has two: its colour and what it is (the alpha: one of the `CODE`s), then its opacity.
 const PALETTE_WIDTH: u32 = 1024;
-/// The depth buffer's format: reversed (1 near, 0 at infinity), so that far things keep their
-/// precision.
-const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// What a class is, in its colour's alpha.
+const CODE_HIDDEN: f32 = 0.0;
+const CODE_SURFACE: f32 = 1.0;
+const CODE_SELECTED: f32 = 2.0;
+const CODE_WIREFRAME: f32 = 3.0;
+const CODE_POINTS: f32 = 4.0;
+/// The most classes an object has here: a triangle's class shares its word with its edges (the
+/// top three bits), an edge's or a point's with whether its face is selected (the top bit).
+const MAX_CLASSES: usize = 1 << 29;
 /// The image's format: as egui's own textures (`Rgba8Unorm` holding sRGB values, which egui's
 /// shader reads as such), so the bytes are the CPU view's.
 pub const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The depth buffer's format: reversed (1 near, 0 at infinity), so that far things keep their
+/// precision.
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Each pixel's class, for the outlines: 0 for the background, else 1 + the class's number in
 /// the scene (the classes of the objects before it, then its own).
 const ID: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -53,6 +67,8 @@ struct View {
     lens: vec4<f32>,
     top: vec4<f32>,
     bottom: vec4<f32>,
+    // x and y: the image's size in pixels; z: a point's side in pixels.
+    pixels: vec4<f32>,
 };
 struct Obj {
     // 0: the classes not selected; 1: the selected faces, in the selection's colour; 2: the
@@ -60,12 +76,17 @@ struct Obj {
     mode: u32,
     // The number of the object's first class in the scene, for the ids.
     base: u32,
-    pad0: u32,
-    pad1: u32,
+    // 1: the faces' edges are drawn.
+    edges: u32,
+    pad: u32,
 };
 @group(0) @binding(0) var<uniform> view: View;
 @group(1) @binding(0) var<storage, read> points: array<f32>;
+// The triangles' corners (three per triangle); for wireframes the edges' ends (two per edge),
+// for points the points.
 @group(1) @binding(1) var<storage, read> corners: array<u32>;
+// Each triangle's class (its edges in the top three bits, as `Object::edges`); for wireframes and
+// points each one's class (the top bit: its face is selected).
 @group(1) @binding(2) var<storage, read> classes: array<u32>;
 @group(1) @binding(3) var colours: texture_2d<f32>;
 @group(1) @binding(4) var<uniform> obj: Obj;
@@ -74,6 +95,12 @@ struct Out {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) colour: vec4<f32>,
     @location(1) @interpolate(flat) id: u32,
+    // The triangle's corners on the image (pixels from its top left): the first two, the third.
+    @location(2) @interpolate(flat) ab: vec4<f32>,
+    @location(3) @interpolate(flat) c: vec2<f32>,
+    // Its edges drawn (bit 0: the first corner to the second, 1: the second to the third, 2:
+    // the third to the first).
+    @location(4) @interpolate(flat) edges: u32,
 };
 
 struct Pixel {
@@ -81,23 +108,52 @@ struct Pixel {
     @location(1) id: u32,
 };
 
-// Corner `j` of the chunk, in view coordinates.
-fn corner(j: u32) -> vec3<f32> {
-    let k = corners[j];
+// Point `k`, in view coordinates.
+fn at(k: u32) -> vec3<f32> {
     let p = vec3<f32>(points[3u * k], points[3u * k + 1u], points[3u * k + 2u]);
     let d = p - view.eye.xyz;
     return vec3<f32>(dot(d, view.right.xyz), dot(d, view.up.xyz), dot(d, view.forward.xyz));
 }
 
+// Corner `j` of the chunk, in view coordinates.
+fn corner(j: u32) -> vec3<f32> {
+    return at(corners[j]);
+}
+
+// Texel `i` of the colours: class c's colour and code at 2c, its opacity at 2c + 1.
+fn texel(i: u32) -> vec4<f32> {
+    return textureLoad(colours, vec2<i32>(i32(i % 1024u), i32(i / 1024u)), 0);
+}
+
+fn code(c: vec4<f32>) -> u32 {
+    return u32(round(c.a));
+}
+
+// A point in view coordinates on the image, in pixels from its top left, as the CPU view.
+fn on_image(v: vec3<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        (1.0 + v.x * view.lens.x / v.z) * 0.5 * view.pixels.x,
+        (1.0 - v.y * view.lens.y / v.z) * 0.5 * view.pixels.y,
+    );
+}
+
+// Outside the view: never drawn.
+const OUTSIDE: vec4<f32> = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> Out {
     let t = i / 3u;
     let v = corner(i);
-    let which = classes[t];
-    var c = textureLoad(colours, vec2<i32>(i32(which % 1024u), i32(which / 1024u)), 0);
-    if obj.mode == 1u && c.a >= 0.25 {
+    let word = classes[t];
+    let which = word & 0x1fffffffu;
+    let c = texel(2u * which);
+    let kind = code(c);
+    let shown = kind == 1u || kind == 2u;
+    let selected = kind == 2u;
+    var colour = c.rgb;
+    if obj.mode == 1u && shown {
         // A selected face of a class shown: the selection's colour, in front.
-        c = vec4<f32>(SELECTED, 1.0);
+        colour = SELECTED;
     }
     // Lambert with the light at the eye, both sides lit alike, for the whole triangle (its
     // normal against the direction to its middle), as the CPU view.
@@ -113,11 +169,9 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     }
     let shade = 0.3 + 0.7 * cosine;
     var out: Out;
-    // Alpha: 0 hidden, 1 selected, between: shown. Each pass draws its own (the others are
-    // put outside the view, never drawn): mode 0 the shown, mode 2 the selected; mode 1 the
-    // selected faces of the classes not hidden.
-    let selected = c.a > 0.75;
-    var skip = c.a < 0.25;
+    // Each pass draws its own classes (the others are put outside the view, never drawn): mode
+    // 0 the surfaces shown, mode 2 the selected; mode 1 the selected faces of the surfaces.
+    var skip = !shown;
     if obj.mode == 0u && selected {
         skip = true;
     }
@@ -126,23 +180,114 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     }
     // Reversed depth: near / distance.
     out.pos = vec4<f32>(v.x * view.lens.x, v.y * view.lens.y, view.lens.z, v.z);
+    out.colour = vec4<f32>(colour * shade, 1.0);
     if skip {
-        out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
-        c.a = 0.0;
+        out.pos = OUTSIDE;
+        out.colour.a = 0.0;
     }
-    out.colour = vec4<f32>(c.rgb * shade, c.a);
     out.id = obj.base + which + 1u;
+    // Its edges on the image, where the whole triangle is in front of the near plane (the
+    // pieces of one cut by it get none, as in the CPU view).
+    let near = view.lens.z;
+    out.edges = 0u;
+    if obj.edges == 1u && a.z >= near && b.z >= near && e.z >= near {
+        out.edges = word >> 29u;
+    }
+    out.ab = vec4<f32>(on_image(a), on_image(b));
+    out.c = on_image(e);
     return out;
+}
+
+// Whether pixel middle `x` is within EDGE_REACH pixels of the line through `p` and `q`.
+fn on_edge(p: vec2<f32>, q: vec2<f32>, x: vec2<f32>) -> bool {
+    let d = q - p;
+    let l = length(d);
+    if !(l > 0.0) {
+        return false;
+    }
+    return abs(d.x * (x.y - p.y) - d.y * (x.x - p.x)) / l < EDGE_REACH;
 }
 
 @fragment
 fn fs(in: Out) -> Pixel {
-    if in.colour.a < 0.25 {
+    if in.colour.a < 0.5 {
+        discard;
+    }
+    var k = 1.0;
+    let x = in.pos.xy;
+    if (in.edges & 1u) != 0u && on_edge(in.ab.xy, in.ab.zw, x) { k = EDGE; }
+    if (in.edges & 2u) != 0u && on_edge(in.ab.zw, in.c, x) { k = EDGE; }
+    if (in.edges & 4u) != 0u && on_edge(in.c, in.ab.xy, x) { k = EDGE; }
+    var out: Pixel;
+    out.colour = vec4<f32>(in.colour.rgb * k, 1.0);
+    out.id = in.id;
+    return out;
+}
+
+// Wireframes and points: in their class's colour (the selection's where their face is
+// selected), darkened, blended with the class's opacity, a little in front (seen on the surface
+// they lie on, as in the CPU view).
+struct Mark {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) @interpolate(flat) colour: vec4<f32>,
+};
+
+// Point `k` of a class `word` (as `classes` holds it) that draws when the class is `wanted`.
+fn mark(k: u32, word: u32, wanted: u32) -> Mark {
+    let which = word & 0x7fffffffu;
+    let c = texel(2u * which);
+    var out: Mark;
+    out.pos = OUTSIDE;
+    out.colour = vec4<f32>(0.0);
+    if code(c) != wanted {
+        return out;
+    }
+    var colour = c.rgb;
+    if (word >> 31u) == 1u {
+        colour = SELECTED;
+    }
+    let v = at(k);
+    out.pos = vec4<f32>(v.x * view.lens.x, v.y * view.lens.y, view.lens.z * (1.0 + AHEAD), v.z);
+    out.colour = vec4<f32>(colour * LINE, texel(2u * which + 1u).r);
+    return out;
+}
+
+@vertex
+fn vs_line(@builtin(vertex_index) i: u32) -> Mark {
+    return mark(corners[i], classes[i / 2u], 3u);
+}
+
+@vertex
+fn vs_dot(@builtin(vertex_index) i: u32) -> Mark {
+    let n = i / 6u;
+    let k = corners[n];
+    var out = mark(k, classes[n], 4u);
+    let v = at(k);
+    if out.colour.a <= 0.0 || !(v.z >= view.lens.z) {
+        out.pos = OUTSIDE;
+        return out;
+    }
+    // A square on the pixels the CPU view fills: from the nearest pixel corner to its top left,
+    // its side rounded; two triangles of corners (0, 0) (1, 0) (0, 1), (1, 0) (1, 1) (0, 1).
+    let side = view.pixels.z;
+    let first = round(on_image(v) - vec2<f32>(side * 0.5));
+    let j = i % 6u;
+    let unit = vec2<f32>(select(0.0, 1.0, j == 1u || j == 3u || j == 4u), select(0.0, 1.0, j == 2u || j == 4u || j == 5u));
+    let p = first + unit * max(round(side), 1.0);
+    // Back to clip coordinates, at the point's depth.
+    let ndc = vec2<f32>(p.x / view.pixels.x * 2.0 - 1.0, 1.0 - p.y / view.pixels.y * 2.0);
+    out.pos = vec4<f32>(ndc * v.z, view.lens.z * (1.0 + AHEAD), v.z);
+    return out;
+}
+
+@fragment
+fn fs_mark(in: Mark) -> Pixel {
+    if !(in.colour.a > 0.0) {
         discard;
     }
     var out: Pixel;
-    out.colour = vec4<f32>(in.colour.rgb, 1.0);
-    out.id = in.id;
+    out.colour = in.colour;
+    out.id = 0u;
     return out;
 }
 
@@ -222,7 +367,7 @@ pub fn usable(adapter: &wgpu::Adapter) -> Result<(), String> {
 }
 
 /// The camera as the shaders take it: `View` in the shader.
-fn view_uniform(scene: &Scene, camera: &Camera, size: [u32; 2], background: [[f32; 3]; 2]) -> [f32; 28] {
+fn view_uniform(scene: &Scene, camera: &Camera, size: [u32; 2], background: [[f32; 3]; 2]) -> [f32; 32] {
     let f = camera.frame();
     let eye = f.eye - scene.origin;
     let (w, h) = (f64::from(size[0].max(1)), f64::from(size[1].max(1)));
@@ -240,17 +385,19 @@ fn view_uniform(scene: &Scene, camera: &Camera, size: [u32; 2], background: [[f3
         v(fx, fy, near),
         [top[0], top[1], top[2], 1.0],
         [bottom[0], bottom[1], bottom[2], 1.0],
+        [w as f32, h as f32, dot_size(size[1]) as f32, 0.0],
     ];
-    let mut out = [0.0; 28];
+    let mut out = [0.0; 32];
     for (o, x) in out.iter_mut().zip(rows.iter().flatten()) {
         *o = *x;
     }
     out
 }
 
-/// Each class's colour in the GPU view, as RGBA bytes: its colour (or the selection's), alpha 0
-/// for hidden, 255 for selected (drawn in front), 128 else.
-fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[u8; 4]> {
+/// Each class's two texels in the GPU view: its colour (or the selection's) with what it is (one
+/// of the `CODE`s: hidden, a surface, a selected surface, a wireframe, points), then its opacity.
+/// A wireframe or points of opacity 0 are hidden (the CPU view doesn't draw them).
+fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
     let Some(obj) = scene.objects.get(k) else { return Vec::new() };
     (0..obj.classes.len())
         .map(|c| {
@@ -264,15 +411,55 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[u8; 4]> {
                     ColourBy::Object => palette(k),
                 }
             };
-            let byte = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let alpha = match style.display_of(k, c32).mode {
-                Mode::Hidden => 0,
-                _ if selected => 255,
-                _ => 128,
+            let d = style.display_of(k, c32);
+            let code = match d.mode {
+                Mode::Hidden => CODE_HIDDEN,
+                Mode::Surface if d.opacity < 1.0 => CODE_HIDDEN,
+                Mode::Surface if selected => CODE_SELECTED,
+                Mode::Surface => CODE_SURFACE,
+                _ if d.opacity.is_nan() || d.opacity <= 0.0 => CODE_HIDDEN,
+                Mode::Wireframe => CODE_WIREFRAME,
+                Mode::Points => CODE_POINTS,
             };
-            [byte(colour[0]), byte(colour[1]), byte(colour[2]), alpha]
+            [colour[0], colour[1], colour[2], code, d.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0]
         })
         .collect()
+}
+
+/// Whether a class of object `k` is drawn with `mode` (of an opacity above 0).
+fn shows(scene: &Scene, k: usize, style: &Style, mode: Mode) -> bool {
+    let n = scene.objects.get(k).map_or(0, |o| o.classes.len());
+    (0..n).any(|c| {
+        let d = style.display_of(k, u32::try_from(c).unwrap_or(u32::MAX));
+        d.mode == mode && d.opacity > 0.0
+    })
+}
+
+/// Edges or points of an object on the GPU, in chunks a storage binding holds: each chunk's
+/// bind group, how many it has, and the buffer of their classes, written again (with the
+/// selected faces' marked) when the selected faces change.
+type Marks = Vec<(wgpu::BindGroup, u32, wgpu::Buffer)>;
+
+/// Each of `obj`'s edges or points (`lines`) as the shader takes it: its triangle's class, the top
+/// bit set where its face is one of `faces` (sorted).
+fn marks(obj: &Object, lines: bool, faces: &[u32]) -> Vec<u32> {
+    let wire = obj.wire();
+    let word = |t: u32| {
+        let class = obj.class.get(t as usize).copied().unwrap_or(0) & 0x7fff_ffff;
+        let picked =
+            !faces.is_empty() && obj.origin_index.get(t as usize).is_some_and(|f| faces.binary_search(f).is_ok());
+        class | (u32::from(picked) << 31)
+    };
+    if lines {
+        wire.edges.iter().map(|e| word(e[2])).collect()
+    } else {
+        wire.points.iter().map(|p| word(p[1])).collect()
+    }
+}
+
+/// A triangle's class as the shader takes it: its edges (`Object::edges`) in the top three bits.
+fn with_edges(class: u32, edges: u8) -> u32 {
+    (class & 0x1fff_ffff) | (u32::from(edges & 0b111) << 29)
 }
 
 /// What an object of the scene is on the GPU.
@@ -289,6 +476,9 @@ struct Uploaded {
     selected: (Vec<u32>, Vec<(wgpu::BindGroup, u32)>),
     /// The selection its selected faces were last looked at for.
     looked: Option<u64>,
+    /// Its edges and its points, as wireframes and points draw them, once a class showed them.
+    lines: Option<Marks>,
+    dots: Option<Marks>,
 }
 
 /// The image drawn (`texture`) and what it is drawn from.
@@ -311,6 +501,8 @@ pub struct Gpu {
     /// The surfaces of the objects, by rank (the first, the second, …, the rest).
     surfaces: Vec<wgpu::RenderPipeline>,
     selected: wgpu::RenderPipeline,
+    lines: wgpu::RenderPipeline,
+    dots: wgpu::RenderPipeline,
     back: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
@@ -441,35 +633,59 @@ impl Gpu {
             Some(wgpu::ColorTargetState { format: COLOUR, blend: None, write_mask: wgpu::ColorWrites::ALL }),
             Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL }),
         ];
-        let pipeline = |label, layout: &wgpu::PipelineLayout, vs, fs, compare, bias| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vs),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(compare != wgpu::CompareFunction::Always),
-                    depth_compare: Some(compare),
-                    stencil: wgpu::StencilState::default(),
-                    bias,
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(fs),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &targets,
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+        // Wireframes and points: blended over what is there with their opacity (the image's
+        // alpha stays 1), behind nothing nearer, leaving the depth and the ids as they were.
+        let over = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
         };
+        let blended = [
+            Some(wgpu::ColorTargetState { format: COLOUR, blend: Some(over), write_mask: wgpu::ColorWrites::ALL }),
+            Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::empty() }),
+        ];
+        // What a pipeline draws: triangles that fill the depth and the ids, or marks (lines or
+        // triangles) blended over them.
+        let pipeline =
+            |label, layout: &wgpu::PipelineLayout, vs, fs, compare, bias, marks: Option<wgpu::PrimitiveTopology>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some(vs),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: marks.unwrap_or(wgpu::PrimitiveTopology::TriangleList),
+                        ..wgpu::PrimitiveState::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(compare != wgpu::CompareFunction::Always && marks.is_none()),
+                        depth_compare: Some(compare),
+                        stencil: wgpu::StencilState::default(),
+                        bias,
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fs),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        targets: if marks.is_some() { &blended } else { &targets },
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         // Where surfaces of several objects lie in the same place the first is seen, as in the
         // CPU view: each later object a little farther, more where a surface is seen at a
         // grazing angle (its depth changes fast across a pixel, and so does its rounding).
@@ -477,21 +693,38 @@ impl Gpu {
             .map(|rank| {
                 let r = i32::try_from(rank).unwrap_or(0);
                 let bias = wgpu::DepthBiasState { constant: -BIAS * r, slope_scale: -SLOPE * r as f32, clamp: 0.0 };
-                pipeline("umcf surfaces", &layout, "vs", "fs", wgpu::CompareFunction::Greater, bias)
+                pipeline("umcf surfaces", &layout, "vs", "fs", wgpu::CompareFunction::Greater, bias, None)
             })
             .collect();
         // The selection in front of what lies in the same place, whichever object it is in;
         // the selected faces over their own triangles too.
         let front = wgpu::DepthBiasState { constant: FRONT, slope_scale: FRONT_SLOPE, clamp: 0.0 };
-        let selected = pipeline("umcf selection", &layout, "vs", "fs", wgpu::CompareFunction::GreaterEqual, front);
-        let back = pipeline(
-            "umcf background",
-            &back_layout,
-            "vs_back",
-            "fs_back",
-            wgpu::CompareFunction::Always,
-            wgpu::DepthBiasState::default(),
+        let selected =
+            pipeline("umcf selection", &layout, "vs", "fs", wgpu::CompareFunction::GreaterEqual, front, None);
+        // Wireframes and points are a little in front already (their depth, as the CPU view's
+        // test): no bias, which lines don't get on every backend.
+        let none = wgpu::DepthBiasState::default();
+        let greater = wgpu::CompareFunction::Greater;
+        let lines = pipeline(
+            "umcf wireframes",
+            &layout,
+            "vs_line",
+            "fs_mark",
+            greater,
+            none,
+            Some(wgpu::PrimitiveTopology::LineList),
         );
+        let dots = pipeline(
+            "umcf points",
+            &layout,
+            "vs_dot",
+            "fs_mark",
+            greater,
+            none,
+            Some(wgpu::PrimitiveTopology::TriangleList),
+        );
+        let back =
+            pipeline("umcf background", &back_layout, "vs_back", "fs_back", wgpu::CompareFunction::Always, none, None);
         let outline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("umcf outlines"),
             layout: Some(&outline_pipeline_layout),
@@ -519,7 +752,7 @@ impl Gpu {
         });
         let view_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("umcf view"),
-            size: 28 * 4,
+            size: 32 * 4,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -546,6 +779,8 @@ impl Gpu {
             queue: queue.clone(),
             surfaces,
             selected,
+            lines,
+            dots,
             back,
             outline,
             object_layout,
@@ -571,29 +806,21 @@ impl Gpu {
         *self.wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(wake));
     }
 
-    /// Whether this view draws `style` as the CPU view would: opaque surfaces, hidden layers,
-    /// the selection; `Err` names what it doesn't draw yet.
+    /// Whether this view draws `style` as the CPU view would: opaque surfaces and their edges,
+    /// wireframes, points, hidden layers, the selection; `Err` names what it doesn't draw yet.
     pub fn draws(style: &Style) -> Result<(), &'static str> {
-        if style.edges {
-            return Err("edges");
-        }
-        for d in style.display.values() {
-            match d.mode {
-                Mode::Hidden => {}
-                Mode::Surface if d.opacity >= 1.0 => {}
-                Mode::Surface => return Err("transparent layers"),
-                Mode::Wireframe => return Err("wireframes"),
-                Mode::Points => return Err("points"),
-            }
+        if style.display.values().any(|d| d.mode == Mode::Surface && d.opacity < 1.0) {
+            return Err("transparent layers");
         }
         Ok(())
     }
 
-    /// Whether `obj` fits the device: its points in one storage binding (its triangles are
-    /// split), its classes' colours in one texture.
+    /// Whether `obj` fits the device: its points in one storage binding (its triangles, edges
+    /// and points are split), its classes' colours in one texture.
     fn fits(&self, obj: &Object) -> bool {
-        let rows = (obj.classes.len() as u64).div_ceil(u64::from(PALETTE_WIDTH));
-        (obj.points.len() as u64).saturating_mul(12) <= self.binding
+        let rows = (obj.classes.len() as u64).saturating_mul(2).div_ceil(u64::from(PALETTE_WIDTH));
+        obj.classes.len() < MAX_CLASSES
+            && (obj.points.len() as u64).saturating_mul(12) <= self.binding
             && rows <= u64::from(self.device.limits().max_texture_dimension_2d)
     }
 
@@ -664,7 +891,8 @@ impl Gpu {
             let Some(up) = self.objects.get(&obj.id()) else { continue };
             write_palette(&self.queue, &up.palette, &colours);
             for (mode, u) in up.uniforms.iter().enumerate() {
-                self.queue.write_buffer(u, 0, &bytes_u32(&[u32::try_from(mode).unwrap_or(0), base, 0, 0]));
+                let words = [u32::try_from(mode).unwrap_or(0), base, u32::from(style.edges), 0];
+                self.queue.write_buffer(u, 0, &bytes_u32(&words));
             }
             base = base.saturating_add(u32::try_from(obj.classes.len()).unwrap_or(u32::MAX));
             if up.looked != Some(selection) {
@@ -672,13 +900,32 @@ impl Gpu {
                     style.selected_faces.iter().filter(|(o, _)| *o == k).map(|(_, f)| *f).collect();
                 faces.sort_unstable();
                 faces.dedup();
-                let groups = (up.selected.0 != faces).then(|| self.selected_faces(obj, up, &faces));
+                let changed = up.selected.0 != faces;
+                let groups = changed.then(|| self.selected_faces(obj, up, &faces));
+                if changed {
+                    // Their edges and points in the selection's colour too.
+                    for (m, lines) in [(&up.lines, true), (&up.dots, false)] {
+                        if let Some(m) = m {
+                            self.write_marks(m, &marks(obj, lines, &faces));
+                        }
+                    }
+                }
                 if let Some(up) = self.objects.get_mut(&obj.id()) {
                     up.looked = Some(selection);
                     if let Some(groups) = groups {
                         up.selected = (faces, groups);
                     }
                 }
+            }
+            // The edges and points the first time a class shows them.
+            let Some(up) = self.objects.get(&obj.id()) else { continue };
+            let lines = (up.lines.is_none() && shows(scene, k, style, Mode::Wireframe))
+                .then(|| self.upload_marks(obj, up, true));
+            let dots =
+                (up.dots.is_none() && shows(scene, k, style, Mode::Points)).then(|| self.upload_marks(obj, up, false));
+            if let Some(up) = self.objects.get_mut(&obj.id()) {
+                up.lines = up.lines.take().or(lines);
+                up.dots = up.dots.take().or(dots);
             }
         }
         self.ensure_target(size);
@@ -733,6 +980,19 @@ impl Gpu {
                 for (group, n) in &up.selected.1 {
                     pass.set_bind_group(1, group, &[]);
                     pass.draw(0..n.saturating_mul(3), 0..1);
+                }
+            }
+            // Wireframes, then points, over the surfaces, as in the CPU view.
+            for (pipeline, mode, vertices) in [(&self.lines, Mode::Wireframe, 2), (&self.dots, Mode::Points, 6)] {
+                pass.set_pipeline(pipeline);
+                for (k, obj) in scene.objects.iter().enumerate() {
+                    let Some(up) = self.objects.get(&obj.id()) else { continue };
+                    let marks = if mode == Mode::Wireframe { &up.lines } else { &up.dots };
+                    let Some(marks) = marks.as_ref().filter(|_| shows(scene, k, style, mode)) else { continue };
+                    for (group, n, _) in marks {
+                        pass.set_bind_group(1, group, &[]);
+                        pass.draw(0..n.saturating_mul(vertices), 0..1);
+                    }
                 }
             }
         }
@@ -793,18 +1053,19 @@ impl Gpu {
         // Straight to bytes: no copy of the points in between (millions of them).
         let points: Vec<u8> = obj.points.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
         let points = self.storage("umcf points", &points);
-        let classes = u32::try_from(obj.classes.len()).unwrap_or(u32::MAX).max(1);
+        // Two texels per class.
+        let texels = u32::try_from(obj.classes.len()).unwrap_or(u32::MAX).max(1).saturating_mul(2);
         let palette = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("umcf colours"),
             size: wgpu::Extent3d {
-                width: classes.min(PALETTE_WIDTH),
-                height: classes.div_ceil(PALETTE_WIDTH),
+                width: texels.min(PALETTE_WIDTH),
+                height: texels.div_ceil(PALETTE_WIDTH),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -826,16 +1087,32 @@ impl Gpu {
             let end = start.saturating_add(per).min(n);
             let triangles = obj.triangles.get(start..end).unwrap_or(&[]);
             let corners: Vec<u8> = triangles.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
-            let classes = obj.class.get(start..end).unwrap_or(&[]);
+            let classes: Vec<u32> = obj
+                .class
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .enumerate()
+                .map(|(i, c)| with_edges(*c, obj.edges.get(start + i).copied().unwrap_or(0)))
+                .collect();
             let [shown, _, selected] = &uniforms;
             let corners = self.storage("umcf corners", &corners);
-            let classes = self.storage("umcf classes", &bytes_u32(classes));
+            let classes = self.storage("umcf classes", &bytes_u32(&classes));
             let group = self.object_group(&points, &corners, &classes, &palette, shown);
             let front = self.object_group(&points, &corners, &classes, &palette, selected);
             chunks.push((group, front, u32::try_from(end - start).unwrap_or(u32::MAX)));
             start = end;
         }
-        Uploaded { chunks, palette, points, uniforms, selected: (Vec::new(), Vec::new()), looked: None }
+        Uploaded {
+            chunks,
+            palette,
+            points,
+            uniforms,
+            selected: (Vec::new(), Vec::new()),
+            looked: None,
+            lines: None,
+            dots: None,
+        }
     }
 
     /// The bind groups of the selected `faces` (sorted) of `obj`, in chunks a storage binding
@@ -849,8 +1126,9 @@ impl Gpu {
             .iter()
             .zip(&obj.origin_index)
             .zip(&obj.class)
-            .filter(|((_, f), _)| faces.binary_search(f).is_ok())
-            .map(|((t, _), c)| (t, *c))
+            .enumerate()
+            .filter(|(_, ((_, f), _))| faces.binary_search(f).is_ok())
+            .map(|(n, ((t, _), c))| (t, with_edges(*c, obj.edges.get(n).copied().unwrap_or(0))))
             .collect();
         let per = usize::try_from((self.binding / 12).max(1)).unwrap_or(usize::MAX);
         let [_, faces_uniform, _] = &up.uniforms;
@@ -866,6 +1144,48 @@ impl Gpu {
                 (group, u32::try_from(chunk.len()).unwrap_or(u32::MAX))
             })
             .collect()
+    }
+
+    /// `obj`'s edges (`lines`) or points as wireframes and points draw them, the selected faces
+    /// `up` was last drawn with marked: in chunks whose ends fit a storage binding and whose
+    /// vertices a draw's count.
+    fn upload_marks(&self, obj: &Object, up: &Uploaded, lines: bool) -> Marks {
+        let wire = obj.wire();
+        let ends: Vec<u32> = if lines {
+            wire.edges.iter().flat_map(|e| [e[0], e[1]]).collect()
+        } else {
+            wire.points.iter().map(|p| p[0]).collect()
+        };
+        let (each, vertices): (u64, u64) = if lines { (2, 2) } else { (1, 6) };
+        let per = usize::try_from((self.binding / (4 * each)).min(u64::from(u32::MAX) / vertices).max(1))
+            .unwrap_or(usize::MAX);
+        let each = usize::try_from(each).unwrap_or(1);
+        let words = marks(obj, lines, &up.selected.0);
+        let [shown, _, _] = &up.uniforms;
+        words
+            .chunks(per)
+            .enumerate()
+            .map(|(n, w)| {
+                let first = n.saturating_mul(per).saturating_mul(each);
+                let e = ends.get(first..first.saturating_add(w.len().saturating_mul(each))).unwrap_or(&[]);
+                let ends = self.storage("umcf ends", &bytes_u32(e));
+                let classes = self.storage("umcf marks", &bytes_u32(w));
+                let group = self.object_group(&up.points, &ends, &classes, &up.palette, shown);
+                (group, u32::try_from(w.len()).unwrap_or(u32::MAX), classes)
+            })
+            .collect()
+    }
+
+    /// Writes `words` (as [`marks`] gives them) into `m`'s chunks.
+    fn write_marks(&self, m: &Marks, words: &[u32]) {
+        let mut start = 0usize;
+        for (_, n, buffer) in m {
+            let end = start.saturating_add(*n as usize);
+            if let Some(w) = words.get(start..end).filter(|w| !w.is_empty()) {
+                self.queue.write_buffer(buffer, 0, &bytes_u32(w));
+            }
+            start = end;
+        }
     }
 
     fn object_group(
@@ -909,18 +1229,27 @@ impl Gpu {
 /// The CPU view's background, top and bottom, where the style gives none.
 const BACKGROUND: [[f32; 3]; 2] = [TOP, BOTTOM];
 
-/// `source` with the CPU view's constants it uses (the selection's colour, the outlines'
-/// darkening) written in, so that the two views share them.
+/// `source` with the CPU view's constants it uses (the selection's colour, how much outlines,
+/// edges, wireframes and points darken, how near an edge is, how far in front they are seen)
+/// written in, so that the two views share them.
 fn with_constants(source: &str) -> String {
     let [r, g, b] = SELECTED;
-    format!("const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n{source}")
+    let reach = EDGE_REACH as f32;
+    format!(
+        "const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n\
+         const EDGE: f32 = {EDGE:?};\nconst EDGE_REACH: f32 = {reach:?};\nconst LINE: f32 = {LINE:?};\n\
+         const AHEAD: f32 = {AHEAD:?};\n{source}"
+    )
 }
 
-fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[u8; 4]]) {
+fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[f32; 8]]) {
     let size = palette.size();
-    let mut bytes = vec![0u8; (size.width as usize).saturating_mul(size.height as usize).saturating_mul(4)];
-    for (px, c) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(colours) {
-        *px = *c;
+    // 16 bytes a texel, two texels a class.
+    let mut bytes = vec![0u8; (size.width as usize).saturating_mul(size.height as usize).saturating_mul(16)];
+    for (px, c) in bytes.as_chunks_mut::<32>().0.iter_mut().zip(colours) {
+        for (b, x) in px.as_chunks_mut::<4>().0.iter_mut().zip(c) {
+            *b = x.to_le_bytes();
+        }
     }
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -930,7 +1259,7 @@ fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[u8; 4
             aspect: wgpu::TextureAspect::All,
         },
         &bytes,
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 4), rows_per_image: None },
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 16), rows_per_image: None },
         size,
     );
 }
@@ -967,7 +1296,16 @@ mod tests {
         found
     }
 
+    /// One device for every test, made once and kept: Vulkan's loader can crash when instances
+    /// are made and dropped on several threads at once (seen with NVIDIA's driver, in
+    /// `loader_icd_scan`), as the tests run.
     fn any_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+        static SHARED: std::sync::OnceLock<Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
+            std::sync::OnceLock::new();
+        SHARED.get_or_init(find_device).clone()
+    }
+
+    fn find_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
             eprintln!("SKIP: no GPU adapter");
@@ -1166,22 +1504,18 @@ mod tests {
         let size = [64u32, 48u32];
         let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 64.0 / 48.0);
         let plain = Style { width: size[0], height: size[1], ..Style::default() };
-        // Edges: a style the GPU view hands to the CPU.
-        let edges = Style { edges: true, ..plain.clone() };
-        for style in [&plain, &edges] {
+        // Transparent layers: a style the GPU view hands to the CPU.
+        let mut glass = plain.clone();
+        glass.display.insert((0, 0), Display { mode: Mode::Surface, opacity: 0.5 });
+        for style in [&plain, &glass] {
             *gpu.uncaptured.lock().unwrap() = Some("the GPU device reported: lost".to_string());
             assert!(gpu.failed());
             let got = gpu.draw(&scene, &camera, style, size, next()).err();
-            assert_eq!(
-                got,
-                Some(NotDrawn::Failed("the GPU device reported: lost".to_string())),
-                "edges {}",
-                style.edges
-            );
+            assert_eq!(got, Some(NotDrawn::Failed("the GPU device reported: lost".to_string())), "{style:?}");
             assert!(!gpu.failed(), "the error is taken");
         }
         // Without one, the style decides again.
-        assert!(matches!(gpu.draw(&scene, &camera, &edges, size, next()).err(), Some(NotDrawn::Here(_))));
+        assert!(matches!(gpu.draw(&scene, &camera, &glass, size, next()).err(), Some(NotDrawn::Here(_))));
         assert!(gpu.draw(&scene, &camera, &plain, size, next()).is_ok());
     }
 
@@ -1197,14 +1531,187 @@ mod tests {
 
     #[test]
     fn styles_the_gpu_view_doesnt_draw_yet_are_named() {
-        let mut style = Style::default();
+        let mut style = Style { edges: true, ..Style::default() };
         assert_eq!(Gpu::draws(&style), Ok(()));
-        style.edges = true;
-        assert_eq!(Gpu::draws(&style), Err("edges"));
-        style.edges = false;
-        style.display.insert((0, 0), Display { mode: Mode::Surface, opacity: 0.5 });
+        for mode in [Mode::Wireframe, Mode::Points, Mode::Hidden] {
+            style.display.insert((0, 0), Display { mode, opacity: 0.5 });
+            assert_eq!(Gpu::draws(&style), Ok(()), "{mode:?}");
+        }
+        style.display.insert((0, 1), Display { mode: Mode::Surface, opacity: 0.5 });
         assert_eq!(Gpu::draws(&style), Err("transparent layers"));
+    }
+
+    /// A box of two patches as a mesh: three faces of a unit cube in two patches, each face
+    /// split in two triangles (a diagonal that is no edge), so that edges and wireframes show
+    /// the faces, not the triangles.
+    fn mesh_scene() -> Scene {
+        let text = scene_text();
+        let stl = umcf_geom::stl::read(text.as_bytes(), &umcf_geom::stl::Limits::default()).unwrap();
+        let mut scene = Scene::new(Vec3::new(0.5, 0.5, 0.5));
+        let mut obj = Object::from_stl("box.stl", &stl, scene.origin);
+        // Each face's diagonal (edge 2 to 0 of its first triangle, 0 to 1 of its second, as
+        // `scene_split(false)` splits them) is no face edge, as in a mesh.
+        for (n, e) in obj.edges.iter_mut().enumerate() {
+            *e = if n % 2 == 0 { 0b011 } else { 0b110 };
+        }
+        scene.objects.push(obj);
+        scene
+    }
+
+    fn scene_text() -> String {
+        let face = |n: &str, corners: [[f32; 3]; 4]| {
+            let v = |p: [f32; 3]| format!("      vertex {} {} {}\n", p[0], p[1], p[2]);
+            let tri = |a, b, c| {
+                format!("  facet normal 0 0 0\n    outer loop\n{}{}{}    endloop\n  endfacet\n", v(a), v(b), v(c))
+            };
+            let [a, b, c, d] = corners;
+            format!("solid {n}\n{}{}endsolid {n}\n", tri(a, b, c), tri(a, c, d))
+        };
+        [
+            face("top", [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]]),
+            face("front", [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+            face("side", [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 1.0]]),
+        ]
+        .concat()
+    }
+
+    /// The pixels of `img` where `a` and `b` differ by more than `tolerance`: how many.
+    fn changed(a: &[u8], b: &[u8], tolerance: u8) -> usize {
+        a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > tolerance)).count()
+    }
+
+    /// The CPU's and the GPU's image of `scene` with `style`, at 240 × 180.
+    fn both(scene: &Scene, style: &mut Style) -> Option<(Vec<u8>, Vec<u8>)> {
+        let (adapter, device, queue) = device()?;
+        let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        let size = [240u32, 180u32];
+        (style.width, style.height) = (size[0], size[1]);
+        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 240.0 / 180.0);
+        let cpu = draw(scene, &camera, style).rgba;
+        let image = read_back(&device, &queue, gpu.draw(scene, &camera, style, size, next()).unwrap());
+        Some((cpu, image))
+    }
+
+    /// What `style` adds to the plain picture, on the CPU and on the GPU: how many pixels each
+    /// changes, and how many of those the two share.
+    fn added(scene: &Scene, style: &Style) -> Option<(usize, usize, usize)> {
+        let mut plain = Style { edges: false, display: Default::default(), ..style.clone() };
+        // What is drawn otherwise than a surface is hidden in the plain one: what it adds is
+        // compared, not what it takes away.
+        for (k, d) in &style.display {
+            if d.mode != Mode::Surface {
+                plain.display.insert(*k, Display { mode: Mode::Hidden, opacity: 1.0 });
+            }
+        }
+        let mut styled = style.clone();
+        let (cpu_plain, gpu_plain) = both(scene, &mut plain)?;
+        let (cpu, image) = both(scene, &mut styled)?;
+        let on_cpu: Vec<bool> = cpu.chunks(4).zip(cpu_plain.chunks(4)).map(|(p, q)| p != q).collect();
+        let on_gpu: Vec<bool> =
+            image.chunks(4).zip(gpu_plain.chunks(4)).map(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 6)).collect();
+        let shared = on_cpu.iter().zip(&on_gpu).filter(|(a, b)| **a && **b).count();
+        Some((on_cpu.iter().filter(|x| **x).count(), on_gpu.iter().filter(|x| **x).count(), shared))
+    }
+
+    #[test]
+    fn the_faces_edges_are_drawn_as_the_cpu_view_draws_them() {
+        let scene = mesh_scene();
+        let mut style = Style { edges: true, ..Style::default() };
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        // Pixels on an edge's border may be in or out on either side.
+        let off = differing(&cpu, &image, 6);
+        assert!(off < 0.01, "{:.1}% of the pixels differ", off * 100.0);
+        let (on_cpu, on_gpu, shared) = added(&scene, &style).unwrap();
+        assert!(on_cpu > 300, "{on_cpu} edge pixels");
+        assert!(on_gpu.abs_diff(on_cpu) <= on_cpu / 10 && shared >= on_cpu * 9 / 10, "{on_cpu} {on_gpu} {shared}");
+        // No diagonal: the faces' edges only (a diagonal darkens pixels across each face's middle).
+        let mut all = scene.clone();
+        all.objects[0].edges.fill(0b111);
+        let (more, _, _) = added(&all, &style).unwrap();
+        assert!(more > on_cpu + 50, "the diagonals add {} pixels", more.saturating_sub(on_cpu));
+    }
+
+    #[test]
+    fn wireframes_and_points_are_drawn_as_the_cpu_view_draws_them() {
+        let scene = mesh_scene();
+        for mode in [Mode::Wireframe, Mode::Points] {
+            // The top in `mode`, over the other two as surfaces; then all three.
+            for classes in [vec![0u32], vec![0, 1, 2]] {
+                let mut style = Style::default();
+                for c in &classes {
+                    style.display.insert((0, *c), Display { mode, opacity: 1.0 });
+                }
+                let Some((on_cpu, on_gpu, shared)) = added(&scene, &style) else { return };
+                // The top's four corners as points: 2 × 2 pixels each, one hidden behind the box.
+                let least = if mode == Mode::Wireframe { 40 } else { 10 };
+                assert!(on_cpu > least, "{mode:?} {classes:?}: {on_cpu} pixels");
+                // One-pixel lines are rasterised a little otherwise (where a line runs between
+                // two pixels); points are the same squares.
+                let (near, share) = if mode == Mode::Wireframe { (4, 7) } else { (10, 9) };
+                assert!(
+                    on_gpu.abs_diff(on_cpu) <= on_cpu / near && shared >= on_cpu * share / 10,
+                    "{mode:?} {classes:?}: {on_cpu} on the CPU, {on_gpu} on the GPU, {shared} both"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_selected_face_of_a_wireframe_is_drawn_in_the_selection_colour() {
+        let scene = mesh_scene();
+        let mut style = Style::default();
         style.display.insert((0, 0), Display { mode: Mode::Wireframe, opacity: 1.0 });
-        assert_eq!(Gpu::draws(&style), Err("wireframes"));
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        assert!(!image.chunks(4).any(orange) && !cpu.chunks(4).any(orange));
+        // The top's first face (its two triangles), then none again: the marks are written
+        // again when the selection changes.
+        let (adapter, device, queue) = device().unwrap();
+        let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        let size = [240u32, 180u32];
+        (style.width, style.height) = (size[0], size[1]);
+        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 240.0 / 180.0);
+        let plain = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
+        style.selected_faces = [(0, 0), (0, 1)].into_iter().collect();
+        let cpu = draw(&scene, &camera, &style).rgba;
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
+        let (a, b) = (cpu.chunks(4).filter(|p| orange(p)).count(), image.chunks(4).filter(|p| orange(p)).count());
+        assert!(a > 40 && b.abs_diff(a) <= a / 4, "{a} orange pixels on the CPU, {b} on the GPU");
+        style.selected_faces.clear();
+        let again = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
+        assert_eq!(changed(&plain, &again, 0), 0, "the selection is still drawn");
+        // A selected patch: its edges in the selection's colour.
+        style.selected = vec![(0, 0)];
+        let image = read_back(&device, &queue, gpu.draw(&scene, &camera, &style, size, next()).unwrap());
+        assert!(image.chunks(4).filter(|p| orange(p)).count() > a, "a selected patch's wireframe");
+    }
+
+    #[test]
+    fn a_wireframe_half_opaque_is_blended_as_on_the_cpu() {
+        let scene = mesh_scene();
+        let mut style = Style::default();
+        // The top as a wireframe at half its opacity over the background and the other faces.
+        style.display.insert((0, 0), Display { mode: Mode::Wireframe, opacity: 0.5 });
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        // Where both drew a line, the same colour (the blend rounds alike).
+        let (mut same, mut lines) = (0, 0);
+        let mut hidden = style.clone();
+        hidden.display.insert((0, 0), Display { mode: Mode::Hidden, opacity: 1.0 });
+        let (cpu_under, gpu_under) = both(&scene, &mut hidden).unwrap();
+        for i in 0..cpu.len() / 4 {
+            let p = |v: &[u8]| [v[i * 4], v[i * 4 + 1], v[i * 4 + 2]];
+            let (c, g) = (p(&cpu), p(&image));
+            if c != p(&cpu_under) && g != p(&gpu_under) {
+                lines += 1;
+                if (0..3).all(|k| c[k].abs_diff(g[k]) <= 2) {
+                    same += 1;
+                }
+            }
+        }
+        assert!(lines > 40 && same >= lines * 9 / 10, "{same} of {lines}");
+        // Half opaque: neither the colour under it nor the line's own.
+        let mut full = style.clone();
+        full.display.insert((0, 0), Display { mode: Mode::Wireframe, opacity: 1.0 });
+        let (_, opaque) = both(&scene, &mut full).unwrap();
+        assert!(changed(&opaque, &image, 6) > 40, "a half-opaque wireframe is drawn as an opaque one");
     }
 }
