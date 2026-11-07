@@ -97,6 +97,8 @@ fn case() -> MemFs {
         .with("0/air/Tambient", "(\n(0 290)\n(3600 295)\n)\n")
         // Read by the solid temperature condition, by path, for the rain's temperature.
         .with("0/air/wambient", "(\n(0 0.008)\n(3600 0.009)\n)\n")
+        // The sun's positions, which simplifiedVegetation reads.
+        .with("constant/sunPosVector", "(\n(0 (0 0 1))\n(3600 (0 0.5 0.8))\n)\n")
         .with(
             "0/street/Ts",
             field("volScalarField", "    street_to_air { type compressible::CFDHAMsolidTemperatureCoupledMixed; }\n"),
@@ -463,6 +465,7 @@ fn of8_case() -> MemFs {
         "0/air/T",
         "0/air/Tambient",
         "0/air/wambient",
+        "constant/sunPosVector",
         "0/street/Ts",
         "0/vegetation/Tl",
     ] {
@@ -1925,4 +1928,200 @@ fn every_cell_of_a_solid_has_one_material() {
     let mut of8 = of8_case();
     of8.insert("constant/street/transportProperties", materials(&material("stone")));
     assert!(errors(&of8).iter().any(|d| d.code == "case.material-zone"), "{:?}", errors(&of8));
+}
+
+/// The data tables the solver reads, the view factor entries, the vegetation fields a solid
+/// reads, and OpenFOAM-8's region list.
+#[test]
+fn radiation_tables_view_factors_and_the_vegetation_entry() {
+    let found = |fs: &MemFs| {
+        check(&Case::open(&complete(fs)).unwrap())
+            .into_iter()
+            .map(|d| (d.level, d.code, d.path, d.message))
+            .collect::<Vec<_>>()
+    };
+    let codes = |fs: &MemFs, prefix: &str| {
+        found(fs).into_iter().filter(|d| d.1.starts_with(prefix)).map(|d| (d.1, d.2)).collect::<Vec<_>>()
+    };
+    let has = |fs: &MemFs, code: &str, level: Level| found(fs).iter().any(|d| d.1 == code && d.0 == level);
+    let dict = |text: &str| format!("{}{text}", header("dictionary"));
+    // The sun's table, for simplifiedVegetation: there, and covering the run (0 to 3600 s).
+    let mut fs = case();
+    fs.remove("constant/sunPosVector");
+    assert_eq!(codes(&fs, "case.table"), [("case.table", "constant/sunPosVector".to_string())]);
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "endTime 3600;", "endTime 7200;");
+    let d = found(&fs);
+    let spans: Vec<&str> = d.iter().filter(|d| d.1 == "case.table-span").map(|d| d.2.as_str()).collect();
+    assert_eq!(spans, ["0/air/Tambient", "0/air/wambient", "constant/sunPosVector"], "{d:?}");
+    let sun = d.iter().find(|d| d.2 == "constant/sunPosVector").unwrap();
+    assert_eq!(sun.0, Level::Warning);
+    assert!(
+        sun.3.contains("covers 0 to 3600 s") && sun.3.contains("0 to 7200 s") && sun.3.contains("last value"),
+        "{}",
+        sun.3
+    );
+    // A table that can't be read is said so; one OpenFOAM's reader stops on is an error;
+    // compressed ones are read.
+    let mut fs = case();
+    fs.insert("constant/sunPosVector", "( (0 (0 0 1)) ( oops");
+    assert!(has(&fs, "case.table", Level::Warning));
+    fs.insert("constant/sunPosVector", "(\n(0 (0 0 1))\n(0 (0 0 1))\n)\n");
+    assert!(found(&fs).iter().any(|d| d.1 == "case.table" && d.0 == Level::Error && d.3.contains("out of order")));
+    fs.insert("constant/sunPosVector", "FoamFile { version 2.0; }\n(\n(0 (0 0 1))\n(3600 (0 0 1))\n)\n");
+    assert!(found(&fs).iter().any(|d| d.1 == "case.table" && d.0 == Level::Error && d.3.contains("header")));
+    fs.remove("constant/sunPosVector");
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, b"(\n(0 (0 0 1))\n(1800 (0 0 1))\n)\n").unwrap();
+    fs.insert("constant/sunPosVector.gz", gz.finish().unwrap());
+    assert_eq!(codes(&fs, "case.table"), [("case.table-span", "constant/sunPosVector.gz".to_string())]);
+    // viewFactorSky: constant/LW in OpenFOAM-12 when it is there, else 0/air/Tambient.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    fs.insert("constant/LW", "(\n(0 300)\n(1800 310)\n)\n");
+    assert_eq!(codes(&fs, "case.table-span"), [("case.table-span", "constant/LW".to_string())]);
+    fs.remove("constant/LW");
+    fs.remove("0/air/Tambient");
+    // Missing, it is said once (the solid conditions read it too: case.ambient).
+    let d = found(&fs);
+    assert_eq!(
+        d.iter().filter(|d| d.2 == "0/air/Tambient").map(|d| d.1).collect::<Vec<_>>(),
+        ["case.ambient"],
+        "{d:?}"
+    );
+    // Without solid conditions reading it, viewFactorSky's need is case.table's.
+    edit(&mut fs, "0/street/Ts", "type compressible::CFDHAMsolidTemperatureCoupledMixed;", "type zeroGradient;");
+    assert!(
+        codes(&fs, "case.table").iter().any(|(c, p)| *c == "case.table" && p == "0/air/Tambient"),
+        "{:?}",
+        found(&fs)
+    );
+    // With rainTemp there and only TransferCoeff (which reads it), viewFactorSky still reads
+    // Tambient: missing, it is case.table's.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    fs.insert("0/air/rainTemp", "(\n(0 285)\n(3600 285)\n)\n");
+    edit(&mut fs, "0/street/Ts", "CFDHAMsolidTemperatureCoupledMixed", "CFDHAMsolidTemperatureTransferCoeff");
+    fs.remove("0/air/Tambient");
+    let d = found(&fs);
+    assert!(d.iter().any(|d| d.1 == "case.table" && d.2 == "0/air/Tambient" && d.0 == Level::Error), "{d:?}");
+    assert!(!d.iter().any(|d| d.1 == "case.ambient"), "{d:?}");
+    // ... where OpenFOAM-12 never finds a cloud cover table.
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    fs.insert("0/air/cloudCover", "(\n(0 0.5)\n(3600 0.5)\n)\n");
+    assert!(has(&fs, "case.cloud-cover", Level::Info));
+    let mut of8 = of8_case();
+    of8.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    of8.insert("constant/LW", "(\n(0 300)\n(1800 310)\n)\n");
+    of8.insert("0/air/cloudCover", "(\n(0 0.5)\n(1800 0.5)\n)\n");
+    // OpenFOAM-8 reads Tambient and the cloud cover, not LW.
+    assert_eq!(codes(&of8, "case.table-span"), [("case.table-span", "0/air/cloudCover".to_string())]);
+    assert!(!found(&of8).iter().any(|d| d.1 == "case.cloud-cover"));
+    // rainTemp takes the outdoor tables' place for TransferCoeff and in OpenFOAM-8; OpenFOAM-12's
+    // CoupledMixed never finds it (an Info) and reads the two.
+    let mut fs = case();
+    fs.insert("0/air/rainTemp", "(\n(0 285)\n(1800 285)\n)\n");
+    let d = found(&fs);
+    assert!(d.iter().any(|d| d.1 == "case.rain-temp" && d.0 == Level::Info), "{d:?}");
+    assert!(!d.iter().any(|d| d.1 == "case.table-span" && d.2 == "0/air/rainTemp"), "{d:?}");
+    edit(&mut fs, "0/street/Ts", "CFDHAMsolidTemperatureCoupledMixed", "CFDHAMsolidTemperatureTransferCoeff");
+    let d = found(&fs);
+    assert!(d.iter().any(|d| d.1 == "case.table-span" && d.2 == "0/air/rainTemp"), "{d:?}");
+    assert!(!d.iter().any(|d| d.1 == "case.rain-temp"), "{d:?}");
+
+    // The view factor entries of the radiating patches, in the dictionary faceAgglomerate reads:
+    // system/viewFactorsDict in OpenFOAM-12 (not the region's).
+    let qr = field(
+        "volScalarField",
+        "    air_to_vegetation { type greyDiffusiveRadiationViewFactor; value uniform 0; }\n    air_to_street { type greyDiffusiveRadiationViewFactor; value uniform 0; }\n",
+    );
+    let vf_dict = dict("writeFacesAgglomeration true;\nair_to_vegetation { nFacesInCoarsestLevel 10; }\n");
+    let mut fs = case();
+    fs.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    fs.insert("0/vegetation/qr", qr.clone());
+    fs.insert("system/vegetation/viewFactorsDict", vf_dict.replace("air_to_vegetation {", "\".*\" {"));
+    fs.insert("system/viewFactorsDict", vf_dict.clone());
+    let d = found(&fs);
+    let vf = d.iter().find(|d| d.1 == "case.view-factors").unwrap();
+    assert_eq!((vf.0, vf.2.as_str()), (Level::Warning, "system/viewFactorsDict"));
+    assert!(vf.3.contains("1 radiating patch") && vf.3.contains("air_to_street"), "{}", vf.3);
+    // A quoted pattern covers it.
+    edit(&mut fs, "system/viewFactorsDict", "air_to_vegetation {", "\"air_to_.*\" {");
+    assert!(!found(&fs).iter().any(|d| d.1 == "case.view-factors"), "{:?}", found(&fs));
+    // Each patch's qr entry as OpenFOAM picks it: a group entry before a later pattern.
+    let mut grouped = fs.clone();
+    grouped.insert(
+        "0/vegetation/qr",
+        field(
+            "volScalarField",
+            "    wall { type greyDiffusiveRadiationViewFactor; value uniform 0; }\n    \".*\" { type fixedValue; value uniform 0; }\n",
+        ),
+    );
+    edit(&mut grouped, "constant/vegetation/polyMesh/boundary", "type mappedInternal;", "type mappedWall;");
+    assert!(!found(&grouped).iter().any(|d| d.1 == "case.qr-type"), "{:?}", found(&grouped));
+    // ... also one whose type doesn't say so (mappedValue derives from fixedValue).
+    let mut mapped = fs.clone();
+    edit(
+        &mut mapped,
+        "0/vegetation/qr",
+        "air_to_street { type greyDiffusiveRadiationViewFactor;",
+        "air_to_street { type mappedValue;",
+    );
+    assert!(
+        found(&mapped).iter().any(|d| d.1 == "case.qr-type" && d.3.contains("mappedValue")),
+        "{:?}",
+        found(&mapped)
+    );
+    // A fixed value other than viewFactorSky's own stops it.
+    edit(
+        &mut fs,
+        "0/vegetation/qr",
+        "air_to_street { type greyDiffusiveRadiationViewFactor;",
+        "air_to_street { type fixedValue;",
+    );
+    assert!(has(&fs, "case.qr-type", Level::Error), "{:?}", found(&fs));
+    // OpenFOAM-8 reads constant/<region>/viewFactorsDict.
+    let mut of8 = of8_case();
+    of8.insert("constant/vegetation/radiationProperties", dict("radiationModel viewFactorSky;\n"));
+    of8.insert("0/vegetation/qr", qr);
+    of8.insert("constant/vegetation/viewFactorsDict", vf_dict);
+    assert!(
+        found(&of8).iter().any(|d| d.1 == "case.view-factors" && d.2 == "constant/vegetation/viewFactorsDict"),
+        "{:?}",
+        found(&of8)
+    );
+
+    // The vegetation field a solid's qrNbr names.
+    let mut fs = case();
+    edit(
+        &mut fs,
+        "0/street/Ts",
+        "CFDHAMsolidTemperatureCoupledMixed;",
+        "CFDHAMsolidTemperatureCoupledMixed; qrNbr qr;",
+    );
+    assert!(found(&fs).iter().any(|d| d.1 == "case.vegetation-field" && d.3.contains("`qr`")), "{:?}", found(&fs));
+    fs.insert(
+        "0/vegetation/qr",
+        field(
+            "volScalarField",
+            "    air_to_vegetation { type zeroGradient; }\n    air_to_street { type zeroGradient; }\n",
+        ),
+    );
+    assert!(!found(&fs).iter().any(|d| d.1 == "case.vegetation-field"), "{:?}", found(&fs));
+
+    // OpenFOAM-8's regionProperties needs fluid, solid and vegetation entries, even empty ones.
+    let entries =
+        |fs: &MemFs| found(fs).into_iter().filter(|d| d.1 == "case.regions-entry").map(|d| d.3).collect::<Vec<_>>();
+    let mut of8 = of8_case();
+    edit(&mut of8, "constant/regionProperties", "    vegetation (vegetation)\n", "");
+    let e = entries(&of8);
+    assert!(e.len() == 1 && e[0].contains("`vegetation`"), "{e:?}");
+    edit(&mut of8, "constant/regionProperties", "    solid (street)\n", "    vegetation ()\n");
+    let e = entries(&of8);
+    assert!(e.len() == 1 && e[0].contains("`solid`"), "{e:?}");
+    // OpenFOAM-12 lists regions in controlDict: not this rule.
+    let mut fs = case();
+    edit(&mut fs, "system/controlDict", "    vegetation (vegetation);\n", "");
+    assert!(entries(&fs).is_empty());
 }

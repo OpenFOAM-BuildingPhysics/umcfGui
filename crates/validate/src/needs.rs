@@ -52,6 +52,11 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     names(case, &fluids, &vegetation, &listed, out);
     ambient(case, out);
     materials(case, out);
+    tables(case, out);
+    view_factors(case, out);
+    if version == Some(OfVersion::V8) {
+        vegetation_listed(case, out);
+    }
     coupled_types(case, version, out);
     let Some(veg) = case.region(VEGETATION).filter(|r| r.kind == RegionKind::Vegetation) else { return };
     solid_reads(case, veg, version, out);
@@ -238,6 +243,7 @@ fn ambient(case: &Case, out: &mut Vec<Diagnostic>) {
 fn solid_reads(case: &Case, veg: &Region, version: Option<OfVersion>, out: &mut Vec<Diagnostic>) {
     let Some(veg_patches) = &veg.patches else { return };
     let mut said: Vec<String> = Vec::new();
+    let mut said_fields: Vec<&str> = Vec::new();
     for (r, path, bc) in solid_temperatures(case) {
         let word = |k: &str| bc.words.iter().find(|(x, _)| x == k).map_or("none", |(_, v)| v.as_str());
         let reads: Vec<&str> = ["qrNbr", "qsNbr"].into_iter().filter(|k| word(k) != "none").collect();
@@ -247,7 +253,32 @@ fn solid_reads(case: &Case, veg: &Region, version: Option<OfVersion>, out: &mut 
         let Some(p) = r.patches.iter().flatten().find(|p| p.name == bc.patch) else { continue };
         // Coupled by group, or not mapped (bc.patch-type): no partner name to follow.
         let Some((_, twin)) = partner(p, &r.name, version) else { continue };
-        if veg_patches.iter().any(|q| q.name == twin) || said.contains(&twin) {
+        if said.contains(&twin) {
+            continue;
+        }
+        if veg_patches.iter().any(|q| q.name == twin) {
+            // The field each names, in the vegetation region (whose fields are listed).
+            for k in &reads {
+                let field = word(k);
+                if !veg.fields.is_empty() && veg.field(field).is_none() && !said_fields.contains(&field) {
+                    said_fields.push(field);
+                    out.push(
+                        Diagnostic::new(
+                            Level::Error,
+                            "case.vegetation-field",
+                            path,
+                            format!(
+                                "`{}` on `{}` reads `{field}` ({k}) from the vegetation region, which has no field \
+                                 `{field}`: the run stops",
+                                bc.kind.as_deref().unwrap_or_default(),
+                                bc.patch
+                            ),
+                        )
+                        .region(&r.name)
+                        .patch(&bc.patch),
+                    );
+                }
+            }
             continue;
         }
         out.push(
@@ -467,6 +498,387 @@ fn overlap(names: &[String], c: u32, first: usize, second: usize) -> (&'static s
         )
     };
     ("case.material-overlap", message)
+}
+
+/// The fluid and vegetation regions that solve radiation with `radiationModel`'s `model`, or
+/// `vegetationModel`/`solarLoadModel` of that name (only those build them).
+fn selecting<'a>(
+    case: &'a Case,
+    file: &'static str,
+    key: &'static str,
+    model: &'a str,
+) -> impl Iterator<Item = &'a Region> {
+    case.regions
+        .iter()
+        .filter(|r| matches!(r.kind, RegionKind::Fluid | RegionKind::Vegetation))
+        .filter(move |r| selected(case, &r.name, file, &[key]).as_deref() == Some(model))
+}
+
+/// The data tables the solver reads by file name, for the readers in use: there, and covering
+/// the run. Past a table's ends OpenFOAM holds its first or last value (`outOfBounds clamp`, the
+/// default in both versions), so a table that ends early freezes the sun or the weather.
+fn tables(case: &Case, out: &mut Vec<Diagnostic>) {
+    let version = case.layout.version;
+    let found = |name: &str| case.tables.iter().find(|t| t.path == name || t.path == format!("{name}.gz"));
+    // Each table in use, and by whom.
+    let mut used: Vec<(&str, String)> = Vec::new();
+    if let Some(r) = selecting(case, "radiationProperties", "radiationModel", "viewFactorSky").next() {
+        let by = format!("viewFactorSky (region `{}`)", r.name);
+        // OpenFOAM-12 reads constant/LW when it is there; OpenFOAM-8 only Tambient.
+        if version != Some(OfVersion::V8) && found("constant/LW").is_some() {
+            used.push(("constant/LW", by));
+        } else {
+            used.push(("0/air/Tambient", format!("{by}, for the sky's temperature")));
+            if found("0/air/cloudCover").is_some() {
+                if version == Some(OfVersion::V8) {
+                    used.push(("0/air/cloudCover", by));
+                } else if version == Some(OfVersion::V12) {
+                    out.push(Diagnostic::new(
+                        Level::Info,
+                        "case.cloud-cover",
+                        "0/air/cloudCover",
+                        "OpenFOAM-12's viewFactorSky looks for 0/air/cloudCover at `$FOAM_CASE/0/air/cloudCover` \
+                         unexpanded, never finds it, and takes a cloud cover of 0",
+                    ));
+                }
+            }
+        }
+    }
+    let sun = selecting(case, "solarLoadProperties", "solarLoadModel", "directAndDiffuse")
+        .next()
+        .map(|r| format!("directAndDiffuse (region `{}`)", r.name))
+        .or_else(|| {
+            selecting(case, "vegetationProperties", "vegetationModel", "simplifiedVegetation")
+                .next()
+                .map(|r| format!("simplifiedVegetation (region `{}`)", r.name))
+        });
+    if let Some(by) = sun {
+        used.push(("constant/sunPosVector", by));
+    }
+    // The solid temperature conditions: rainTemp when it is there, else Tambient and wambient;
+    // OpenFOAM-12's CoupledMixed never finds rainTemp (`$FOAM_CASE` unexpanded) and always reads
+    // the two. Missing ones are case.ambient's.
+    let rain = found("0/air/rainTemp").is_some();
+    let mut kinds: Vec<&str> = solid_temperatures(case).filter_map(|(_, _, b)| b.kind.as_deref()).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    for kind in kinds {
+        let by = format!("`{kind}`");
+        let blind = version == Some(OfVersion::V12) && kind == "compressible::CFDHAMsolidTemperatureCoupledMixed";
+        if rain && !blind {
+            used.push(("0/air/rainTemp", by));
+        } else {
+            used.push(("0/air/Tambient", by.clone()));
+            used.push(("0/air/wambient", by.clone()));
+            if rain {
+                out.push(Diagnostic::new(
+                    Level::Info,
+                    "case.rain-temp",
+                    "0/air/rainTemp",
+                    format!(
+                        "OpenFOAM-12's {by} looks for 0/air/rainTemp at `$FOAM_CASE/0/air/rainTemp` unexpanded, never \
+                         finds it, and takes the rain's temperature from Tambient and wambient"
+                    ),
+                ));
+            }
+        }
+    }
+    // Whether a solid condition reads Tambient and wambient (then case.ambient says when one is
+    // missing).
+    let solid_ambient = solid_temperatures(case).any(|(_, _, b)| {
+        let blind = version == Some(OfVersion::V12)
+            && b.kind.as_deref() == Some("compressible::CFDHAMsolidTemperatureCoupledMixed");
+        !rain || blind
+    });
+    let solid_reads_ambient = |name: &str| matches!(name, "0/air/Tambient" | "0/air/wambient") && solid_ambient;
+    // The run's window: from the time it starts at to endTime.
+    let c = &case.controls;
+    let n = |v: &Option<String>| v.as_deref().and_then(|v| v.trim().parse::<f64>().ok()).filter(|x| x.is_finite());
+    let start = case.start.as_ref().map(|t| t.value);
+    let end = if c.stop_at.as_deref().is_none_or(|s| s == "endTime") { n(&c.end_time) } else { None };
+    let mut said: Vec<&str> = Vec::new();
+    for (name, by) in &used {
+        if said.contains(name) {
+            continue;
+        }
+        said.push(name);
+        let Some(t) = found(name) else {
+            // Tambient and wambient missing for the solid conditions are case.ambient's.
+            if !solid_reads_ambient(name) {
+                out.push(Diagnostic::new(
+                    Level::Error,
+                    "case.table",
+                    *name,
+                    format!("{by} reads {name}, which is not there: the run stops"),
+                ));
+            }
+            continue;
+        };
+        match &t.span {
+            Err(e) if e.fatal => out.push(Diagnostic::new(
+                Level::Error,
+                "case.table",
+                &t.path,
+                format!("{by} reads {}: {}", t.path, e.message),
+            )),
+            Err(e) => out.push(Diagnostic::new(
+                Level::Warning,
+                "case.table",
+                &t.path,
+                format!("{by} reads {}, which can't be read here ({}): its times are not checked", t.path, e.message),
+            )),
+            Ok(span) => {
+                let early = start.filter(|s| *s < span.first);
+                let late = end.filter(|e| *e > span.last);
+                if early.is_some() || late.is_some() {
+                    let (s, e) = (start.unwrap_or(span.first), end.unwrap_or(span.last));
+                    out.push(Diagnostic::new(
+                        Level::Warning,
+                        "case.table-span",
+                        &t.path,
+                        format!(
+                            "{} covers {} to {} s, and the run goes from {s} to {e} s: {} it, OpenFOAM holds its {} \
+                             value, read by {by}",
+                            t.path,
+                            span.first,
+                            span.last,
+                            if late.is_some() { "past the end of" } else { "before the start of" },
+                            if late.is_some() { "last" } else { "first" }
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The scalar condition types derived, directly or not, from `fixedValueFvPatchField` in
+/// OpenFOAM-8 and 12 whose names don't end in `FixedValue` (those that do, `uniformFixedValue`,
+/// `codedFixedValue`, `timeVaryingMappedFixedValue`, …, are taken by their name), with
+/// viewFactorSky's own: the wall functions, the total pressure chain, the mapped values, ….
+const FIXED_VALUE: [&str; 56] = [
+    "fixedValue",
+    "greyDiffusiveRadiationViewFactor",
+    "alphaFixedPressure",
+    "alphatFilmWallFunction",
+    "cellMotion",
+    "compressible::alphatJayatillekeWallFunction",
+    "compressible::alphatWallFunction",
+    "convectiveHeatTransfer",
+    "dynamicPressure",
+    "epsilonWallFunction",
+    "fixedEnergy",
+    "fixedMean",
+    "fixedPressureCompressibleDensity",
+    "fixedProfile",
+    "fixedUnburntEnthalpy",
+    "fixedValueInletOutlet",
+    "fWallFunction",
+    "inclinedFilmNusseltHeight",
+    "interfaceCompression",
+    "kLowReWallFunction",
+    "lumpedMassTemperature",
+    "mapped",
+    "mappedField",
+    "mappedInternalValue",
+    "mappedValue",
+    "nutWallFunction",
+    "omegaWallFunction",
+    "outletMappedUniformInlet",
+    "plenumPressure",
+    "pressure",
+    "prghTotalHydrostaticPressure",
+    "syringePressure",
+    "totalTemperature",
+    "turbulentInlet",
+    "uniformDensityHydrostaticPressure",
+    "uniformTotalPressure",
+    "waveSurfacePressure",
+    "zeroFixedValue",
+    "v2WallFunction",
+    "nutkWallFunction",
+    "nutkRoughWallFunction",
+    "nutkAtmRoughWallFunction",
+    "nutkFilmWallFunction",
+    "nutLowReWallFunction",
+    "nutUWallFunction",
+    "nutURoughWallFunction",
+    "nutUSpaldingWallFunction",
+    "nutTabulatedWallFunction",
+    "epsilonmWallFunction",
+    "totalPressure",
+    "rotatingTotalPressure",
+    "fanPressure",
+    "entrainmentPressure",
+    "mappedFixedInternalValue",
+    "waveAlpha",
+    "specieTransferVelocity",
+];
+
+/// A pattern key matched whole, as OpenFOAM's regExp does; `None` when it can't be read here.
+fn whole(pattern: &str) -> Option<regex::Regex> {
+    regex::RegexBuilder::new(&format!("^(?:{pattern})$")).size_limit(1 << 20).build().ok()
+}
+
+/// The patches the radiation exchanges through without an entry in the `viewFactorsDict`
+/// `faceAgglomerate` reads: it leaves them unagglomerated, a coarse face for each face, so
+/// `viewFactorsGen` and the run are slow and big. The radiating patches are those whose `qr`
+/// condition in the region solving viewFactorSky is a fixed value (viewFactorSky.C,
+/// viewFactorsGen.C); viewFactorSky takes them as `greyDiffusiveRadiationViewFactor` and stops
+/// on another (`case.qr-type`). The dictionary is the one the case's `faceAgglomerate` reads
+/// (its `-dict`, else `system/` in OpenFOAM-12, `constant/<region>/` in OpenFOAM-8); its keys
+/// are names or quoted patterns.
+fn view_factors(case: &Case, out: &mut Vec<Diagnostic>) {
+    let Some(r) = selecting(case, "radiationProperties", "radiationModel", "viewFactorSky").next() else { return };
+    let Some(qr) = r.field("qr") else { return };
+    let Some(patches) = &r.patches else { return };
+    // Each patch's qr condition as OpenFOAM picks its entry; entries that can't all be read here
+    // leave the check out.
+    let Some(kinds) = crate::kinds_by_patch(case, r, qr) else { return };
+    // A fixed value: viewFactorSky selects qr conditions by `isA<fixedValueFvPatchScalarField>`.
+    let fixed = |k: &str| FIXED_VALUE.contains(&k) || k.ends_with("ixedValue");
+    let fixed_patches: Vec<(&str, &str)> =
+        kinds.iter().filter_map(|(p, k)| k.filter(|k| fixed(k)).map(|k| (*p, k))).collect();
+    // A fixed value other than viewFactorSky's own: it stops on it, faces or not.
+    let other: Vec<String> = fixed_patches
+        .iter()
+        .filter(|(_, k)| *k != "greyDiffusiveRadiationViewFactor")
+        .map(|(p, k)| format!("`{p}` ({k})"))
+        .collect();
+    if !other.is_empty() {
+        let shown: Vec<&str> = other.iter().take(10).map(String::as_str).collect();
+        out.push(
+            Diagnostic::new(
+                Level::Error,
+                "case.qr-type",
+                &qr.path,
+                format!(
+                    "`qr` is a fixed value other than greyDiffusiveRadiationViewFactor on {} patch{} ({}{}): \
+                     viewFactorSky takes every fixed-value qr as its own condition and stops",
+                    other.len(),
+                    if other.len() == 1 { "" } else { "es" },
+                    shown.join(", "),
+                    if other.len() > shown.len() { ", …" } else { "" }
+                ),
+            )
+            .region(&r.name)
+            .field("qr"),
+        );
+    }
+    // The radiating patches with faces.
+    let radiating: Vec<&str> = fixed_patches
+        .iter()
+        .map(|(p, _)| *p)
+        .filter(|p| patches.iter().any(|q| q.name == *p && q.n_faces > 0))
+        .collect();
+    // The dictionary faceAgglomerate reads for this region.
+    let runs: Vec<&umcf_model::script::Run> = case
+        .scripts
+        .iter()
+        .flat_map(|s| &s.steps)
+        .filter_map(|st| match &st.kind {
+            umcf_model::script::StepKind::Run(run) if run.app == "faceAgglomerate" => Some(run),
+            _ => None,
+        })
+        .filter(|run| run.region.as_deref().unwrap_or("") == r.name)
+        .collect();
+    let default = umcf_model::script::Run {
+        app: "faceAgglomerate".to_string(),
+        args: Vec::new(),
+        region: (!r.name.is_empty()).then(|| r.name.clone()),
+        all_regions: false,
+        parallel: false,
+        dict: None,
+        np: None,
+        run_parallel: false,
+    };
+    let versions = match case.layout.version {
+        Some(v) => vec![v],
+        None => OfVersion::ALL.to_vec(),
+    };
+    let is_dir = |p: &str| case.exists(p) == Some(true) && case.dict(p).is_none();
+    let mut candidates: Vec<String> = Vec::new();
+    for run in runs.iter().copied().chain(runs.is_empty().then_some(&default)) {
+        for v in &versions {
+            candidates.extend(crate::workflow::dictionary(run, *v, is_dir));
+        }
+    }
+    let Some((path, doc)) = candidates.iter().find_map(|p| case.dict(p).map(|d| (p, d))) else { return };
+    // The dictionary's patch entries: a name, or a quoted pattern matched whole (one that can't
+    // be read here leaves the check out).
+    let mut names: Vec<&str> = Vec::new();
+    let mut patterns: Vec<regex::Regex> = Vec::new();
+    for e in doc.root.entries().filter(|e| e.dict().is_some()) {
+        let key = e.key.text.as_str();
+        if key.starts_with('"') {
+            let Some(re) = whole(umcf_foam_dict::unquote(key)) else { return };
+            patterns.push(re);
+        } else {
+            names.push(key);
+        }
+    }
+    let listed = |p: &str| names.contains(&p) || patterns.iter().any(|re| re.is_match(p));
+    let missing: Vec<&str> = radiating.iter().copied().filter(|p| !listed(p)).collect();
+    if !missing.is_empty() {
+        let shown: Vec<&str> = missing.iter().take(10).copied().collect();
+        out.push(
+            Diagnostic::new(
+                Level::Warning,
+                "case.view-factors",
+                path,
+                format!(
+                    "{} radiating patch{} of region `{}` ({}{}) {} no entry here: faceAgglomerate leaves {} \
+                     unagglomerated, every face its own, which makes viewFactorsGen and the run slow and big",
+                    missing.len(),
+                    if missing.len() == 1 { "" } else { "es" },
+                    r.name,
+                    shown.join(", "),
+                    if missing.len() > shown.len() { ", …" } else { "" },
+                    if missing.len() == 1 { "has" } else { "have" },
+                    if missing.len() == 1 { "it" } else { "them" }
+                ),
+            )
+            .region(&r.name),
+        );
+    }
+}
+
+/// OpenFOAM-8's urbanMicroclimateFoam looks `fluid`, `solid` and `vegetation` up in
+/// `regionProperties`' regions (`rp["fluid"]` in fluid/createFluidMeshes.H, `rp["solid"]`,
+/// `rp["vegetation"]` in veg/createVegMeshes.H) and stops when one isn't there, even with no
+/// trees or no solids.
+fn vegetation_listed(case: &Case, out: &mut Vec<Diagnostic>) {
+    const FILE: &str = "constant/regionProperties";
+    if case.layout.regions_from.as_deref() != Some(FILE) {
+        return;
+    }
+    let Some(list) = case.dict(FILE).and_then(|d| d.get(&["regions"])) else { return };
+    let [umcf_foam_dict::Node::List { items, .. }] = list.value.as_slice() else { return };
+    // Words at the list's top level: `fluid (air) solid (…) vegetation (…)`; a macro or a
+    // directive there can't be judged.
+    let words: Vec<&str> = items
+        .iter()
+        .filter_map(|n| match n {
+            umcf_foam_dict::Node::Atom(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    if words.iter().any(|w| w.starts_with('$') || w.starts_with('#')) {
+        return;
+    }
+    for kind in ["fluid", "solid", "vegetation"] {
+        if !words.contains(&kind) {
+            out.push(Diagnostic::new(
+                Level::Error,
+                "case.regions-entry",
+                FILE,
+                format!(
+                    "the regions have no `{kind}` entry: OpenFOAM-8's urbanMicroclimateFoam looks it up and stops \
+                     without it, even when there are none (add `{kind} ()`)"
+                ),
+            ));
+        }
+    }
 }
 
 /// The patches by name, the first of a name kept (OpenFOAM stops on a name given twice).

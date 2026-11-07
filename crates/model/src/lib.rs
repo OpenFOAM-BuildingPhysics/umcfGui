@@ -46,6 +46,7 @@ use umcf_schema::{CaseKind, Layout, Note, Severity};
 mod controls;
 pub mod description;
 pub mod script;
+pub mod tables;
 pub mod workflow;
 
 pub use controls::Controls;
@@ -557,6 +558,9 @@ pub struct Case {
     /// The start-time fields are listed, not read yet ([`OpenOptions::defer_fields`]): their
     /// boundary conditions aren't known until [`Case::read_start_fields`].
     pub fields_pending: bool,
+    /// The data tables the solver reads by file name that are there (`tables::TABLES`), with
+    /// their first and last times.
+    pub tables: Vec<tables::Table>,
     /// Where in [`Case::notes`] the fields' notes go when they are read later: where reading
     /// them at open would have put them.
     field_notes_at: usize,
@@ -839,6 +843,7 @@ impl Case {
 
         let zone_notes_at = notes.len();
         notes.append(&mut zone_notes);
+        let tables = tables::read(fs, options.dict_bytes);
         let scripts = read_scripts(fs, options, &mut notes)?;
         let paths = snapshot(fs)?;
         let disk = Arc::new(std::sync::Mutex::new(DiskState {
@@ -860,6 +865,7 @@ impl Case {
             processors,
             scripts,
             fields_pending,
+            tables,
             field_notes_at,
             zone_notes_at,
             paths,
