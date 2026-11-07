@@ -115,13 +115,15 @@ draw on the CPU.
   blended with their opacity, a selected face's in orange. Where surfaces of two regions lie in
   the same place, the region listed first is seen, as on the CPU (where the CPU's depths round
   otherwise, it can show a few of the other region's face edges through it, with *Edges* on; the
-  GPU doesn't). The selection is seen over what lies within 1e-5 of its distance in front of it,
-  as on the CPU; on OpenGL, whose depths are less precise, within 1e-4 (a selected patch a
-  millimetre behind another, ten metres away, shows through there). Wireframes and points are
-  seen where no surface is in front, whether it is selected or not, as on the CPU; only where a later region's surface lies a hair in front of an
-  earlier one's (within the margin that puts the earlier in front) are the earlier region's
-  wireframes and points seen through it. Lines one pixel wide can take a neighbouring
-  pixel here and there.
+  GPU doesn't). An opaque selection is seen over opaque surfaces within 1e-5 of its distance in
+  front of it, as on the CPU; on OpenGL, whose depths are less precise, within 1e-4 (a selected
+  opaque patch a millimetre behind another, ten metres away, shows through there). A
+  transparent layer in front of an opaque selection is held to 1e-5, on OpenGL too, and a
+  selected transparent layer has no margin. Wireframes and points are seen where no surface is
+  in front, whether it is selected or not, as on the CPU; only where a later region's surface
+  lies a hair in front of an earlier one's (within the margin that puts the earlier in front)
+  are the earlier region's wireframes and points seen through it. Lines one pixel wide can take
+  a neighbouring pixel here and there.
 - **Transparent layers** are blended over the rest (and over the wireframes and points behind
   them, as on the CPU), seen where nothing opaque is in front, a selected face's or patch's in
   orange. One layer over what is behind it, or several of the same colour, look as on the CPU.

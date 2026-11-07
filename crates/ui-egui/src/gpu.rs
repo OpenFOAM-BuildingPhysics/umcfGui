@@ -383,7 +383,10 @@ fn fs_glass(in: Out) -> Glass {
         discard;
     }
     let k = edging(in);
-    let w = clamp(pow(view.pixels.w / in.z, 4.0), 0.01, 100.0);
+    // A tenth of the weight, which leaves the mean colour as it is: the half-float sums
+    // overflow (the pixel's layers are left out) only past thousands of near layers, while far
+    // ones (1e-3) stay within half-float precision.
+    let w = clamp(pow(view.pixels.w / in.z, 4.0), 0.01, 100.0) * 0.1;
     var out: Glass;
     if obj.mode == 4u {
         // Only the colour changes: neither the layer's weight nor what it lets through.
@@ -531,8 +534,9 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
             let d = style.display_of(k, c32);
             let code = match d.mode {
                 Mode::Hidden => CODE_HIDDEN,
-                // Not drawn (the CPU view would draw it opaque, without outlines; the window's
-                // display card only takes opacities from 0 to 1).
+                // Not drawn here: a deliberate difference (the CPU view sends it to its
+                // transparent layers, whose blend with a NaN opacity is undefined); the window's
+                // display card only takes opacities from 0 to 1.
                 Mode::Surface if d.opacity.is_nan() => CODE_HIDDEN,
                 // Transparent (an opacity of 0 is drawn as one, and adds nothing, as on the CPU).
                 Mode::Surface if d.opacity < 1.0 => CODE_GLASS,
