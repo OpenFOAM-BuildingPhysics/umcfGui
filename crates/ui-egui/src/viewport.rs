@@ -1,12 +1,14 @@
-//! The 3D view: the engine's scene drawn by the CPU rasteriser into a texture, an orbit camera
+//! The 3D view: the engine's scene drawn by the CPU rasteriser, or on the GPU (the `gpu` module,
+//! where the window runs on wgpu and the view is switched to it), into a texture, an orbit camera
 //! (drag to turn, right or middle drag to pan, wheel to zoom), standard views, and picking. A
 //! click doesn't select anything itself: it becomes a `select.pick` command with the ray under
 //! the cursor, like every other change; a rectangle dragged in *Box select* becomes a
 //! `select.rect` with the camera and the rectangle in the image's pixels.
 
 use eframe::egui::{
-    self, Color32, ColorImage, PointerButton, Pos2, Rect, Sense, TextureHandle, TextureOptions, pos2, vec2,
+    self, Color32, ColorImage, PointerButton, Pos2, Rect, Sense, TextureHandle, TextureId, TextureOptions, pos2, vec2,
 };
+use eframe::egui_wgpu;
 use umcf_engine::Sel;
 use umcf_geom::bvh::Ray;
 use umcf_render::camera::{Camera, View};
@@ -15,12 +17,85 @@ use umcf_render::{Object, Scene, Source};
 
 use crate::theme::Tokens;
 
+/// What draws the 3D view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Renderer {
+    /// The CPU rasteriser (`umcf_render::raster`), everywhere.
+    #[default]
+    Cpu,
+    /// The GPU (the `gpu` module), where the window runs on a GPU device that can.
+    Gpu,
+}
+
+impl Renderer {
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Cpu => "CPU",
+            Renderer::Gpu => "GPU",
+        }
+    }
+}
+
+/// The GPU view and the window's texture it draws into.
+struct GpuView {
+    gpu: crate::gpu::Gpu,
+    /// The window's device and egui's renderer, which shows the image as a texture.
+    state: egui_wgpu::RenderState,
+    /// The texture egui shows, and the size it was registered at.
+    texture: Option<(TextureId, [u32; 2])>,
+}
+
+impl Drop for GpuView {
+    /// The window's texture of the image goes with the view (switched off after a failure).
+    fn drop(&mut self) {
+        if let Some((id, _)) = self.texture.take() {
+            self.state.renderer.write().free_texture(&id);
+        }
+    }
+}
+
+impl GpuView {
+    /// Draws into the GPU view's image, shown as a texture of the window; its id.
+    fn draw(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        style: &Style,
+        size: [u32; 2],
+        revision: u64,
+    ) -> Result<TextureId, crate::gpu::NotDrawn> {
+        let target = self.gpu.draw(scene, camera, style, size, revision)?;
+        let filter = egui_wgpu::wgpu::FilterMode::Linear;
+        let mut renderer = self.state.renderer.write();
+        let device = &self.state.device;
+        let id = match self.texture {
+            Some((id, at)) if at == target.size => id,
+            Some((id, _)) => {
+                renderer.update_egui_texture_from_wgpu_texture(device, &target.view, filter, id);
+                id
+            }
+            None => renderer.register_native_texture(device, &target.view, filter),
+        };
+        self.texture = Some((id, target.size));
+        Ok(id)
+    }
+}
+
 /// The view's state: the camera and what the texture shows.
 pub struct Viewport {
     /// `None` until the scene is first shown (then it frames the scene).
     pub camera: Option<Camera>,
     pub edges: bool,
+    /// What draws the view (asked for): see [`Viewport::drawn_with`] for what did.
+    pub renderer: Renderer,
     texture: Option<TextureHandle>,
+    gpu: Option<GpuView>,
+    /// Why there is no GPU view, when there is none.
+    pub no_gpu: Option<String>,
+    /// The image last shown.
+    image: Option<TextureId>,
+    /// What drew the image last shown, and why it was the CPU when the GPU was asked for.
+    drawn_with: (Renderer, Option<String>),
     drawn: Option<Drawn>,
     /// What is under the cursor, for the status bar.
     pub hover: Option<String>,
@@ -56,7 +131,12 @@ impl Default for Viewport {
         Viewport {
             camera: None,
             edges: false,
+            renderer: Renderer::Cpu,
             texture: None,
+            gpu: None,
+            no_gpu: Some("the window doesn't run on a GPU device".to_string()),
+            image: None,
+            drawn_with: (Renderer::Cpu, None),
             drawn: None,
             hover: None,
             last_hover: None,
@@ -80,6 +160,7 @@ struct Drawn {
     faces: bool,
     revision: u64,
     dark: bool,
+    renderer: Renderer,
 }
 
 /// What the user asked the view for, done by the app (it runs commands).
@@ -141,11 +222,32 @@ impl Viewport {
         }
     }
 
+    /// The GPU view on the window's wgpu device, for [`Renderer::Gpu`]; why not, when the
+    /// device can't draw it.
+    pub fn attach_gpu(&mut self, state: &egui_wgpu::RenderState, ctx: &egui::Context) -> Result<(), String> {
+        let gpu = crate::gpu::Gpu::new(&state.adapter, &state.device, &state.queue)?;
+        let ctx = ctx.clone();
+        gpu.wake_with(move || ctx.request_repaint());
+        self.gpu = Some(GpuView { gpu, state: state.clone(), texture: None });
+        self.no_gpu = None;
+        Ok(())
+    }
+
+    /// Whether the view can be drawn on the GPU.
+    pub fn has_gpu(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    /// What drew the image last shown, and why the CPU did when the GPU was asked for.
+    pub fn drawn_with(&self) -> (Renderer, Option<&str>) {
+        (self.drawn_with.0, self.drawn_with.1.as_deref())
+    }
+
     /// The image last drawn, over `rect` (while a job runs); nothing before the first.
     pub fn paint_last(&self, painter: &egui::Painter, rect: Rect) {
-        if let Some(t) = &self.texture {
+        if let Some(id) = self.image {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            painter.image(t.id(), rect, uv, Color32::WHITE);
+            painter.image(id, rect, uv, Color32::WHITE);
         }
     }
 
@@ -215,9 +317,19 @@ impl Viewport {
             let (w, h) = umcf_render::raster::size(size[0], size[1]);
             [w, h]
         };
-        let drawn =
-            Drawn { camera: key(&cam), size, faces: self.faces, edges: self.edges, revision, dark: tokens.dark };
-        if self.drawn.as_ref() != Some(&drawn) || self.texture.is_none() {
+        let drawn = Drawn {
+            camera: key(&cam),
+            size,
+            faces: self.faces,
+            edges: self.edges,
+            revision,
+            dark: tokens.dark,
+            renderer: self.renderer,
+        };
+        // An error the GPU device reported since: drawn again, to go back to the CPU, though
+        // nothing else changed.
+        let gpu_failed = self.renderer == Renderer::Gpu && self.gpu.as_ref().is_some_and(|g| g.gpu.failed());
+        if self.drawn.as_ref() != Some(&drawn) || self.image.is_none() || gpu_failed {
             let mut selected = Vec::new();
             for (k, o) in scene.objects.iter().enumerate() {
                 for (c, name) in o.classes.iter().enumerate() {
@@ -240,16 +352,45 @@ impl Viewport {
                 display: display.clone(),
                 background: Some(tokens.view_background()),
             };
-            let image = draw(scene, &cam, &style);
-            let colour = ColorImage::from_rgba_unmultiplied([image.width as usize, image.height as usize], &image.rgba);
-            match &mut self.texture {
-                Some(t) => t.set(colour, TextureOptions::LINEAR),
-                None => self.texture = Some(ui.ctx().load_texture("viewport", colour, TextureOptions::LINEAR)),
+            // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
+            use crate::gpu::NotDrawn;
+            let on_gpu = match (self.renderer, &mut self.gpu) {
+                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size, revision) {
+                    Ok(id) => Ok(id),
+                    Err(NotDrawn::Here(why)) => Err(Some(why)),
+                    // The GPU failed: the view is the CPU's from now on, and says why.
+                    Err(NotDrawn::Failed(e)) => {
+                        let why = format!("the GPU failed: {e}");
+                        self.gpu = None;
+                        self.no_gpu = Some(why.clone());
+                        self.renderer = Renderer::Cpu;
+                        Err(Some(why))
+                    }
+                },
+                (Renderer::Gpu, None) => Err(self.no_gpu.clone()),
+                (Renderer::Cpu, _) => Err(None),
+            };
+            match on_gpu {
+                Ok(id) => {
+                    self.image = Some(id);
+                    self.drawn_with = (Renderer::Gpu, None);
+                }
+                Err(why) => {
+                    let image = draw(scene, &cam, &style);
+                    let colour =
+                        ColorImage::from_rgba_unmultiplied([image.width as usize, image.height as usize], &image.rgba);
+                    match &mut self.texture {
+                        Some(t) => t.set(colour, TextureOptions::LINEAR),
+                        None => self.texture = Some(ui.ctx().load_texture("viewport", colour, TextureOptions::LINEAR)),
+                    }
+                    self.image = self.texture.as_ref().map(TextureHandle::id);
+                    self.drawn_with = (Renderer::Cpu, why);
+                }
             }
             self.drawn = Some(drawn);
         }
-        if let Some(t) = &self.texture {
-            ui.painter().image(t.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        if let Some(id) = self.image {
+            ui.painter().image(id, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
 
         // What is under the cursor (read only: the scene's BVH, no command).

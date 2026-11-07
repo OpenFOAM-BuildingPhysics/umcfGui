@@ -38,6 +38,7 @@ use umcf_render::camera::{Camera, View};
 
 pub mod bc;
 pub mod display;
+mod gpu;
 pub mod icons;
 mod jobs;
 pub mod newpatch;
@@ -55,6 +56,7 @@ use ribbon::{Item, Workspace};
 use theme::Tokens;
 use umcf_engine::Layer;
 use umcf_render::raster::Display;
+pub use viewport::Renderer;
 use viewport::{Action, Drag, Viewport};
 
 pub use serde_json::Value;
@@ -409,6 +411,23 @@ impl App {
         self.session.canceller().reset();
         let result = self.session.execute(id, &params);
         self.after(id, result)
+    }
+
+    /// The GPU switch's tooltip: what it does, or why it can't.
+    fn renderer_tip(&self) -> String {
+        match &self.viewport.no_gpu {
+            Some(why) => format!("The 3D view is drawn on the CPU: {why}"),
+            None => "Draw the 3D view on the GPU (edges, wireframes, points and transparent layers on the CPU for now)"
+                .to_string(),
+        }
+    }
+
+    /// Switches the 3D view between the GPU and the CPU, where it can be drawn on the GPU.
+    fn toggle_renderer(&mut self) {
+        self.viewport.renderer = match self.viewport.renderer {
+            Renderer::Cpu if self.viewport.has_gpu() => Renderer::Gpu,
+            _ => Renderer::Cpu,
+        };
     }
 
     /// Runs a quick command here, or, while a job has the session, after it (in the queue).
@@ -979,6 +998,13 @@ impl App {
                     .clicked()
                 {
                     self.viewport.edges = !on;
+                }
+            }
+            Item::Renderer => {
+                let on = self.viewport.renderer == Renderer::Gpu;
+                let can = self.viewport.has_gpu();
+                if self.ribbon_button(ui, Icon::Gpu, "GPU", can, on).on_hover_text(self.renderer_tip()).clicked() {
+                    self.toggle_renderer();
                 }
             }
             Item::Theme => {
@@ -1925,6 +1951,10 @@ impl App {
                     if b(ui, Icon::Edges, edges, "Edges", "Draw the faces' edges") {
                         self.viewport.edges = !edges;
                     }
+                    let gpu = self.viewport.renderer == Renderer::Gpu;
+                    if self.viewport.has_gpu() && b(ui, Icon::Gpu, gpu, "GPU", &self.renderer_tip()) {
+                        self.toggle_renderer();
+                    }
                     let faces = self.viewport.faces;
                     if b(
                         ui,
@@ -2074,6 +2104,18 @@ impl App {
                     if h.chars().count() > 28 { h.chars().take(27).collect::<String>() + "…" } else { h.clone() };
                 ui.label(RichText::new(short).size(12.0));
             }
+            // What drew the 3D view, and why the CPU did when the GPU was asked for.
+            if self.session.case().is_some() {
+                let (by, why) = self.viewport.drawn_with();
+                ui.separator();
+                let colour = if why.is_some() { t.warning } else { t.text_muted };
+                let tip = match (why, by, &self.viewport.no_gpu) {
+                    (Some(w), _, _) => format!("Drawn on the CPU: {w}"),
+                    (None, Renderer::Cpu, Some(no)) => format!("The 3D view is drawn on the CPU: {no}"),
+                    (None, _, _) => format!("The 3D view is drawn on the {}", by.name()),
+                };
+                ui.label(RichText::new(by.name()).size(12.0).color(colour)).on_hover_text(tip);
+            }
             if let Some(case) = self.session.case() {
                 let n = case.changed().len();
                 if n > 0 {
@@ -2145,6 +2187,64 @@ pub struct Options {
     pub show: Vec<String>,
     /// A command whose card opens at the start, as its ribbon button opens it (`bc.set`).
     pub open: Option<String>,
+    /// What draws the 3D view at the start.
+    pub renderer: Start,
+}
+
+/// What draws the 3D view at the start (`--renderer`). The window runs on a GPU device (wgpu)
+/// only when the GPU is asked for and there is one; then the view can be switched in it. Else it
+/// runs on OpenGL (glow), as it always did: a window that wgpu can't show (a remote session,
+/// some virtual machines) would not open, and eframe can't fall back once it has started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Start {
+    /// The CPU rasteriser.
+    #[default]
+    Cpu,
+    /// The GPU; the CPU, with a warning, where there is none.
+    Gpu,
+    /// The GPU where there is a hardware one, else the CPU (a software GPU is no faster).
+    Auto,
+}
+
+impl Start {
+    /// `cpu`, `gpu` or `auto`.
+    pub fn parse(name: &str) -> Option<Start> {
+        match name {
+            "cpu" => Some(Start::Cpu),
+            "gpu" => Some(Start::Gpu),
+            "auto" => Some(Start::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// Whether this machine has a GPU device the 3D view can be drawn on (wgpu with storage buffers
+/// in vertex shaders), and whether it is a software one (lavapipe, llvmpipe, WARP); why not.
+fn gpu_probe() -> Result<bool, String> {
+    use eframe::egui_wgpu::wgpu;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let options =
+        wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() };
+    let adapter = pollster::block_on(instance.request_adapter(&options)).map_err(|e| format!("no GPU device: {e}"))?;
+    gpu::usable(&adapter)?;
+    Ok(adapter.get_info().device_type == wgpu::DeviceType::Cpu)
+}
+
+/// The wgpu set-up of the window: egui's, with the device given all the adapter allows (the 3D
+/// view's buffers can be large).
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew, wgpu};
+    let setup = WgpuSetupCreateNew {
+        device_descriptor: std::sync::Arc::new(|adapter: &wgpu::Adapter| wgpu::DeviceDescriptor {
+            label: Some("umcfGui device"),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }),
+        // The adapter the probe looked at (two GPUs: the faster).
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..WgpuSetupCreateNew::without_display_handle()
+    };
+    WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
 /// The desktop window around an [`App`].
@@ -2152,6 +2252,8 @@ struct Desktop {
     app: App,
     screenshot: Option<String>,
     frames: u32,
+    /// When the screenshot was asked of the window.
+    asked: Option<std::time::Instant>,
     /// Set once the screenshot is written (or failed): the window closes.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the screenshot was not written, for [`run`] to return.
@@ -2188,8 +2290,19 @@ impl eframe::App for Desktop {
         }
         self.frames += 1;
         ui.ctx().request_repaint();
+        // A screenshot asked for and never written (a window format the capture doesn't take):
+        // fail after half a minute, not wait.
+        if self.asked.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(30)) {
+            let mut f = self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            f.get_or_insert_with(|| format!("the screenshot {path} wasn't taken: the window's capture gave nothing"));
+            self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
         // A few frames for the panels to settle and the view to draw.
         if self.frames == 5 {
+            #[allow(clippy::disallowed_methods)]
+            let now = std::time::Instant::now();
+            self.asked = Some(now);
             let (path, done, failed, ctx) = (path.clone(), self.done.clone(), self.failed.clone(), ui.ctx().clone());
             let callback = egui::ScreenshotCallback::new(move |image| {
                 let [w, h] = image.size;
@@ -2280,16 +2393,63 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     app.start_up(options.open.as_deref())?;
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
+    // The GPU only when asked for (see [`Start`]); `auto` passes a software one over.
+    let probe: Result<(), String> = match options.renderer {
+        Start::Cpu => {
+            Err("started with --renderer cpu (the default): start with --renderer gpu or auto to switch".to_string())
+        }
+        Start::Gpu => gpu_probe().map(|_| ()),
+        Start::Auto => match gpu_probe() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err("the GPU device is a software one".to_string()),
+            Err(e) => Err(e),
+        },
+    };
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),
+        renderer: if probe.is_ok() { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow },
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
     let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let wanted = options.screenshot.clone();
     let done: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
-    let desktop =
-        Desktop { app, screenshot: options.screenshot, frames: 0, done: done.clone(), failed: failed.clone() };
-    eframe::run_native("umcfGui", native, Box::new(|_cc| Ok(Box::new(desktop)))).map_err(|e| e.to_string())?;
+    let mut desktop = Desktop {
+        app,
+        screenshot: options.screenshot,
+        frames: 0,
+        asked: None,
+        done: done.clone(),
+        failed: failed.clone(),
+    };
+    let start = options.renderer;
+    let created = move |cc: &eframe::CreationContext<'_>| {
+        let viewport = &mut desktop.app.viewport;
+        let attached = match (&cc.wgpu_render_state, &probe) {
+            // `auto` takes a hardware device only: the window's own may differ from the probe's.
+            (Some(state), _)
+                if start == Start::Auto
+                    && state.adapter.get_info().device_type == eframe::egui_wgpu::wgpu::DeviceType::Cpu =>
+            {
+                Err("the GPU device is a software one".to_string())
+            }
+            (Some(state), _) => viewport.attach_gpu(state, &cc.egui_ctx),
+            (None, Err(e)) => Err(e.clone()),
+            (None, Ok(())) => Err("the window doesn't run on a GPU device".to_string()),
+        };
+        if let Err(e) = &attached {
+            viewport.no_gpu = Some(e.clone());
+        }
+        viewport.renderer = match start {
+            Start::Gpu | Start::Auto if viewport.has_gpu() => Renderer::Gpu,
+            _ => Renderer::Cpu,
+        };
+        if let (Start::Gpu, Err(e)) = (start, &attached) {
+            eprintln!("umcf-gui: --renderer gpu: the 3D view is drawn on the CPU: {e}");
+        }
+        Ok(Box::new(desktop) as Box<dyn eframe::App>)
+    };
+    eframe::run_native("umcfGui", native, Box::new(created)).map_err(|e| e.to_string())?;
     if let Some(e) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
         return Err(e);
     }

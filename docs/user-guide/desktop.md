@@ -22,7 +22,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
-| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does |
+| `--renderer cpu\|gpu\|auto` | What draws the 3D view: the CPU (the default), the GPU, or the GPU where there is a hardware one; with `gpu` or `auto` the view can be switched in the window ([the GPU view](#the-gpu-view)) |
+| `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does, or when the window gives no picture within half a minute |
 
 ## The window
 
@@ -53,7 +54,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   The name of what is under the cursor shows in the history bar.
 - **The axis triad** (top right): click an axis to look along it.
 - **The navigation bar** (bottom): orbit, pan or *Box select*, zoom, fit, the standard views, the
-  faces' edges, *Pick faces* and *Select through*.
+  faces' edges, *GPU* (where the window runs on a GPU device), *Pick faces* and *Select
+  through*.
   - *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
     adds or takes away one, Shift+click adds one), drawn in the selection colour.
   - *Box select*: a drag draws a rectangle that selects what is in it (`select.rect`): the
@@ -84,6 +86,38 @@ running shows no dialog at all, so install `zenity` or `xdg-desktop-portal` ther
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search (not a card
 whose command waits or runs: its outcome closes it).
+
+## The GPU view
+
+The 3D view is drawn by the CPU, or on the GPU. Start the app with `--renderer gpu` (or `auto`,
+which takes a hardware GPU and passes a software one over); then *GPU* in the *View* tab's
+*Display* group and in the navigation bar switches between the two at any time. The history bar
+says which drew the view (*GPU* or *CPU*); its tooltip says why the CPU did when the GPU was asked
+for. Like *Edges*, the switch is a setting of the window, not a command: the command line's
+`scene.snapshot` and `umcf-cli render` always draw on the CPU.
+
+- **When there is a GPU view.** Asked for it, the app looks for a GPU device it can draw on
+  (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through
+  wgpu), and the whole window runs on it. Without one, and with the default `--renderer cpu`,
+  the window runs on OpenGL as it always did and the view is drawn by the CPU: *GPU* is grey in
+  the ribbon, its tooltip saying why (as `--renderer gpu` does), and left out of the navigation
+  bar. (A window wgpu can't show, in some remote sessions and virtual machines, would not open:
+  so the GPU is used only when asked for.)
+- **When the GPU fails** (out of its memory, a limit of the device), the view goes back to the CPU
+  for the rest of the session and the tooltip says why.
+- **What it draws.** The same picture as the CPU: each patch or surface region in its colour,
+  shaded per triangle with the light at the eye, outlines where patches meet, the selection in
+  orange in front of what lies in the same place, what is hidden left out. Where surfaces of two
+  regions lie in the same place, the region listed first is seen, as on the CPU.
+- **What the CPU still draws.** Edges, wireframes, points and transparent layers are drawn by
+  the CPU for now: with any of them on, the view is drawn by the CPU (the history bar says
+  so). Picking, *Box select* and `scene.snapshot` work on the CPU either way, on the same scene.
+- **How fast.** The Hong Kong project's five regions (15 million triangles) at 1440 × 860:
+  turning, panning and zooming take 3 to 8 ms a frame on an NVIDIA RTX 5060 Ti, against about a
+  second on the CPU (which draws at half the resolution while the view moves). The first frame
+  uploads the meshes (0.23 s); what the view shows stays on the GPU until it is hidden or read
+  again. A new selection of patches or a display mode uploads only colours; picked faces upload
+  their triangles.
 
 ## Long work
 
@@ -167,9 +201,12 @@ about the new conditions.
 
 ## Limits
 
-- The 3D view is drawn by the CPU renderer, at the window's resolution (at half of it while the
-  view turns). It keeps up with surfaces and meshes of a few hundred thousand boundary faces;
-  a GPU view comes later.
+- The CPU view is drawn at the window's resolution (at half of it while the view turns); it
+  keeps up with surfaces and meshes of a few hundred thousand boundary faces. The GPU view
+  draws opaque surfaces only: edges, wireframes, points and transparent layers bring the CPU view
+  back ([the GPU view](#the-gpu-view)). The GPU holds what the view shows (about 16 bytes per
+  triangle and 12 per point: 340 MB for the Hong Kong project); while a region's points don't fit
+  one of its buffers, the whole view is drawn by the CPU.
 - The 3D view reads regions at once and keeps hidden ones within a share of the memory free when
   the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
   dropped past it is read again when it is shown.
