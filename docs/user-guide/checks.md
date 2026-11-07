@@ -97,7 +97,17 @@ word. Checked in solver cases.
 | `case.canopy` | Error | With `simplifiedVegetation`, the `vegetation` region has no `air_to_vegetation` patch (the trees' surface, found by name), or one the radiation takes as sky. The usual canopy types, both surfaces, are `mappedInternal` (OpenFOAM-12) and `mappedWall` (OpenFOAM-8) |
 | `case.vegetation-patch` | Error | A solid temperature condition with `qrNbr` or `qsNbr` reads the radiation from the `vegetation` patch named like its partner patch in the air, and there is no such patch; or, in OpenFOAM-8, `simpleGrass` reads it from the `vegetation` patch named like each of its `grassPatches` (OpenFOAM-12 falls back to the air's) |
 | `case.sky-surface` | Warning | With `viewFactorSky` in `vegetation`, a patch is a surface in the air and sky in `vegetation`, or the other way round. The radiation takes the wall types (`wall`, `mappedWall`, `mappedExtrudedWall` and `nonConformalMappedWall` in OpenFOAM-12; `wall`, `mappedWall`, `regionCoupledWall` and `mappedWallVariableThickness` in OpenFOAM-8) and, in OpenFOAM-12, `mappedInternal` as surfaces, every other patch as sky: the ground and buildings are surfaces, the domain's sides and top sky, so one of the two types is likely wrong |
+| `case.material-zone` | Error | A material of a solid's `buildingMaterials` (`constant/<solid>/transportProperties`) has no cell zone of its `name` in that region's mesh (`cellZones`, which `topoSet` or `setSet` writes): the solver assigns each material to the cells of its zone and stops. Also a material's zone that lists a cell the region doesn't have: the run fails there |
+| `case.material-overlap` | Error | A cell is in the zones of two materials, a zone lists a cell twice, or a material is listed twice: the solver stops on a cell assigned twice |
+| `case.material-cover` | Error | Cells of a solid are in no material's zone (how many, and the first): the solver stops unless every cell has a material. Zones no material names don't count. Judged when the cell count is known (the `owner` header's note), and every material has a plain name (not a `$macro` or `#calc`) and a zone |
 | `bc.patch-type` | Error | A condition on a patch that can't carry it: urbanMicroclimateFoam's coupled conditions (`compressible::CFDHAM…`, apart from `…TransferCoeffInterior`) need a mapped patch (`mapped`, `mappedWall`, `mappedExtrudedWall`, `nonConformalMappedWall` in OpenFOAM-12; `mappedPatch`, `mappedWall`, `mappedWallVariableThickness` in OpenFOAM-8), `mappedLeafTemperature` a `mappedInternal` patch in OpenFOAM-12 (a mapped one in OpenFOAM-8). The run stops where the condition is built. Only entries that name the patch are checked, not patterns or groups |
+
+The materials' zones come from the mesh the run reads (`constant/<solid>/polyMesh`, or a time
+directory's), read when the case opens within the size limit for a field file (256 MB by
+default). They are not judged for a solid whose mesh is only decomposed (`processor*`), a list of
+materials given by a `$macro` or `#include`, or more than 2^30 cells; and in a decomposed run the
+solver reads each processor's zones, so zones changed with `topoSet -parallel` after
+`decomposePar` are not what is checked.
 
 ## Solver types
 

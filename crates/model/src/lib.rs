@@ -128,6 +128,11 @@ pub struct Region {
     pub counts: umcf_foam_mesh::Counts,
     /// The fields of the initial time directory, by name.
     pub fields: Vec<FieldInfo>,
+    /// A solid region's cell zones (`cellZones` of the mesh the run reads; none without the
+    /// file), which its materials are assigned to: `None` for other regions, without a mesh, or
+    /// when the file couldn't be read (a note says why). Shared, so copies of the case cost
+    /// nothing.
+    pub cell_zones: Option<Arc<Vec<umcf_foam_mesh::Zone>>>,
 }
 
 impl Region {
@@ -786,8 +791,30 @@ impl Case {
                     Default::default()
                 }
             };
+            // A solid's materials go by cell zone (solid/updatebuildingMaterials.H): its zones,
+            // within the mesh's limits.
+            // Zones are labels per cell, as big as a field: within the cap on a field file
+            // (none read with a cap of 0).
+            let meshed = patches.is_some() || counts.cells.is_some();
+            let zone_limits = umcf_foam_mesh::Limits { max_bytes: options.field_bytes, ..Default::default() };
+            let cell_zones = if kind == RegionKind::Solid && meshed && options.field_bytes > 0 {
+                match umcf_foam_mesh::read_cell_zones(fs, &mesh_owner, &zone_limits) {
+                    // A mesh without the file has no zones.
+                    Ok(z) => Some(Arc::new(z.unwrap_or_default())),
+                    Err(e) => {
+                        notes.push(note(
+                            Severity::Info,
+                            format!("{mesh_owner}/cellZones"),
+                            format!("{e}: the materials' cell zones are not checked"),
+                        ));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let fields = fields.next().unwrap_or_default();
-            out.push(Region { name, kind, patches, counts, fields });
+            out.push(Region { name, kind, patches, counts, fields, cell_zones });
         }
 
         let scripts = read_scripts(fs, options, &mut notes)?;

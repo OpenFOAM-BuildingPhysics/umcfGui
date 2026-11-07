@@ -51,6 +51,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     let listed = case.layout.regions_from.clone().unwrap_or_default();
     names(case, &fluids, &vegetation, &listed, out);
     ambient(case, out);
+    materials(case, out);
     coupled_types(case, version, out);
     let Some(veg) = case.region(VEGETATION).filter(|r| r.kind == RegionKind::Vegetation) else { return };
     solid_reads(case, veg, version, out);
@@ -299,6 +300,121 @@ fn grass_reads(case: &Case, fluid: &Region, veg: &Region, out: &mut Vec<Diagnost
             .region(&fluid.name)
             .patch(name),
         );
+    }
+}
+
+/// Most cells a solid's materials are checked over (a byte each).
+const MAX_CELLS: u64 = 1 << 30;
+
+/// A solid region's materials against its cell zones, as the solver assigns them
+/// (`solid/updatebuildingMaterials.H`, both versions): each material's `name` is a cell zone,
+/// no cell is in two materials' zones (a material listed twice counts twice), and every cell is
+/// in one. Zones no material names don't count. The run stops on each.
+fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
+    for r in case.regions.iter().filter(|r| r.kind == RegionKind::Solid) {
+        let Some(zones) = &r.cell_zones else { continue };
+        let file = format!("constant/{}/transportProperties", r.name);
+        let Some(list) = case.dict(&file).and_then(|d| d.get(&["buildingMaterials"])) else { continue };
+        // The materials' names in order. A list given otherwise (`$mats`, `#include`) or a name
+        // given otherwise (`$m`, `#calc`) can't be judged: then only the plain names are, and
+        // only for their zones.
+        let mut names: Vec<String> = Vec::new();
+        let items = match list.value.as_slice() {
+            [umcf_foam_dict::Node::List { items, .. }] => items.as_slice(),
+            _ => continue,
+        };
+        let mut judged = true;
+        for item in items {
+            let umcf_foam_dict::Node::Dict { body, .. } = item else {
+                judged = false;
+                continue;
+            };
+            let plain = |v: &str| !v.is_empty() && !v.starts_with('$') && !v.starts_with('#');
+            match body.get("name").and_then(umcf_foam_dict::Entry::value_text) {
+                Some(v) if plain(v.trim()) => names.push(umcf_foam_dict::unquote(v.trim()).to_string()),
+                _ => judged = false,
+            }
+        }
+        let diag = |code, message: String| Diagnostic::new(Level::Error, code, &file, message).region(&r.name);
+        // The first zone of a name, as OpenFOAM finds it.
+        let zone = |name: &str| zones.iter().find(|z| z.name == name);
+        let missing: Vec<&str> = names.iter().map(String::as_str).filter(|n| zone(n).is_none()).collect();
+        for m in &missing {
+            out.push(diag(
+                "case.material-zone",
+                format!(
+                    "material `{m}` has no cell zone of that name in region `{}`: the solver assigns each material \
+                     to the cells of its zone, and stops",
+                    r.name
+                ),
+            ));
+        }
+        // Each cell's material (two bytes a cell), by the zones in the materials' order.
+        let Some(n) = r.counts.cells.filter(|n| *n <= MAX_CELLS) else { continue };
+        let mut owner: Vec<u16> = Vec::new();
+        if owner.try_reserve_exact(n as usize).is_err() || names.len() >= usize::from(u16::MAX) {
+            continue;
+        }
+        owner.resize(n as usize, 0);
+        let mut stop = None;
+        'materials: for (i, name) in names.iter().enumerate() {
+            let Some(z) = zone(name) else { continue };
+            let tag = u16::try_from(i + 1).unwrap_or(u16::MAX);
+            for &c in &z.cells {
+                let Some(slot) = owner.get_mut(c as usize) else {
+                    // The solver indexes past its cells and crashes.
+                    stop = Some((
+                        "case.material-zone",
+                        format!(
+                            "zone `{name}` lists cell {c}, and region `{}` has {n} cells: the run fails there",
+                            r.name
+                        ),
+                    ));
+                    break 'materials;
+                };
+                if *slot != 0 {
+                    let first = usize::from(*slot) - 1;
+                    let other = names.get(first).map_or("?", String::as_str);
+                    stop = Some((
+                        "case.material-overlap",
+                        if first == i {
+                            format!("zone `{name}` lists cell {c} twice: the solver stops on a cell assigned twice")
+                        } else if other == name {
+                            format!(
+                                "material `{name}` is listed twice, so its zone's cells (cell {c} first) get two \
+                             materials: the solver stops"
+                            )
+                        } else {
+                            format!(
+                                "cell {c} is in the zones of materials `{other}` and `{name}`: the solver stops on a cell \
+                             with two materials"
+                            )
+                        },
+                    ));
+                    break 'materials;
+                }
+                *slot = tag;
+            }
+        }
+        if let Some((code, message)) = stop {
+            out.push(diag(code, message));
+            continue;
+        }
+        if !missing.is_empty() || !judged {
+            continue;
+        }
+        let none = owner.iter().filter(|m| **m == 0).count();
+        if none > 0 {
+            let first = owner.iter().position(|m| *m == 0).unwrap_or_default();
+            out.push(diag(
+                "case.material-cover",
+                format!(
+                    "{none} of the {n} cells of region `{}` are in no material's zone (cell {first} first): the solver \
+                     stops unless every cell has a material",
+                    r.name
+                ),
+            ));
+        }
     }
 }
 

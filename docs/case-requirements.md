@@ -52,8 +52,10 @@ A region without `radiationProperties` has no radiation, and one without `solarL
 no solar load; the solver doesn't stop.
 
 **Materials and cell zones.** Every `buildingMaterials` `name` must be a cell zone of that solid
-region, and the zones must cover every cell exactly once (`solid/updatebuildingMaterials.H`).
-The zones come from `topoSet` *12* or `setSet -batch` *8*.
+region (the first zone of that name), and the materials' zones must cover every cell exactly
+once; zones no material names don't count (`solid/updatebuildingMaterials.H`, both versions).
+The zones come from `topoSet` *12* or `setSet -batch` *8*. The case check judges this
+([checks](user-guide/checks.md#what-urbanmicroclimatefoam-needs-from-regions-and-patches)).
 
 **What the equations read.**
 
