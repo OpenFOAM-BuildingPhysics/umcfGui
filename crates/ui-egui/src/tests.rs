@@ -114,6 +114,15 @@ fn a_stroke_painted_with_the_brush_selects_the_faces_under_it() {
         h.run();
     }
     assert_eq!(h.state().viewport.brush, crate::viewport::BRUSH.0);
+    // Not while a text field has the keys, the cursor over the view.
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").click();
+    h.run();
+    h.hover_at(c);
+    h.key_press(egui::Key::CloseBracket);
+    h.run();
+    assert_eq!(h.state().viewport.brush, crate::viewport::BRUSH.0);
+    h.key_press(egui::Key::Escape);
+    h.run();
     // Ctrl takes away; a click is a dab, with the same modes.
     drag(&mut h, c - vec2(20.0, 0.0), c + vec2(20.0, 0.0), Modifiers::COMMAND);
     assert!(h.state().session().selection().is_empty());

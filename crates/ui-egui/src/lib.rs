@@ -2041,7 +2041,7 @@ impl App {
                         Icon::Through,
                         through,
                         "Select through",
-                        "A rectangle takes everything in it, hidden too (the faces whose middle is in it), not only what is seen",
+                        "A rectangle or a brush stroke takes everything in it, hidden too (the faces whose middle is in it), not only what is seen",
                     ) {
                         self.viewport.through = !through;
                     }

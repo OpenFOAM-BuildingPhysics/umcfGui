@@ -337,6 +337,7 @@ fn a_brush_stroke_covers_what_is_seen_under_it_or_everything_through_it() {
         Stroke { points: vec![], radius: 5.0 },
         Stroke { points: vec![[f64::NAN, 50.0]], radius: 5.0 },
         Stroke { points: vec![[69.0, 50.0]], radius: f64::INFINITY },
+        Stroke { points: vec![[69.0, 50.0]; crate::raster::MAX_STROKE + 1], radius: 5.0 },
     ] {
         assert!(all(&s, empty.clone(), false).is_empty() && all(&s, empty, true).is_empty());
     }

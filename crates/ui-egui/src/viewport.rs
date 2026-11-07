@@ -113,7 +113,7 @@ pub struct Viewport {
     pub drag: Drag,
     /// A click picks the mesh face under it, not its patch.
     pub faces: bool,
-    /// A rectangle takes everything in it, hidden or not.
+    /// A rectangle or a brush stroke takes everything in it, hidden or not.
     pub through: bool,
     /// Where the rectangle being dragged started, in points.
     corner: Option<Pos2>,
@@ -543,7 +543,8 @@ impl Viewport {
             self.stroke.clear();
             return None;
         }
-        if response.hovered() {
+        // Not while a text field takes the keys.
+        if response.hovered() && !ui.ctx().text_edit_focused() {
             let (smaller, larger) =
                 ui.input(|i| (i.key_pressed(egui::Key::OpenBracket), i.key_pressed(egui::Key::CloseBracket)));
             if smaller {

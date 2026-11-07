@@ -546,8 +546,12 @@ impl Stroke {
         })
     }
 
+    /// Whether it can be used: 1 to [`MAX_STROKE`] points, all finite, and a finite radius
+    /// (else it covers nothing).
     fn finite(&self) -> bool {
-        self.radius.is_finite() && !self.points.is_empty() && self.points.iter().flatten().all(|c| c.is_finite())
+        self.radius.is_finite()
+            && (1..=MAX_STROKE).contains(&self.points.len())
+            && self.points.iter().flatten().all(|c| c.is_finite())
     }
 }
 
@@ -655,8 +659,9 @@ impl Area {
 
     /// Which of the pixels `xs` × `ys` (inclusive ranges) have their middle in it, row by row;
     /// `None` for a rectangle (all of them). A stroke is made row by row: on each row, each
-    /// segment's reach (a capsule, convex) is one interval; they are merged and filled, so that the
-    /// work is the rows times the segments near them plus the pixels, however they overlap.
+    /// segment's reach (a capsule, convex) is one interval or none; they are merged and filled, so
+    /// that the work is the rows times the segments (at most [`MAX_STROKE`]) plus the pixels,
+    /// however they overlap.
     fn mask(&self, xs: (usize, usize), ys: (usize, usize)) -> Option<Vec<bool>> {
         let Area::Stroke(s) = self else { return None };
         let w = xs.1 - xs.0 + 1;
