@@ -216,7 +216,8 @@ project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.
   project takes 3.5 s and 0.87 GB the first time, all five of its regions 4.3 s and 1.27 GB
   ([memory](#memory)). Drawing and picking boundary triangles is quick: the 573 000 of a 2.8-million-cell
   air region of a 3×3 street-grid case in 0.14 s.
-- No level of detail; the renderer draws every triangle on one core, and sorts transparent
-  triangles one by one ([display modes](#display-modes)).
+- No level of detail; the CPU renderer draws every triangle on one core, and sorts transparent
+  triangles one by one ([display modes](#display-modes)); the desktop app's GPU view draws them
+  without sorting ([the GPU view](desktop.md#the-gpu-view)).
 - Selections are whole patches, surface regions and mesh faces (`faces: true`), one at a time or
   by a rectangle (`select.rect`). A brush and picking cells are not there yet.

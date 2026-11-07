@@ -4,8 +4,11 @@
 //! place), flat-shaded with the light at the eye (per triangle, as the CPU view), the faces'
 //! edges when asked for, wireframes and points over the surfaces (seen where nothing opaque is in
 //! front, blended with their opacity), outlines where one class meets another or the background,
-//! over the background's gradient, with an infinite far plane. Transparent layers are drawn by
-//! the CPU view for now ([`Gpu::draws`] says which styles this one draws).
+//! over the background's gradient, with an infinite far plane. Transparent layers are blended
+//! over all that, order-independent (weighted by opacity and nearness): one layer as the CPU
+//! view blends it; where layers of different colours lie over each other, the nearer counts
+//! more rather than being drawn last. A device that can't blend half-float images leaves them
+//! to the CPU view ([`Gpu::draws`]).
 //!
 //! Each object is uploaded once, as it is (its points, its triangles' corners and classes,
 //! split into chunks a storage binding holds), and kept while the scene shows it; its edges and
@@ -44,6 +47,10 @@ const CODE_SURFACE: f32 = 1.0;
 const CODE_SELECTED: f32 = 2.0;
 const CODE_WIREFRAME: f32 = 3.0;
 const CODE_POINTS: f32 = 4.0;
+const CODE_GLASS: f32 = 5.0;
+/// The transparent layers' sum of weighted colours and what they let through.
+const SUMS: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const THROUGH: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The most classes an object has here: a triangle's class shares its word with its edges (the
 /// top three bits), an edge's or a point's with whether its face is selected (the top bit).
 const MAX_CLASSES: usize = 1 << 29;
@@ -67,12 +74,15 @@ struct View {
     lens: vec4<f32>,
     top: vec4<f32>,
     bottom: vec4<f32>,
-    // x and y: the image's size in pixels; z: a point's side in pixels.
+    // x and y: the image's size in pixels; z: a point's side in pixels; w: the camera's distance
+    // to what it looks at (the transparent layers' weights are relative to it).
     pixels: vec4<f32>,
 };
 struct Obj {
     // 0: the classes not selected; 1: the selected faces, in the selection's colour; 2: the
-    // selected classes (drawn after the others, in front of what lies in the same place).
+    // selected classes (drawn after the others, in front of what lies in the same place); 3:
+    // the transparent classes; 4: the selected faces of those (what the selection's colour
+    // changes of their colour).
     mode: u32,
     // The number of the object's first class in the scene, for the ids.
     base: u32,
@@ -155,12 +165,21 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     let which = word & 0x1fffffffu;
     let c = texel(2u * which);
     let kind = code(c);
-    let shown = kind == 1u || kind == 2u;
+    let glass = obj.mode >= 3u;
+    var shown = kind == 1u || kind == 2u;
+    if glass {
+        shown = kind == 5u;
+    }
     let selected = kind == 2u;
     var colour = c.rgb;
     if obj.mode == 1u && shown {
         // A selected face of a class shown: the selection's colour, in front.
         colour = SELECTED;
+    }
+    if obj.mode == 4u {
+        // A selected face of a transparent class: what turns its colour into the selection's
+        // (added to the class's colour drawn in mode 3).
+        colour = SELECTED - c.rgb;
     }
     // Lambert with the light at the eye, both sides lit alike, for the whole triangle (its
     // normal against the direction to its middle), as the CPU view.
@@ -188,9 +207,12 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     // Reversed depth: near / distance.
     out.pos = vec4<f32>(v.x * view.lens.x, v.y * view.lens.y, view.lens.z, v.z);
     out.colour = vec4<f32>(colour * shade, 1.0);
+    if glass {
+        out.colour.a = texel(2u * which + 1u).r;
+    }
     if skip {
         out.pos = OUTSIDE;
-        out.colour.a = 0.0;
+        out.colour.a = -1.0;
     }
     out.id = obj.base + which + 1u;
     // Its edges on the image, where the whole triangle is in front of the near plane (the
@@ -216,16 +238,21 @@ fn on_edge(p: vec2<f32>, q: vec2<f32>, x: vec2<f32>) -> bool {
     return abs(d.x * (x.y - p.y) - d.y * (x.x - p.x)) / l < EDGE_REACH;
 }
 
+// How much the faces' edges darken pixel `x` of the triangle `in`: EDGE on one, else 1.
+fn edging(in: Out) -> f32 {
+    let x = in.pos.xy;
+    if (in.edges & 1u) != 0u && on_edge(in.ab.xy, in.ab.zw, x) { return EDGE; }
+    if (in.edges & 2u) != 0u && on_edge(in.ab.zw, in.c, x) { return EDGE; }
+    if (in.edges & 4u) != 0u && on_edge(in.c, in.ab.xy, x) { return EDGE; }
+    return 1.0;
+}
+
 @fragment
 fn fs(in: Out) -> Pixel {
     if in.colour.a < 0.5 {
         discard;
     }
-    var k = 1.0;
-    let x = in.pos.xy;
-    if (in.edges & 1u) != 0u && on_edge(in.ab.xy, in.ab.zw, x) { k = EDGE; }
-    if (in.edges & 2u) != 0u && on_edge(in.ab.zw, in.c, x) { k = EDGE; }
-    if (in.edges & 4u) != 0u && on_edge(in.c, in.ab.xy, x) { k = EDGE; }
+    let k = edging(in);
     var out: Pixel;
     out.colour = vec4<f32>(in.colour.rgb * k, 1.0);
     out.id = in.id;
@@ -306,6 +333,36 @@ fn fs_mark(in: Mark) -> @location(0) vec4<f32> {
     return in.colour;
 }
 
+// Transparent layers, in any order (weighted, blended: order-independent): what each adds to
+// the sum of the layers' colours (weighted by opacity, and by nearness so that the nearer
+// counts more where layers of different colours lie over each other), and how much of what is
+// behind it each lets through. Seen where no surface is nearer, as in the CPU view.
+struct Glass {
+    @location(0) sum: vec4<f32>,
+    @location(1) through: f32,
+};
+
+@fragment
+fn fs_glass(in: Out) -> Glass {
+    let a = in.colour.a;
+    let under = bitcast<f32>(textureLoad(depths, vec2<i32>(in.pos.xy), 0).r);
+    if !(a > 0.0) || !(view.lens.z / in.z > under) {
+        discard;
+    }
+    let k = edging(in);
+    let w = clamp(pow(view.pixels.w / in.z, 4.0), 0.01, 100.0);
+    var out: Glass;
+    if obj.mode == 4u {
+        // Only the colour changes: neither the layer's weight nor what it lets through.
+        out.sum = vec4<f32>(in.colour.rgb * k * a * w, 0.0);
+        out.through = 0.0;
+    } else {
+        out.sum = vec4<f32>(in.colour.rgb * k * a * w, a * w);
+        out.through = a;
+    }
+    return out;
+}
+
 struct Back {
     @builtin(position) pos: vec4<f32>,
     @location(0) s: f32,
@@ -335,6 +392,9 @@ fn fs_back(in: Back) -> Pixel {
 const OUTLINES: &str = r#"
 @group(0) @binding(0) var image: texture_2d<f32>;
 @group(0) @binding(1) var ids: texture_2d<u32>;
+// The transparent layers: their weighted colours and weights, and what they let through.
+@group(0) @binding(2) var sums: texture_2d<f32>;
+@group(0) @binding(3) var through: texture_2d<f32>;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -346,7 +406,13 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let size = vec2<i32>(textureDimensions(ids));
     let p = vec2<i32>(pos.xy);
     let id = textureLoad(ids, p, 0).r;
-    let c = textureLoad(image, p, 0);
+    var c = textureLoad(image, p, 0);
+    // The transparent layers over what is behind them: one layer as the CPU view blends it.
+    let sum = textureLoad(sums, p, 0);
+    let covered = 1.0 - textureLoad(through, p, 0).r;
+    if covered > 0.0 && sum.a > 0.0 {
+        c = vec4<f32>(sum.rgb / sum.a * covered + c.rgb * (1.0 - covered), 1.0);
+    }
     var outline = false;
     if id != 0u {
         if p.x + 1 < size.x && textureLoad(ids, p + vec2<i32>(1, 0), 0).r != id { outline = true; }
@@ -401,7 +467,7 @@ fn view_uniform(scene: &Scene, camera: &Camera, size: [u32; 2], background: [[f3
         v(fx, fy, near),
         [top[0], top[1], top[2], 1.0],
         [bottom[0], bottom[1], bottom[2], 1.0],
-        [w as f32, h as f32, dot_size(size[1]) as f32, 0.0],
+        [w as f32, h as f32, dot_size(size[1]) as f32, camera.distance as f32],
     ];
     let mut out = [0.0; 32];
     for (o, x) in out.iter_mut().zip(rows.iter().flatten()) {
@@ -430,7 +496,9 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
             let d = style.display_of(k, c32);
             let code = match d.mode {
                 Mode::Hidden => CODE_HIDDEN,
-                Mode::Surface if d.opacity < 1.0 => CODE_HIDDEN,
+                Mode::Surface if d.opacity.is_nan() => CODE_HIDDEN,
+                // Transparent (an opacity of 0 is drawn as one, and adds nothing, as on the CPU).
+                Mode::Surface if d.opacity < 1.0 => CODE_GLASS,
                 Mode::Surface if selected => CODE_SELECTED,
                 Mode::Surface => CODE_SURFACE,
                 _ if d.opacity.is_nan() || d.opacity <= 0.0 => CODE_HIDDEN,
@@ -440,6 +508,15 @@ fn class_colours(scene: &Scene, k: usize, style: &Style) -> Vec<[f32; 8]> {
             [colour[0], colour[1], colour[2], code, d.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0]
         })
         .collect()
+}
+
+/// Whether a class of object `k` is a transparent surface.
+fn has_glass(scene: &Scene, k: usize, style: &Style) -> bool {
+    let n = scene.objects.get(k).map_or(0, |o| o.classes.len());
+    (0..n).any(|c| {
+        let d = style.display_of(k, u32::try_from(c).unwrap_or(u32::MAX));
+        d.mode == Mode::Surface && d.opacity < 1.0 && d.opacity > 0.0
+    })
 }
 
 /// Whether a class of object `k` is drawn with `mode` (of an opacity above 0).
@@ -482,16 +559,19 @@ fn with_edges(class: u32, edges: u8) -> u32 {
 
 /// What an object of the scene is on the GPU.
 struct Uploaded {
-    /// What draws it: for chunks of its triangles, a bind group for the classes shown and one
-    /// for the selected classes (sharing the chunk's buffers), and how many triangles each has.
-    chunks: Vec<(wgpu::BindGroup, wgpu::BindGroup, u32)>,
+    /// What draws it: for chunks of its triangles, a bind group for the classes shown, one for
+    /// the selected classes and one for the transparent classes (sharing the chunk's buffers),
+    /// and how many triangles each has.
+    chunks: Vec<([wgpu::BindGroup; 3], u32)>,
     palette: wgpu::Texture,
     points: wgpu::Buffer,
-    /// Its uniforms, by mode: the classes shown, the selected faces, the selected classes.
-    uniforms: [wgpu::Buffer; 3],
+    /// Its uniforms, by mode: the classes shown, the selected faces, the selected classes, the
+    /// transparent classes, their selected faces.
+    uniforms: [wgpu::Buffer; 5],
     /// The selected faces it was last drawn with, and their triangles in chunks (none: no
-    /// triangle has them), drawn over it in the selection's colour.
-    selected: (Vec<u32>, Vec<(wgpu::BindGroup, u32)>),
+    /// triangle has them), drawn over it in the selection's colour: a bind group for the
+    /// opaque surfaces' and one for the transparent ones'.
+    selected: (Vec<u32>, Vec<([wgpu::BindGroup; 2], u32)>),
     /// The selection its selected faces were last looked at for.
     looked: Option<u64>,
     /// Its edges and its points, as wireframes and points draw them, once a class showed them.
@@ -511,6 +591,9 @@ pub struct Target {
     /// The surfaces' depths without bias, and what reads them (wireframes and points).
     depths: wgpu::TextureView,
     marks: wgpu::BindGroup,
+    /// The transparent layers' weighted colours and what they let through (cleared each frame).
+    sums: wgpu::TextureView,
+    through: wgpu::TextureView,
     depth: wgpu::TextureView,
     outline: wgpu::BindGroup,
 }
@@ -524,6 +607,9 @@ pub struct Gpu {
     selected: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     dots: wgpu::RenderPipeline,
+    /// The transparent layers, where the device blends half-float images (else the CPU view
+    /// draws them).
+    glass: Option<wgpu::RenderPipeline>,
     back: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
@@ -634,7 +720,7 @@ impl Gpu {
                 storage(1),
                 storage(2),
                 texture(3, wgpu::ShaderStages::VERTEX, wgpu::TextureSampleType::Float { filterable: false }),
-                uniform(4, wgpu::ShaderStages::VERTEX),
+                uniform(4, wgpu::ShaderStages::VERTEX_FRAGMENT),
             ],
         });
         let outline_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -642,6 +728,8 @@ impl Gpu {
             entries: &[
                 texture(0, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Float { filterable: false }),
                 texture(1, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint),
+                texture(2, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Float { filterable: false }),
+                texture(3, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
         let layout_of = |label, groups: &[Option<&wgpu::BindGroupLayout>]| {
@@ -752,6 +840,57 @@ impl Gpu {
             none,
             Some(wgpu::PrimitiveTopology::TriangleList),
         );
+        // The transparent layers: their weighted colours added up, what they let through
+        // multiplied, where the device can render and blend half floats.
+        let blends = |f: wgpu::TextureFormat| {
+            let features = adapter.get_texture_format_features(f);
+            features.allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                && features.flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+        };
+        let glass = (blends(SUMS) && blends(THROUGH)).then(|| {
+            let add = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let let_through = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation: wgpu::BlendOperation::Add,
+            };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("umcf transparent layers"),
+                layout: Some(&marks_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_glass"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: SUMS,
+                            blend: Some(wgpu::BlendState { color: add, alpha: add }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: THROUGH,
+                            blend: Some(wgpu::BlendState { color: let_through, alpha: let_through }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                    ],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
         let back =
             pipeline("umcf background", &back_layout, "vs_back", "fs_back", wgpu::CompareFunction::Always, none, None);
         let outline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -810,6 +949,7 @@ impl Gpu {
             selected,
             lines,
             dots,
+            glass,
             back,
             outline,
             object_layout,
@@ -837,10 +977,11 @@ impl Gpu {
         *self.wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(wake));
     }
 
-    /// Whether this view draws `style` as the CPU view would: opaque surfaces and their edges,
-    /// wireframes, points, hidden layers, the selection; `Err` names what it doesn't draw yet.
-    pub fn draws(style: &Style) -> Result<(), &'static str> {
-        if style.display.values().any(|d| d.mode == Mode::Surface && d.opacity < 1.0) {
+    /// Whether this view draws `style` as the CPU view would: opaque and transparent surfaces and
+    /// their edges, wireframes, points, hidden layers, the selection; `Err` names what it can't
+    /// (transparent layers, on a device that can't blend half-float images).
+    pub fn draws(&self, style: &Style) -> Result<(), &'static str> {
+        if self.glass.is_none() && style.display.values().any(|d| d.mode == Mode::Surface && d.opacity < 1.0) {
             return Err("transparent layers");
         }
         Ok(())
@@ -874,7 +1015,7 @@ impl Gpu {
             self.target = None;
             return Err(NotDrawn::Failed(e));
         }
-        Gpu::draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
+        self.draws(style).map_err(|what| NotDrawn::Here(format!("{what} are drawn by the CPU view")))?;
         if let Some(o) = scene.objects.iter().find(|o| !self.fits(o)) {
             return Err(NotDrawn::Here(format!("{} is too big for one buffer of the GPU", o.label())));
         }
@@ -991,7 +1132,7 @@ impl Gpu {
                 let Some(up) = self.objects.get(&obj.id()) else { continue };
                 let Some(pipeline) = self.surfaces.get(k.min(RANKS - 1)) else { continue };
                 pass.set_pipeline(pipeline);
-                for (group, _, n) in &up.chunks {
+                for ([group, ..], n) in &up.chunks {
                     pass.set_bind_group(1, group, &[]);
                     pass.draw(0..n.saturating_mul(3), 0..1);
                 }
@@ -1003,12 +1144,12 @@ impl Gpu {
                 let any =
                     (0..obj.classes.len()).any(|c| style.selected.contains(&(k, u32::try_from(c).unwrap_or(u32::MAX))));
                 if any {
-                    for (_, front, n) in &up.chunks {
+                    for ([_, front, _], n) in &up.chunks {
                         pass.set_bind_group(1, front, &[]);
                         pass.draw(0..n.saturating_mul(3), 0..1);
                     }
                 }
-                for (group, n) in &up.selected.1 {
+                for ([group, _], n) in &up.selected.1 {
                     pass.set_bind_group(1, group, &[]);
                     pass.draw(0..n.saturating_mul(3), 0..1);
                 }
@@ -1042,6 +1183,47 @@ impl Gpu {
                     for (group, n, _) in marks {
                         pass.set_bind_group(1, group, &[]);
                         pass.draw(0..n.saturating_mul(vertices), 0..1);
+                    }
+                }
+            }
+        }
+        {
+            // The transparent layers, over all that (as in the CPU view, after the wireframes
+            // and points), into their own images (always cleared: the outlines' pass reads
+            // them), seen where no surface is nearer.
+            let clear = |view, value| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(value), store: wgpu::StoreOp::Store },
+                })
+            };
+            let none = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+            let all = wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("umcf transparent layers"),
+                color_attachments: &[clear(&target.sums, none), clear(&target.through, all)],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if let Some(glass) = &self.glass {
+                pass.set_pipeline(glass);
+                pass.set_bind_group(0, &self.view_group, &[]);
+                pass.set_bind_group(2, &target.marks, &[]);
+                for (k, obj) in scene.objects.iter().enumerate() {
+                    let Some(up) = self.objects.get(&obj.id()).filter(|_| has_glass(scene, k, style)) else {
+                        continue;
+                    };
+                    for ([_, _, group], n) in &up.chunks {
+                        pass.set_bind_group(1, group, &[]);
+                        pass.draw(0..n.saturating_mul(3), 0..1);
+                    }
+                    for ([_, group], n) in &up.selected.1 {
+                        pass.set_bind_group(1, group, &[]);
+                        pass.draw(0..n.saturating_mul(3), 0..1);
                     }
                 }
             }
@@ -1085,6 +1267,15 @@ impl Gpu {
         let ids = make("umcf ids", ID, drawn);
         let depths = make("umcf depths", ID, drawn);
         let depth = make("umcf depth", DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        // Half floats where the device blends them (the transparent layers are drawn), else
+        // bytes, only cleared: no layer there.
+        let (sums_format, through_format) = if self.glass.is_some() {
+            (SUMS, THROUGH)
+        } else {
+            (wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::R8Unorm)
+        };
+        let sums = view_of_texture(&make("umcf transparent layers", sums_format, drawn));
+        let through = view_of_texture(&make("umcf let through", through_format, drawn));
         let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let (view, scene, ids, depth) = (view_of(&texture), view_of(&scene), view_of(&ids), view_of(&depth));
         let depths = view_of(&depths);
@@ -1099,9 +1290,11 @@ impl Gpu {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&scene) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ids) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&sums) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&through) },
             ],
         });
-        self.target = Some(Target { size, texture, view, scene, ids, depths, marks, depth, outline });
+        self.target = Some(Target { size, texture, view, scene, ids, depths, marks, sums, through, depth, outline });
     }
 
     /// `obj` on the GPU: its points, its triangles' corners and classes in chunks a storage
@@ -1134,7 +1327,7 @@ impl Gpu {
                 mapped_at_creation: false,
             })
         };
-        let uniforms = [uniform(), uniform(), uniform()];
+        let uniforms = [uniform(), uniform(), uniform(), uniform(), uniform()];
         // Triangles per chunk: their corners (12 bytes each) within a binding.
         let per = usize::try_from((self.chunk.min(self.binding) / 12).max(1)).unwrap_or(usize::MAX);
         let mut chunks = Vec::new();
@@ -1152,12 +1345,13 @@ impl Gpu {
                 .enumerate()
                 .map(|(i, c)| with_edges(*c, obj.edges.get(start + i).copied().unwrap_or(0)))
                 .collect();
-            let [shown, _, selected] = &uniforms;
+            let [shown, _, selected, glass, _] = &uniforms;
             let corners = self.storage("umcf corners", &corners);
             let classes = self.storage("umcf classes", &bytes_u32(&classes));
             let group = self.object_group(&points, &corners, &classes, &palette, shown);
             let front = self.object_group(&points, &corners, &classes, &palette, selected);
-            chunks.push((group, front, u32::try_from(end - start).unwrap_or(u32::MAX)));
+            let glass = self.object_group(&points, &corners, &classes, &palette, glass);
+            chunks.push(([group, front, glass], u32::try_from(end - start).unwrap_or(u32::MAX)));
             start = end;
         }
         Uploaded {
@@ -1174,7 +1368,7 @@ impl Gpu {
 
     /// The bind groups of the selected `faces` (sorted) of `obj`, in chunks a storage binding
     /// holds, and how many triangles each has: their triangles, drawn in the selection's colour.
-    fn selected_faces(&self, obj: &Object, up: &Uploaded, faces: &[u32]) -> Vec<(wgpu::BindGroup, u32)> {
+    fn selected_faces(&self, obj: &Object, up: &Uploaded, faces: &[u32]) -> Vec<([wgpu::BindGroup; 2], u32)> {
         if faces.is_empty() {
             return Vec::new();
         }
@@ -1188,7 +1382,7 @@ impl Gpu {
             .map(|(n, ((t, _), c))| (t, with_edges(*c, obj.edges.get(n).copied().unwrap_or(0))))
             .collect();
         let per = usize::try_from((self.chunk.min(self.binding) / 12).max(1)).unwrap_or(usize::MAX);
-        let [_, faces_uniform, _] = &up.uniforms;
+        let [_, faces_uniform, _, _, glass_uniform] = &up.uniforms;
         picked
             .chunks(per)
             .map(|chunk| {
@@ -1198,7 +1392,8 @@ impl Gpu {
                 let corners = self.storage("umcf corners", &corners);
                 let classes = self.storage("umcf classes", &bytes_u32(&classes));
                 let group = self.object_group(&up.points, &corners, &classes, &up.palette, faces_uniform);
-                (group, u32::try_from(chunk.len()).unwrap_or(u32::MAX))
+                let glass = self.object_group(&up.points, &corners, &classes, &up.palette, glass_uniform);
+                ([group, glass], u32::try_from(chunk.len()).unwrap_or(u32::MAX))
             })
             .collect()
     }
@@ -1215,7 +1410,7 @@ impl Gpu {
         let per =
             usize::try_from((self.chunk.min(self.binding) / (4 * each)).min(u64::from(u32::MAX) / vertices).max(1))
                 .unwrap_or(usize::MAX);
-        let [shown, _, _] = &up.uniforms;
+        let [shown, ..] = &up.uniforms;
         (0..count)
             .step_by(per)
             .map(|first| {
@@ -1324,6 +1519,10 @@ fn write_palette(queue: &wgpu::Queue, palette: &wgpu::Texture, colours: &[[f32; 
         wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 16), rows_per_image: None },
         size,
     );
+}
+
+fn view_of_texture(t: &wgpu::Texture) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn bytes_f32(v: &[f32]) -> Vec<u8> {
@@ -1566,6 +1765,8 @@ mod tests {
     fn an_error_the_device_reported_fails_the_frame_whatever_the_style() {
         let Some((adapter, device, queue)) = device() else { return };
         let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
+        // As on a device that can't blend half floats: transparent layers go to the CPU.
+        gpu.glass = None;
         let scene = scene();
         let size = [64u32, 48u32];
         let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 64.0 / 48.0);
@@ -1596,15 +1797,17 @@ mod tests {
     }
 
     #[test]
-    fn styles_the_gpu_view_doesnt_draw_yet_are_named() {
+    fn styles_the_gpu_view_doesnt_draw_are_named() {
+        let Some((adapter, device, queue)) = device() else { return };
+        let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
         let mut style = Style { edges: true, ..Style::default() };
-        assert_eq!(Gpu::draws(&style), Ok(()));
-        for mode in [Mode::Wireframe, Mode::Points, Mode::Hidden] {
+        for mode in [Mode::Wireframe, Mode::Points, Mode::Hidden, Mode::Surface] {
             style.display.insert((0, 0), Display { mode, opacity: 0.5 });
-            assert_eq!(Gpu::draws(&style), Ok(()), "{mode:?}");
+            assert_eq!(gpu.draws(&style), Ok(()), "{mode:?}");
         }
-        style.display.insert((0, 1), Display { mode: Mode::Surface, opacity: 0.5 });
-        assert_eq!(Gpu::draws(&style), Err("transparent layers"));
+        // Without half floats to blend, transparent layers are the CPU's.
+        gpu.glass = None;
+        assert_eq!(gpu.draws(&style), Err("transparent layers"));
     }
 
     /// A box of two patches as a mesh: three faces of a unit cube in two patches, each face
@@ -1829,6 +2032,79 @@ mod tests {
         let up = small.objects.values().next().unwrap();
         assert!(up.chunks.len() > 1 && up.lines.as_ref().unwrap().len() > 1 && up.dots.as_ref().unwrap().len() > 1);
         assert!(up.selected.1.len() > 1, "the side's selected faces in one chunk");
+    }
+
+    /// The share of pixels of the CPU's and the GPU's image of `scene` with `style` that differ
+    /// by more than `tolerance`.
+    fn off(scene: &Scene, style: &Style, tolerance: u8) -> Option<f64> {
+        let (cpu, image) = both(scene, &mut style.clone())?;
+        Some(differing(&cpu, &image, tolerance))
+    }
+
+    #[test]
+    fn a_transparent_layer_is_blended_as_on_the_cpu() {
+        let scene = mesh_scene();
+        let glass = |o: f32| Display { mode: Mode::Surface, opacity: o };
+        // The top half opaque over the background; then every face (three layers that don't lie
+        // over each other here), with edges, at 0.3.
+        let mut style = Style::default();
+        style.display.insert((0, 0), glass(0.5));
+        let Some(top) = off(&scene, &style, 3) else { return };
+        assert!(top < 0.01, "top: {:.2}% differ", top * 100.0);
+        let mut all = Style { edges: true, ..Style::default() };
+        for c in 0..3 {
+            all.display.insert((0, c), glass(0.3));
+        }
+        let every = off(&scene, &all, 3).unwrap();
+        assert!(every < 0.01, "all: {:.2}% differ", every * 100.0);
+        // Over the background it changes the picture: not drawn as opaque, nor left out.
+        let (_, opaque) = both(&scene, &mut Style::default()).unwrap();
+        let (_, image) = both(&scene, &mut style.clone()).unwrap();
+        assert!(changed(&opaque, &image, 6) > 1000);
+    }
+
+    #[test]
+    fn an_opaque_box_is_seen_through_a_transparent_one_as_on_the_cpu() {
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 0.5));
+        let mut style = Style::default();
+        for c in 0..3 {
+            style.display.insert((0, c), Display { mode: Mode::Surface, opacity: 0.4 });
+        }
+        let Some(through) = off(&scene, &style, 3) else { return };
+        assert!(through < 0.01, "{:.2}% differ", through * 100.0);
+        // A selected face of the transparent box: in the selection's colour, blended once.
+        let (cpu_plain, gpu_plain) = both(&scene, &mut style.clone()).unwrap();
+        style.selected_faces = [(0, 0), (0, 1)].into_iter().collect();
+        let (cpu, image) = both(&scene, &mut style.clone()).unwrap();
+        let (a, b) = (changed(&cpu_plain, &cpu, 6), changed(&gpu_plain, &image, 6));
+        assert!(a > 500 && b.abs_diff(a) <= a / 50, "the selection changes {a} pixels on the CPU, {b} on the GPU");
+        assert!(differing(&cpu, &image, 3) < 0.01);
+        // A selected transparent patch too.
+        style.selected_faces.clear();
+        style.selected = vec![(0, 2)];
+        assert!(off(&scene, &style, 3).unwrap() < 0.01);
+    }
+
+    #[test]
+    fn transparent_layers_over_each_other_mix_the_nearer_more() {
+        // Two transparent boxes, one inside the other, of their own colours: the CPU blends the
+        // farther first; the GPU weighs them (order-independent), the nearer more.
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 0.5));
+        let mut style = Style { colour_by: ColourBy::Object, ..Style::default() };
+        for k in 0..2 {
+            for c in 0..3 {
+                style.display.insert((k, c), Display { mode: Mode::Surface, opacity: 0.5 });
+            }
+        }
+        let Some((cpu, image)) = both(&scene, &mut style.clone()) else { return };
+        // Where the two lie over each other the colours are near the CPU's (within a sixth of
+        // the range), and elsewhere the same.
+        let near = differing(&cpu, &image, 40);
+        assert!(near < 0.005, "{:.2}% differ by more than 40", near * 100.0);
+        let exact = differing(&cpu, &image, 3);
+        assert!(exact < 0.2, "{:.2}% differ", exact * 100.0);
     }
 
     #[test]

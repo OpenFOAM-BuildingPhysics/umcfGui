@@ -117,9 +117,16 @@ for. Like *Edges*, the switch is a setting of the window, not a command: the com
   earlier one's (within the margin that puts the earlier in front) are the earlier region's
   wireframes and points seen through it. Lines one pixel wide can take a neighbouring
   pixel here and there.
-- **What the CPU still draws.** Transparent layers are drawn by the CPU for now: with one on,
-  the view is drawn by the CPU (the history bar says so). Picking, *Box select* and
-  `scene.snapshot` work on the CPU either way, on the same scene.
+- **Transparent layers** are blended over the rest (and over the wireframes and points behind
+  them, as on the CPU), seen where nothing opaque is in front, a selected face's or patch's in
+  orange. One layer over what is behind it, or several of the same colour, look as on the CPU.
+  Where layers of different colours lie over each other, the GPU doesn't sort them: it mixes
+  them, the nearer counting more (weighted, blended transparency), where the CPU blends the
+  farthest first. The colours there differ a little from the CPU's; the GPU's don't depend on
+  how triangles are cut or ordered.
+- **What the CPU still draws.** On a device that can't blend half-float images (some OpenGL
+  ES drivers), transparent layers bring the CPU view back (the history bar says so). Picking,
+  *Box select* and `scene.snapshot` work on the CPU either way, on the same scene.
 - **How fast.** The Hong Kong project's five regions (15 million triangles) at 1440 × 860:
   turning, panning and zooming take 3 to 8 ms a frame on an NVIDIA RTX 5060 Ti, against about a
   second on the CPU (which draws at half the resolution while the view moves). The first frame
@@ -128,7 +135,9 @@ for. Like *Edges*, the switch is a setting of the window, not a command: the com
   their triangles. Edges cost nothing more (3.5 ms a frame). The first wireframe or points layer
   of a region finds its edges and points and uploads them (3.5 s for all five regions, as the CPU
   takes on its first frame of them); with every region a third surfaces, a third wireframe and a
-  third points, with edges, a frame takes 8.4 ms, against 1.25 s on the CPU.
+  third points, with edges, a frame takes 8.4 ms, against 1.25 s on the CPU. With a third of
+  every region's patches transparent, 5.8 ms, against 2.2 s on the CPU. The transparent layers
+  take two half-float images of the view's size (10 bytes a pixel).
 
 ## Long work
 
@@ -213,8 +222,7 @@ about the new conditions.
 ## Limits
 
 - The CPU view is drawn at the window's resolution (at half of it while the view turns); it
-  keeps up with surfaces and meshes of a few hundred thousand boundary faces. On the GPU view,
-  transparent layers bring the CPU view back ([the GPU view](#the-gpu-view)). The GPU holds what
+  keeps up with surfaces and meshes of a few hundred thousand boundary faces. The GPU holds what
   the view shows (about 16 bytes per triangle and 12 per point: 340 MB for the Hong Kong project;
   once a region was a wireframe or points, 12 bytes per edge and 8 per point more); while a
   region's points don't fit one of its buffers, the whole view is drawn by the CPU. A region's

@@ -417,7 +417,7 @@ impl App {
     fn renderer_tip(&self) -> String {
         match &self.viewport.no_gpu {
             Some(why) => format!("The 3D view is drawn on the CPU: {why}"),
-            None => "Draw the 3D view on the GPU (transparent layers on the CPU for now)".to_string(),
+            None => "Draw the 3D view on the GPU".to_string(),
         }
     }
 
