@@ -323,6 +323,19 @@ pub struct Gpu {
     target: Option<Target>,
     /// An error the device reported outside the scopes this view sets (wgpu's default panics).
     uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// What wakes the window when the device reports one.
+    wake: Wake,
+}
+
+/// What wakes the window (egui's repaint), set once the view is shown.
+type Wake = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send>>>>;
+
+/// Keeps the first error the device reported, and wakes the window to show it.
+fn keep(slot: &std::sync::Mutex<Option<String>>, wake: &Wake, error: String) {
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert(error);
+    if let Some(w) = wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+        w();
+    }
 }
 
 impl Gpu {
@@ -338,17 +351,17 @@ impl Gpu {
         // (it shares the device): the message says the device reported them. A lost device (a
         // driver reset) too.
         let uncaptured: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
-        let kept = uncaptured.clone();
+        // The window is woken to show what went wrong, also while its image doesn't change.
+        let wake: Wake = Default::default();
+        let (kept, woken) = (uncaptured.clone(), wake.clone());
         device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
             eprintln!("umcf-gui: the GPU device reported: {e}");
-            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            slot.get_or_insert_with(|| format!("the GPU device reported: {e}"));
+            keep(&kept, &woken, format!("the GPU device reported: {e}"));
         }));
-        let kept = uncaptured.clone();
+        let (kept, woken) = (uncaptured.clone(), wake.clone());
         device.set_device_lost_callback(move |_, message| {
             eprintln!("umcf-gui: the GPU device was lost: {message}");
-            let mut slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            slot.get_or_insert_with(|| format!("the GPU device was lost: {message}"));
+            keep(&kept, &woken, format!("the GPU device was lost: {message}"));
         });
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -541,7 +554,19 @@ impl Gpu {
             binding,
             target: None,
             uncaptured,
+            wake,
         })
+    }
+
+    /// Whether the device has reported an error the next draw fails with.
+    pub fn failed(&self) -> bool {
+        self.uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+    }
+
+    /// Wakes the window with `wake` when the device reports an error, so that it is shown
+    /// though nothing else changes.
+    pub fn wake_with(&self, wake: impl Fn() + Send + 'static) {
+        *self.wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(wake));
     }
 
     /// Whether this view draws `style` as the CPU view would: opaque surfaces, hidden layers,

@@ -224,8 +224,10 @@ impl Viewport {
 
     /// The GPU view on the window's wgpu device, for [`Renderer::Gpu`]; why not, when the
     /// device can't draw it.
-    pub fn attach_gpu(&mut self, state: &egui_wgpu::RenderState) -> Result<(), String> {
+    pub fn attach_gpu(&mut self, state: &egui_wgpu::RenderState, ctx: &egui::Context) -> Result<(), String> {
         let gpu = crate::gpu::Gpu::new(&state.adapter, &state.device, &state.queue)?;
+        let ctx = ctx.clone();
+        gpu.wake_with(move || ctx.request_repaint());
         self.gpu = Some(GpuView { gpu, state: state.clone(), texture: None });
         self.no_gpu = None;
         Ok(())
@@ -324,7 +326,10 @@ impl Viewport {
             dark: tokens.dark,
             renderer: self.renderer,
         };
-        if self.drawn.as_ref() != Some(&drawn) || self.image.is_none() {
+        // An error the GPU device reported since: drawn again, to go back to the CPU, though
+        // nothing else changed.
+        let gpu_failed = self.renderer == Renderer::Gpu && self.gpu.as_ref().is_some_and(|g| g.gpu.failed());
+        if self.drawn.as_ref() != Some(&drawn) || self.image.is_none() || gpu_failed {
             let mut selected = Vec::new();
             for (k, o) in scene.objects.iter().enumerate() {
                 for (c, name) in o.classes.iter().enumerate() {

@@ -2433,7 +2433,7 @@ pub fn run(options: Options) -> Result<(), String> {
             {
                 Err("the GPU device is a software one".to_string())
             }
-            (Some(state), _) => viewport.attach_gpu(state),
+            (Some(state), _) => viewport.attach_gpu(state, &cc.egui_ctx),
             (None, Err(e)) => Err(e.clone()),
             (None, Ok(())) => Err("the window doesn't run on a GPU device".to_string()),
         };
