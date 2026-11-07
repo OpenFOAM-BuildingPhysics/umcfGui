@@ -450,6 +450,8 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 let sets = checkmesh_sets(fs, r, mesh, &mut d);
                 (Some(q), sets)
             }
+            // A read stopped by a cancel: the command stops, not the region.
+            Err(_) if s.cancel.is_cancelled() => return Err(Error::Cancelled { id: CHECK.id.to_string() }),
             Err(e) => {
                 // Its quality steps, counted up front, are done: there is nothing to check; so are
                 // the bytes of its files that weren't read.
