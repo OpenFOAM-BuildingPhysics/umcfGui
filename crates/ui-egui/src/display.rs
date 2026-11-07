@@ -90,9 +90,31 @@ impl App {
         d
     }
 
-    /// Changes how `layer` is drawn. A layer's entry keeps its place, so a patch set after its
-    /// region still wins over it; a new one goes last.
+    /// Changes how `layer` is drawn. What it sets governs what it holds: a region's mode or
+    /// opacity is taken from the entries of its patches and patch groups (a group's from its
+    /// patches', a surface's from its regions'), so that all of them are drawn as it is; an
+    /// entry left with nothing to set goes. A layer's entry keeps its place, a new one goes
+    /// last.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
+        if let Change::Mode(_) | Change::Opacity(_) = change {
+            let groups = self.patch_groups();
+            let holds = |e: &Layer| match (&layer, e) {
+                (Layer::Region(r), Layer::Patch { region, .. } | Layer::Group { region, .. }) => r == region,
+                (Layer::Group { region: r, group }, Layer::Patch { region, patch }) => {
+                    r == region && groups.get(&(region.clone(), patch.clone())).is_some_and(|g| g.contains(group))
+                }
+                (Layer::Surface(f), Layer::Solid { file, .. }) => f == file,
+                _ => false,
+            };
+            for e in self.display.iter_mut().filter(|e| holds(&e.layer)) {
+                match change {
+                    Change::Mode(_) => e.mode = None,
+                    Change::Opacity(_) => e.opacity = None,
+                    Change::Reset => {}
+                }
+            }
+            self.display.retain(|e| e.layer == layer || e.mode.is_some() || e.opacity.is_some());
+        }
         let at = self.display.iter().position(|e| e.layer == layer);
         match (change, at) {
             (Change::Reset, Some(k)) => {
@@ -117,7 +139,18 @@ impl App {
                 self.display.push(DisplayEntry { layer, mode, opacity });
             }
         }
-        self.revision += 1;
+        self.look += 1;
+    }
+
+    /// Each patch's groups (`inGroups`), by region and patch.
+    fn patch_groups(&self) -> std::collections::HashMap<(String, String), Vec<String>> {
+        let mut out = std::collections::HashMap::new();
+        for r in self.session.case().map(|c| c.regions.as_slice()).unwrap_or_default() {
+            for p in r.patches.iter().flatten() {
+                out.insert((r.name.clone(), p.name.clone()), p.groups.clone());
+            }
+        }
+        out
     }
 
     /// The entries as commands take them: those of what the view shows (an entry of a surface
@@ -161,7 +194,7 @@ impl App {
             Layer::Surface(f) | Layer::Solid { file: f, .. } => surfaces.contains(f),
         });
         if self.display.len() != before {
-            self.revision += 1;
+            self.look += 1;
         }
     }
 }

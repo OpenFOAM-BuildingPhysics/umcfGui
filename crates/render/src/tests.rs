@@ -573,3 +573,32 @@ fn an_edge_through_the_near_plane_is_still_drawn() {
         .count();
     assert!(drawn >= 4 * 25, "{drawn} pixels of edges in the corners");
 }
+
+#[test]
+fn a_layer_nearly_opaque_is_drawn_as_it_is_opaque() {
+    use crate::raster::{Display, Mode};
+    // The cube from a corner: the nearer faces in front of the farther ones. At an opacity just
+    // below 1 it is the cube drawn opaque, outlines too (they fade with the opacity), not the
+    // farther faces mixed in; lower, they show through more and more.
+    let s = scene_of(&cube([0.0; 3]));
+    let cam = Camera::fit(View::Iso, &s.bbox().unwrap(), 1.0);
+    let at = |a: f32| {
+        let mut st = Style { width: 120, height: 120, ..Style::default() };
+        for c in 0..3 {
+            st.display.insert((0, c), Display { mode: Mode::Surface, opacity: a });
+        }
+        draw(&s, &cam, &st).rgba
+    };
+    let opaque = at(1.0);
+    let off = |img: &[u8], tolerance: u8| {
+        opaque.chunks(4).zip(img.chunks(4)).filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > tolerance)).count()
+    };
+    assert!(off(&at(0.99), 4) == 0, "{} pixels differ at 0.99", off(&at(0.99), 4));
+    let mut last = 0;
+    for a in [0.9, 0.7, 0.5, 0.3] {
+        let n = off(&at(a), 4);
+        assert!(n >= last, "{a}: {n} pixels differ, {last} before");
+        last = n;
+    }
+    assert!(last > 1000, "{last}");
+}

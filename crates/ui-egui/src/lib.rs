@@ -116,6 +116,9 @@ pub struct App {
     pub expanded: BTreeSet<String>,
     /// Goes up whenever a command ran: the 3D view draws again.
     revision: u64,
+    /// Goes up whenever how the layers are drawn changes (`display`): the 3D view draws again,
+    /// from the scene it has (nothing in the case changed).
+    pub(crate) look: u64,
     /// The case the shown lists were made for.
     shown_for: Option<String>,
     /// The open case's STL surfaces, listed again after each command (not on every frame).
@@ -251,6 +254,7 @@ impl App {
             results_open: false,
             expanded: BTreeSet::new(),
             revision: 0,
+            look: 0,
             shown_for: None,
             surfaces: Vec::new(),
             unlisted: false,
@@ -705,7 +709,7 @@ impl App {
         // The 3D view as it was, dimmed.
         let view = self.viewport.rect.unwrap_or_else(|| rect.with_min_y(bar.max.y).shrink(t.gap));
         p.rect_filled(view, CornerRadius::same(t.radius_card), self.view_middle());
-        self.viewport.paint_last(p, view);
+        self.viewport.paint_image(p, view);
         p.rect_filled(
             view,
             CornerRadius::same(t.radius_card),
@@ -1278,7 +1282,7 @@ impl App {
                 if !self.working() {
                     self.start(jobs::Work::Scene { params: params.clone() });
                 }
-                self.viewport.paint_last(ui.painter(), rect);
+                self.viewport.paint_last(ui, rect, &t);
                 ui.ctx().request_repaint();
             }
             let error = match failed {
@@ -1287,7 +1291,8 @@ impl App {
                 None => match self.session.scene(&params) {
                     Ok(scene) => {
                         let display = umcf_engine::display_style(scene, &entries);
-                        action = self.viewport.show(ui, rect, scene, &selection, &display, revision, &t);
+                        let look = self.look;
+                        action = self.viewport.show(ui, rect, scene, &selection, &display, [revision, look], &t);
                         None
                     }
                     Err(e) => {
