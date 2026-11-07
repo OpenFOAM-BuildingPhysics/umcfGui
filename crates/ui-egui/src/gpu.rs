@@ -101,12 +101,19 @@ struct Out {
     // Its edges drawn (bit 0: the first corner to the second, 1: the second to the third, 2:
     // the third to the first).
     @location(4) @interpolate(flat) edges: u32,
+    // Its distance in front of the eye.
+    @location(5) z: f32,
 };
 
 struct Pixel {
     @location(0) colour: vec4<f32>,
     @location(1) id: u32,
+    // near / distance (as the depth buffer, but without the bias that puts one object or the
+    // selection in front of another), as the bits of a float: what wireframes and points are
+    // tested against, as in the CPU view.
+    @location(2) depth: u32,
 };
+@group(2) @binding(0) var depths: texture_2d<u32>;
 
 // Point `k`, in view coordinates.
 fn at(k: u32) -> vec3<f32> {
@@ -195,6 +202,7 @@ fn vs(@builtin(vertex_index) i: u32) -> Out {
     }
     out.ab = vec4<f32>(on_image(a), on_image(b));
     out.c = on_image(e);
+    out.z = v.z;
     return out;
 }
 
@@ -221,12 +229,14 @@ fn fs(in: Out) -> Pixel {
     var out: Pixel;
     out.colour = vec4<f32>(in.colour.rgb * k, 1.0);
     out.id = in.id;
+    out.depth = bitcast<u32>(view.lens.z / in.z);
     return out;
 }
 
 // Wireframes and points: in their class's colour (the selection's where their face is
-// selected), darkened, blended with the class's opacity, a little in front (seen on the surface
-// they lie on, as in the CPU view).
+// selected), darkened, blended with the class's opacity, in a pass of their own over the
+// surfaces, seen where no surface is nearer by more than AHEAD (on the surface they lie on, as
+// in the CPU view).
 struct Mark {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) colour: vec4<f32>,
@@ -270,10 +280,10 @@ fn vs_dot(@builtin(vertex_index) i: u32) -> Mark {
     // A square on the pixels the CPU view fills: from the nearest pixel corner to its top left,
     // its side rounded; two triangles of corners (0, 0) (1, 0) (0, 1), (1, 0) (1, 1) (0, 1).
     let side = view.pixels.z;
-    let first = round(on_image(v) - vec2<f32>(side * 0.5));
+    let first = floor(on_image(v) - vec2<f32>(side * 0.5) + vec2<f32>(0.5));
     let j = i % 6u;
     let unit = vec2<f32>(select(0.0, 1.0, j == 1u || j == 3u || j == 4u), select(0.0, 1.0, j == 2u || j == 4u || j == 5u));
-    let p = first + unit * max(round(side), 1.0);
+    let p = first + unit * max(floor(side + 0.5), 1.0);
     // Back to clip coordinates, at the point's depth.
     let ndc = vec2<f32>(p.x / view.pixels.x * 2.0 - 1.0, 1.0 - p.y / view.pixels.y * 2.0);
     out.pos = vec4<f32>(ndc * v.z, view.lens.z * (1.0 + AHEAD), v.z);
@@ -281,14 +291,13 @@ fn vs_dot(@builtin(vertex_index) i: u32) -> Mark {
 }
 
 @fragment
-fn fs_mark(in: Mark) -> Pixel {
-    if !(in.colour.a > 0.0) {
+fn fs_mark(in: Mark) -> @location(0) vec4<f32> {
+    // Its depth is near * (1 + AHEAD) / distance: the CPU view's test.
+    let under = bitcast<f32>(textureLoad(depths, vec2<i32>(in.pos.xy), 0).r);
+    if !(in.colour.a > 0.0) || !(in.pos.z > under) {
         discard;
     }
-    var out: Pixel;
-    out.colour = in.colour;
-    out.id = 0u;
-    return out;
+    return in.colour;
 }
 
 struct Back {
@@ -311,6 +320,7 @@ fn fs_back(in: Back) -> Pixel {
     var out: Pixel;
     out.colour = vec4<f32>(mix(view.top.rgb, view.bottom.rgb, clamp(in.s, 0.0, 1.0)), 1.0);
     out.id = 0u;
+    out.depth = 0u;
     return out;
 }
 "#;
@@ -490,6 +500,9 @@ pub struct Target {
     pub view: wgpu::TextureView,
     scene: wgpu::TextureView,
     ids: wgpu::TextureView,
+    /// The surfaces' depths without bias, and what reads them (wireframes and points).
+    depths: wgpu::TextureView,
+    marks: wgpu::BindGroup,
     depth: wgpu::TextureView,
     outline: wgpu::BindGroup,
 }
@@ -506,6 +519,7 @@ pub struct Gpu {
     back: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
+    depths_layout: wgpu::BindGroupLayout,
     outline_layout: wgpu::BindGroupLayout,
     view_buffer: wgpu::Buffer,
     view_group: wgpu::BindGroup,
@@ -626,15 +640,21 @@ impl Gpu {
                 immediate_size: 0,
             })
         };
+        let depths_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("umcf depths"),
+            entries: &[texture(0, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint)],
+        });
         let layout = layout_of("umcf view", &[Some(&view_layout), Some(&object_layout)]);
+        let marks_layout = layout_of("umcf marks", &[Some(&view_layout), Some(&object_layout), Some(&depths_layout)]);
         let back_layout = layout_of("umcf background", &[Some(&view_layout)]);
         let outline_pipeline_layout = layout_of("umcf outlines", &[Some(&outline_layout)]);
         let targets = [
             Some(wgpu::ColorTargetState { format: COLOUR, blend: None, write_mask: wgpu::ColorWrites::ALL }),
             Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+            Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL }),
         ];
         // Wireframes and points: blended over what is there with their opacity (the image's
-        // alpha stays 1), behind nothing nearer, leaving the depth and the ids as they were.
+        // alpha stays 1), in a pass of their own.
         let over = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -647,12 +667,10 @@ impl Gpu {
                 operation: wgpu::BlendOperation::Add,
             },
         };
-        let blended = [
-            Some(wgpu::ColorTargetState { format: COLOUR, blend: Some(over), write_mask: wgpu::ColorWrites::ALL }),
-            Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::empty() }),
-        ];
+        let blended =
+            [Some(wgpu::ColorTargetState { format: COLOUR, blend: Some(over), write_mask: wgpu::ColorWrites::ALL })];
         // What a pipeline draws: triangles that fill the depth and the ids, or marks (lines or
-        // triangles) blended over them.
+        // triangles) blended over them, tested against the depths the triangles wrote.
         let pipeline =
             |label, layout: &wgpu::PipelineLayout, vs, fs, compare, bias, marks: Option<wgpu::PrimitiveTopology>| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -668,9 +686,9 @@ impl Gpu {
                         topology: marks.unwrap_or(wgpu::PrimitiveTopology::TriangleList),
                         ..wgpu::PrimitiveState::default()
                     },
-                    depth_stencil: Some(wgpu::DepthStencilState {
+                    depth_stencil: marks.is_none().then_some(wgpu::DepthStencilState {
                         format: DEPTH,
-                        depth_write_enabled: Some(compare != wgpu::CompareFunction::Always && marks.is_none()),
+                        depth_write_enabled: Some(compare != wgpu::CompareFunction::Always),
                         depth_compare: Some(compare),
                         stencil: wgpu::StencilState::default(),
                         bias,
@@ -701,13 +719,13 @@ impl Gpu {
         let front = wgpu::DepthBiasState { constant: FRONT, slope_scale: FRONT_SLOPE, clamp: 0.0 };
         let selected =
             pipeline("umcf selection", &layout, "vs", "fs", wgpu::CompareFunction::GreaterEqual, front, None);
-        // Wireframes and points are a little in front already (their depth, as the CPU view's
-        // test): no bias, which lines don't get on every backend.
+        // Wireframes and points test their depth themselves, against the surfaces' without the
+        // bias above, as the CPU view does.
         let none = wgpu::DepthBiasState::default();
         let greater = wgpu::CompareFunction::Greater;
         let lines = pipeline(
             "umcf wireframes",
-            &layout,
+            &marks_layout,
             "vs_line",
             "fs_mark",
             greater,
@@ -716,7 +734,7 @@ impl Gpu {
         );
         let dots = pipeline(
             "umcf points",
-            &layout,
+            &marks_layout,
             "vs_dot",
             "fs_mark",
             greater,
@@ -784,6 +802,7 @@ impl Gpu {
             back,
             outline,
             object_layout,
+            depths_layout,
             outline_layout,
             view_buffer,
             view_group,
@@ -943,7 +962,7 @@ impl Gpu {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("umcf view"),
-                color_attachments: &[attachment(&target.scene), attachment(&target.ids)],
+                color_attachments: &[attachment(&target.scene), attachment(&target.ids), attachment(&target.depths)],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
@@ -982,7 +1001,26 @@ impl Gpu {
                     pass.draw(0..n.saturating_mul(3), 0..1);
                 }
             }
-            // Wireframes, then points, over the surfaces, as in the CPU view.
+        }
+        {
+            // Wireframes, then points, over the surfaces, as in the CPU view: tested against the
+            // depths the surfaces wrote, without the bias that puts one object or the selection
+            // in front of another.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("umcf marks"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.scene,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.view_group, &[]);
+            pass.set_bind_group(2, &target.marks, &[]);
             for (pipeline, mode, vertices) in [(&self.lines, Mode::Wireframe, 2), (&self.dots, Mode::Points, 6)] {
                 pass.set_pipeline(pipeline);
                 for (k, obj) in scene.objects.iter().enumerate() {
@@ -1033,9 +1071,16 @@ impl Gpu {
         let texture = make("umcf view", COLOUR, drawn | wgpu::TextureUsages::COPY_SRC);
         let scene = make("umcf scene", COLOUR, drawn);
         let ids = make("umcf ids", ID, drawn);
+        let depths = make("umcf depths", ID, drawn);
         let depth = make("umcf depth", DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let view_of = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let (view, scene, ids, depth) = (view_of(&texture), view_of(&scene), view_of(&ids), view_of(&depth));
+        let depths = view_of(&depths);
+        let marks = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umcf depths"),
+            layout: &self.depths_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depths) }],
+        });
         let outline = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("umcf outlines"),
             layout: &self.outline_layout,
@@ -1044,7 +1089,7 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ids) },
             ],
         });
-        self.target = Some(Target { size, texture, view, scene, ids, depth, outline });
+        self.target = Some(Target { size, texture, view, scene, ids, depths, marks, depth, outline });
     }
 
     /// `obj` on the GPU: its points, its triangles' corners and classes in chunks a storage
@@ -1545,22 +1590,30 @@ mod tests {
     /// split in two triangles (a diagonal that is no edge), so that edges and wireframes show
     /// the faces, not the triangles.
     fn mesh_scene() -> Scene {
-        let text = scene_text();
-        let stl = umcf_geom::stl::read(text.as_bytes(), &umcf_geom::stl::Limits::default()).unwrap();
         let mut scene = Scene::new(Vec3::new(0.5, 0.5, 0.5));
+        scene.objects.push(mesh_box(&scene, 1.0));
+        scene
+    }
+
+    /// [`mesh_scene`]'s box, `scale` times as big about its middle, as an object of `scene`.
+    fn mesh_box(scene: &Scene, scale: f32) -> Object {
+        let text = scene_text(scale);
+        let stl = umcf_geom::stl::read(text.as_bytes(), &umcf_geom::stl::Limits::default()).unwrap();
         let mut obj = Object::from_stl("box.stl", &stl, scene.origin);
         // Each face's diagonal (edge 2 to 0 of its first triangle, 0 to 1 of its second, as
         // `scene_split(false)` splits them) is no face edge, as in a mesh.
         for (n, e) in obj.edges.iter_mut().enumerate() {
             *e = if n % 2 == 0 { 0b011 } else { 0b110 };
         }
-        scene.objects.push(obj);
-        scene
+        obj
     }
 
-    fn scene_text() -> String {
+    fn scene_text(scale: f32) -> String {
         let face = |n: &str, corners: [[f32; 3]; 4]| {
-            let v = |p: [f32; 3]| format!("      vertex {} {} {}\n", p[0], p[1], p[2]);
+            let v = |p: [f32; 3]| {
+                let p = p.map(|x| 0.5 + (x - 0.5) * scale);
+                format!("      vertex {} {} {}\n", p[0], p[1], p[2])
+            };
             let tri = |a, b, c| {
                 format!("  facet normal 0 0 0\n    outer loop\n{}{}{}    endloop\n  endfacet\n", v(a), v(b), v(c))
             };
@@ -1627,8 +1680,53 @@ mod tests {
         // No diagonal: the faces' edges only (a diagonal darkens pixels across each face's middle).
         let mut all = scene.clone();
         all.objects[0].edges.fill(0b111);
-        let (more, _, _) = added(&all, &style).unwrap();
+        let (more, more_gpu, _) = added(&all, &style).unwrap();
         assert!(more > on_cpu + 50, "the diagonals add {} pixels", more.saturating_sub(on_cpu));
+        assert!(more_gpu > on_gpu + 50, "the diagonals add {} pixels on the GPU", more_gpu.saturating_sub(on_gpu));
+    }
+
+    #[test]
+    fn wireframes_are_seen_as_on_the_cpu_where_other_objects_surfaces_lie() {
+        // The CPU tests a line against the surfaces' depths as they are; the GPU puts later
+        // objects behind and the selection in front of what lies in the same place (a bias),
+        // which must not hide nor show lines the CPU doesn't.
+        let wire = Display { mode: Mode::Wireframe, opacity: 1.0 };
+        // 1. The second box's wireframe on the first's surfaces, selected: in the same place.
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 1.0));
+        let mut style = Style { selected: vec![(0, 0), (0, 1), (0, 2)], ..Style::default() };
+        for c in 0..3 {
+            style.display.insert((1, c), wire);
+        }
+        let Some((on_cpu, on_gpu, shared)) = added(&scene, &style) else { return };
+        assert!(on_cpu > 200, "{on_cpu} line pixels");
+        // Lines exactly on a surface are rasterised a little otherwise (which pixels a line
+        // takes, and of those which are in front, within AHEAD): about as many, two thirds the
+        // same.
+        assert!(
+            on_gpu.abs_diff(on_cpu) <= on_cpu / 5 && shared >= on_cpu * 6 / 10,
+            "on a selection: {on_cpu} on the CPU, {on_gpu} on the GPU, {shared} both"
+        );
+        // And the selection doesn't change which are seen.
+        let (_, unselected, _) = added(&scene, &Style { selected: Vec::new(), ..style.clone() }).unwrap();
+        assert!(on_gpu.abs_diff(unselected) <= on_gpu / 50, "{on_gpu} selected, {unselected} not");
+        // 2. The first box's wireframe just inside a second box a little bigger: hidden by it
+        // (its faces in front), but where the two boxes' outlines meet.
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 1.003));
+        let mut style = Style::default();
+        for c in 0..3 {
+            style.display.insert((0, c), wire);
+        }
+        let (on_cpu, on_gpu, _) = added(&scene, &style).unwrap();
+        let (seen, _, _) = added(&mesh_scene(), &style).unwrap();
+        assert!(seen > 300 && on_cpu < seen / 2, "{on_cpu} of {seen} line pixels seen through on the CPU");
+        // Where the outlines meet (the bigger box is a fifth of a pixel bigger), one-pixel lines
+        // take neighbouring pixels on either side; the rest is hidden on both.
+        assert!(
+            on_gpu < seen / 2 && on_gpu <= on_cpu * 3 / 2,
+            "behind: {on_cpu} on the CPU, {on_gpu} on the GPU, of {seen}"
+        );
     }
 
     #[test]

@@ -337,8 +337,9 @@ impl Target {
         if !(p.x.is_finite() && p.y.is_finite()) {
             return;
         }
-        let (x0, y0) = ((p.x - r).round(), (p.y - r).round());
-        let n = size.round().max(1.0) as usize;
+        // Halves up, as the GPU view (`floor(x + 0.5)`; `round` takes -0.5 to -1).
+        let (x0, y0) = ((p.x - r + 0.5).floor(), (p.y - r + 0.5).floor());
+        let n = (size + 0.5).floor().max(1.0) as usize;
         for j in 0..n {
             for i in 0..n {
                 if let Some(at) = self.inside(x0 + i as f64 + 0.5, y0 + j as f64 + 0.5)
