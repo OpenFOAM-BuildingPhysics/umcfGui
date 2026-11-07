@@ -194,7 +194,7 @@ megabytes (`UMCF_MEMORY=4000 umcf-gui case`; another value is ignored):
   `owner` header notes: about 32 bytes per point of the mesh and per boundary face, and for a
   binary mesh (read whole, not as a stream) 24 more per point and its `faces` file's size.
   Without the counts it is estimated from the sizes of its `points` and `faces` files, a
-  surface from its file's size. The biggest start first, and a
+  surface from its file's size; a read whose size can't be told runs alone. The biggest start first, and a
   reader starts only while its estimate and those running fit. One always runs, so a region
   bigger than the budget is read, alone.
 - **A quarter for what the scene keeps while it is hidden.** Past it, the regions and surfaces

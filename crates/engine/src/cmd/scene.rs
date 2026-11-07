@@ -130,7 +130,8 @@ type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
 ///
 /// Each job comes with an estimate of the memory it holds while it runs. A job starts only while
 /// the estimates of the jobs running and its own fit in `budget`; the biggest start first, and a
-/// job runs alone when nothing else runs, whatever its estimate.
+/// job runs alone when nothing else runs, whatever its estimate. [`UNKNOWN`] (a read whose size
+/// can't be told) runs alone, unless the budget is unbounded.
 fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Result<Vec<T>, Error> {
     use std::sync::{Condvar, Mutex};
     struct State<'a, T> {
@@ -205,17 +206,20 @@ fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Res
         .collect()
 }
 
+/// The estimate of a read whose size can't be told: it runs alone (see [`parallel`]).
+const UNKNOWN: u64 = u64::MAX;
+
 /// About how much memory reading region `region`'s boundary holds while it runs, from the
 /// counts the `owner` header notes: every point of the mesh (read whole, then only the
 /// boundary's kept) and the boundary faces. A binary mesh is read whole, not as a stream: its
 /// `points` file is held besides its points, and its `faces` file whole. Without the counts, from
-/// the sizes of the `points` and `faces` files.
+/// the sizes of the `points` and `faces` files; [`UNKNOWN`] when those can't be told either.
 fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
     let dir = mesh_dir(region);
     // A file's size, about four times that when compressed (its bytes and what they decompress to).
     let size = |name: &str| {
         let plain = fs.size(&format!("{dir}/{name}"));
-        plain.or_else(|| fs.size(&format!("{dir}/{name}.gz")).map(|n| n.saturating_mul(4))).unwrap_or(0)
+        plain.or_else(|| fs.size(&format!("{dir}/{name}.gz")).map(|n| n.saturating_mul(4)))
     };
     let counts = umcf_foam_mesh::counts(fs, &dir, &Limits::default()).unwrap_or_default();
     match counts.points {
@@ -223,20 +227,25 @@ fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
             let boundary = counts.faces.zip(counts.internal_faces).map_or(0, |(f, i)| f.saturating_sub(i));
             let streamed = points.saturating_mul(32).saturating_add(boundary.saturating_mul(32));
             if counts.binary {
-                streamed.saturating_add(points.saturating_mul(24)).saturating_add(size("faces"))
+                // A faces file whose size can't be told: as many bytes as the points'.
+                let faces = size("faces").unwrap_or_else(|| points.saturating_mul(24));
+                streamed.saturating_add(points.saturating_mul(24)).saturating_add(faces)
             } else {
                 streamed
             }
         }
-        None => size("points").saturating_mul(2).saturating_add(size("faces")),
+        None => match (size("points"), size("faces")) {
+            (Some(p), f) => p.saturating_mul(2).saturating_add(f.unwrap_or(p)),
+            (None, _) => UNKNOWN,
+        },
     }
 }
 
 /// About how much memory reading surface `file` holds while it runs: its bytes, what is read of
-/// them and the object built.
+/// them and the object built; [`UNKNOWN`] when its size can't be told.
 fn surface_need(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
-    let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file)).unwrap_or(0);
-    size.saturating_mul(3)
+    let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file));
+    size.map_or(UNKNOWN, |n| n.saturating_mul(3))
 }
 
 /// Drops the first of `spare` (the ones shown least recently) while they hold more than `budget`.
@@ -640,7 +649,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden; when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -1179,22 +1188,29 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Jobs that note the estimates running together; the most seen.
+    /// Jobs that note the estimates running together (saturating: [`UNKNOWN`] is the most there
+    /// is); the most seen.
     fn run(costs: &[u64], budget: u64) -> (Vec<usize>, u64) {
-        let held = AtomicU64::new(0);
+        use std::sync::Mutex;
+        // What runs now: each job's estimate, by its index.
+        let running: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
         let most = AtomicU64::new(0);
         let jobs: Vec<(u64, Job<'_, usize>)> = costs
             .iter()
             .enumerate()
             .map(|(k, &c)| -> (u64, Job<'_, usize>) {
-                let (held, most) = (&held, &most);
+                let (running, most) = (&running, &most);
                 (
                     c,
                     Box::new(move || {
-                        let now = held.fetch_add(c, Ordering::SeqCst) + c;
-                        most.fetch_max(now, Ordering::SeqCst);
+                        {
+                            let mut r = running.lock().unwrap();
+                            r.push((k, c));
+                            let now = r.iter().fold(0u64, |a, (_, c)| a.saturating_add(*c));
+                            most.fetch_max(now, Ordering::SeqCst);
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(20));
-                        held.fetch_sub(c, Ordering::SeqCst);
+                        running.lock().unwrap().retain(|(j, _)| *j != k);
                         Ok(k)
                     }),
                 )
@@ -1249,8 +1265,8 @@ mod tests {
         sizes.insert(&format!("{d}/points.gz"), vec![0u8; 300]);
         sizes.insert(&format!("{d}/faces"), faces);
         assert_eq!(mesh_need(&sizes, "air"), 300 * 4 * 2 + 1000);
-        // Nothing there: nothing planned.
-        assert_eq!(mesh_need(&umcf_core::MemFs::new(), "air"), 0);
+        // Nothing there, or sizes that can't be told: alone.
+        assert_eq!(mesh_need(&umcf_core::MemFs::new(), "air"), UNKNOWN);
     }
 
     #[test]
@@ -1261,5 +1277,15 @@ mod tests {
             (5, Box::new(|| panic!("boom"))),
         ];
         assert!(parallel("test", jobs, 5).is_err());
+        // A panic alone is the engine's `Panicked`.
+        let jobs: Vec<(u64, Job<'_, u32>)> = vec![(5, Box::new(|| panic!("boom")))];
+        assert!(matches!(parallel("test", jobs, 5), Err(Error::Panicked { .. })), "a panic is `Panicked`");
+    }
+
+    #[test]
+    fn reads_of_unknown_size_run_alone() {
+        let (out, most) = run(&[UNKNOWN, 10, UNKNOWN, 10], 100);
+        assert_eq!(out, [0, 1, 2, 3]);
+        assert_eq!(most, UNKNOWN, "an unknown read held the whole budget alone");
     }
 }

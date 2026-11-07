@@ -54,7 +54,8 @@ fn free_memory() -> u64 {
     };
     #[cfg(target_os = "linux")]
     if let Some(own) = std::fs::read_to_string("/proc/self/cgroup").ok()
-        && let Some(left) = cgroup_free(&own, |p| std::fs::read_to_string(p).ok())
+        && let Some(mounts) = std::fs::read_to_string("/proc/self/mountinfo").ok()
+        && let Some(left) = cgroup_free(&own, &mounts, |p| std::fs::read_to_string(p).ok())
     {
         return free.min(left);
     }
@@ -64,23 +65,34 @@ fn free_memory() -> u64 {
 /// What the control groups (v2) the process is in leave free: for each of them from its own up to
 /// the root that sets `memory.max`, the limit less what is used (`memory.current` without the
 /// page cache the kernel can drop: `file` less `shmem` in `memory.stat`, as shared memory and
-/// tmpfs stay), the least of them. `own` is `/proc/self/cgroup`, `read` reads a file under
-/// `/sys/fs/cgroup`. `None` when none sets a limit (no cgroup v2, or no limit: a desktop
-/// session).
+/// tmpfs stay), the least of them. `own` is `/proc/self/cgroup`, `mounts` is
+/// `/proc/self/mountinfo` (where the cgroup2 file system is mounted, and which group is its
+/// root: a container may see only its own part of the tree), `read` reads a file. `None` when
+/// none sets a limit (no cgroup v2, or no limit: a desktop session).
 ///
 /// This is how a SLURM job's, a container's or a `systemd-run -p MemoryMax=` limit is found,
 /// set on the job's group while the process runs in a group below it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn cgroup_free(own: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> {
-    const ROOT: &str = "/sys/fs/cgroup";
+fn cgroup_free(own: &str, mounts: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> {
     let path = own.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
     if !path.starts_with('/') {
         return None;
     }
-    // A group outside the namespace's root (`/../x`): only the root's limit is seen.
-    let path = if path.split('/').any(|part| part == "..") { "" } else { path.trim_end_matches('/') };
+    let (root, point) = cgroup2_mount(mounts)?;
+    let point = point.trim_end_matches('/');
+    // The group below the mount's root; one outside it (`/../x`, or not under the root) sees
+    // only the mount's own group.
+    let below = if root == "/" {
+        Some(path)
+    } else {
+        path.strip_prefix(root.trim_end_matches('/')).filter(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
+    let rel = match below {
+        Some(rel) if !rel.split('/').any(|part| part == "..") => rel.trim_end_matches('/'),
+        _ => "",
+    };
     let number = |file: &str| read(file).and_then(|t| t.trim().parse::<u64>().ok());
-    let mut dir = format!("{ROOT}{path}");
+    let mut dir = format!("{point}{rel}");
     let mut least: Option<u64> = None;
     loop {
         // `max` (no limit) doesn't parse: that group doesn't count.
@@ -97,11 +109,28 @@ fn cgroup_free(own: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> 
             least = Some(least.map_or(left, |l| l.min(left)));
         }
         match dir.rfind('/') {
-            Some(i) if i >= ROOT.len() => dir.truncate(i),
+            Some(i) if i >= point.len() && i > 0 => dir.truncate(i),
             _ => break,
         }
     }
     least
+}
+
+/// The root and the mount point of the first cgroup2 file system in `/proc/self/mountinfo`'s text
+/// (`id parent dev root point options … - cgroup2 source options`); one whose paths have escaped
+/// characters (`\040` for a space) is passed over.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn cgroup2_mount(mounts: &str) -> Option<(&str, &str)> {
+    mounts.lines().find_map(|l| {
+        let (fields, kind) = l.split_once(" - ")?;
+        if kind.split_whitespace().next() != Some("cgroup2") {
+            return None;
+        }
+        let mut f = fields.split_whitespace().skip(3);
+        let (root, point) = (f.next()?, f.next()?);
+        (root.starts_with('/') && point.starts_with('/') && !root.contains('\\') && !point.contains('\\'))
+            .then_some((root, point))
+    })
 }
 
 #[cfg(test)]
@@ -110,9 +139,15 @@ mod tests {
 
     #[test]
     fn the_system_tells_its_free_memory() {
-        // Linux, Windows and macOS all tell it; CI runs this on each.
-        assert!(free_memory() > 0);
+        // Linux, Windows and macOS all tell it; CI runs this on each. Asked directly: the
+        // fallback would hide a failure.
+        let mut system = sysinfo::System::new();
+        system.refresh_memory();
+        assert!(system.available_memory() > 0);
     }
+
+    /// The cgroup2 file system mounted as on a host (the whole tree at `/sys/fs/cgroup`).
+    const HOST: &str = "43 1 259:5 / / rw - xfs /dev/nvme0n1p3 rw\n47 45 0:29 / /sys/fs/cgroup rw,nosuid shared:7 - cgroup2 cgroup2 rw,nsdelegate\n";
 
     /// A tree of control groups as files: `(path, text)`.
     fn groups(files: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
@@ -136,7 +171,7 @@ mod tests {
         ]);
         // 4 GB less 1 GB used, of which 0.75 GB is page cache, 0.25 GB of it shared memory that
         // stays: 0.5 GB can be dropped.
-        assert_eq!(cgroup_free(own, read), Some(3584 << 20));
+        assert_eq!(cgroup_free(own, HOST, read), Some(3584 << 20));
     }
 
     #[test]
@@ -148,22 +183,45 @@ mod tests {
             ("/sys/fs/cgroup/a/b/memory.max", "500\n"),
             ("/sys/fs/cgroup/a/b/memory.current", "600\n"),
         ]);
-        assert_eq!(cgroup_free(own, read), Some(0));
+        assert_eq!(cgroup_free(own, HOST, read), Some(0));
     }
 
     #[test]
     fn no_limit_or_no_cgroup_v2_is_none() {
         // A desktop session: no group sets a limit.
         let read = groups(&[("/sys/fs/cgroup/user.slice/memory.max", "max\n")]);
-        assert_eq!(cgroup_free("0::/user.slice/user-1000.slice/app.scope\n", read), None);
+        assert_eq!(cgroup_free("0::/user.slice/user-1000.slice/app.scope\n", HOST, read), None);
         // cgroup v1 only: no `0::` line.
-        assert_eq!(cgroup_free("4:memory:/user.slice\n", groups(&[])), None);
+        assert_eq!(cgroup_free("4:memory:/user.slice\n", HOST, groups(&[])), None);
         // The root group itself.
         let root = || groups(&[("/sys/fs/cgroup/memory.max", "100\n")]);
-        assert_eq!(cgroup_free("0::/\n", root()), Some(100));
+        assert_eq!(cgroup_free("0::/\n", HOST, root()), Some(100));
         // Outside the namespace's root: the root's limit.
-        assert_eq!(cgroup_free("0::/../etc\n", root()), Some(100));
-        assert_eq!(cgroup_free("0::etc\n", groups(&[])), None);
+        assert_eq!(cgroup_free("0::/../etc\n", HOST, root()), Some(100));
+        assert_eq!(cgroup_free("0::etc\n", HOST, groups(&[])), None);
+        // No cgroup2 mount.
+        assert_eq!(cgroup_free("0::/\n", "43 1 259:5 / / rw - xfs /dev/x rw\n", root()), None);
+    }
+
+    #[test]
+    fn a_mount_of_part_of_the_tree_is_resolved_from_its_root() {
+        // `/jobs/job7` mounted at `/sys/fs/cgroup`: the task's group `/jobs/job7/task0` is
+        // `/sys/fs/cgroup/task0` there, below the job's limit at the mount itself.
+        let mounts = "47 45 0:29 /jobs/job7 /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
+        let read = || {
+            groups(&[
+                ("/sys/fs/cgroup/memory.max", "1000\n"),
+                ("/sys/fs/cgroup/task0/memory.max", "600\n"),
+                ("/sys/fs/cgroup/task0/memory.current", "100\n"),
+            ])
+        };
+        assert_eq!(cgroup_free("0::/jobs/job7/task0\n", mounts, read()), Some(500));
+        // A group outside the mount's root: the mount's own group.
+        assert_eq!(cgroup_free("0::/jobs/job8\n", mounts, read()), Some(1000));
+        assert_eq!(cgroup_free("0::/jobs/job7x\n", mounts, read()), Some(1000));
+        // Mounted elsewhere.
+        let other = "47 45 0:29 / /run/cg rw - cgroup2 none rw\n";
+        assert_eq!(cgroup_free("0::/a\n", other, groups(&[("/run/cg/a/memory.max", "7\n")])), Some(7));
     }
 
     #[test]
