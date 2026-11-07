@@ -161,8 +161,9 @@ draw on the CPU.
   a neighbouring pixel here and there.
 - **Transparent layers** are blended over the rest (and over the wireframes and points behind
   them, as on the CPU), seen where nothing opaque is in front, a selected face's or patch's in
-  orange. The nearest layer on each pixel is found first (two passes of their own; of layers in
-  the same place, as two regions' faces on their interface, the first region's) and blended last,
+  orange. The nearest layer on each pixel is found first (two passes of their own; of layers
+  within 1e-4 of the distance of the nearest, as two regions' faces on their interface, the
+  first region's) and blended last,
   over the others, as on the CPU, with its outlines as much as it covers what is behind it: at
   an opacity near 1 a layer looks as it does opaque, and turning the opacity down from 1 is
   smooth. Behind it, where layers of different colours lie over each other, the GPU doesn't
@@ -183,7 +184,7 @@ draw on the CPU.
   takes on its first frame of them); with every region a third surfaces, a third wireframe and a
   third points, with edges, a frame takes 8.4 ms, against 1.25 s on the CPU. With a third of
   every region's patches transparent, 5.8 ms, against 2.2 s on the CPU (measured before the
-  nearest layer's pass, which draws the transparent layers once more). The transparent layers
+  nearest layer's two passes, which draw the transparent layers twice more). The transparent layers
   take three half-float images and four of 32-bit words of the view's size (34 bytes a pixel).
 
 ## Long work

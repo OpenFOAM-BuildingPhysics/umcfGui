@@ -410,7 +410,8 @@ fn fs_glass_which(in: Out) -> GlassWhich {
         discard;
     }
     var out: GlassWhich;
-    out.depth = bitcast<u32>(d);
+    // Its depth as the rasteriser gave it (invariant), to find it again exactly.
+    out.depth = bitcast<u32>(in.pos.z);
     out.id = in.id;
     out.alpha = bitcast<u32>(in.colour.a);
     out.order = min(f32(in.id) / 16777216.0, 1.0);
@@ -445,7 +446,7 @@ fn fs_glass(in: Out) -> Glass {
     out.sum = vec4<f32>(0.0);
     out.through = 0.0;
     out.front = vec4<f32>(0.0);
-    if textureLoad(glass_ids, p, 0).r == in.id && textureLoad(glass_depths, p, 0).r == bitcast<u32>(d) {
+    if textureLoad(glass_ids, p, 0).r == in.id && textureLoad(glass_depths, p, 0).r == bitcast<u32>(in.pos.z) {
         // The nearest: its colour and opacity (a selected face only its colour's change).
         if obj.mode == 4u {
             out.front = vec4<f32>(in.colour.rgb * k * a, 0.0);
@@ -1665,7 +1666,9 @@ impl Gpu {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                if let Some(glass) = &self.glass {
+                // Without transparent layers only the clears are needed.
+                let any = (0..scene.objects.len()).any(|k| has_glass(scene, k, style));
+                if let Some(glass) = self.glass.as_ref().filter(|_| any) {
                     if step == 0 {
                         pass.set_pipeline(&glass.near);
                         pass.set_bind_group(2, &target.marks, &[]);

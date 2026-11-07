@@ -1034,10 +1034,19 @@ fn what_a_region_group_or_surface_sets_governs_what_it_holds() {
     app.set_display(Layer::Surface("a.stl".into()), Change::Mode(Mode::Hidden));
     assert!(app.layer_entry(&solid("a.stl")).is_none());
     assert!(app.layer_entry(&solid("b.stl")).is_some());
+    // A patch whose entry kept its opacity, set again after its region: it wins (its entry goes
+    // after the region's).
+    let region = Layer::Region(String::new());
+    app.set_display(region.clone(), Change::Reset);
+    app.set_display(p("walls"), Change::Opacity(0.5));
+    app.set_display(region.clone(), Change::Mode(Mode::Wireframe));
+    app.set_display(p("walls"), Change::Mode(Mode::Surface));
+    assert_eq!(app.layer_display(&p("walls"), &["outer".to_string()]).mode, Mode::Surface);
+    assert_eq!(app.display.last().map(|e| &e.layer), Some(&p("walls")));
     // Reset takes away only the layer's own entry.
     app.set_display(group.clone(), Change::Reset);
     assert!(app.layer_entry(&group).is_none());
-    assert!(app.layer_entry(&p("ground")).is_some());
+    assert!(app.layer_entry(&p("walls")).is_some());
 }
 
 /// A case whose mesh `boundary` reads wait, once `hold` is set, until it is cleared again.

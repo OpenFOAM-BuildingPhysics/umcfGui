@@ -93,8 +93,8 @@ impl App {
     /// Changes how `layer` is drawn. What it sets governs what it holds: a region's mode or
     /// opacity is taken from the entries of its patches and patch groups (a group's from its
     /// patches', a surface's from its regions'), so that all of them are drawn as it is; an
-    /// entry left with nothing to set goes. A layer's entry keeps its place, a new one goes
-    /// last.
+    /// entry left with nothing to set goes. The layer's entry goes last (the entries apply in
+    /// order), so that what was set last wins: a patch set after its region wins over it.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
         if let Change::Mode(_) | Change::Opacity(_) = change {
             let groups = self.patch_groups();
@@ -122,13 +122,13 @@ impl App {
             }
             (Change::Reset, None) => return,
             (c, Some(k)) => {
-                if let Some(e) = self.display.get_mut(k) {
-                    match c {
-                        Change::Mode(m) => e.mode = Some(m),
-                        Change::Opacity(a) => e.opacity = Some(a),
-                        Change::Reset => {}
-                    }
+                let mut e = self.display.remove(k);
+                match c {
+                    Change::Mode(m) => e.mode = Some(m),
+                    Change::Opacity(a) => e.opacity = Some(a),
+                    Change::Reset => {}
                 }
+                self.display.push(e);
             }
             (c, None) => {
                 let (mode, opacity) = match c {

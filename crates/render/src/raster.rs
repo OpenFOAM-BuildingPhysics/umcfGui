@@ -1060,6 +1060,8 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                     let edges = if style.edges { face_edges } else { 0 };
                     lens.fill(&mut t, [a, b, c], colour, id, edges, margin(front), 1.0);
                 }
+                // An opacity of 0 adds nothing.
+                Mode::Surface if d.opacity <= 0.0 => {}
                 Mode::Surface => {
                     let depth = (a[2] + b[2] + c[2]) / 3.0;
                     let edges = if style.edges { face_edges } else { 0 };
