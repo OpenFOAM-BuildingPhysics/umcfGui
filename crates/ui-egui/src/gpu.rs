@@ -441,8 +441,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDrawn {
     /// The CPU draws this one (transparent layers on a device that can't blend half floats, an
-    /// object too big for the
-    /// device); the next may be the GPU's again.
+    /// object too big for the device); the next may be the GPU's again.
     Here(String),
     /// The GPU failed (out of memory, a limit of the device): the view goes back to the CPU.
     Failed(String),
@@ -2059,8 +2058,7 @@ mod tests {
         let scene = mesh_scene();
         let glass = |o: f32| Display { mode: Mode::Surface, opacity: o };
         // The top patch at half opacity over the background; then every face (three layers that
-        // don't lie
-        // over each other here), with edges, at 0.3.
+        // don't lie over each other here), with edges, at 0.3.
         let mut style = Style::default();
         style.display.insert((0, 0), glass(0.5));
         let Some(top) = off(&scene, &style, 3) else { return };
