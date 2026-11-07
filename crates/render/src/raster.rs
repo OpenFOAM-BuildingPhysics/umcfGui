@@ -195,6 +195,15 @@ struct Screen {
     inv_z: f64,
 }
 
+/// What a pass over the transparent triangles does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Finding {
+    Near,
+    Which,
+    /// Blends them.
+    No,
+}
+
 /// The buffers being drawn into.
 struct Target {
     w: usize,
@@ -204,6 +213,20 @@ struct Target {
     depth: Vec<f32>,
     id: Vec<u32>,
     colour: Vec<[u8; 3]>,
+    /// The nearest transparent layer on each pixel: its depth (as `depth`), class, opacity and
+    /// colour; blended last, over the others, and its outlines drawn (empty: not kept, each
+    /// layer blended as it is drawn).
+    glass_depth: Vec<f32>,
+    glass_id: Vec<u32>,
+    glass_alpha: Vec<f32>,
+    glass_colour: Vec<[f32; 3]>,
+    /// The nearest depth of a transparent layer on each pixel: the layers within AHEAD of it
+    /// are the nearest, the lowest class of them taken (so that layers in the same place, as
+    /// the faces of two regions on their interface, give the same one on every pixel).
+    glass_near: Vec<f32>,
+    /// Transparent triangles are looked at for the nearest layer (not blended): its depth
+    /// (`Near`), then which it is (`Which`).
+    finding: Finding,
     /// When there: the ids of the blended triangles' pixels, as they are drawn.
     hits: Option<std::collections::HashSet<u32>>,
     /// When there: which of the pixels drawn count for `hits` (row by row over `x` and `y`);
@@ -273,7 +296,46 @@ impl Target {
                     .any(|(bit, dist)| edges & bit != 0 && *dist < EDGE_REACH);
                 if alpha < 1.0 {
                     let k = if near_edge { EDGE } else { 1.0 };
-                    self.blend(i, colour.map(|ch| ch * k), alpha);
+                    let colour = colour.map(|ch| ch * k);
+                    match self.finding {
+                        Finding::Near => {
+                            if alpha > 0.0
+                                && let Some(near) = self.glass_near.get_mut(i)
+                                && z > *near
+                            {
+                                *near = z;
+                            }
+                            continue;
+                        }
+                        Finding::Which => {
+                            let near = self.glass_near.get(i).copied().unwrap_or(f32::INFINITY);
+                            let (d, g) = (self.glass_depth.get(i).copied(), self.glass_id.get(i).copied());
+                            // Of the nearest, the lowest class; of one class, the nearest.
+                            let better = match (d, g) {
+                                (Some(d), Some(g)) => id < g || (id == g && z > d),
+                                _ => false,
+                            };
+                            if alpha > 0.0
+                                && z * (1.0 + AHEAD) >= near
+                                && better
+                                && let (Some(d), Some(g), Some(a), Some(c)) = (
+                                    self.glass_depth.get_mut(i),
+                                    self.glass_id.get_mut(i),
+                                    self.glass_alpha.get_mut(i),
+                                    self.glass_colour.get_mut(i),
+                                )
+                            {
+                                (*d, *g, *a, *c) = (z, id, alpha, colour);
+                            }
+                            continue;
+                        }
+                        Finding::No => {}
+                    }
+                    // The nearest is blended last, over the others.
+                    let nearest = self.glass_depth.get(i) == Some(&z) && self.glass_id.get(i) == Some(&id);
+                    if !nearest {
+                        self.blend(i, colour, alpha);
+                    }
                     let counts = self.counts(px, py);
                     if let Some(h) = &mut self.hits
                         && counts
@@ -400,7 +462,7 @@ impl Target {
 
 /// A transparent triangle: its points in view coordinates, colour, opacity, depth and the
 /// edges drawn on it.
-type Glass = ([[f64; 3]; 3], [f32; 3], f32, f64, u8);
+type Glass = ([[f64; 3]; 3], [f32; 3], f32, f64, u8, u32);
 
 /// The camera as the rasteriser uses it: points into view coordinates (right, up, into the
 /// image, relative to the eye) and those onto the image.
@@ -810,6 +872,12 @@ pub fn covered(
         depth: vec![0.0; wu * hu],
         id: vec![NONE; wu * hu],
         colour: Vec::new(),
+        glass_depth: Vec::new(),
+        glass_id: Vec::new(),
+        glass_alpha: Vec::new(),
+        glass_colour: Vec::new(),
+        glass_near: Vec::new(),
+        finding: Finding::No,
         hits: Some(std::collections::HashSet::new()),
         mask,
     };
@@ -914,6 +982,13 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
                 std::iter::repeat_n(bytes([0, 1, 2].map(|k| top[k] * (1.0 - s) + bottom[k] * s)), wu)
             })
             .collect(),
+        // Kept only where there are transparent layers (below).
+        glass_depth: Vec::new(),
+        glass_id: Vec::new(),
+        glass_alpha: Vec::new(),
+        glass_colour: Vec::new(),
+        glass_near: Vec::new(),
+        finding: Finding::No,
         hits: None,
         mask: None,
     };
@@ -978,15 +1053,19 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             let face_edges = obj.edges.get(n).copied().unwrap_or(0);
             let d = style.display_of(k, class);
             match d.mode {
+                // A NaN opacity: hidden (as on the GPU).
                 Mode::Hidden => {}
+                Mode::Surface if d.opacity.is_nan() => {}
                 Mode::Surface if d.opacity >= 1.0 => {
                     let edges = if style.edges { face_edges } else { 0 };
                     lens.fill(&mut t, [a, b, c], colour, id, edges, margin(front), 1.0);
                 }
+                // An opacity of 0 adds nothing.
+                Mode::Surface if d.opacity <= 0.0 => {}
                 Mode::Surface => {
                     let depth = (a[2] + b[2] + c[2]) / 3.0;
                     let edges = if style.edges { face_edges } else { 0 };
-                    glass.push(([a, b, c], colour, d.opacity, depth, edges));
+                    glass.push(([a, b, c], colour, d.opacity, depth, edges, id));
                 }
                 // Drawn from the object's edges and points, below.
                 Mode::Wireframe | Mode::Points => {}
@@ -1055,25 +1134,48 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
             t.line(p, q, g.colour, g.alpha);
         }
     }
-    // Transparent surfaces last, the farthest first.
+    // Transparent surfaces last: the nearest on each pixel found first; the others blended,
+    // the farthest first; the nearest over them (exact, so that at an opacity near 1 it is the
+    // surface drawn opaque).
     glass.sort_by(|a, b| b.3.total_cmp(&a.3));
-    for (verts, colour, alpha, _, edges) in glass {
-        lens.fill(&mut t, verts, colour, NONE, edges, 0.0, alpha);
+    if !glass.is_empty() {
+        let n = wu * hu;
+        (t.glass_depth, t.glass_id, t.glass_alpha) = (vec![0.0; n], vec![NONE; n], vec![0.0; n]);
+        (t.glass_colour, t.glass_near) = (vec![[0.0; 3]; n], vec![0.0; n]);
+        for finding in [Finding::Near, Finding::Which, Finding::No] {
+            t.finding = finding;
+            for (verts, colour, alpha, _, edges, id) in &glass {
+                lens.fill(&mut t, *verts, *colour, *id, *edges, 0.0, *alpha);
+            }
+        }
+        for i in 0..n {
+            if let (Some(&a), Some(&c)) = (t.glass_alpha.get(i), t.glass_colour.get(i))
+                && a > 0.0
+            {
+                t.blend(i, c, a);
+            }
+        }
     }
-    // Outlines where one class meets another or the background.
+    // Outlines where one class meets another or the background: of the opaque surfaces, and
+    // of the nearest transparent layer, as much as it covers them (at an opacity near 1 as
+    // the surface drawn opaque has them).
     let mut rgba = Vec::with_capacity(wu * hu * 4);
     for y in 0..hu {
         for x in 0..wu {
             let i = y * wu + x;
-            let id = t.id.get(i).copied().unwrap_or(NONE);
-            let differs = |j: Option<usize>| j.and_then(|j| t.id.get(j)).is_some_and(|o| *o != id);
-            let outline = id != NONE
-                && (differs((x + 1 < wu).then_some(i + 1))
-                    || differs(x.checked_sub(1).map(|_| i - 1))
-                    || differs((y + 1 < hu).then_some(i + wu))
-                    || differs(y.checked_sub(1).map(|_| i - wu)));
+            let outline = |ids: &[u32]| {
+                let id = ids.get(i).copied().unwrap_or(NONE);
+                let differs = |j: Option<usize>| j.and_then(|j| ids.get(j)).is_some_and(|o| *o != id);
+                id != NONE
+                    && (differs((x + 1 < wu).then_some(i + 1))
+                        || differs(x.checked_sub(1).map(|_| i - 1))
+                        || differs((y + 1 < hu).then_some(i + wu))
+                        || differs(y.checked_sub(1).map(|_| i - wu)))
+            };
             let c = t.colour.get(i).copied().unwrap_or([255; 3]);
-            let k = if outline { OUTLINE } else { 1.0 };
+            let a = t.glass_alpha.get(i).copied().unwrap_or(0.0);
+            let k = |on: bool| if on { OUTLINE } else { 1.0 };
+            let k = k(outline(&t.id)) * (1.0 - a) + k(outline(&t.glass_id)) * a;
             rgba.extend(c.map(|ch| (f32::from(ch) * k).round().clamp(0.0, 255.0) as u8));
             rgba.push(255);
         }

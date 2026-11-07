@@ -180,7 +180,8 @@ struct Drawn {
     guides: umcf_render::guides::Guides,
     /// Picking faces, for the hover text.
     faces: bool,
-    revision: u64,
+    /// The case's revision and the layers' look (how they are drawn).
+    revision: [u64; 2],
     dark: bool,
     renderer: Renderer,
 }
@@ -283,10 +284,20 @@ impl Viewport {
     }
 
     /// The image last drawn, over `rect` (while a job runs); nothing before the first.
-    pub fn paint_last(&self, painter: &egui::Painter, rect: Rect) {
+    pub fn paint_image(&self, painter: &egui::Painter, rect: Rect) {
         if let Some(id) = self.image {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             painter.image(id, rect, uv, Color32::WHITE);
+        }
+    }
+
+    /// The view as last drawn, over `rect`, while its scene is built: the image and the triad.
+    pub fn paint_last(&self, ui: &mut egui::Ui, rect: Rect, tokens: &Tokens) {
+        self.paint_image(ui.painter(), rect);
+        // The triad stays (it would blink for the frames the scene takes); a click on it in
+        // those frames does nothing.
+        if let Some(cam) = self.camera {
+            let _ = self.triad(ui, rect, &cam, tokens);
         }
     }
 
@@ -299,7 +310,7 @@ impl Viewport {
         scene: &Scene,
         selection: &[Sel],
         display: &std::collections::HashMap<(usize, u32), Display>,
-        revision: u64,
+        revision: [u64; 2],
         tokens: &Tokens,
     ) -> Option<Action> {
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -401,7 +412,7 @@ impl Viewport {
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
             use crate::gpu::NotDrawn;
             let on_gpu = match (self.renderer, &mut self.gpu) {
-                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size, revision) {
+                (Renderer::Gpu, Some(g)) => match g.draw(scene, &cam, &style, size, revision[0]) {
                     Ok(id) => Ok(id),
                     Err(NotDrawn::Here(why)) => Err(Some(why)),
                     // The GPU failed: the view is the CPU's from now on, and says why.

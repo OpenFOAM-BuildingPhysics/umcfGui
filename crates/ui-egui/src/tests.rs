@@ -945,7 +945,10 @@ fn a_layer_is_shown_as_its_context_menu_says() {
     assert_eq!(h.state().session().selection(), [Sel::Patch { region: String::new(), patch: "ground".into() }]);
     assert!(h.state().log.last().unwrap().command == "select.pick");
     assert_eq!(h.state().viewport.hover.as_deref(), Some("patch ground"));
-    // The region as a wireframe: the sky keeps its own entry, after it.
+    // The sky half transparent too; then the region as a wireframe: that governs all its
+    // patches, the sky with them (its mode goes, its opacity stays), and draws nothing new.
+    h.state_mut().set_display(sky.clone(), crate::display::Change::Opacity(0.5));
+    let (revision, built) = (h.state().revision, h.state().scene_built.clone());
     tree_item(&h, "(single region)").click_secondary();
     h.run();
     h.get_by_label("Wireframe").click();
@@ -953,9 +956,19 @@ fn a_layer_is_shown_as_its_context_menu_says() {
     h.key_press(egui::Key::Escape);
     h.run();
     let region = Layer::Region(String::new());
+    assert_eq!(h.state().layer_entry(&sky).map(|e| (e.mode, e.opacity)), Some((None, Some(0.5))));
+    assert_eq!(h.state().layer_display(&sky, &[]).mode, Mode::Wireframe);
+    assert_eq!((h.state().revision, &h.state().scene_built), (revision, &built), "the scene isn't built again");
+    // The region's opacity: the sky's entry has nothing left to set, and goes.
+    h.state_mut().set_display(region.clone(), crate::display::Change::Opacity(0.8));
+    assert!(h.state().layer_entry(&sky).is_none());
+    assert_eq!(h.state().layer_display(&sky, &[]).opacity, 0.8);
+    // A patch set after its region wins over it, in its place after it; Reset takes it away.
+    h.state_mut().set_display(sky.clone(), crate::display::Change::Mode(Mode::Surface));
     let order: Vec<&Layer> = h.state().display.iter().map(|e| &e.layer).collect();
-    assert_eq!(order, [&sky, &region]);
-    // Reset takes the sky's entry away.
+    assert_eq!(order, [&region, &sky]);
+    assert_eq!(h.state().layer_display(&sky, &[]).mode, Mode::Surface);
+    h.run();
     tree_item(&h, "sky").click_secondary();
     h.run();
     h.get_by_label("Reset").click();
@@ -970,6 +983,185 @@ fn a_layer_is_shown_as_its_context_menu_says() {
     assert_eq!(order, [&region]);
     click_at(&mut h, rect.center(), Modifiers::NONE);
     assert_eq!(h.state().log.last().unwrap().command, "select.pick");
+}
+
+#[test]
+fn what_a_region_group_or_surface_sets_governs_what_it_holds() {
+    use crate::display::Change;
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    // The sky and the walls in a group `outer`, the ground not.
+    let mut fs = case();
+    let patch = |n: &str, count: u32, start: u32, group: &str| {
+        format!(
+            "    {n}\n    {{\n        type wall;\n{group}        nFaces {count};\n        startFace {start};\n    }}\n"
+        )
+    };
+    let outer = "        inGroups List<word> 1(outer);\n";
+    fs.insert(
+        "constant/polyMesh/boundary",
+        format!(
+            "{}3\n(\n{}{}{})\n",
+            h("polyBoundaryMesh"),
+            patch("ground", 1, 0, ""),
+            patch("sky", 1, 1, outer),
+            patch("walls", 4, 2, outer)
+        ),
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    let p = |n: &str| Layer::Patch { region: String::new(), patch: n.into() };
+    let group = Layer::Group { region: String::new(), group: "outer".into() };
+    for n in ["ground", "sky", "walls"] {
+        app.set_display(p(n), Change::Mode(Mode::Points));
+    }
+    let look = app.look;
+    // The group's mode: its patches', not the ground's.
+    app.set_display(group.clone(), Change::Mode(Mode::Wireframe));
+    let set: Vec<&Layer> = app.display.iter().map(|e| &e.layer).collect();
+    assert_eq!(set, [&group, &p("ground")]);
+    assert!(app.look > look);
+    // An opacity takes only opacities: the group's mode stays.
+    app.set_display(p("sky"), Change::Opacity(0.3));
+    app.set_display(Layer::Region(String::new()), Change::Opacity(0.6));
+    assert!(app.layer_entry(&p("sky")).is_none());
+    assert_eq!(app.layer_entry(&group).map(|e| (e.mode, e.opacity)), Some((Some(Mode::Wireframe), None)));
+    // A surface's: its regions', not another surface's.
+    let solid = |f: &str| Layer::Solid { file: f.into(), solid: "roof".into() };
+    app.display.push(umcf_engine::DisplayEntry { layer: solid("a.stl"), mode: Some(Mode::Points), opacity: None });
+    app.display.push(umcf_engine::DisplayEntry { layer: solid("b.stl"), mode: Some(Mode::Points), opacity: None });
+    app.set_display(Layer::Surface("a.stl".into()), Change::Mode(Mode::Hidden));
+    assert!(app.layer_entry(&solid("a.stl")).is_none());
+    assert!(app.layer_entry(&solid("b.stl")).is_some());
+    // A patch whose entry kept its opacity, set again after its region: it wins (its entry goes
+    // after the region's).
+    let region = Layer::Region(String::new());
+    app.set_display(region.clone(), Change::Reset);
+    app.set_display(p("walls"), Change::Opacity(0.5));
+    app.set_display(region.clone(), Change::Mode(Mode::Wireframe));
+    app.set_display(p("walls"), Change::Mode(Mode::Surface));
+    assert_eq!(app.layer_display(&p("walls"), &["outer".to_string()]).mode, Mode::Surface);
+    assert_eq!(app.display.last().map(|e| &e.layer), Some(&p("walls")));
+    // Reset takes away only the layer's own entry.
+    app.set_display(group.clone(), Change::Reset);
+    assert!(app.layer_entry(&group).is_none());
+    assert!(app.layer_entry(&p("walls")).is_some());
+}
+
+/// The case of `case()` with its patches in the groups named (`ground` in `g1` and `g2`, say).
+fn grouped(groups: &[(&str, &[&str])]) -> App {
+    let mut fs = case();
+    let names = ["ground", "sky", "walls"];
+    let counts = [(1, 0), (1, 1), (4, 2)];
+    let mut body = String::new();
+    for (n, (count, start)) in names.iter().zip(counts) {
+        let g = groups.iter().find(|(p, _)| p == n).map_or(&[][..], |(_, g)| *g);
+        let in_groups = if g.is_empty() {
+            String::new()
+        } else {
+            format!("        inGroups List<word> {}({});\n", g.len(), g.join(" "))
+        };
+        body += &format!(
+            "    {n}\n    {{\n        type wall;\n{in_groups}        nFaces {count};\n        startFace {start};\n    }}\n"
+        );
+    }
+    fs.insert("constant/polyMesh/boundary", format!("{}3\n(\n{body})\n", h("polyBoundaryMesh")));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    App::new(s)
+}
+
+/// What the browser says of each patch (`layer_display`) is what the view draws (the engine's
+/// `display_style`, class by class); returns each patch's (mode, opacity).
+fn drawn(app: &mut App) -> std::collections::HashMap<String, (umcf_render::raster::Mode, f32)> {
+    let scene = app.session.scene(&json!({})).unwrap().clone();
+    let style = umcf_engine::display_style(&scene, &app.display);
+    let mut out = std::collections::HashMap::new();
+    for (k, o) in scene.objects.iter().enumerate() {
+        let umcf_render::Source::Mesh { region } = &o.source else { continue };
+        for (c, name) in o.classes.iter().enumerate() {
+            let groups = o.groups.get(c).cloned().unwrap_or_default();
+            let d = style.get(&(k, c as u32)).copied().unwrap_or_default();
+            let layer = umcf_engine::Layer::Patch { region: region.clone(), patch: name.clone() };
+            let said = app.layer_display(&layer, &groups);
+            assert_eq!((d.mode, d.opacity), (said.mode, said.opacity), "{name}");
+            out.insert(name.clone(), (d.mode, d.opacity));
+        }
+    }
+    out
+}
+
+#[test]
+fn what_was_set_last_wins_until_its_holder_sets_the_same() {
+    use crate::display::Change;
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    let region = || Layer::Region(String::new());
+    let patch = |n: &str| Layer::Patch { region: String::new(), patch: n.into() };
+    let group = |g: &str| Layer::Group { region: String::new(), group: g.into() };
+    let both: &[&str] = &["g1", "g2"];
+    // Each: the changes in order, then what the ground is drawn as.
+    type Case = (Vec<(Layer, Change)>, (Mode, f32));
+    let cases: Vec<Case> = vec![
+        // A region's opacity after a patch's mode set after the region's.
+        (
+            vec![
+                (region(), Change::Mode(Mode::Wireframe)),
+                (patch("ground"), Change::Mode(Mode::Points)),
+                (region(), Change::Opacity(0.5)),
+            ],
+            (Mode::Points, 0.5),
+        ),
+        // A patch's opacity after its region's.
+        (
+            vec![
+                (patch("ground"), Change::Mode(Mode::Points)),
+                (region(), Change::Opacity(0.5)),
+                (patch("ground"), Change::Opacity(0.8)),
+            ],
+            (Mode::Points, 0.8),
+        ),
+        // A region's mode after a patch's opacity set after the region's.
+        (
+            vec![
+                (region(), Change::Opacity(0.5)),
+                (patch("ground"), Change::Opacity(0.8)),
+                (region(), Change::Mode(Mode::Wireframe)),
+            ],
+            (Mode::Wireframe, 0.8),
+        ),
+        // A group's, between its region's and its patch's.
+        (
+            vec![
+                (patch("ground"), Change::Opacity(0.8)),
+                (group("g1"), Change::Mode(Mode::Points)),
+                (region(), Change::Opacity(0.4)),
+                (group("g1"), Change::Opacity(0.6)),
+            ],
+            (Mode::Points, 0.6),
+        ),
+        // Two groups of one patch: the one set last.
+        (
+            vec![
+                (group("g1"), Change::Opacity(0.3)),
+                (group("g2"), Change::Opacity(0.7)),
+                (group("g1"), Change::Opacity(0.5)),
+            ],
+            (Mode::Surface, 0.5),
+        ),
+    ];
+    for (k, (changes, want)) in cases.into_iter().enumerate() {
+        let mut app = grouped(&[("ground", both)]);
+        for (layer, change) in changes {
+            app.set_display(layer, change);
+        }
+        let got = drawn(&mut app);
+        assert_eq!(got.get("ground"), Some(&want), "case {k}: {:?}", app.display);
+        // The sky, in no group, is drawn as its region only.
+        let r = app.layer_display(&region(), &[]);
+        assert_eq!(got.get("sky"), Some(&(r.mode, r.opacity)), "case {k}");
+    }
 }
 
 /// A case whose mesh `boundary` reads wait, once `hold` is set, until it is cleared again.
@@ -1555,4 +1747,24 @@ fn the_snapshot_card_starts_with_the_views_grid_origin_and_background() {
     a.invoke("scene.snapshot");
     let params: serde_json::Value = serde_json::from_str(&a.dialog.as_ref().unwrap().params).unwrap();
     assert_eq!(params, serde_json::json!({ "grid": false, "dark": false }));
+}
+
+#[test]
+fn the_triad_stays_while_the_scene_is_built() {
+    // The frames that wait for a scene show the last image and the triad, which would blink
+    // otherwise.
+    let h = harness(app());
+    let mut viewport = crate::viewport::Viewport::default();
+    viewport.camera = h.state().viewport.camera;
+    assert!(viewport.camera.is_some());
+    let tokens = crate::theme::Tokens::light();
+    let rect = egui::Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0));
+    let mut waiting = Harness::new_ui(move |ui| {
+        ui.ctx().set_fonts(crate::theme::fonts());
+        viewport.paint_last(ui, rect, &tokens);
+    });
+    waiting.run();
+    for axis in ["+X view", "-Y view", "+Z view"] {
+        assert!(waiting.query_by_label(axis).is_some(), "{axis}");
+    }
 }

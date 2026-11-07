@@ -45,8 +45,14 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   surface. A click selects a patch or a surface region; Ctrl+click adds it or takes it out. A
   right click on a region, a patch, a surface or a surface region shows it as surfaces,
   wireframe or points, or hides it, and sets its opacity ([display modes](scene.md#display-modes)).
-  A patch's menu has its patch groups too. The row says how it is drawn when that isn't the
-  default, and *Reset* draws it as what it is part of again. What is hidden is not picked.
+  A patch's menu has its patch groups too. What a region sets governs all its patches: its mode
+  or opacity is taken off the patches and patch groups that had their own (a patch group's off
+  its patches, a surface's off its regions), so that all of them are drawn as it is; a patch set
+  after that keeps what it set until its region, or a patch group it is in, sets the same again
+  (a patch in two groups takes its mode, and its opacity, from the group changed last that has
+  one). The row notes what was set on it itself, when not the default (not what it takes from
+  its region or groups; its menu shows how it is drawn), and *Reset* draws it as what it is part
+  of again. What is hidden is not picked.
 - **The 3D view**: the meshes' boundary patches or the surfaces, each patch in its own colour,
   the selection in orange (see [3D scene and selection](scene.md)). Drag to turn the view (or
   pan, with the navigation bar's *Pan*); a right or middle drag pans; the wheel zooms. A click
@@ -158,14 +164,16 @@ draw on the CPU.
   a neighbouring pixel here and there.
 - **Transparent layers** are blended over the rest (and over the wireframes and points behind
   them, as on the CPU), seen where nothing opaque is in front, a selected face's or patch's in
-  orange. One layer over what is behind it, or several of the same shaded colour (faces of one
-  patch turned to the light alike), look as on the CPU. Where layers of different colours lie
-  over each other, the GPU doesn't sort them: it mixes them, the nearer counting more
-  (weighted, blended transparency), where the CPU blends the farthest first. The colours there
-  can differ much from the CPU's: two layers near each other at 90 % opacity are mixed about
-  evenly on the GPU, where the CPU shows the nearer at 90 % and the farther at 9 %. The GPU's
-  blend doesn't depend on the order the triangles are drawn in (each triangle is still shaded
-  by its own middle, as on the CPU).
+  orange. The nearest layer on each pixel is found first (two passes of their own; of layers
+  within 1e-4 of the distance of the nearest, as two regions' faces on their interface, the
+  first region's) and blended last,
+  over the others, as on the CPU, with its outlines as much as it covers what is behind it: at
+  an opacity near 1 a layer looks as it does opaque, and turning the opacity down from 1 is
+  smooth. Behind it, where layers of different colours lie over each other, the GPU doesn't
+  sort them: it mixes them, the nearer counting more (weighted, blended transparency), where the
+  CPU blends the farthest first. The colours there can differ from the CPU's, more the more of
+  them there are; the nearest is the same. The GPU's blend doesn't depend on the order the
+  triangles are drawn in (each triangle is still shaded by its own middle, as on the CPU).
 - **What the CPU still draws.** On a device that can't blend half-float images (some OpenGL
   ES drivers), transparent layers bring the CPU view back (the history bar says so). Picking,
   *Box select*, the *Brush* and `scene.snapshot` work on the CPU either way, on the same scene.
@@ -178,8 +186,9 @@ draw on the CPU.
   of a region finds its edges and points and uploads them (3.5 s for all five regions, as the CPU
   takes on its first frame of them); with every region a third surfaces, a third wireframe and a
   third points, with edges, a frame takes 8.4 ms, against 1.25 s on the CPU. With a third of
-  every region's patches transparent, 5.8 ms, against 2.2 s on the CPU. The transparent layers
-  take two half-float images of the view's size (10 bytes a pixel).
+  every region's patches transparent, 5.8 ms, against 2.2 s on the CPU (measured before the
+  nearest layer's two passes, which draw the transparent layers twice more). The transparent layers
+  take three half-float images and four of 32-bit words of the view's size (34 bytes a pixel).
 
 ## Long work
 
