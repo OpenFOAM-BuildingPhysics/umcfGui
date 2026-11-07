@@ -2121,14 +2121,15 @@ impl App {
                 } else {
                     egui::Sense::hover()
                 });
-                let other = match self.viewport.renderer {
-                    Renderer::Cpu => Renderer::Gpu,
-                    Renderer::Gpu => Renderer::Cpu,
+                // The click switches the setting (as *GPU* in the ribbon), not what drew this
+                // frame: with the GPU on, the CPU may draw a style the GPU doesn't.
+                let hint = match self.viewport.renderer {
+                    Renderer::Cpu => "Click to draw the view on the GPU.",
+                    Renderer::Gpu => "Click to turn the GPU view off (the CPU draws the view).",
                 };
                 let r = ui.add(label);
                 let r = if can {
-                    r.on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(format!("{tip}. Click to draw it on the {}.", other.name()))
+                    r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{tip}. {hint}"))
                 } else {
                     r.on_hover_text(tip)
                 };

@@ -92,10 +92,12 @@ whose command waits or runs: its outcome closes it).
 The 3D view is drawn by the CPU, or on the GPU. Start the app with `--renderer gpu` (or `auto`,
 which takes a hardware GPU and passes a software one over); then *GPU* in the *View* tab's
 *Display* group and in the navigation bar switches between the two at any time, and so does a
-click on *GPU* or *CPU* at the right of the history bar, which says which drew the view; its
-tooltip says why the CPU did when the GPU was asked for. Without a GPU view the label is only
-shown, not a switch. Like *Edges*, the switch is a setting of the window, not a command: the command line's
-`scene.snapshot` and `umcf-cli render` always draw on the CPU.
+click on *GPU* or *CPU* at the right of the history bar. The label says which drew the view, its
+tooltip why the CPU did when the GPU was asked for; the click switches the setting, as *GPU*
+does (with the GPU on and a frame the CPU drew, *CPU* in amber, it turns the GPU view off).
+Without a GPU view the label is only shown, not a switch. Like *Edges*, the switch is a setting
+of the window, not a command: the command line's `scene.snapshot` and `umcf-cli render` always
+draw on the CPU.
 
 - **When there is a GPU view.** Asked for it, the app looks for a GPU device it can draw on
   (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through
