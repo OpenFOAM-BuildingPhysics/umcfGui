@@ -18,7 +18,7 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "wgpu
 
 [dev-dependencies]
 umcf-core.workspace = true
-egui_kittest = "0.37"
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 [lints]
 workspace = true

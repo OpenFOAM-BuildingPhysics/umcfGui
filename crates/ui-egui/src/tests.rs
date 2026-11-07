@@ -1497,3 +1497,16 @@ fn without_a_gpu_view_the_status_bar_label_is_no_switch() {
     assert!(!h.state().viewport.has_gpu());
     h.get_by_label("CPU");
 }
+
+#[test]
+fn the_snapshot_card_starts_with_the_views_grid_origin_and_background() {
+    let mut a = app();
+    a.invoke("scene.snapshot");
+    assert_eq!(a.dialog.as_ref().unwrap().params, "{}");
+    a.dialog = None;
+    a.viewport.guides.grid = false;
+    a.viewport.dark = false;
+    a.invoke("scene.snapshot");
+    let params: serde_json::Value = serde_json::from_str(&a.dialog.as_ref().unwrap().params).unwrap();
+    assert_eq!(params, serde_json::json!({ "grid": false, "dark": false }));
+}

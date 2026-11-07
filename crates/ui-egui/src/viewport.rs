@@ -86,6 +86,10 @@ pub struct Viewport {
     /// `None` until the scene is first shown (then it frames the scene).
     pub camera: Option<Camera>,
     pub edges: bool,
+    /// The grid on the ground and the origin's planes and axes (`render::guides`).
+    pub guides: umcf_render::guides::Guides,
+    /// A dark view (the default), else a light one, whatever the window's theme.
+    pub dark: bool,
     /// What draws the view (asked for): see [`Viewport::drawn_with`] for what did.
     pub renderer: Renderer,
     texture: Option<TextureHandle>,
@@ -131,6 +135,8 @@ impl Default for Viewport {
         Viewport {
             camera: None,
             edges: false,
+            guides: umcf_render::guides::Guides::ALL,
+            dark: true,
             renderer: Renderer::Cpu,
             texture: None,
             gpu: None,
@@ -156,6 +162,7 @@ struct Drawn {
     camera: [f64; 7],
     size: [u32; 2],
     edges: bool,
+    guides: umcf_render::guides::Guides,
     /// Picking faces, for the hover text.
     faces: bool,
     revision: u64,
@@ -210,6 +217,12 @@ fn ray_at(camera: &Camera, rect: Rect, pos: Pos2, size: [u32; 2]) -> Ray {
 }
 
 impl Viewport {
+    /// The view's background, top and bottom: dark or light as switched.
+    pub fn background(&self) -> [[f32; 3]; 2] {
+        use umcf_render::raster::{BOTTOM, LIGHT_BOTTOM, LIGHT_TOP, TOP};
+        if self.dark { [TOP, BOTTOM] } else { [LIGHT_TOP, LIGHT_BOTTOM] }
+    }
+
     /// The view's width over its height (1 before it was shown).
     pub fn aspect(&self) -> f64 {
         self.rect.map_or(1.0, |r| f64::from(r.width().max(1.0) / r.height().max(1.0)))
@@ -322,8 +335,9 @@ impl Viewport {
             size,
             faces: self.faces,
             edges: self.edges,
+            guides: self.guides,
             revision,
-            dark: tokens.dark,
+            dark: self.dark,
             renderer: self.renderer,
         };
         // An error the GPU device reported since: drawn again, to go back to the CPU, though
@@ -350,7 +364,8 @@ impl Viewport {
                 selected_faces: umcf_engine::selected_faces(scene, selection),
                 colour_by: ColourBy::Class,
                 display: display.clone(),
-                background: Some(tokens.view_background()),
+                background: Some(self.background()),
+                guides: self.guides,
             };
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
             use crate::gpu::NotDrawn;

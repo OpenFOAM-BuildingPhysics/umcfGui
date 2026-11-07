@@ -44,7 +44,8 @@ usage:
       or file could not be opened.
 
   umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
-                 [--surface <file>]... [--edges] [--select <what>]... [--pick <x>,<y>] [--json]
+                 [--surface <file>]... [--edges] [--no-grid] [--no-origin] [--light]
+                 [--select <what>]... [--pick <x>,<y>] [--json]
       Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
       region with a mesh, or the STL surfaces when there is none, each in its own colour.
       --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
@@ -53,6 +54,9 @@ usage:
       --region, --surface  what to draw (a mesh region, \"\" in a single-region case; an STL file
                    in constant/triSurface); both can be repeated
       --edges      draw the faces' edges (the mesh's cells at the boundary)
+      --no-grid    leave out the grid on the ground (z = 0)
+      --no-origin  leave out the origin's planes and axes
+      --light      a light background (the default is dark)
       --select     draw a patch (<region>/<patch>, or <patch> in a single-region case) or a
                    surface region (<file.stl>/<region>) as selected (orange); can be repeated
       --pick       select what is under pixel x,y of the image, and list everything under it
@@ -259,6 +263,15 @@ fn render(args: &[String]) -> Result<u8, String> {
             "--json" => as_json = true,
             "--edges" => {
                 params.insert("edges".into(), json!(true));
+            }
+            "--no-grid" => {
+                params.insert("grid".into(), json!(false));
+            }
+            "--no-origin" => {
+                params.insert("origin".into(), json!(false));
+            }
+            "--light" => {
+                params.insert("dark".into(), json!(false));
             }
             "--out" => out_file = Some(value("--out")?),
             "--view" => {
