@@ -2269,7 +2269,7 @@ fn creator(
             (Some(state), _)
                 if matches!(start, Start::Auto | Start::Ready) && passed_over(state.adapter.get_info().device_type) =>
             {
-                Err("the GPU device is a software or virtual one".to_string())
+                Err(PASSED_OVER.to_string())
             }
             (Some(state), _) => viewport.attach_gpu(state, &cc.egui_ctx),
             (None, Err(e)) => Err(e.clone()),
@@ -2287,6 +2287,24 @@ fn creator(
         }
         Ok(Box::new(desktop) as Box<dyn eframe::App>)
     })
+}
+
+/// Why the window doesn't run on a GPU device it found: a software or virtual one.
+const PASSED_OVER: &str = "the GPU device is a software or virtual one";
+
+/// Whether the window runs on a GPU device, for `start`, with `probe` (as [`gpu_probe`]: whether
+/// the device found is passed over, or why there is none); why not. The probe runs only when it
+/// is needed.
+fn window_on_gpu(start: Start, probe: impl FnOnce() -> Result<bool, String>) -> Result<(), String> {
+    match start {
+        Start::Cpu => Err("started with --renderer cpu: the window runs on OpenGL".to_string()),
+        Start::Gpu => probe().map(|_| ()),
+        Start::Auto | Start::Ready => match probe() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(PASSED_OVER.to_string()),
+            Err(e) => Err(e),
+        },
+    }
 }
 
 /// Whether a device of `kind` is passed over unless the GPU is asked for: a software one (no
@@ -2474,15 +2492,7 @@ pub fn run(options: Options) -> Result<(), String> {
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
     // The window on a GPU device where there is one (see [`Start`]); without --renderer and with
     // `auto`, a software or virtual one is passed over.
-    let probe: Result<(), String> = match options.renderer {
-        Start::Cpu => Err("started with --renderer cpu: the window runs on OpenGL".to_string()),
-        Start::Gpu => gpu_probe().map(|_| ()),
-        Start::Auto | Start::Ready => match gpu_probe() {
-            Ok(false) => Ok(()),
-            Ok(true) => Err("the GPU device is a software or virtual one".to_string()),
-            Err(e) => Err(e),
-        },
-    };
+    let probe = window_on_gpu(options.renderer, gpu_probe);
     let native = |renderer| eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),
         renderer,

@@ -24,8 +24,9 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
   --renderer    what draws the 3D view at the start: without it, the CPU, with the window on a
                 hardware GPU where there is one so that the view can be switched to it (GPU in
                 the View tab, the navigation bar or the history bar); gpu, or auto (a hardware
-                GPU where there is one) to start on the GPU; cpu for the window on OpenGL, no
-                switch (where a GPU window doesn't open)
+                GPU where there is one) to start on the GPU; cpu: the window always on OpenGL,
+                no switch (for a machine where a GPU window opens but can't show, as over
+                ssh -X). A GPU window that doesn't open is opened again on OpenGL.
   --screenshot  write a PNG of the window once it has drawn, then quit
 ";
 

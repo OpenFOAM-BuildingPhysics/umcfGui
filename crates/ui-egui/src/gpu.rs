@@ -1597,6 +1597,39 @@ mod tests {
     }
 
     #[test]
+    fn the_window_runs_on_a_gpu_as_the_start_asks() {
+        use crate::{PASSED_OVER, Start, passed_over, window_on_gpu};
+        let none = || Err::<bool, String>("no GPU device".to_string());
+        // A hardware device, one passed over (software or virtual), none.
+        for start in [Start::Ready, Start::Auto] {
+            assert_eq!(window_on_gpu(start, || Ok(false)), Ok(()), "{start:?}");
+            assert_eq!(window_on_gpu(start, || Ok(true)), Err(PASSED_OVER.to_string()), "{start:?}");
+            assert_eq!(window_on_gpu(start, none), Err("no GPU device".to_string()), "{start:?}");
+        }
+        // --renderer gpu takes any device.
+        assert_eq!(window_on_gpu(Start::Gpu, || Ok(false)), Ok(()));
+        assert_eq!(window_on_gpu(Start::Gpu, || Ok(true)), Ok(()));
+        assert!(window_on_gpu(Start::Gpu, none).is_err());
+        // --renderer cpu: OpenGL, without looking for a device.
+        let looked = std::cell::Cell::new(false);
+        let r = window_on_gpu(Start::Cpu, || {
+            looked.set(true);
+            Ok(false)
+        });
+        assert!(r.is_err() && !looked.get());
+        use wgpu::DeviceType;
+        for (kind, over) in [
+            (DeviceType::Other, false),
+            (DeviceType::IntegratedGpu, false),
+            (DeviceType::DiscreteGpu, false),
+            (DeviceType::VirtualGpu, true),
+            (DeviceType::Cpu, true),
+        ] {
+            assert_eq!(passed_over(kind), over, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn styles_the_gpu_view_doesnt_draw_yet_are_named() {
         let mut style = Style { edges: true, ..Style::default() };
         assert_eq!(Gpu::draws(&style), Ok(()));

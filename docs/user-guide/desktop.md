@@ -22,7 +22,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
-| `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window on OpenGL, no switch (where a GPU window doesn't open) ([the GPU view](#the-gpu-view)) |
+| `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window always on OpenGL, no switch (for a machine where a GPU window opens but can't show, as over `ssh -X`). A GPU window that doesn't open is opened again on OpenGL ([the GPU view](#the-gpu-view)) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does, or when the window gives no picture within half a minute |
 
 ## The window
