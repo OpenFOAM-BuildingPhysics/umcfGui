@@ -50,11 +50,17 @@ fn reference_case_meshes() {
                 Ok(m) => {
                     match &boundary {
                         Ok(b) => {
-                            let same = b.points == m.points
+                            // The same faces with the same points (the boundary keeps only
+                            // the points it uses, numbered otherwise).
+                            let at = |f: Option<&[u32]>, points: &[[f64; 3]]| {
+                                f.map(|f| f.iter().map(|p| points.get(*p as usize).copied()).collect::<Vec<_>>())
+                            };
+                            let same = b.n_points() == m.n_points()
                                 && b.boundary == m.boundary
                                 && b.first_boundary_face() == m.n_internal_faces()
                                 && b.n_faces() == m.n_faces()
-                                && (m.n_internal_faces()..m.n_faces()).all(|i| b.face(i) == m.face(i));
+                                && (m.n_internal_faces()..m.n_faces())
+                                    .all(|i| at(b.face(i), &b.points) == at(m.face(i), &m.points));
                             if !same {
                                 failures.push(format!("{case} {r}: the boundary read alone differs from the mesh's"));
                             }

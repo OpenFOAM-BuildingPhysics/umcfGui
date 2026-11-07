@@ -9,6 +9,9 @@ The short version:
 - **Never crash:** no `unwrap`, `expect`, `panic!` or `unsafe` outside tests; case files and
   solver processes are hostile input.
 - **Everything is a command**, and the [layering](architecture.md) is enforced.
+- **Linux, Windows and macOS equally:** every feature works the same on all three (OpenFOAM
+  itself is reached through WSL, a virtual machine or a remote machine where it doesn't run);
+  CI builds and tests on each.
 - **The solver is the spec.** Read the urbanMicroclimateFoam source freely; ported code keeps
   its copyright line and names its source file and commit.
 - **Pull requests** target `main`, never another pull request; each push is first reviewed by
@@ -59,7 +62,10 @@ the tutorials from GitHub ([Example cases](#example-cases)).
 
 Every pull request gets a CodeRabbit review; `main` requires its check and `cargo xtask ci` to
 pass, and every review thread to be resolved. A Claude Code review runs only when asked for,
-never on its own: comment `/claude-review` on an open pull request. Only a comment from an
+never on its own, and only for substantial changes (a new feature, a change of behaviour across
+crates, or of how case files are read or written; not docs, tests, CI or small fixes), and only
+by the maintainer or an agent with the maintainer's go: comment `/claude-review` on an open
+pull request. Only a comment from an
 account with write access to the repository counts. It reviews the PR's head as it stands,
 posts its findings as inline comments (each a thread to resolve before merging) and a summary
 comment, and never runs the PR's code. The comment trigger runs the workflow as it is on

@@ -127,18 +127,55 @@ type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
 /// Runs `jobs` on up to one worker thread per core and on the calling thread, which takes
 /// jobs too (so they all run, one after the other, where no thread starts: wasm, or a thread
 /// limit); their results in order, or the first error. A job that panics is a `Panicked` error.
-fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
-    use std::sync::Mutex;
+///
+/// Each job comes with an estimate of the memory it holds while it runs. A job starts only while
+/// the estimates of the jobs running and its own fit in `budget`; the biggest start first, and a
+/// job runs alone when nothing else runs, whatever its estimate. [`UNKNOWN`] (a read whose size
+/// can't be told) runs alone, unless `budget` is `u64::MAX` (only tests pass that; a session's
+/// is at most half of it).
+fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Result<Vec<T>, Error> {
+    use std::sync::{Condvar, Mutex};
+    struct State<'a, T> {
+        /// The jobs not started, the biggest first.
+        queue: Vec<(usize, u64, Job<'a, T>)>,
+        /// The estimates of the jobs running, together.
+        held: u64,
+        running: usize,
+    }
     let n = jobs.len();
-    let queue: Mutex<Vec<(usize, Job<'_, T>)>> = Mutex::new(jobs.into_iter().enumerate().rev().collect());
+    let mut queue: Vec<(usize, u64, Job<'_, T>)> = jobs.into_iter().enumerate().map(|(k, (c, j))| (k, c, j)).collect();
+    queue.sort_by_key(|(k, c, _)| (std::cmp::Reverse(*c), *k));
+    let state = Mutex::new(State { queue, held: 0, running: 0 });
+    let changed = Condvar::new();
     let done: Mutex<Vec<Option<Result<T, Error>>>> = Mutex::new((0..n).map(|_| None).collect());
     let work = || {
         loop {
-            let next = match queue.lock() {
-                Ok(mut q) => q.pop(),
-                Err(_) => None,
+            // The next job that fits, waiting for a running one to end while none does.
+            let next = {
+                let Ok(mut st) = state.lock() else { return };
+                loop {
+                    if st.queue.is_empty() {
+                        break None;
+                    }
+                    let fits = if st.running == 0 {
+                        Some(0)
+                    } else {
+                        let held = st.held;
+                        st.queue.iter().position(|(_, c, _)| held.saturating_add(*c) <= budget)
+                    };
+                    if let Some(i) = fits {
+                        let job = st.queue.remove(i);
+                        st.held = st.held.saturating_add(job.1);
+                        st.running += 1;
+                        break Some(job);
+                    }
+                    st = match changed.wait(st) {
+                        Ok(st) => st,
+                        Err(_) => return,
+                    };
+                }
             };
-            let Some((k, job)) = next else { return };
+            let Some((k, cost, job)) = next else { return };
             // A panic is the engine's `Panicked`, as the guard around every command makes it.
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|payload| {
                 Err(Error::Panicked { id: id.to_string(), message: crate::panic_message(payload.as_ref()) })
@@ -148,6 +185,11 @@ fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
             {
                 *slot = Some(r);
             }
+            if let Ok(mut st) = state.lock() {
+                st.held = st.held.saturating_sub(cost);
+                st.running = st.running.saturating_sub(1);
+            }
+            changed.notify_all();
         }
     };
     let workers = std::thread::available_parallelism().map_or(1, |c| c.get()).min(n).saturating_sub(1);
@@ -163,6 +205,59 @@ fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
     done.into_iter()
         .map(|r| r.unwrap_or_else(|| Err(Error::Failed(format!("{id}: a reader job did not run")))))
         .collect()
+}
+
+/// The estimate of a read whose size can't be told: it runs alone (see [`parallel`]).
+const UNKNOWN: u64 = u64::MAX;
+
+/// About how much memory reading region `region`'s boundary holds while it runs, from the
+/// counts the `owner` header notes: every point of the mesh (read whole, then only the
+/// boundary's kept) and the boundary faces. A binary mesh is read whole, not as a stream: its
+/// `points` file is held besides its points, and its `faces` file whole. Without the counts, from
+/// the sizes of the `points` and `faces` files; [`UNKNOWN`] when those can't be told either.
+fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
+    let dir = mesh_dir(region);
+    // A file's size, about four times that when compressed (its bytes and what they decompress to).
+    let size = |name: &str| {
+        let plain = fs.size(&format!("{dir}/{name}"));
+        plain.or_else(|| fs.size(&format!("{dir}/{name}.gz")).map(|n| n.saturating_mul(4)))
+    };
+    let counts = umcf_foam_mesh::counts(fs, &dir, &Limits::default()).unwrap_or_default();
+    match counts.points {
+        Some(points) => {
+            let boundary = counts.faces.zip(counts.internal_faces).map_or(0, |(f, i)| f.saturating_sub(i));
+            let streamed = points.saturating_mul(32).saturating_add(boundary.saturating_mul(32));
+            if counts.binary {
+                // A faces file whose size can't be told: as many bytes as the points'.
+                let faces = size("faces").unwrap_or_else(|| points.saturating_mul(24));
+                streamed.saturating_add(points.saturating_mul(24)).saturating_add(faces)
+            } else {
+                streamed
+            }
+        }
+        None => match (size("points"), size("faces")) {
+            (Some(p), f) => p.saturating_mul(2).saturating_add(f.unwrap_or(p)),
+            (None, _) => UNKNOWN,
+        },
+    }
+}
+
+/// About how much memory reading surface `file` holds while it runs: its bytes, what is read of
+/// them and the object built; [`UNKNOWN`] when its size can't be told.
+fn surface_need(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
+    let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file));
+    size.map_or(UNKNOWN, |n| n.saturating_mul(3))
+}
+
+/// Drops the first of `spare` (the ones shown least recently) while they hold more than `budget`.
+fn trim_spare(spare: &mut Vec<(Key, Object)>, budget: u64) {
+    let mut held: u64 = spare.iter().map(|(_, o)| o.bytes()).sum();
+    let mut dropped = 0;
+    while held > budget && dropped < spare.len() {
+        held = held.saturating_sub(spare.get(dropped).map_or(0, |(_, o)| o.bytes()));
+        dropped += 1;
+    }
+    spare.drain(..dropped);
 }
 
 /// The parameters that say what the scene shows.
@@ -283,44 +378,53 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             Mesh(BoundaryMesh),
             Surface(stl::Stl),
         }
-        let jobs_for = |keys: &[&Key]| -> Vec<Job<'_, Read>> {
-            let mut jobs: Vec<Job<'_, Read>> = Vec::new();
+        let budget = s.budget;
+        let jobs_for = |keys: &[&Key]| -> Vec<(u64, Job<'_, Read>)> {
+            let mut jobs: Vec<(u64, Job<'_, Read>)> = Vec::new();
             for k in keys {
                 match &k.source {
                     Source::Mesh { region } => {
                         let r = region.clone();
-                        jobs.push(Box::new(move || {
-                            let mut mesh = BoundaryMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
-                                let which = if r.is_empty() { String::new() } else { format!(" of region {r}") };
-                                Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
-                            })?;
-                            // The patches as the case has them (renamed or retyped and not saved
-                            // yet), when they are the same faces.
-                            if let Some(patches) = case.region(&r).and_then(|x| x.patches.as_ref())
-                                && patches.len() == mesh.boundary.len()
-                                && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
-                            {
-                                mesh.boundary = patches.clone();
-                            }
-                            Ok(Read::Mesh(mesh))
-                        }));
+                        jobs.push((
+                            mesh_need(fs, &r),
+                            Box::new(move || {
+                                let mut mesh =
+                                    BoundaryMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
+                                        let which =
+                                            if r.is_empty() { String::new() } else { format!(" of region {r}") };
+                                        Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
+                                    })?;
+                                // The patches as the case has them (renamed or retyped and not saved
+                                // yet), when they are the same faces.
+                                if let Some(patches) = case.region(&r).and_then(|x| x.patches.as_ref())
+                                    && patches.len() == mesh.boundary.len()
+                                    && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
+                                {
+                                    mesh.boundary = patches.clone();
+                                }
+                                Ok(Read::Mesh(mesh))
+                            }),
+                        ));
                     }
                     Source::Surface { file } => {
                         let f = file.clone();
-                        jobs.push(Box::new(move || {
-                            let bytes = case
-                                .file(fs, &f)?
-                                .ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
-                            let stl =
-                                stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
-                            Ok(Read::Surface(stl))
-                        }));
+                        jobs.push((
+                            surface_need(case, fs, &f),
+                            Box::new(move || {
+                                let bytes = case
+                                    .file(fs, &f)?
+                                    .ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
+                                let stl = stl::read(&bytes, &limits())
+                                    .map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
+                                Ok(Read::Surface(stl))
+                            }),
+                        ));
                     }
                 }
             }
             jobs
         };
-        let read = parallel(id, jobs_for(&missing))?;
+        let read = parallel(id, jobs_for(&missing), budget.read)?;
 
         // The origin: the middle of what is shown, so that points far from the world's origin
         // (projected coordinates) stay precise in single precision. The previous scene's is kept
@@ -351,32 +455,50 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         let mut read = read;
         if moved {
             let again: Vec<&Key> = wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).collect();
-            read.extend(parallel(id, jobs_for(&again))?);
+            read.extend(parallel(id, jobs_for(&again), budget.read)?);
             missing.extend(again);
         }
-        let built: Vec<Job<'_, Object>> = missing
+        // Building an object reads nothing more; what it adds while it runs is the object, planned
+        // like the reads.
+        let built: Vec<(u64, Job<'_, Object>)> = missing
             .iter()
             .zip(read)
-            .map(|(k, x)| -> Job<'_, Object> {
+            .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
-                Box::new(move || {
-                    Ok(match (source, x) {
-                        (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
-                        (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
-                        _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
-                    })
-                })
+                (
+                    match &x {
+                        // About two triangles a face (their corners, class, face and edges: 21
+                        // bytes each), the 4-byte map of every point and, at most, each point
+                        // in single precision.
+                        Read::Mesh(m) => {
+                            let faces = m.n_faces().saturating_sub(m.first_boundary_face()) as u64;
+                            faces.saturating_mul(42).saturating_add((m.points.len() as u64).saturating_mul(16))
+                        }
+                        // Three points (12 bytes each), 21 bytes a triangle, and its region
+                        // while the object is built.
+                        Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
+                    },
+                    Box::new(move || {
+                        Ok(match (source, x) {
+                            (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
+                            (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
+                            _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
+                        })
+                    }),
+                )
             })
             .collect();
-        let mut fresh: Vec<(Key, Object)> = missing.into_iter().cloned().zip(parallel(id, built)?).collect();
+        let mut fresh: Vec<(Key, Object)> =
+            missing.into_iter().cloned().zip(parallel(id, built, budget.read)?).collect();
 
         // The new scene: each object taken from what was read, else from before; what was
-        // there and isn't shown now is kept aside.
+        // there and isn't shown now is kept aside, the ones shown least recently first (those
+        // hidden before, then those hidden now), within the budget for them.
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
                 // Copied only while a copy of the session still holds it.
                 let c = std::sync::Arc::try_unwrap(c).unwrap_or_else(|shared| (*shared).clone());
-                c.keys.into_iter().zip(c.scene.objects).chain(c.spare).collect()
+                c.spare.into_iter().chain(c.keys.into_iter().zip(c.scene.objects)).collect()
             }
             _ => Vec::new(),
         };
@@ -387,7 +509,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                 .iter()
                 .position(|(x, _)| x.same(&k))
                 .map(|i| fresh.swap_remove(i))
-                .or_else(|| pool.iter().position(|(x, _)| x.same(&k)).map(|i| pool.swap_remove(i)));
+                .or_else(|| pool.iter().position(|(x, _)| x.same(&k)).map(|i| pool.remove(i)));
             let Some((k, o)) = found else {
                 return Err(Error::Failed(format!("{id}: an object of the scene was neither read nor kept")));
             };
@@ -396,6 +518,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         // An object of files a command has put since (another version) can't be shown again.
         pool.retain(|(k, _)| k.files.iter().all(|(f, v)| case_put(s, f, v)));
+        trim_spare(&mut pool, budget.spare);
         // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
         // the faces picked on it go.
         if reload {
@@ -539,7 +662,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden; when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -1070,5 +1193,131 @@ impl Session {
             id: "surfaces".to_string(),
             message: crate::panic_message(payload.as_ref()),
         })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Jobs that note the estimates running together (saturating: [`UNKNOWN`] is the most there
+    /// is); the most seen.
+    fn run(costs: &[u64], budget: u64) -> (Vec<usize>, u64) {
+        let seen = run_with(costs, budget);
+        (seen.out, seen.most)
+    }
+
+    /// What [`run_with`] saw.
+    struct Seen {
+        /// The jobs' results.
+        out: Vec<usize>,
+        /// The most the estimates running together came to.
+        most: u64,
+        /// The most jobs that ran together with an [`UNKNOWN`] one among them.
+        together: usize,
+    }
+
+    fn run_with(costs: &[u64], budget: u64) -> Seen {
+        use std::sync::Mutex;
+        // What runs now: each job's estimate, by its index.
+        let running: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+        let most = AtomicU64::new(0);
+        let with_unknown = std::sync::atomic::AtomicUsize::new(0);
+        let jobs: Vec<(u64, Job<'_, usize>)> = costs
+            .iter()
+            .enumerate()
+            .map(|(k, &c)| -> (u64, Job<'_, usize>) {
+                let (running, most, with_unknown) = (&running, &most, &with_unknown);
+                (
+                    c,
+                    Box::new(move || {
+                        {
+                            let mut r = running.lock().unwrap();
+                            r.push((k, c));
+                            let now = r.iter().fold(0u64, |a, (_, c)| a.saturating_add(*c));
+                            most.fetch_max(now, Ordering::SeqCst);
+                            if r.iter().any(|(_, c)| *c == UNKNOWN) {
+                                with_unknown.fetch_max(r.len(), Ordering::SeqCst);
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        running.lock().unwrap().retain(|(j, _)| *j != k);
+                        Ok(k)
+                    }),
+                )
+            })
+            .collect();
+        let out = parallel("test", jobs, budget).unwrap();
+        Seen { out, most: most.load(Ordering::SeqCst), together: with_unknown.load(Ordering::SeqCst) }
+    }
+
+    #[test]
+    fn jobs_start_only_while_they_fit_the_budget() {
+        let (out, most) = run(&[60, 50, 40, 10, 30], 100);
+        assert_eq!(out, [0, 1, 2, 3, 4], "results in the jobs' order");
+        assert!(most <= 100, "{most}");
+        // A job bigger than the budget runs, alone.
+        let (out, most) = run(&[500, 20, 20], 100);
+        assert_eq!(out, [0, 1, 2]);
+        assert_eq!(most, 500);
+        // A big budget runs them together (where threads start).
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) > 1 {
+            assert!(run(&[10, 10, 10], u64::MAX).1 > 10);
+        }
+    }
+
+    /// An `owner` header in `format`, noting `points` points and 50 faces, 40 internal.
+    fn owner(format: &str, points: u64) -> String {
+        format!(
+            "FoamFile\n{{\n    version 2.0;\n    format {format};\n    class labelList;\n    note \"nPoints:{points} nCells:9 nFaces:50 nInternalFaces:40\";\n    object owner;\n}}\n"
+        )
+    }
+
+    #[test]
+    fn the_read_estimate_follows_the_mesh_format() {
+        let d = "constant/air/polyMesh";
+        let faces = vec![b'x'; 1000];
+        // ASCII: streamed, 32 bytes per point and per boundary face.
+        let mut fs = umcf_core::MemFs::new();
+        fs.insert(&format!("{d}/owner"), owner("ascii", 100));
+        fs.insert(&format!("{d}/faces"), faces.clone());
+        assert_eq!(mesh_need(&fs, "air"), 100 * 32 + 10 * 32);
+        // Binary: read whole: 24 more per point, and the faces file.
+        fs.insert(&format!("{d}/owner"), owner("binary", 100));
+        assert_eq!(mesh_need(&fs, "air"), 100 * 32 + 10 * 32 + 100 * 24 + 1000);
+        // Compressed faces: four times their size.
+        let mut gz = umcf_core::MemFs::new();
+        gz.insert(&format!("{d}/owner"), owner("binary", 100));
+        gz.insert(&format!("{d}/faces.gz"), faces.clone());
+        assert_eq!(mesh_need(&gz, "air"), 100 * 32 + 10 * 32 + 100 * 24 + 4000);
+        // No counts (an owner without a header): from the file sizes.
+        let mut sizes = umcf_core::MemFs::new();
+        sizes.insert(&format!("{d}/owner"), "3(0 0 1)\n");
+        sizes.insert(&format!("{d}/points.gz"), vec![0u8; 300]);
+        sizes.insert(&format!("{d}/faces"), faces);
+        assert_eq!(mesh_need(&sizes, "air"), 300 * 4 * 2 + 1000);
+        // Nothing there, or sizes that can't be told: alone.
+        assert_eq!(mesh_need(&umcf_core::MemFs::new(), "air"), UNKNOWN);
+    }
+
+    #[test]
+    fn a_failing_or_panicking_job_fails_the_whole() {
+        let jobs: Vec<(u64, Job<'_, u32>)> = vec![
+            (5, Box::new(|| Ok(1))),
+            (5, Box::new(|| Err(Error::Failed("no".into())))),
+            (5, Box::new(|| panic!("boom"))),
+        ];
+        assert!(parallel("test", jobs, 5).is_err());
+        // A panic alone is the engine's `Panicked`.
+        let jobs: Vec<(u64, Job<'_, u32>)> = vec![(5, Box::new(|| panic!("boom")))];
+        assert!(matches!(parallel("test", jobs, 5), Err(Error::Panicked { .. })), "a panic is `Panicked`");
+    }
+
+    #[test]
+    fn reads_of_unknown_size_run_alone() {
+        let seen = run_with(&[UNKNOWN, 10, UNKNOWN, 10], 100);
+        assert_eq!(seen.out, [0, 1, 2, 3]);
+        assert_eq!(seen.together, 1, "an unknown read ran with another");
     }
 }

@@ -99,6 +99,12 @@ pub trait CaseFs {
     fn hard_links(&self, _rel: &str) -> u64 {
         1
     }
+
+    /// The file's size in bytes without reading it, when it can be told (`None`: no such file,
+    /// or a file system that can't tell). Only for estimates: what a read gives may differ.
+    fn size(&self, _rel: &str) -> Option<u64> {
+        None
+    }
 }
 
 /// Write access to a case. A write is atomic: readers see the old file or the new one, never a
@@ -254,6 +260,9 @@ impl<F: CaseFs> CaseFs for Cancellable<F> {
     fn is_dir(&self, rel: &str) -> bool {
         self.inner.is_dir(rel)
     }
+    fn size(&self, rel: &str) -> Option<u64> {
+        self.inner.size(rel)
+    }
     fn list(&self, rel: &str) -> Result<Vec<String>, FsError> {
         self.cancel.check(rel)?;
         self.inner.list(rel)
@@ -296,6 +305,10 @@ impl DirFs {
 }
 
 impl CaseFs for DirFs {
+    fn size(&self, rel: &str) -> Option<u64> {
+        std::fs::metadata(self.path(rel)?).ok().filter(|m| m.is_file()).map(|m| m.len())
+    }
+
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
         let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
         let meta = match std::fs::metadata(&path) {
@@ -496,6 +509,10 @@ impl MemFs {
 }
 
 impl CaseFs for MemFs {
+    fn size(&self, rel: &str) -> Option<u64> {
+        self.files.get(rel).map(|b| b.len() as u64)
+    }
+
     fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
         check_rel(rel)?;
         match self.files.get(rel) {

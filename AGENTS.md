@@ -131,6 +131,13 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
   hand-roll calendar math.
 - **Rust only** (no handwritten JS/TS, no Python in the product). L0–L3 stay wasm-clean
   (`cargo xtask wasm`) so a web results viewer stays possible.
+- **Linux, Windows and macOS are supported equally.** The desktop app, the CLI and every
+  feature work the same on all three. The one exception is OpenFOAM itself, which runs only on
+  Linux: on the others the runner reaches it through WSL, a virtual machine or container, or a
+  remote machine. Whatever asks the system (free memory, files and paths, dialogs, processes,
+  threads) uses a cross-platform crate or code of its own for each of the three. It is never
+  written for Linux with a fixed guess for the others. CI builds and tests on all three, and code
+  that asks the system is tested on each.
 
 ## 5. Assets
 
@@ -200,6 +207,11 @@ as it was, isn't done.
 - **Every pull request targets `main`**, never another pull request's branch; at most 300 files;
   squash-merged. It is ready only when a CodeRabbit review covers its head: every thread is
   answered and resolved, and its outside-diff comments are read. (Since #16.)
+- **The Claude Code review (`/claude-review`) is for substantial changes only.** A substantial
+  change is a new feature, a change of behaviour across crates, or a change to how case files
+  are read or written. Docs, tests, CI and small fixes don't get one. The review counts against
+  a subscription's usage, and it starts only when asked: the maintainer, or an agent with the
+  maintainer's go, comments `/claude-review`.
 - **Merges are manual.** No auto-merge: the maintainer merges. `--admin` only for the one pull
   request the maintainer names, never carried over to the next. Remote branches are deleted
   only when the maintainer says so. (Since #43.)

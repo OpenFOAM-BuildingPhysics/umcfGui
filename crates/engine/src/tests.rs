@@ -1751,6 +1751,49 @@ fn the_scene_reads_each_mesh_once() {
     assert_eq!((count("air"), count("ground")), (2, 2));
 }
 
+/// Hidden objects are kept within the budget for them, the ones shown least recently dropped
+/// first: a region dropped is read again when it is shown, one kept is not.
+#[test]
+fn hidden_regions_are_kept_within_the_budget() {
+    let mut fs = two_region_fs();
+    fs.insert("system/controlDict", control().replace("fluid (air);", "fluid (air);\n    solid (ground roofs);"));
+    cube_mesh(&mut fs, "constant/roofs/polyMesh");
+    let (mut s, reads) = counting_session(fs);
+    let count = |r: &str| reads.lock().unwrap().get(&format!("constant/{r}/polyMesh/points")).copied().unwrap_or(0);
+    let one = s.scene(&json!({ "regions": ["air"] })).unwrap().objects[0].bytes();
+    assert!(one > 0);
+    // Room for one hidden region.
+    s.set_budget(Budget { read: u64::MAX, spare: one });
+    s.scene(&json!({})).unwrap();
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 1, 1));
+    // Ground, then roofs, are hidden: roofs, hidden last, is kept.
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    s.scene(&json!({})).unwrap();
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 2, 1));
+    // Roofs is hidden first, then ground: ground, hidden more recently, is kept, roofs goes.
+    s.scene(&json!({ "regions": ["air", "ground"] })).unwrap();
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    s.scene(&json!({})).unwrap();
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 2, 2));
+    // No room: every hidden region goes.
+    s.set_budget(Budget { read: u64::MAX, spare: 0 });
+    s.scene(&json!({ "regions": ["air"] })).unwrap();
+    s.scene(&json!({})).unwrap();
+    assert_eq!((count("air"), count("ground"), count("roofs")), (1, 3, 3));
+}
+
+/// A read budget smaller than any read (the regions read one at a time: see the scheduler's
+/// own tests) draws the same scene.
+#[test]
+fn a_small_read_budget_draws_the_same_scene() {
+    let (mut s, _) = two_region_session();
+    let all = s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap().data["camera"].clone();
+    let (mut t, _) = two_region_session();
+    t.set_budget(Budget { read: 1, spare: 0 });
+    let one = t.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap().data["camera"].clone();
+    assert_eq!(one, all);
+}
+
 /// A patch renamed by a command is shown by its new name, also for a region shown before.
 #[test]
 fn a_spare_region_follows_a_renamed_patch() {

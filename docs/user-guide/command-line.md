@@ -87,7 +87,9 @@ umcf-cli render path/to/case --out case.png [--view top] [--size 1600x1000] [--e
 This draws the case's meshes (their boundary patches) or STL surfaces into a PNG file with the
 CPU renderer, and can select and pick patches first: see [3D scene and
 selection](scene.md#on-the-command-line). The exit status is 0 when the image is written and 2
-when the case can't be opened or drawn.
+when the case can't be opened or drawn. How many regions are read at once, and how much is kept
+of hidden ones, follows the memory free, or `UMCF_MEMORY` when it is set to a whole number of
+megabytes above 0 ([memory](scene.md#memory)).
 
 ## Running commands
 

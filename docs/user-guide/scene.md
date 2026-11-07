@@ -44,9 +44,12 @@ the selection in orange (in front of a patch of another region in the same place
 | `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
 
 The scene is built the first time it is needed: each region's mesh (only its boundary: its
-points, boundary faces and patches) and each surface is read once, the missing ones in parallel,
-and kept, also while it is hidden. So a pick after a snapshot, or showing a region again, reads
-nothing, while what is shown stays near where the scene is centred. Points are kept in single
+points that its boundary faces use, boundary faces and patches) and each surface is read once,
+the missing ones in parallel, and kept, also while it is hidden. So a pick after a snapshot, or
+showing a region again, reads nothing, while what is shown stays near where the scene is centred.
+Both keep to the session's [memory budget](#memory): readers start only while their estimates
+fit, and what is kept of hidden regions and surfaces is dropped past its share, the ones shown
+least recently first (and read again when shown). Points are kept in single
 precision relative to the middle of what is shown; when that moves more than 10 km (a mesh in
 local and a surface in projected coordinates, say), what is shown is read again around the new
 middle and what was kept of hidden ones is dropped, so that nothing loses precision. The scene
@@ -179,13 +182,39 @@ region roofs of constant/triSurface/walls.stl (1 under the cursor); 1 selected
 walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangles), 1 selected
 ```
 
+## Memory
+
+The session plans with the memory free when the program starts, as Linux, Windows or macOS
+tell it (on Linux no more than the control groups it runs in leave, with cgroup v2: a
+container, a SLURM job, `systemd-run -p MemoryMax=`; the page cache they can drop counts as
+free, shared memory doesn't). Where the free memory can't be told it plans with half the
+total, and with 1 GB where neither can. `UMCF_MEMORY`, set to a whole number of megabytes
+above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is ignored):
+
+- **Half of it for reading at once.** Each region's read is estimated from the counts its
+  `owner` header notes: about 32 bytes per point of the mesh and per boundary face, and for a
+  binary mesh (read whole, not as a stream) 24 more per point and its `faces` file's size.
+  Without the counts it is estimated from the sizes of its `points` and `faces` files, a
+  surface from its file's size; a read whose size can't be told runs alone. The biggest start
+  first, and a reader starts only while its estimate and those running fit. One always runs,
+  so a region bigger than the budget is read, alone. Building the drawn objects from what was
+  read is planned the same way, from the size of each object.
+- **A quarter for what the scene keeps while it is hidden.** Past it, the regions and surfaces
+  shown least recently are dropped, and read again when they are shown.
+
+The estimates are plans, not limits: what is shown is always kept, however big. The Hong Kong
+project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.3 s with at most
+1.27 GB with the memory of a 32 GB machine, 5.9 s and 1.15 GB with `UMCF_MEMORY=2000`, 7.0 s and
+1.05 GB with `UMCF_MEMORY=1000` (all at once and every point kept: 5.95 s and 1.84 GB).
+
 ## Limits
 
-- Drawing a mesh reads its boundary only, but keeps all of its points. ASCII files are read as a
-  stream, compressed or not (the file isn't held, nor the text of its points or internal faces);
-  a binary file is held whole while it is read. The 16-million-cell air region of the HK project
-  takes 3.8 s and 0.97 GB the first time, all five of its regions 4.5 s and 1.8 GB, read in
-  parallel. Drawing and picking boundary triangles is quick: the 573 000 of a 2.8-million-cell
+- Drawing a mesh reads its boundary only, and keeps only the points its boundary faces use.
+  ASCII files are read as a stream, compressed or not (the file isn't held, nor the text of its
+  points or internal faces); a binary file is held whole while it is read, and every point of
+  the mesh is held until its boundary's are picked out. The 16-million-cell air region of the HK
+  project takes 3.5 s and 0.87 GB the first time, all five of its regions 4.3 s and 1.27 GB
+  ([memory](#memory)). Drawing and picking boundary triangles is quick: the 573 000 of a 2.8-million-cell
   air region of a 3×3 street-grid case in 0.14 s.
 - No level of detail; the renderer draws every triangle on one core, and sorts transparent
   triangles one by one ([display modes](#display-modes)).

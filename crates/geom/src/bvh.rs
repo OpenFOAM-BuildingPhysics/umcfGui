@@ -84,6 +84,12 @@ impl Bounds {
 }
 
 impl Bvh {
+    /// About how many bytes the hierarchy holds.
+    pub fn bytes(&self) -> u64 {
+        (self.nodes.capacity() * std::mem::size_of::<Node>() + self.order.capacity() * std::mem::size_of::<u32>())
+            as u64
+    }
+
     /// Builds the hierarchy over `triangles` (indices into `points`).
     pub fn new(points: &[[f32; 3]], triangles: &[[u32; 3]]) -> Bvh {
         // Each triangle's box and centroid, for the triangles that can be hit.

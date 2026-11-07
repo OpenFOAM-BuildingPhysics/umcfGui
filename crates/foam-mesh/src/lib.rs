@@ -424,6 +424,9 @@ pub struct Counts {
     pub cells: Option<u64>,
     pub faces: Option<u64>,
     pub internal_faces: Option<u64>,
+    /// Whether `owner` is written in binary (OpenFOAM writes a mesh's files in one format, its
+    /// `writeFormat`); `false` without a header.
+    pub binary: bool,
 }
 
 /// The counts the `owner` header of the mesh in `dir` notes (all `None` for no `owner`, or one
@@ -471,16 +474,18 @@ pub fn counts(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Counts> {
         cells: h.count("nCells"),
         faces: h.count("nFaces"),
         internal_faces: h.count("nInternalFaces"),
+        binary: end.is_some() && h.format == umcf_foam_field::Format::Binary,
     })
 }
 
-/// What drawing or picking a mesh's boundary needs: its points, a face's point labels by its
-/// label in the whole mesh, and the patches.
+/// What drawing or picking a mesh's boundary needs: points, a face's points by the face's label
+/// in the whole mesh, and the patches.
 pub trait Boundary {
-    /// The mesh's points, by label.
+    /// The points the faces use, by the labels [`Boundary::face`] gives (the mesh's own labels
+    /// for a [`PolyMesh`], labels into the kept points for a [`BoundaryMesh`]).
     fn points(&self) -> &[[f64; 3]];
-    /// The point labels of face `i` (a label in the whole mesh); `None` for a face this mesh
-    /// doesn't hold.
+    /// The points of face `i` (a label in the whole mesh), as labels into
+    /// [`Boundary::points`]; `None` for a face this mesh doesn't hold.
     fn face(&self, i: usize) -> Option<&[u32]>;
     /// The boundary patches, as `boundary` lists them.
     fn patches(&self) -> &[Patch];
@@ -507,9 +512,16 @@ impl Boundary for PolyMesh {
 /// the internal faces or `owner` (only its header). It is checked as far as it goes: the patches
 /// cover the faces from the first boundary face to the last, where the `owner` header says the
 /// internal faces end, every face has 3 points or more, every point label is in range.
+///
+/// Only the points the boundary faces use are kept, numbered in the order the faces first use
+/// them: [`BoundaryMesh::face`] gives labels into these points, not the mesh's own point labels
+/// (a 16-million-cell region has about ten times as many points as its boundary uses).
 #[derive(Debug, Clone)]
 pub struct BoundaryMesh {
+    /// The points the boundary faces use, by the labels [`BoundaryMesh::face`] gives.
     pub points: Vec<[f64; 3]>,
+    /// How many points the whole mesh has.
+    mesh_points: usize,
     /// The label of the first boundary face (the mesh's internal faces come before it).
     first: usize,
     /// Offsets and point labels of faces `first..`.
@@ -555,14 +567,41 @@ impl BoundaryMesh {
             Ok((p?, f?))
         })?;
         let (n_faces, face_offsets, face_points) = faces;
-        let mesh = BoundaryMesh { points, first: first.unwrap_or(n_faces), face_offsets, face_points, boundary };
+        let mesh_points = points.len();
+        let mut mesh =
+            BoundaryMesh { points, mesh_points, first: first.unwrap_or(n_faces), face_offsets, face_points, boundary };
         mesh.check(n_faces, counts)?;
+        mesh.keep_used_points()?;
         Ok(mesh)
     }
 
-    /// How many points the mesh has.
+    /// Keeps only the points the boundary faces use (checked: every label is in range), and
+    /// numbers the faces' points into them.
+    fn keep_used_points(&mut self) -> Result<()> {
+        let mut map: Vec<u32> = vec![u32::MAX; self.points.len()];
+        let mut kept: Vec<[f64; 3]> = Vec::new();
+        for p in &mut self.face_points {
+            let (Some(slot), Some(point)) = (map.get_mut(*p as usize), self.points.get(*p as usize)) else {
+                return Err(Error::Inconsistent(format!(
+                    "a face uses point {p}, the mesh has {} points",
+                    self.mesh_points
+                )));
+            };
+            if *slot == u32::MAX {
+                *slot = u32::try_from(kept.len())
+                    .map_err(|_| Error::Unsupported("more boundary points than 32-bit labels hold".into()))?;
+                kept.push(*point);
+            }
+            *p = *slot;
+        }
+        kept.shrink_to_fit();
+        self.points = kept;
+        Ok(())
+    }
+
+    /// How many points the whole mesh has (more than the boundary keeps: see the type).
     pub fn n_points(&self) -> usize {
-        self.points.len()
+        self.mesh_points
     }
 
     /// The faces of the whole mesh, internal ones too.
@@ -575,8 +614,8 @@ impl BoundaryMesh {
         self.first
     }
 
-    /// The point labels of boundary face `i` (its label in the whole mesh); `None` for an
-    /// internal face.
+    /// The points of boundary face `i` (its label in the whole mesh), as labels into
+    /// [`BoundaryMesh::points`]; `None` for an internal face.
     pub fn face(&self, i: usize) -> Option<&[u32]> {
         let k = i.checked_sub(self.first)?;
         let start = *self.face_offsets.get(k)? as usize;
@@ -609,7 +648,7 @@ impl BoundaryMesh {
         if self.first > n_faces {
             return bad(format!("the patches start at face {}, the mesh has {n_faces}", self.first));
         }
-        let n_points = self.n_points();
+        let n_points = self.points.len();
         if let Some(p) = self.face_points.iter().find(|p| **p as usize >= n_points) {
             return bad(format!("a face uses point {p}, the mesh has {n_points} points"));
         }
@@ -636,12 +675,12 @@ impl BoundaryMesh {
 }
 
 impl Boundary for BoundaryMesh {
-    /// The mesh's points, by label.
+    /// The points the boundary faces use (see [`BoundaryMesh`]).
     fn points(&self) -> &[[f64; 3]] {
         &self.points
     }
 
-    /// The point labels of face `i`.
+    /// The points of boundary face `i`, as labels into the kept points.
     fn face(&self, i: usize) -> Option<&[u32]> {
         BoundaryMesh::face(self, i)
     }
