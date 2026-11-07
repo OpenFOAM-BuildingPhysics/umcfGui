@@ -138,6 +138,8 @@ struct Counts {
     expected: std::sync::atomic::AtomicU64,
     /// The bytes read before the job said what it expects: not part of it.
     base: std::sync::atomic::AtomicU64,
+    /// Held while [`Progress::expect`] sets `base` and `expected` together.
+    expecting: std::sync::Mutex<()>,
     done: std::sync::atomic::AtomicU64,
     total: std::sync::atomic::AtomicU64,
 }
@@ -198,6 +200,8 @@ impl Progress {
     /// it first said so doesn't count towards them.
     pub fn expect(&self, bytes: u64) {
         use std::sync::atomic::Ordering::Relaxed;
+        // One at a time: two first calls at once would each take a base.
+        let _one = self.0.expecting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.0.expected.load(Relaxed) == 0 {
             self.0.base.store(self.0.bytes.load(Relaxed), Relaxed);
         }

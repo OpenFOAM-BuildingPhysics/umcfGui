@@ -124,20 +124,22 @@ fn area_centre(ps: &[V]) -> (V, V) {
 const CHUNK: usize = 1 << 16;
 
 /// The faces a check has gone through, for a progress bar ([`umcf_core::Progress`] steps, one per
-/// face of each pass), and whether it was cancelled: a pass checks every [`CHUNK`] faces.
+/// face of each pass), and whether it was cancelled: a pass checks every `chunk` faces.
 struct Work<'a> {
     cancel: Option<&'a umcf_core::Cancel>,
+    /// Faces between two steps and checks: [`CHUNK`], fewer in tests.
+    chunk: usize,
 }
 
 impl Work<'_> {
     /// After face `i` of a pass: `false` when the job was cancelled, to stop.
     fn face(&self, i: usize) -> bool {
-        if !(i + 1).is_multiple_of(CHUNK) {
+        if !(i + 1).is_multiple_of(self.chunk.max(1)) {
             return true;
         }
         match self.cancel {
             Some(c) => {
-                c.progress().advance(CHUNK as u64);
+                c.progress().advance(self.chunk.max(1) as u64);
                 !c.is_cancelled()
             }
             None => true,
@@ -147,7 +149,7 @@ impl Work<'_> {
     /// A pass over `n` faces ended: the steps of its last, partial chunk.
     fn pass(&self, n: usize) {
         if let Some(c) = self.cancel {
-            c.progress().advance((n % CHUNK) as u64);
+            c.progress().advance((n % self.chunk.max(1)) as u64);
         }
     }
 }
@@ -161,7 +163,7 @@ pub fn quality_steps(faces: u64, all_geometry: bool) -> u64 {
 /// Cell centres and volumes (`primitiveMesh::makeCellCentresAndVols`). Face geometry is
 /// computed on the fly rather than stored: a 16-million-cell mesh has 50 million faces.
 pub fn cell_centres_volumes(mesh: &PolyMesh) -> (Vec<V>, Vec<f64>) {
-    let done = cell_centres_volumes_with(mesh, &Work { cancel: None });
+    let done = cell_centres_volumes_with(mesh, &Work { cancel: None, chunk: CHUNK });
     done.unwrap_or_default()
 }
 
@@ -326,26 +328,38 @@ fn pyramid_volume(apex: V, area: V, centre: V) -> f64 {
 
 /// Runs the checks (see the module documentation).
 pub fn quality(mesh: &PolyMesh) -> Quality {
-    quality_or_stop(mesh, false, &Work { cancel: None }).unwrap_or_default()
+    quality_or_stop(mesh, false, &Work { cancel: None, chunk: CHUNK }).unwrap_or_default()
 }
 
 /// Runs the checks and those `checkMesh -allGeometry` adds ([`Quality::all`]).
 pub fn quality_all(mesh: &PolyMesh) -> Quality {
-    quality_or_stop(mesh, true, &Work { cancel: None }).unwrap_or_default()
+    quality_or_stop(mesh, true, &Work { cancel: None, chunk: CHUNK }).unwrap_or_default()
 }
 
 /// [`quality`] (with `all_geometry`: [`quality_all`]) as a job: it counts the faces it goes
 /// through in `cancel`'s progress ([`quality_steps`] in all) and stops, `None`, soon after
 /// `cancel` is set.
 pub fn quality_with(mesh: &PolyMesh, all_geometry: bool, cancel: &umcf_core::Cancel) -> Option<Quality> {
-    quality_or_stop(mesh, all_geometry, &Work { cancel: Some(cancel) })
+    // Cancelled already: not started (a mesh of fewer faces than a chunk is never checked again).
+    if cancel.is_cancelled() {
+        return None;
+    }
+    quality_or_stop(mesh, all_geometry, &Work { cancel: Some(cancel), chunk: CHUNK })
+}
+
+/// [`quality_with`] stepping and checking every `chunk` faces, and without the check before it
+/// starts: the chunks' own accounting, for tests.
+#[cfg(test)]
+pub(crate) fn quality_in_chunks(
+    mesh: &PolyMesh,
+    all_geometry: bool,
+    cancel: &umcf_core::Cancel,
+    chunk: usize,
+) -> Option<Quality> {
+    quality_or_stop(mesh, all_geometry, &Work { cancel: Some(cancel), chunk })
 }
 
 fn quality_or_stop(mesh: &PolyMesh, all_geometry: bool, work: &Work) -> Option<Quality> {
-    // Cancelled already: not started (a mesh of fewer faces than a chunk is never checked again).
-    if work.cancel.is_some_and(umcf_core::Cancel::is_cancelled) {
-        return None;
-    }
     let (centres, vols) = cell_centres_volumes_with(mesh, work)?;
     let mut q = quality_of(mesh, &centres, &vols, work)?;
     if all_geometry {

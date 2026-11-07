@@ -151,6 +151,26 @@ fn the_quality_passes_count_their_faces_and_stop_when_cancelled() {
 }
 
 #[test]
+fn the_chunks_count_every_face_and_stop_mid_pass() {
+    let m = block([3, 2, 2], false, &|p| p);
+    let n = m.n_faces();
+    // A chunk that doesn't divide the faces: whole chunks and a remainder in each pass.
+    let chunk = 7;
+    assert_ne!(n % chunk, 0, "{n} faces");
+    for all in [false, true] {
+        let cancel = umcf_core::Cancel::new();
+        let q = crate::mesh::quality_in_chunks(&m, all, &cancel, chunk).unwrap();
+        assert_eq!(q, if all { quality_all(&m) } else { quality(&m) });
+        assert_eq!(cancel.progress().get().done, quality_steps(n as u64, all), "all_geometry {all}");
+        // Cancelled before the first pass ends: stopped at its first chunk.
+        let cancel = umcf_core::Cancel::new();
+        cancel.cancel();
+        assert_eq!(crate::mesh::quality_in_chunks(&m, all, &cancel, chunk), None);
+        assert_eq!(cancel.progress().get().done, chunk as u64);
+    }
+}
+
+#[test]
 fn a_regular_block_is_clean() {
     let m = block([3, 2, 2], false, &|p| p);
     let q = quality(&m);
