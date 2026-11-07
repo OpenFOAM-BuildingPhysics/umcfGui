@@ -186,9 +186,9 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 
 The session plans with the memory free when the program starts, as Linux, Windows or macOS
 tell it (on Linux no more than the control groups it runs in leave, with cgroup v2: a
-container, a SLURM job, `systemd-run -p MemoryMax=`; their page cache counts as free), or with
-`UMCF_MEMORY` when that is set to a whole number of megabytes (`UMCF_MEMORY=4000 umcf-gui
-case`; another value is ignored):
+container, a SLURM job, `systemd-run -p MemoryMax=`; the page cache they can drop counts as
+free, shared memory doesn't), or with `UMCF_MEMORY` when that is set to a whole number of
+megabytes (`UMCF_MEMORY=4000 umcf-gui case`; another value is ignored):
 
 - **Half of it for reading at once.** Each region's read is estimated from the counts its
   `owner` header notes: about 32 bytes per point of the mesh and per boundary face, and for a

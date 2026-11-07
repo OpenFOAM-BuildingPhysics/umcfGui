@@ -63,10 +63,10 @@ fn free_memory() -> u64 {
 
 /// What the control groups (v2) the process is in leave free: for each of them from its own up to
 /// the root that sets `memory.max`, the limit less what is used (`memory.current` without the
-/// page cache, `file` in `memory.stat`, which the kernel drops before it runs out), the least of
-/// them. `own` is
-/// `/proc/self/cgroup`, `read` reads a file under `/sys/fs/cgroup`. `None` when none sets a
-/// limit (no cgroup v2, or no limit: a desktop session).
+/// page cache the kernel can drop: `file` less `shmem` in `memory.stat`, as shared memory and
+/// tmpfs stay), the least of them. `own` is `/proc/self/cgroup`, `read` reads a file under
+/// `/sys/fs/cgroup`. `None` when none sets a limit (no cgroup v2, or no limit: a desktop
+/// session).
 ///
 /// This is how a SLURM job's, a container's or a `systemd-run -p MemoryMax=` limit is found,
 /// set on the job's group while the process runs in a group below it.
@@ -86,11 +86,13 @@ fn cgroup_free(own: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> 
         // `max` (no limit) doesn't parse: that group doesn't count.
         if let Some(max) = number(&format!("{dir}/memory.max")) {
             let current = number(&format!("{dir}/memory.current")).unwrap_or(0);
-            let cache = read(&format!("{dir}/memory.stat"))
-                .and_then(|t| {
-                    t.lines().find_map(|l| l.strip_prefix("file ")).and_then(|n| n.trim().parse::<u64>().ok())
-                })
-                .unwrap_or(0);
+            let stat = read(&format!("{dir}/memory.stat")).unwrap_or_default();
+            let entry = |key: &str| {
+                stat.lines()
+                    .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            let cache = entry("file").saturating_sub(entry("shmem"));
             let left = max.saturating_sub(current.saturating_sub(cache));
             least = Some(least.map_or(left, |l| l.min(left)));
         }
@@ -126,10 +128,11 @@ mod tests {
         let read = groups(&[
             (&format!("{job}/memory.max"), "4294967296\n"),
             (&format!("{job}/memory.current"), "1073741824\n"),
-            (&format!("{job}/memory.stat"), "anon 1\nfile 536870912\ninactive_file 2\n"),
+            (&format!("{job}/memory.stat"), "anon 1\nfile 805306368\nshmem 268435456\ninactive_file 2\n"),
             (&format!("{job}/step_0/user/task_0/memory.max"), "max\n"),
         ]);
-        // 4 GB less 1 GB used, of which 0.5 GB is cache it can drop.
+        // 4 GB less 1 GB used, of which 0.75 GB is page cache, 0.25 GB of it shared memory that
+        // stays: 0.5 GB can be dropped.
         assert_eq!(cgroup_free(own, read), Some(3584 << 20));
     }
 
