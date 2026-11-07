@@ -2,8 +2,8 @@
 //! 3D scene keeps of what isn't shown.
 //!
 //! Taken once per process, when the first session starts, from the memory free as Linux,
-//! Windows or macOS tell it (no more than a Linux control group allows: a container, a SLURM
-//! job; 8 GB where it can't be told), or from `UMCF_MEMORY` (a whole number of megabytes) when
+//! Windows or macOS tell it (on Linux no more than the process's control group leaves: a
+//! container, a SLURM job; 8 GB where it can't be told), or from `UMCF_MEMORY` (a whole number of megabytes) when
 //! it is set; another value of it is ignored. Half of it is for reading at once, a quarter for
 //! hidden scene objects. These are plans from estimates, not limits: a single read bigger than
 //! the budget still runs, alone.
@@ -39,20 +39,64 @@ impl Budget {
     }
 }
 
-/// The memory free now, as the system tells it (Linux, Windows, macOS), and no more than the
-/// control group allows where one limits it (Linux: a container, a SLURM job); else
-/// [`FALLBACK`].
+/// The memory free now, as the system tells it (Linux, Windows, macOS), and on Linux no more
+/// than the process's control group leaves (see [`cgroup_free`]); else [`FALLBACK`]. A failure
+/// of the system's crate falls back too: the budget is a plan, never a reason to stop.
 fn free_memory() -> u64 {
-    let mut system = sysinfo::System::new();
-    system.refresh_memory();
-    let free = match system.available_memory() {
-        0 => FALLBACK,
-        n => n,
+    let system = std::panic::catch_unwind(|| {
+        let mut system = sysinfo::System::new();
+        system.refresh_memory();
+        system.available_memory()
+    });
+    let free = match system {
+        Ok(0) | Err(_) => FALLBACK,
+        Ok(n) => n,
     };
-    match system.cgroup_limits() {
-        Some(limits) if limits.free_memory > 0 => free.min(limits.free_memory),
-        _ => free,
+    #[cfg(target_os = "linux")]
+    if let Some(own) = std::fs::read_to_string("/proc/self/cgroup").ok()
+        && let Some(left) = cgroup_free(&own, |p| std::fs::read_to_string(p).ok())
+    {
+        return free.min(left);
     }
+    free
+}
+
+/// What the control groups (v2) the process is in leave free: for each of them from its own up to
+/// the root that sets `memory.max`, the limit less what is used (`memory.current` without the
+/// page cache it can drop, `inactive_file` in `memory.stat`), the least of them. `own` is
+/// `/proc/self/cgroup`, `read` reads a file under `/sys/fs/cgroup`. `None` when none sets a
+/// limit (no cgroup v2, or no limit: a desktop session).
+///
+/// This is how a SLURM job's, a container's or a `systemd-run -p MemoryMax=` limit is found,
+/// set on the job's group while the process runs in a group below it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn cgroup_free(own: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> {
+    const ROOT: &str = "/sys/fs/cgroup";
+    let path = own.lines().find_map(|l| l.strip_prefix("0::"))?.trim().trim_end_matches('/');
+    if path.split('/').any(|part| part == "..") {
+        return None;
+    }
+    let number = |file: &str| read(file).and_then(|t| t.trim().parse::<u64>().ok());
+    let mut dir = format!("{ROOT}{path}");
+    let mut least: Option<u64> = None;
+    loop {
+        // `max` (no limit) doesn't parse: that group doesn't count.
+        if let Some(max) = number(&format!("{dir}/memory.max")) {
+            let current = number(&format!("{dir}/memory.current")).unwrap_or(0);
+            let cache = read(&format!("{dir}/memory.stat"))
+                .and_then(|t| {
+                    t.lines().find_map(|l| l.strip_prefix("inactive_file ")).and_then(|n| n.trim().parse::<u64>().ok())
+                })
+                .unwrap_or(0);
+            let left = max.saturating_sub(current.saturating_sub(cache));
+            least = Some(least.map_or(left, |l| l.min(left)));
+        }
+        match dir.rfind('/') {
+            Some(i) if i >= ROOT.len() => dir.truncate(i),
+            _ => break,
+        }
+    }
+    least
 }
 
 #[cfg(test)]
@@ -63,6 +107,52 @@ mod tests {
     fn the_system_tells_its_free_memory() {
         // Linux, Windows and macOS all tell it; CI runs this on each.
         assert!(free_memory() > 0);
+    }
+
+    /// A tree of control groups as files: `(path, text)`.
+    fn groups(files: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
+        let files: Vec<(String, String)> = files.iter().map(|(p, t)| (p.to_string(), t.to_string())).collect();
+        move |p| files.iter().find(|(q, _)| q == p).map(|(_, t)| t.clone())
+    }
+
+    #[test]
+    fn a_job_limit_above_the_process_group_counts() {
+        // SLURM: the limit is on the job's group, the process runs in a task's group below it.
+        let own = "0::/system.slice/slurmstepd.scope/job_7/step_0/user/task_0\n";
+        let job = "/sys/fs/cgroup/system.slice/slurmstepd.scope/job_7";
+        let read = groups(&[
+            (&format!("{job}/memory.max"), "4294967296\n"),
+            (&format!("{job}/memory.current"), "1073741824\n"),
+            (&format!("{job}/memory.stat"), "anon 1\ninactive_file 536870912\nactive_file 2\n"),
+            (&format!("{job}/step_0/user/task_0/memory.max"), "max\n"),
+        ]);
+        // 4 GB less 1 GB used, of which 0.5 GB is cache it can drop.
+        assert_eq!(cgroup_free(own, read), Some(3584 << 20));
+    }
+
+    #[test]
+    fn the_tightest_group_counts_and_a_full_one_leaves_nothing() {
+        let own = "0::/a/b\n";
+        let read = groups(&[
+            ("/sys/fs/cgroup/a/memory.max", "1000\n"),
+            ("/sys/fs/cgroup/a/memory.current", "100\n"),
+            ("/sys/fs/cgroup/a/b/memory.max", "500\n"),
+            ("/sys/fs/cgroup/a/b/memory.current", "600\n"),
+        ]);
+        assert_eq!(cgroup_free(own, read), Some(0));
+    }
+
+    #[test]
+    fn no_limit_or_no_cgroup_v2_is_none() {
+        // A desktop session: no group sets a limit.
+        let read = groups(&[("/sys/fs/cgroup/user.slice/memory.max", "max\n")]);
+        assert_eq!(cgroup_free("0::/user.slice/user-1000.slice/app.scope\n", read), None);
+        // cgroup v1 only: no `0::` line.
+        assert_eq!(cgroup_free("4:memory:/user.slice\n", groups(&[])), None);
+        // The root group itself.
+        let read = groups(&[("/sys/fs/cgroup/memory.max", "100\n")]);
+        assert_eq!(cgroup_free("0::/\n", read), Some(100));
+        assert_eq!(cgroup_free("0::/../etc\n", groups(&[])), None);
     }
 
     #[test]

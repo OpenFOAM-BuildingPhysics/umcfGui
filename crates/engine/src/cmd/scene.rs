@@ -1219,6 +1219,40 @@ mod tests {
         }
     }
 
+    /// An `owner` header in `format`, noting `points` points and 50 faces, 40 internal.
+    fn owner(format: &str, points: u64) -> String {
+        format!(
+            "FoamFile\n{{\n    version 2.0;\n    format {format};\n    class labelList;\n    note \"nPoints:{points} nCells:9 nFaces:50 nInternalFaces:40\";\n    object owner;\n}}\n"
+        )
+    }
+
+    #[test]
+    fn the_read_estimate_follows_the_mesh_format() {
+        let d = "constant/air/polyMesh";
+        let faces = vec![b'x'; 1000];
+        // ASCII: streamed, 32 bytes per point and per boundary face.
+        let mut fs = umcf_core::MemFs::new();
+        fs.insert(&format!("{d}/owner"), owner("ascii", 100));
+        fs.insert(&format!("{d}/faces"), faces.clone());
+        assert_eq!(mesh_need(&fs, "air"), 100 * 32 + 10 * 32);
+        // Binary: read whole: 24 more per point, and the faces file.
+        fs.insert(&format!("{d}/owner"), owner("binary", 100));
+        assert_eq!(mesh_need(&fs, "air"), 100 * 32 + 10 * 32 + 100 * 24 + 1000);
+        // Compressed faces: four times their size.
+        let mut gz = umcf_core::MemFs::new();
+        gz.insert(&format!("{d}/owner"), owner("binary", 100));
+        gz.insert(&format!("{d}/faces.gz"), faces.clone());
+        assert_eq!(mesh_need(&gz, "air"), 100 * 32 + 10 * 32 + 100 * 24 + 4000);
+        // No counts (an owner without a header): from the file sizes.
+        let mut sizes = umcf_core::MemFs::new();
+        sizes.insert(&format!("{d}/owner"), "3(0 0 1)\n");
+        sizes.insert(&format!("{d}/points.gz"), vec![0u8; 300]);
+        sizes.insert(&format!("{d}/faces"), faces);
+        assert_eq!(mesh_need(&sizes, "air"), 300 * 4 * 2 + 1000);
+        // Nothing there: nothing planned.
+        assert_eq!(mesh_need(&umcf_core::MemFs::new(), "air"), 0);
+    }
+
     #[test]
     fn a_failing_or_panicking_job_fails_the_whole() {
         let jobs: Vec<(u64, Job<'_, u32>)> = vec![

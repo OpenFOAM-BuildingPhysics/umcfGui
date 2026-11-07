@@ -185,7 +185,8 @@ walls.png: 1280 × 800 of surface constant/triSurface/walls.stl (320948 triangle
 ## Memory
 
 The session plans with the memory free when the program starts, as Linux, Windows or macOS
-tell it (on Linux no more than its control group allows: a container, a SLURM job), or with
+tell it (on Linux no more than the control groups it runs in leave, with cgroup v2: a
+container, a SLURM job, `systemd-run -p MemoryMax=`; page cache they can drop counts as free), or with
 `UMCF_MEMORY` when that is set to a whole number of megabytes (`UMCF_MEMORY=4000 umcf-gui
 case`; another value is ignored):
 
