@@ -196,6 +196,15 @@ fn read_file(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<
     Ok(None)
 }
 
+/// The cell zones of the mesh in `dir` (`cellZones`, or `cellZones.gz`), without the rest of
+/// the mesh; `None` when it has none.
+pub fn read_cell_zones(fs: &dyn CaseFs, dir: &str, limits: &Limits) -> Result<Option<Vec<Zone>>> {
+    match read_file(fs, dir, "cellZones", limits)? {
+        Some((path, bytes)) => Ok(Some(parse_zones(&path, &bytes, limits)?)),
+        None => Ok(None),
+    }
+}
+
 /// The bytes of `dir/name` or `dir/name.gz`, decompressed; an error when neither exists.
 fn require(fs: &dyn CaseFs, dir: &str, name: &str, limits: &Limits) -> Result<(String, Vec<u8>)> {
     read_file(fs, dir, name, limits)?.ok_or_else(|| Error::Missing { file: format!("{dir}/{name}") })

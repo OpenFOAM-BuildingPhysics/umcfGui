@@ -128,6 +128,40 @@ pub struct Region {
     pub counts: umcf_foam_mesh::Counts,
     /// The fields of the initial time directory, by name.
     pub fields: Vec<FieldInfo>,
+    /// A solid region's cell zones (`cellZones` of the mesh the run reads; none without the
+    /// file), which its materials are assigned to, read with the start-time fields: `None` for
+    /// other regions, without a mesh, until the fields are read, or when the file couldn't be
+    /// read (a note says why). Shared, so copies of the case cost nothing.
+    pub cell_zones: Option<Arc<Vec<umcf_foam_mesh::Zone>>>,
+    /// Where a solid region's zones are read from (the mesh the run reads), `None` for other
+    /// regions and without a mesh.
+    pub zones_from: Option<String>,
+}
+
+/// The cell zones of the mesh in `dir` (none without the file), within the cap on a field file:
+/// they are labels per cell, as big as a field (none read with a cap of 0). A file that can't be
+/// read is a note.
+fn solid_zones(
+    fs: &dyn CaseFs,
+    dir: &str,
+    options: OpenOptions,
+    notes: &mut Vec<Note>,
+) -> Option<Arc<Vec<umcf_foam_mesh::Zone>>> {
+    if options.field_bytes == 0 {
+        return None;
+    }
+    let limits = umcf_foam_mesh::Limits { max_bytes: options.field_bytes, ..Default::default() };
+    match umcf_foam_mesh::read_cell_zones(fs, dir, &limits) {
+        Ok(z) => Some(Arc::new(z.unwrap_or_default())),
+        Err(e) => {
+            notes.push(note(
+                Severity::Info,
+                format!("{dir}/cellZones"),
+                format!("{e}: the materials' cell zones are not checked"),
+            ));
+            None
+        }
+    }
 }
 
 impl Region {
@@ -526,6 +560,9 @@ pub struct Case {
     /// Where in [`Case::notes`] the fields' notes go when they are read later: where reading
     /// them at open would have put them.
     field_notes_at: usize,
+    /// Where the solids' cell zone notes go among the notes (after the regions'), as for
+    /// `field_notes_at`.
+    zone_notes_at: usize,
     /// The paths in the case when it was opened (see [`Case::exists`]).
     paths: std::collections::BTreeSet<String>,
     files: BTreeMap<String, Arc<Document>>,
@@ -748,6 +785,8 @@ impl Case {
         };
         let mut fields = read_fields(fs, &field_dirs, options, None, &mut notes)?.into_iter();
         let field_notes_at = notes.len();
+        // The zones' notes after every region's (as a deferred read puts them).
+        let mut zone_notes = Vec::new();
         let mut out = Vec::new();
         for (name, kind) in regions {
             let mesh = umcf_foam_mesh::mesh_dir(&name);
@@ -786,10 +825,20 @@ impl Case {
                     Default::default()
                 }
             };
+            // A solid's materials go by cell zone (solid/updatebuildingMaterials.H): read with
+            // the fields, which a deferred open reads later.
+            let meshed = patches.is_some() || counts.cells.is_some();
+            let zones_from = (kind == RegionKind::Solid && meshed).then(|| mesh_owner.clone());
+            let cell_zones = match &zones_from {
+                Some(dir) if !options.defer_fields => solid_zones(fs, dir, options, &mut zone_notes),
+                _ => None,
+            };
             let fields = fields.next().unwrap_or_default();
-            out.push(Region { name, kind, patches, counts, fields });
+            out.push(Region { name, kind, patches, counts, fields, cell_zones, zones_from });
         }
 
+        let zone_notes_at = notes.len();
+        notes.append(&mut zone_notes);
         let scripts = read_scripts(fs, options, &mut notes)?;
         let paths = snapshot(fs)?;
         let disk = Arc::new(std::sync::Mutex::new(DiskState {
@@ -812,6 +861,7 @@ impl Case {
             scripts,
             fields_pending,
             field_notes_at,
+            zone_notes_at,
             paths,
             files,
             raw: BTreeMap::new(),
@@ -846,12 +896,20 @@ impl Case {
         let options = OpenOptions { defer_fields: false, ..self.options };
         let mut notes = Vec::new();
         let read = read_fields(fs, &dirs, options, progress, &mut notes)?;
+        let mut zone_notes = Vec::new();
         for (region, fields) in self.regions.iter_mut().zip(read) {
             region.fields = fields;
+            if let Some(dir) = &region.zones_from {
+                region.cell_zones = solid_zones(fs, dir, options, &mut zone_notes);
+            }
         }
-        // In the order reading them at open gives.
+        // In the order reading them at open gives: the fields' notes, then (after the regions'
+        // notes, moved on by those) the zones'.
+        let shift = notes.len();
         let at = self.field_notes_at.min(self.notes.len());
         self.notes.splice(at..at, notes);
+        let at = (self.zone_notes_at + shift).min(self.notes.len());
+        self.notes.splice(at..at, zone_notes);
         self.fields_pending = false;
         Ok(true)
     }
@@ -875,6 +933,7 @@ impl Case {
         for region in &mut self.regions {
             if let Some(r) = read.regions.iter().find(|r| r.name == region.name) {
                 region.fields = r.fields.clone();
+                region.cell_zones = r.cell_zones.clone();
             }
         }
         self.notes = read.notes.clone();

@@ -1131,3 +1131,24 @@ fn a_skipped_face_too_large_makes_the_whole_readers_error() {
     assert!(matches!(stream::face_list_from(&mut s, 1, &l), Err(Error::Bad { .. })));
     assert!(open("f", faces.as_bytes()).unwrap().1.face_list_from(&l, 1).is_err());
 }
+
+#[test]
+fn cell_zones_alone() {
+    use std::io::Write;
+    let d = "constant/polyMesh";
+    // None without the file; the zones in order, also from cellZones.gz.
+    assert_eq!(read_cell_zones(&MemFs::new(), d, &Limits::default()).unwrap(), None);
+    let zones =
+        read_cell_zones(&MemFs::new().with(&format!("{d}/cellZones"), ZONES), d, &Limits::default()).unwrap().unwrap();
+    assert_eq!(
+        zones.iter().map(|z| (z.name.as_str(), z.cells.clone())).collect::<Vec<_>>(),
+        [("left", vec![0]), ("both", vec![0, 1])]
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(ZONES.as_bytes()).unwrap();
+    let fs = MemFs::new().with(&format!("{d}/cellZones.gz"), gz.finish().unwrap());
+    assert_eq!(read_cell_zones(&fs, d, &Limits::default()).unwrap().unwrap(), zones);
+    // Over the byte limit: an error, not a partial list.
+    let small = Limits { max_bytes: 16, ..Limits::default() };
+    assert!(read_cell_zones(&MemFs::new().with(&format!("{d}/cellZones"), ZONES), d, &small).is_err());
+}

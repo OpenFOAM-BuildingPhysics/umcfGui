@@ -18,6 +18,15 @@ fn boundary(patches: &[String]) -> String {
     format!("{}{}\n(\n{})\n", header("polyBoundaryMesh"), patches.len(), patches.concat())
 }
 
+/// A `cellZones` file: each zone's name and its `cellLabels` list.
+fn zones(list: &[(&str, &str)]) -> String {
+    let body: String = list
+        .iter()
+        .map(|(n, cells)| format!("{n}\n{{\n    type cellZone;\n    cellLabels List<label> {cells};\n}}\n"))
+        .collect();
+    format!("{}{}\n(\n{body})\n", header("regIOobject"), list.len())
+}
+
 fn field(class: &str, bcs: &str) -> String {
     format!("{}dimensions [0 0 0 1 0 0 0];\ninternalField uniform 300;\nboundaryField\n{{\n{bcs}}}\n", header(class))
 }
@@ -69,6 +78,8 @@ fn case() -> MemFs {
         .with("system/controlDict", format!("{}{CONTROL}", header("dictionary")))
         .with("constant/air/polyMesh/boundary", air)
         .with("constant/street/polyMesh/boundary", street)
+        // The material's cells (the street's material is `brick`).
+        .with("constant/street/polyMesh/cellZones", zones(&[("brick", "2(0 1)")]))
         .with("constant/vegetation/polyMesh/boundary", vegetation)
         .with("constant/air/fvModels", format!("{}\n", header("dictionary")))
         .with(
@@ -445,6 +456,7 @@ fn of8_case() -> MemFs {
         "constant/regionProperties",
         "constant/air/polyMesh/boundary",
         "constant/street/polyMesh/boundary",
+        "constant/street/polyMesh/cellZones",
         "constant/vegetation/polyMesh/boundary",
         "constant/air/vegetationProperties",
         "constant/street/transportProperties",
@@ -1726,4 +1738,191 @@ fn what_a_case_needs_from_its_regions_and_patches() {
     edit(&mut fs, "constant/street/polyMesh/boundary", "type mappedWall;", "type wall;");
     edit(&mut fs, "0/street/Ts", "CFDHAMsolidTemperatureCoupledMixed", "CFDHAMsolidTemperatureTransferCoeffInterior");
     assert!(!has(&fs, "bc.patch-type"), "{:?}", errors(&fs));
+}
+
+/// A solid's materials against its cell zones, as the solver assigns them.
+#[test]
+fn every_cell_of_a_solid_has_one_material() {
+    let only = |fs: &MemFs| errors(fs).iter().map(|d| d.code).collect::<Vec<_>>();
+    let materials = |list: &str| format!("{}buildingMaterials\n(\n{list});\n", header("dictionary"));
+    let material = |name: &str| format!("    {{ name {name}; buildingMaterialModel Hamstad5Brick; }}\n");
+    // Four cells, from the owner header's note.
+    let mut fs = case();
+    fs.insert(
+        "constant/street/polyMesh/owner",
+        "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nPoints:10 nCells:4 nFaces:12 nInternalFaces:3\";\n}\n0()\n",
+    );
+    // brick has cells 0 and 1: 2 and 3 have no material.
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-cover"]);
+    assert!(e[0].message.contains("2 of the 4 cells") && e[0].message.contains("cell 2 first"), "{}", e[0].message);
+    assert_eq!((e[0].path.as_str(), e[0].region.as_deref()), ("constant/street/transportProperties", Some("street")));
+    // A second material for the rest; zones no material names don't count.
+    fs.insert(
+        "constant/street/polyMesh/cellZones",
+        zones(&[("brick", "2(0 1)"), ("concrete", "2(2 3)"), ("all", "4(0 1 2 3)")]),
+    );
+    fs.insert("constant/street/transportProperties", materials(&(material("brick") + &material("concrete"))));
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    // A cell in two materials' zones.
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "2(0 1)"), ("concrete", "3(1 2 3)")]));
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-overlap"]);
+    assert!(e[0].message.contains("cell 1") && e[0].message.contains("`brick` and `concrete`"), "{}", e[0].message);
+    // A material listed twice.
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "4(0 1 2 3)")]));
+    fs.insert("constant/street/transportProperties", materials(&(material("brick") + &material("brick"))));
+    assert_eq!(only(&fs), ["case.material-overlap"]);
+    // A material without a zone of its name (and coverage then not judged: brick's zone has
+    // half the cells).
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "2(0 1)")]));
+    fs.insert("constant/street/transportProperties", materials(&(material("brick") + &material("glass"))));
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-zone"]);
+    assert!(e[0].message.contains("`glass`"), "{}", e[0].message);
+    // A cell listed twice in one zone.
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "4(0 1 1 3)")]));
+    fs.insert("constant/street/transportProperties", materials(&material("brick")));
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-overlap"]);
+    assert!(e[0].message.contains("lists cell 1 twice"), "{}", e[0].message);
+    // A cell past the region's: the solver indexes past its cells.
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "4(0 1 2 99)")]));
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-zone"]);
+    assert!(e[0].message.contains("cell 99") && e[0].message.contains("4 cells"), "{}", e[0].message);
+    // A zone name given twice: the first counts, as OpenFOAM finds it.
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "4(0 1 2 3)"), ("brick", "1(0)")]));
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "1(0)"), ("brick", "4(0 1 2 3)")]));
+    assert_eq!(only(&fs), ["case.material-cover"]);
+    // A list given by a macro, or a name by a directive, can't be judged.
+    fs.insert(
+        "constant/street/transportProperties",
+        format!("{}mats\n(\n{});\nbuildingMaterials $mats;\n", header("dictionary"), material("brick")),
+    );
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    fs.insert("constant/street/transportProperties", materials(&material("#calc \"brick\"")));
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    // No cellZones file at all: every material lacks its zone.
+    let mut fs = case();
+    fs.remove("constant/street/polyMesh/cellZones");
+    assert_eq!(only(&fs), ["case.material-zone"]);
+    // A name given by a macro can't be judged: no coverage finding from it.
+    let mut fs = case();
+    fs.insert(
+        "constant/street/polyMesh/owner",
+        "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nCells:4\";\n}\n0()\n",
+    );
+    fs.insert(
+        "constant/street/transportProperties",
+        format!(
+            "{}m brick;\nbuildingMaterials\n(\n    {{ name $m; buildingMaterialModel Hamstad5Brick; }}\n);\n",
+            header("dictionary")
+        ),
+    );
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    // What the solver stops on first, in its order (the materials in order, each zone's cells in
+    // order), with four cells noted.
+    let first = |zs: &[(&str, &str)], list: &[&str]| {
+        let mut fs = case();
+        fs.insert(
+            "constant/street/polyMesh/owner",
+            "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nCells:4\";\n}\n0()\n",
+        );
+        fs.insert("constant/street/polyMesh/cellZones", zones(zs));
+        fs.insert(
+            "constant/street/transportProperties",
+            materials(&list.iter().map(|m| material(m)).collect::<String>()),
+        );
+        errors(&fs).into_iter().map(|d| (d.code, d.message)).collect::<Vec<_>>()
+    };
+    let says = |e: &[(&str, String)], code: &str, text: &str| {
+        assert!(e.len() == 1 && e[0].0 == code && e[0].1.contains(text), "{e:?}");
+    };
+    // A cell three times: the second time.
+    says(&first(&[("brick", "4(0 0 0 1)")], &["brick"]), "case.material-overlap", "lists cell 0 twice");
+    // A cell past the region's before a cell twice, and after.
+    says(&first(&[("brick", "4(9 0 0 1)")], &["brick"]), "case.material-zone", "cell 9");
+    says(&first(&[("brick", "4(0 0 9 1)")], &["brick"]), "case.material-overlap", "cell 0 twice");
+    // Two materials' zones meeting before a cell twice in one zone, and after.
+    says(
+        &first(&[("brick", "2(0 1)"), ("glass", "3(1 2 2)")], &["brick", "glass"]),
+        "case.material-overlap",
+        "`brick` and `glass`",
+    );
+    says(
+        &first(&[("brick", "2(0 1)"), ("glass", "3(2 2 1)")], &["brick", "glass"]),
+        "case.material-overlap",
+        "lists cell 2 twice",
+    );
+    // The solver stops at a material without a zone: an overlap after it isn't reached.
+    says(
+        &first(&[("brick", "2(0 1)"), ("glass", "2(1 2)")], &["stone", "brick", "glass"]),
+        "case.material-zone",
+        "`stone`",
+    );
+    // A material listed many times costs one pass over its zone.
+    let many = vec!["brick"; 1000];
+    says(&first(&[("brick", "4(0 1 2 3)")], &many), "case.material-overlap", "listed twice");
+    // Many materials and zones stay quick: names are looked up, not scanned for each other. Four
+    // times as many take about four times as long, not sixteen (a scan of 60 000 names for each
+    // takes seconds in a debug build); a ratio, so a loaded machine slows both alike.
+    let timed = |n: usize| {
+        let names: Vec<String> = (0..n).map(|i| format!("m{i}")).collect();
+        let cells: Vec<String> = (0..n).map(|i| format!("1({i})")).collect();
+        let zs: Vec<(&str, &str)> = names.iter().map(String::as_str).zip(cells.iter().map(String::as_str)).collect();
+        let mut fs = case();
+        fs.insert(
+            "constant/street/polyMesh/owner",
+            format!("FoamFile\n{{\n    format ascii;\n    class labelList;\n    note \"nCells:{n}\";\n}}\n0()\n"),
+        );
+        fs.insert("constant/street/polyMesh/cellZones", zones(&zs));
+        fs.insert(
+            "constant/street/transportProperties",
+            materials(&names.iter().map(|m| material(m)).collect::<String>()),
+        );
+        let c = Case::open(&complete(&fs)).unwrap();
+        let checked = || {
+            let d = check(&c);
+            assert!(
+                d.iter().all(|d| !d.code.starts_with("case.material")),
+                "{:?}",
+                d.iter().take(3).collect::<Vec<_>>()
+            );
+        };
+        // Timed only off wasm, where there is a clock; the findings are checked everywhere.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[allow(clippy::disallowed_methods)]
+            let t = std::time::Instant::now();
+            checked();
+            t.elapsed().as_secs_f64()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            checked();
+            0.0
+        }
+    };
+    let (small, large) = (timed(15_000), timed(60_000));
+    assert!(large < 8.0 * small + 0.2, "15 000 in {small:.3} s, 60 000 in {large:.3} s");
+    // Without a cell count, overlaps are still found (coverage isn't judged).
+    let mut fs = case();
+    fs.insert("constant/street/polyMesh/cellZones", zones(&[("brick", "2(0 1)"), ("concrete", "1(1)")]));
+    fs.insert("constant/street/transportProperties", materials(&(material("brick") + &material("concrete"))));
+    assert_eq!(only(&fs), ["case.material-overlap"]);
+    // A huge count noted in the header costs nothing: only the zones' labels are looked at.
+    let mut fs = case();
+    fs.insert(
+        "constant/street/polyMesh/owner",
+        "FoamFile\n{\n    format ascii;\n    class labelList;\n    note \"nCells:4000000000\";\n}\n0()\n",
+    );
+    let e = errors(&fs);
+    assert_eq!(only(&fs), ["case.material-cover"]);
+    assert!(e[0].message.contains("3999999998 of the 4000000000 cells"), "{}", e[0].message);
+    // The same in OpenFOAM-8.
+    let mut of8 = of8_case();
+    of8.insert("constant/street/transportProperties", materials(&material("stone")));
+    assert!(errors(&of8).iter().any(|d| d.code == "case.material-zone"), "{:?}", errors(&of8));
 }
