@@ -294,8 +294,8 @@ impl Viewport {
     /// The view as last drawn, over `rect`, while its scene is built: the image and the triad.
     pub fn paint_last(&self, ui: &mut egui::Ui, rect: Rect, tokens: &Tokens) {
         self.paint_image(ui.painter(), rect);
-        // The triad stays (it would blink for the frames the scene takes); a click on it waits
-        // for the scene.
+        // The triad stays (it would blink for the frames the scene takes); a click on it in
+        // those frames does nothing.
         if let Some(cam) = self.camera {
             let _ = self.triad(ui, rect, &cam, tokens);
         }

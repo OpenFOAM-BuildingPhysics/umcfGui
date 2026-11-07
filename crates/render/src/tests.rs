@@ -602,3 +602,34 @@ fn a_layer_nearly_opaque_is_drawn_as_it_is_opaque() {
     }
     assert!(last > 1000, "{last}");
 }
+
+#[test]
+fn transparent_layers_in_the_same_place_give_the_same_nearest_everywhere() {
+    use crate::raster::{ColourBy, Display, Mode};
+    // A square twice in the same place, split along one diagonal and along the other (as the
+    // faces of two regions on their interface), half transparent, each in its own colour: the
+    // first is the nearest on every pixel, as where both are split alike (no outline along the
+    // diagonals, no triangles of the one or the other).
+    let square = |other: bool| {
+        let v = |p: [f32; 3]| format!("vertex {} {} {}\n", p[0], p[1], p[2]);
+        let tri = |a, b, c| format!("facet normal 0 0 1\nouter loop\n{}{}{}endloop\nendfacet\n", v(a), v(b), v(c));
+        let [a, b, c, d] = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0]];
+        let (t1, t2) = if other { (tri(a, b, d), tri(b, c, d)) } else { (tri(a, b, c), tri(a, c, d)) };
+        let text = format!("solid q\n{t1}{t2}endsolid q\n");
+        umcf_geom::stl::read(text.as_bytes(), &umcf_geom::stl::Limits::default()).unwrap()
+    };
+    let draw_pair = |other: bool| {
+        let mut s = Scene::new(Vec3::new(2.0, 2.0, 0.0));
+        s.objects.push(Object::from_stl("a.stl", &square(false), s.origin));
+        s.objects.push(Object::from_stl("b.stl", &square(other), s.origin));
+        let cam = Camera::fit(View::Iso, &s.bbox().unwrap(), 1.0);
+        let mut st = Style { width: 120, height: 120, colour_by: ColourBy::Object, ..Style::default() };
+        for k in 0..2 {
+            st.display.insert((k, 0), Display { mode: Mode::Surface, opacity: 0.5 });
+        }
+        draw(&s, &cam, &st).rgba
+    };
+    let (alike, crossed) = (draw_pair(false), draw_pair(true));
+    let off = alike.chunks(4).zip(crossed.chunks(4)).filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > 4)).count();
+    assert!(off < 10, "{off} pixels differ");
+}

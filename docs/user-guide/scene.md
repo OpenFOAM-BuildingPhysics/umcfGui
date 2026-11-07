@@ -94,7 +94,9 @@ umcf-cli run --case my-case \
 
 Opaque surfaces are drawn first. Edges and points go over them where nothing opaque is in front,
 and transparent surfaces last, the farthest first, each blended over what is behind it; the
-nearest on each pixel is found first and blended last, so that it is exact. The outlines where
+nearest on each pixel is found first and blended last, so that it is exact (of layers in the
+same place, as the faces of two regions on their interface, the first region's, on every
+pixel). The outlines where
 one class meets another are drawn on the nearest transparent layer too, as much as it covers what
 is behind it: at an opacity near 1 a layer is drawn as it is opaque.
 

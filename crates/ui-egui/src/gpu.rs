@@ -104,7 +104,9 @@ struct Obj {
 @group(1) @binding(4) var<uniform> obj: Obj;
 
 struct Out {
-    @builtin(position) pos: vec4<f32>,
+    // Invariant: the transparent layers' passes find the nearest layer's pixels again by their
+    // depth.
+    @builtin(position) @invariant pos: vec4<f32>,
     @location(0) @interpolate(flat) colour: vec4<f32>,
     @location(1) @interpolate(flat) id: u32,
     // The triangle's corners on the image (pixels from its top left): the first two, the third.
@@ -130,6 +132,9 @@ struct Pixel {
 // transparent layers' pass.
 @group(2) @binding(1) var glass_depths: texture_2d<u32>;
 @group(2) @binding(2) var glass_ids: texture_2d<u32>;
+// The nearest depth of a transparent layer on each pixel (bits), for the pass that finds which
+// is the nearest.
+@group(2) @binding(3) var glass_near: texture_2d<u32>;
 
 // Point `k`, in view coordinates.
 fn at(k: u32) -> vec3<f32> {
@@ -372,23 +377,43 @@ fn fs_mark(in: Mark) -> @location(0) vec4<f32> {
     return in.colour;
 }
 
-// The nearest transparent layer on each pixel, first (a pass of its own, nearest by the depth
-// buffer): its depth (the bits of near / distance) and its id. Seen where no surface is nearer.
-struct GlassFront {
-    @location(0) depth: u32,
-    @location(1) id: u32,
-};
-
+// The nearest transparent layer on each pixel, first, in two passes of their own. The first
+// finds its depth (the bits of near / distance), the nearest by the depth buffer. The second
+// takes, of the layers within AHEAD of it, the one of the lowest id (its depth: the id), so
+// that layers in the same place (the faces of two regions on their interface) give the same one
+// on every pixel, not one or the other by the last bit of their depths, as the CPU view: its
+// depth, id and opacity. Seen where no surface is nearer.
 @fragment
-fn fs_glass_front(in: Out) -> GlassFront {
+fn fs_glass_near(in: Out) -> @location(0) u32 {
     let d = view.lens.z / in.z;
     let under = bitcast<f32>(textureLoad(depths, vec2<i32>(in.pos.xy), 0).r);
     if !(in.colour.a > 0.0) || !(d > under) {
         discard;
     }
-    var out: GlassFront;
+    return bitcast<u32>(d);
+}
+
+struct GlassWhich {
+    @location(0) depth: u32,
+    @location(1) id: u32,
+    @location(2) alpha: u32,
+    @builtin(frag_depth) order: f32,
+};
+
+@fragment
+fn fs_glass_which(in: Out) -> GlassWhich {
+    let d = view.lens.z / in.z;
+    let p = vec2<i32>(in.pos.xy);
+    let under = bitcast<f32>(textureLoad(depths, p, 0).r);
+    let near = bitcast<f32>(textureLoad(glass_near, p, 0).r);
+    if !(in.colour.a > 0.0) || !(d > under) || !(d * (1.0 + AHEAD) >= near) {
+        discard;
+    }
+    var out: GlassWhich;
     out.depth = bitcast<u32>(d);
     out.id = in.id;
+    out.alpha = bitcast<u32>(in.colour.a);
+    out.order = min(f32(in.id) / 16777216.0, 1.0);
     return out;
 }
 
@@ -563,6 +588,7 @@ const OUTLINES: &str = r#"
 // The nearest transparent layer: its colour (times its opacity) and opacity, and its id.
 @group(0) @binding(4) var front: texture_2d<f32>;
 @group(0) @binding(5) var glass_ids: texture_2d<u32>;
+@group(0) @binding(6) var glass_alphas: texture_2d<u32>;
 
 // Whether pixel `p` is on an outline: a class (not 0) whose neighbour differs; of the opaque
 // surfaces (`glass` false) or of the nearest transparent layer.
@@ -598,11 +624,12 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if covered > 0.0 && sum.a > 0.0 && all(abs(sum) < vec4<f32>(65000.0)) {
         c = vec4<f32>(sum.rgb / sum.a * covered + c.rgb * (1.0 - covered), 1.0);
     }
-    // The nearest layer over that, as the CPU view blends it.
+    // The nearest layer over that, as the CPU view blends it: its colour (the mean of its
+    // fragments', a triangle given twice counted once), its opacity.
     let f = textureLoad(front, p, 0);
     var a = 0.0;
     if textureLoad(glass_ids, p, 0).r != 0u && f.a > 0.0 && all(abs(f) < vec4<f32>(65000.0)) {
-        a = min(f.a, 1.0);
+        a = clamp(bitcast<f32>(textureLoad(glass_alphas, p, 0).r), 0.0, 1.0);
         c = vec4<f32>(f.rgb / f.a * a + c.rgb * (1.0 - a), 1.0);
     }
     // Outlines: the opaque surfaces', and the nearest layer's as much as it covers them (as
@@ -787,15 +814,20 @@ pub struct Target {
     /// opacity; and what the transparent layers' pass reads.
     glass_depths: wgpu::TextureView,
     glass_ids: wgpu::TextureView,
+    glass_alphas: wgpu::TextureView,
+    glass_near: wgpu::TextureView,
     front: wgpu::TextureView,
     glass: wgpu::BindGroup,
+    which: wgpu::BindGroup,
     depth: wgpu::TextureView,
     outline: wgpu::BindGroup,
 }
 
-/// The transparent layers' pipelines: the nearest on each pixel, then all of them.
+/// The transparent layers' pipelines: the nearest on each pixel (its depth, then which), then
+/// all of them.
 struct GlassPipelines {
-    front: wgpu::RenderPipeline,
+    near: wgpu::RenderPipeline,
+    which: wgpu::RenderPipeline,
     layers: wgpu::RenderPipeline,
 }
 
@@ -821,6 +853,7 @@ pub struct Gpu {
     object_layout: wgpu::BindGroupLayout,
     depths_layout: wgpu::BindGroupLayout,
     glass_layout: wgpu::BindGroupLayout,
+    which_layout: wgpu::BindGroupLayout,
     outline_layout: wgpu::BindGroupLayout,
     view_buffer: wgpu::Buffer,
     view_group: wgpu::BindGroup,
@@ -943,6 +976,7 @@ impl Gpu {
                 texture(3, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Float { filterable: false }),
                 texture(4, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Float { filterable: false }),
                 texture(5, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint),
+                texture(6, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint),
             ],
         });
         let layout_of = |label, groups: &[Option<&wgpu::BindGroupLayout>]| {
@@ -969,6 +1003,18 @@ impl Gpu {
         });
         let glass_pipeline_layout =
             layout_of("umcf transparent layers", &[Some(&view_layout), Some(&object_layout), Some(&glass_layout)]);
+        // Which is the nearest reads the surfaces' depths and the nearest depth.
+        let which_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("umcf nearest transparent layer"),
+            entries: &[
+                texture(0, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint),
+                texture(3, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Uint),
+            ],
+        });
+        let which_pipeline_layout = layout_of(
+            "umcf nearest transparent layer",
+            &[Some(&view_layout), Some(&object_layout), Some(&which_layout)],
+        );
         let back_layout = layout_of("umcf background", &[Some(&view_layout)]);
         let outline_pipeline_layout = layout_of("umcf outlines", &[Some(&outline_layout)]);
         let targets = [
@@ -1086,38 +1132,53 @@ impl Gpu {
                 operation: wgpu::BlendOperation::Add,
             };
             let add = Some(wgpu::BlendState { color: add, alpha: add });
-            // The nearest layer on each pixel: its depth and id, the nearest by the depth buffer
-            // (a pass of its own, its depth cleared).
-            let front = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("umcf nearest transparent layer"),
-                layout: Some(&marks_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Greater),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs_glass_front"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[
-                        Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL }),
-                        Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL }),
-                    ],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
+            // The nearest layer on each pixel: its depth (the nearest by the depth buffer), then
+            // which (the lowest id by the depth buffer), each a pass of its own, the depth cleared.
+            let id_target =
+                Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::ALL });
+            let find = |label, layout, fs, compare, targets: &[Option<wgpu::ColorTargetState>]| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(compare),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fs),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        targets,
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let near = find(
+                "umcf nearest transparent depth",
+                &marks_layout,
+                "fs_glass_near",
+                wgpu::CompareFunction::Greater,
+                std::slice::from_ref(&id_target),
+            );
+            let which = find(
+                "umcf nearest transparent layer",
+                &which_pipeline_layout,
+                "fs_glass_which",
+                wgpu::CompareFunction::Less,
+                &[id_target.clone(), id_target.clone(), id_target.clone()],
+            );
             let layers = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("umcf transparent layers"),
                 layout: Some(&glass_pipeline_layout),
@@ -1147,7 +1208,7 @@ impl Gpu {
                 multiview_mask: None,
                 cache: None,
             });
-            GlassPipelines { front, layers }
+            GlassPipelines { near, which, layers }
         });
         let back =
             pipeline("umcf background", &back_layout, "vs_back", "fs_back", wgpu::CompareFunction::Always, none, None);
@@ -1279,6 +1340,7 @@ impl Gpu {
             object_layout,
             depths_layout,
             glass_layout,
+            which_layout,
             outline_layout,
             view_buffer,
             view_group,
@@ -1581,15 +1643,20 @@ impl Gpu {
                 })
             };
             let none = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
-            {
-                // The nearest layer on each pixel first (none: id 0).
+            // The nearest layer on each pixel first (none: id 0): its depth, then which.
+            for (step, view, far) in [(0, &target.glass_near, 0.0), (1, &target.glass_depths, 1.0)] {
+                let colours = if step == 0 {
+                    vec![clear(view, none)]
+                } else {
+                    vec![clear(view, none), clear(&target.glass_ids, none), clear(&target.glass_alphas, none)]
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("umcf nearest transparent layer"),
-                    color_attachments: &[clear(&target.glass_depths, none), clear(&target.glass_ids, none)],
+                    color_attachments: &colours,
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &target.depth,
                         depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0.0),
+                            load: wgpu::LoadOp::Clear(far),
                             store: wgpu::StoreOp::Discard,
                         }),
                         stencil_ops: None,
@@ -1599,9 +1666,14 @@ impl Gpu {
                     multiview_mask: None,
                 });
                 if let Some(glass) = &self.glass {
-                    pass.set_pipeline(&glass.front);
+                    if step == 0 {
+                        pass.set_pipeline(&glass.near);
+                        pass.set_bind_group(2, &target.marks, &[]);
+                    } else {
+                        pass.set_pipeline(&glass.which);
+                        pass.set_bind_group(2, &target.which, &[]);
+                    }
                     pass.set_bind_group(0, &self.view_group, &[]);
-                    pass.set_bind_group(2, &target.marks, &[]);
                     for (k, obj) in scene.objects.iter().enumerate() {
                         let Some(up) = self.objects.get(&obj.id()).filter(|_| has_glass(scene, k, style)) else {
                             continue;
@@ -1695,6 +1767,8 @@ impl Gpu {
         let front = view_of_texture(&make("umcf nearest transparent layer", sums_format, drawn));
         let glass_depths = view_of_texture(&make("umcf nearest transparent depths", ID, drawn));
         let glass_ids = view_of_texture(&make("umcf nearest transparent ids", ID, drawn));
+        let glass_alphas = view_of_texture(&make("umcf nearest transparent opacities", ID, drawn));
+        let glass_near = view_of_texture(&make("umcf nearest transparent depth", ID, drawn));
         let view_of = view_of_texture;
         let (view, scene, ids, depth) = (view_of(&texture), view_of(&scene), view_of(&ids), view_of(&depth));
         let depths = view_of(&depths);
@@ -1713,6 +1787,15 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&through) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&front) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&glass_ids) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&glass_alphas) },
+            ],
+        });
+        let which = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umcf nearest transparent layer"),
+            layout: &self.which_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depths) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&glass_near) },
             ],
         });
         let glass = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1736,8 +1819,11 @@ impl Gpu {
             through,
             glass_depths,
             glass_ids,
+            glass_alphas,
+            glass_near,
             front,
             glass,
+            which,
             depth,
             outline,
         });
@@ -2556,6 +2642,31 @@ mod tests {
         let mut scene = Scene::new(Vec3::new(0.5, 0.5, 0.5));
         scene.objects.push(Object::from_stl("box.stl", &stl, scene.origin));
         scene
+    }
+
+    #[test]
+    fn transparent_layers_in_the_same_place_give_the_same_nearest_everywhere() {
+        // The same box twice, its faces split along one diagonal and along the other (as the two
+        // regions on an interface are), each in its own colour, half transparent: on every pixel
+        // the first box's face is the nearest, on both views, as where both are split alike. No
+        // outline along the diagonals, no patches of the one or the other.
+        let pair = |other: bool| {
+            let mut scene = scene_split(false);
+            let second = scene_split(other).objects.remove(0);
+            scene.objects.push(second);
+            scene
+        };
+        let mut style = Style { colour_by: ColourBy::Object, ..Style::default() };
+        for k in 0..2 {
+            for c in 0..3 {
+                style.display.insert((k, c), Display { mode: Mode::Surface, opacity: 0.5 });
+            }
+        }
+        let Some((cpu_alike, gpu_alike)) = both(&pair(false), &mut style.clone()) else { return };
+        let (cpu, gpu) = both(&pair(true), &mut style.clone()).unwrap();
+        assert!(changed(&cpu_alike, &cpu, 6) < 10, "the CPU's: {} pixels", changed(&cpu_alike, &cpu, 6));
+        assert!(changed(&gpu_alike, &gpu, 6) < 10, "the GPU's: {} pixels", changed(&gpu_alike, &gpu, 6));
+        assert!(differing(&cpu, &gpu, 6) < 0.01, "{:.2}% differ", differing(&cpu, &gpu, 6) * 100.0);
     }
 
     #[test]
