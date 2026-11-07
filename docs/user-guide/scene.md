@@ -29,7 +29,9 @@ and the snapshot says how many were (`left_out`).
 
 `scene.snapshot` draws the scene with the CPU renderer and returns a PNG image: flat shading
 with the light at the eye, both sides of a face lit alike, an outline where patches meet, and
-the selection in orange (in front of a patch of another region in the same place).
+the selection in orange (in front of a patch of another region in the same place), over a dark
+background with a grid on the ground and the origin's planes and axes, as the desktop app's view
+([the grid, the origin and the dark view](desktop.md#the-grid-the-origin-and-the-dark-view)).
 
 | Parameter | Default | Does |
 |---|---|---|
@@ -42,6 +44,9 @@ the selection in orange (in front of a patch of another region in the same place
 | `regions`, `surfaces` | see above | Which mesh regions and surfaces |
 | `reload` | `false` | Reads the files again (after OpenFOAM rewrote a mesh) |
 | `display` | none | Each layer as surfaces, wireframe or points, or hidden, with an opacity ([display modes](#display-modes)) |
+| `grid` | `true` | The grid on the ground (z = 0), under the scene |
+| `origin` | `true` | The origin's xy, xz and yz planes and its axes |
+| `dark` | `true` | A dark background; `false` a light one |
 
 The scene is built the first time it is needed: each region's mesh (only its boundary: its
 points that its boundary faces use, boundary faces and patches) and each surface is read once,
@@ -169,6 +174,7 @@ change it. `select.*` commands go into the journal, so a journal replays the sam
 
 ```sh
 umcf-cli render path/to/case --out case.png [--view top] [--size 1600x1000] [--edges]
+umcf-cli render path/to/case --out plain.png --no-grid --no-origin --light
 umcf-cli render path/to/case --out walls.png --surface walls.stl --pick 640,400
 umcf-cli render path/to/case --out inlet.png --region air --select air/inlet
 ```

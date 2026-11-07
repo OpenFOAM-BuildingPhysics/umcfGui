@@ -113,6 +113,13 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
   defaults or returns an error. Only menu-style invocation opens a dialog (`UiRequest::Dialog`).
 - **The UI is thin:** panels read engine state and act through `app.run(id, params)`. Colours
   come from `theme::Tokens`. **egui only, never Tauri.**
+- **The 3D view works the same on the GPU and the CPU.** Every feature of the 3D view (what it
+  shows and how: surfaces, edges, wireframes, transparency, the selection, the grid, the origin,
+  the background) is drawn by both renderers, the GPU view (`ui-egui/src/gpu.rs`) and the CPU
+  rasteriser (`render::raster`, which also draws the snapshots), in the same change, from the
+  same scene and the same geometry (`render::guides` for what isn't the case's). A test compares
+  the two images (`gpu.rs`'s tests: NVIDIA, lavapipe on the CI, Mesa's OpenGL). Where a device
+  can't draw a feature, the view falls back to the CPU for it and the docs say so.
 - **From geometry to a case, in the GUI.** People import STL geometry (buildings, terrain,
   trees), set up and run the meshing (blockMesh background, snappyHexMesh refinement and layers,
   the solid-region extrusion steps), look at the mesh in 3D and assign boundary conditions by

@@ -5,6 +5,8 @@
 //! - [`Scene`] holds the [`Object`]s, built from `foam-mesh` and `geom` data. It doesn't depend
 //!   on any renderer: the GUI's viewport and the CPU rasteriser here draw the same scene.
 //! - [`camera`] places the eye (standard views, framing a box) and gives the ray through a pixel.
+//! - [`guides`] makes the grid on the ground and the origin's planes and axes both renderers
+//!   draw beside the scene.
 //! - [`raster`] draws a scene into an image in software, for headless snapshots and machines
 //!   without a GPU; [`png`] encodes it.
 //! - [`Scene::pick`] casts a ray through the scene with a triangle BVH per object (built the
@@ -30,6 +32,7 @@ use umcf_geom::stl::Stl;
 use umcf_geom::{BBox, Vec3};
 
 pub mod camera;
+pub mod guides;
 pub mod png;
 pub mod raster;
 

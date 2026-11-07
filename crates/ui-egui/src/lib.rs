@@ -500,8 +500,29 @@ impl App {
             self.start(jobs::Work::Command { id: id.to_string(), params: json!({}), then: jobs::Then::Nothing });
         } else {
             self.close_idle_cards();
-            self.dialog = Some(Dialog { id, params: "{}".to_string(), error: None });
+            let params = if id == "scene.snapshot" { self.snapshot_params() } else { "{}".to_string() };
+            self.dialog = Some(Dialog { id, params, error: None });
         }
+    }
+
+    /// The *Snapshot* card's parameters to start with: the grid, the origin and the background
+    /// as the 3D view has them switched (only those that differ from the snapshot's defaults).
+    fn snapshot_params(&self) -> String {
+        let mut p = serde_json::Map::new();
+        let v = &self.viewport;
+        for (key, on) in [("grid", v.guides.grid), ("origin", v.guides.origin), ("dark", v.dark)] {
+            if !on {
+                p.insert(key.to_string(), json!(false));
+            }
+        }
+        serde_json::to_string_pretty(&p).ok().filter(|_| !p.is_empty()).unwrap_or_else(|| "{}".to_string())
+    }
+
+    /// The 3D view's background, middle colour (behind the view, and dimmed while it is busy).
+    fn view_middle(&self) -> Color32 {
+        let [top, bottom] = self.viewport.background();
+        let c = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
+        c(top).lerp_to_gamma(c(bottom), 0.5)
     }
 
     /// Closes the edit cards, apart from one whose command waits or runs: it stays till it is
@@ -683,9 +704,7 @@ impl App {
         p.text(at, egui::Align2::LEFT_CENTER, name, theme::strong(14.0), t.bar_text);
         // The 3D view as it was, dimmed.
         let view = self.viewport.rect.unwrap_or_else(|| rect.with_min_y(bar.max.y).shrink(t.gap));
-        let [top, bottom] = t.view_background();
-        let c = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
-        p.rect_filled(view, CornerRadius::same(t.radius_card), c(top).lerp_to_gamma(c(bottom), 0.5));
+        p.rect_filled(view, CornerRadius::same(t.radius_card), self.view_middle());
         self.viewport.paint_last(p, view);
         p.rect_filled(
             view,
@@ -999,6 +1018,24 @@ impl App {
                     self.viewport.edges = !on;
                 }
             }
+            Item::Grid => {
+                let on = self.viewport.guides.grid;
+                if self.ribbon_button(ui, Icon::Grid, "Grid", true, on).on_hover_text(GRID_TIP).clicked() {
+                    self.viewport.guides.grid = !on;
+                }
+            }
+            Item::Origin => {
+                let on = self.viewport.guides.origin;
+                if self.ribbon_button(ui, Icon::Origin, "Origin", true, on).on_hover_text(ORIGIN_TIP).clicked() {
+                    self.viewport.guides.origin = !on;
+                }
+            }
+            Item::DarkView => {
+                let on = self.viewport.dark;
+                if self.ribbon_button(ui, Icon::DarkView, "Dark view", true, on).on_hover_text(DARK_TIP).clicked() {
+                    self.viewport.dark = !on;
+                }
+            }
             Item::Renderer => {
                 let on = self.viewport.renderer == Renderer::Gpu;
                 let can = self.viewport.has_gpu();
@@ -1216,16 +1253,15 @@ impl App {
     fn canvas(&mut self, ui: &mut Ui) {
         let t = self.tokens.clone();
         let rect = ui.available_rect_before_wrap();
-        let [top, bottom] = t.view_background();
-        let c = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
-        ui.painter().rect_filled(rect, CornerRadius::same(t.radius_card), c(top).lerp_to_gamma(c(bottom), 0.5));
+        ui.painter().rect_filled(rect, CornerRadius::same(t.radius_card), self.view_middle());
+        // Text on the view in the muted colour of the view's own shade, whatever the theme's.
+        let muted = if self.viewport.dark { Tokens::dark() } else { Tokens::light() }.text_muted;
         let mut action = None;
         if self.session.case().is_none() {
-            let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(t.text_muted);
+            let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
         } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
-            let text =
-                RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(t.text_muted);
+            let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
             let params = self.shown();
@@ -1950,6 +1986,18 @@ impl App {
                     if b(ui, Icon::Edges, edges, "Edges", "Draw the faces' edges") {
                         self.viewport.edges = !edges;
                     }
+                    let grid = self.viewport.guides.grid;
+                    if b(ui, Icon::Grid, grid, "Grid", GRID_TIP) {
+                        self.viewport.guides.grid = !grid;
+                    }
+                    let origin = self.viewport.guides.origin;
+                    if b(ui, Icon::Origin, origin, "Origin", ORIGIN_TIP) {
+                        self.viewport.guides.origin = !origin;
+                    }
+                    let dark = self.viewport.dark;
+                    if b(ui, Icon::DarkView, dark, "Dark view", DARK_TIP) {
+                        self.viewport.dark = !dark;
+                    }
                     let gpu = self.viewport.renderer == Renderer::Gpu;
                     if self.viewport.has_gpu() && b(ui, Icon::Gpu, gpu, "GPU", &self.renderer_tip()) {
                         self.toggle_renderer();
@@ -2343,6 +2391,11 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     };
     WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() }
 }
+
+/// The view's guides' and background's tooltips.
+const GRID_TIP: &str = "The grid on the ground (z = 0): its spacing follows the zoom; the scene hides it";
+const ORIGIN_TIP: &str = "The origin: its xy, xz and yz planes and its x, y and z axes, sized with the view";
+const DARK_TIP: &str = "A dark 3D view (else a light one), whatever the window's theme";
 
 /// The desktop window around an [`App`].
 struct Desktop {

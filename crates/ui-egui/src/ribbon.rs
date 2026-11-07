@@ -67,6 +67,12 @@ pub enum Item {
     Edges,
     /// The 3D view on the GPU or the CPU.
     Renderer,
+    /// The grid on the ground on or off.
+    Grid,
+    /// The origin's planes and axes on or off.
+    Origin,
+    /// The 3D view dark or light.
+    DarkView,
     /// Light or dark theme.
     Theme,
 }
@@ -174,7 +180,10 @@ const SETUP: &[Tab] = &[
                     Item::View(View::Right, "Right", Icon::ViewRight),
                 ],
             },
-            Group { name: "Display", items: &[Item::Edges, Item::Renderer, Item::Theme] },
+            Group {
+                name: "Display",
+                items: &[Item::Edges, Item::Grid, Item::Origin, Item::DarkView, Item::Renderer, Item::Theme],
+            },
             Group { name: "Export", items: &[Item::Command("scene.snapshot", "Snapshot", Icon::Snapshot)] },
         ],
         note: None,

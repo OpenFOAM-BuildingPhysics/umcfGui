@@ -9,6 +9,8 @@ The short version:
 - **Never crash:** no `unwrap`, `expect`, `panic!` or `unsafe` outside tests; case files and
   solver processes are hostile input.
 - **Everything is a command**, and the [layering](architecture.md) is enforced.
+- **The 3D view the same on the GPU and the CPU:** every feature of the 3D view is drawn by both
+  renderers in the same change, and a test compares their images (AGENTS.md §4).
 - **Linux, Windows and macOS equally:** every feature works the same on all three (OpenFOAM
   itself is reached through WSL, a virtual machine or a remote machine where it doesn't run);
   CI builds and tests on each.

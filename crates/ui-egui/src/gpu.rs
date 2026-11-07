@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use eframe::egui_wgpu::wgpu;
 use umcf_render::camera::Camera;
 use umcf_render::raster::{
-    AHEAD, BOTTOM, ColourBy, EDGE, EDGE_REACH, FRONT as CPU_FRONT, LINE, Mode, OUTLINE, SELECTED, Style, TOP, dot_size,
-    palette,
+    AHEAD, BOTTOM, ColourBy, EDGE, EDGE_REACH, FRONT as CPU_FRONT, LINE, Mode, OUTLINE, SELECTED, SQUARE_FRONT, Style,
+    TOP, dot_size, palette,
 };
 use umcf_render::{Object, Scene};
 
@@ -52,6 +52,8 @@ const THROUGH: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The most classes an object has here: a triangle's class shares its word with its edges (the
 /// top three bits), an edge's or a point's with whether its face is selected (the top bit).
 const MAX_CLASSES: usize = 1 << 29;
+/// A guide's vertex: a position and a colour (with its alpha), 7 floats.
+const GUIDE_VERTEX: u64 = 28;
 /// The image's format: as egui's own textures (`Rgba8Unorm` holding sRGB values, which egui's
 /// shader reads as such), so the bytes are the CPU view's.
 pub const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -425,6 +427,89 @@ fn fs_back(in: Back) -> Pixel {
 }
 "#;
 
+/// The guides (the grid, the origin's squares and lines: `render::guides`), from a vertex buffer
+/// of positions (relative to the scene's origin) and colours. The grid is drawn in the scene's
+/// pass under everything (no depth test); the origin's squares and lines in the marks' pass,
+/// behind the surfaces' depths, as the CPU view draws them.
+const GUIDES: &str = r#"
+struct View {
+    eye: vec4<f32>,
+    right: vec4<f32>,
+    up: vec4<f32>,
+    forward: vec4<f32>,
+    // x and y: from view to clip coordinates; z: the near plane's distance.
+    lens: vec4<f32>,
+    top: vec4<f32>,
+    bottom: vec4<f32>,
+    // x and y: the image's size in pixels; z: a point's side in pixels; w: the camera's distance
+    // to what it looks at (the transparent layers' weights are relative to it).
+    pixels: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> view: View;
+@group(1) @binding(0) var depths: texture_2d<u32>;
+
+struct In {
+    @location(0) p: vec3<f32>,
+    @location(1) c: vec4<f32>,
+};
+
+struct Out {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) @interpolate(flat) c: vec4<f32>,
+    @location(1) z: f32,
+};
+
+@vertex
+fn vs(in: In) -> Out {
+    let d = in.p - view.eye.xyz;
+    let v = vec3<f32>(dot(d, view.right.xyz), dot(d, view.up.xyz), dot(d, view.forward.xyz));
+    var out: Out;
+    out.pos = vec4<f32>(v.x * view.lens.x, v.y * view.lens.y, view.lens.z, v.z);
+    out.c = in.c;
+    out.z = v.z;
+    return out;
+}
+
+struct Under {
+    @location(0) colour: vec4<f32>,
+    @location(1) id: u32,
+    @location(2) depth: u32,
+};
+
+// The grid: over the background, under what comes after it (the ids and depths kept).
+@fragment
+fn fs_under(in: Out) -> Under {
+    var out: Under;
+    out.colour = in.c;
+    out.id = 0u;
+    out.depth = 0u;
+    return out;
+}
+
+fn under(in: Out) -> f32 {
+    return bitcast<f32>(textureLoad(depths, vec2<i32>(in.pos.xy), 0).r);
+}
+
+// The origin's squares: where no surface is nearer, one they lie on by less than SQUARE_FRONT
+// (as the CPU puts them): seen on a surface, not on a selected one (put CPU_FRONT nearer).
+@fragment
+fn fs_square(in: Out) -> @location(0) vec4<f32> {
+    if !(view.lens.z * (1.0 + SQUARE_FRONT) / in.z > under(in)) {
+        discard;
+    }
+    return in.c;
+}
+
+// The origin's lines: where no surface is nearer by more than AHEAD (as the CPU's lines).
+@fragment
+fn fs_line(in: Out) -> @location(0) vec4<f32> {
+    if !(view.lens.z * (1.0 + AHEAD) / in.z > under(in)) {
+        discard;
+    }
+    return in.c;
+}
+"#;
+
 /// Darkens the pixels where one class meets another or the background, as the CPU view.
 const OUTLINES: &str = r#"
 @group(0) @binding(0) var image: texture_2d<f32>;
@@ -653,6 +738,11 @@ pub struct Gpu {
     /// draws them).
     glass: Option<wgpu::RenderPipeline>,
     back: wgpu::RenderPipeline,
+    /// The guides: the grid (in the scene's pass), the origin's squares and lines (in the
+    /// marks' pass).
+    guide_grid: wgpu::RenderPipeline,
+    guide_squares: wgpu::RenderPipeline,
+    guide_lines: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
     depths_layout: wgpu::BindGroupLayout,
@@ -942,6 +1032,69 @@ impl Gpu {
         });
         let back =
             pipeline("umcf background", &back_layout, "vs_back", "fs_back", wgpu::CompareFunction::Always, none, None);
+        let guides_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("umcf guides"),
+            source: wgpu::ShaderSource::Wgsl(with_constants(GUIDES, depth_front).into()),
+        });
+        let guides_layout = layout_of("umcf guides", &[Some(&view_layout), Some(&depths_layout)]);
+        let guide_vertex = [Some(wgpu::VertexBufferLayout {
+            array_stride: GUIDE_VERTEX,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
+        })];
+        let over_targets =
+            [Some(wgpu::ColorTargetState { format: COLOUR, blend: Some(over), write_mask: wgpu::ColorWrites::ALL })];
+        let grid_targets = [
+            over_targets[0].clone(),
+            Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::empty() }),
+            Some(wgpu::ColorTargetState { format: ID, blend: None, write_mask: wgpu::ColorWrites::empty() }),
+        ];
+        let guide = |label,
+                     layout: &wgpu::PipelineLayout,
+                     fs,
+                     topology,
+                     targets: &[Option<wgpu::ColorTargetState>],
+                     depth: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &guides_module,
+                    entry_point: Some("vs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &guide_vertex,
+                },
+                primitive: wgpu::PrimitiveState { topology, ..wgpu::PrimitiveState::default() },
+                // In the scene's pass (the grid) the depth attachment is there, not tested.
+                depth_stencil: depth.then_some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &guides_module,
+                    entry_point: Some(fs),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let lines_topology = wgpu::PrimitiveTopology::LineList;
+        let guide_grid = guide("umcf grid", &back_layout, "fs_under", lines_topology, &grid_targets, true);
+        let guide_squares = guide(
+            "umcf origin planes",
+            &guides_layout,
+            "fs_square",
+            wgpu::PrimitiveTopology::TriangleList,
+            &over_targets,
+            false,
+        );
+        let guide_lines = guide("umcf origin lines", &guides_layout, "fs_line", lines_topology, &over_targets, false);
         let outline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("umcf outlines"),
             layout: Some(&outline_pipeline_layout),
@@ -1000,6 +1153,9 @@ impl Gpu {
             dots,
             glass,
             back,
+            guide_grid,
+            guide_squares,
+            guide_lines,
             outline,
             object_layout,
             depths_layout,
@@ -1149,6 +1305,42 @@ impl Gpu {
                 up.dots = up.dots.take().or(dots);
             }
         }
+        // The guides, as the CPU view makes them: one vertex buffer, the grid's lines, the
+        // origin's squares (two triangles each), its lines.
+        let background = style.background.unwrap_or(BACKGROUND);
+        let guides = umcf_render::guides::build(scene, camera, style.guides, umcf_render::raster::is_dark(background));
+        let mut vertices: Vec<f32> = Vec::new();
+        let vertex =
+            |v: &mut Vec<f32>, p: [f32; 3], c: [f32; 3], a: f32| v.extend([p[0], p[1], p[2], c[0], c[1], c[2], a]);
+        for l in &guides.grid {
+            vertex(&mut vertices, l.a, l.colour, l.alpha);
+            vertex(&mut vertices, l.b, l.colour, l.alpha);
+        }
+        let grid_end = vertices.len() / 7;
+        for q in &guides.squares {
+            let [a, b, c, d] = q.corners;
+            for p in [a, b, c, a, c, d] {
+                vertex(&mut vertices, p, q.colour, q.alpha);
+            }
+        }
+        let squares_end = vertices.len() / 7;
+        for l in &guides.lines {
+            vertex(&mut vertices, l.a, l.colour, l.alpha);
+            vertex(&mut vertices, l.b, l.colour, l.alpha);
+        }
+        let lines_end = vertices.len() / 7;
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let (grid_end, squares_end, lines_end) = (count(grid_end), count(squares_end), count(lines_end));
+        let guide_buffer = (lines_end > 0).then(|| {
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("umcf guides"),
+                size: (vertices.len() as u64) * 4,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buffer, 0, &bytes_f32(&vertices));
+            buffer
+        });
         self.ensure_target(size);
         let Some(target) = &self.target else { return };
         let mut encoder =
@@ -1177,6 +1369,12 @@ impl Gpu {
             pass.set_bind_group(0, &self.view_group, &[]);
             pass.set_pipeline(&self.back);
             pass.draw(0..3, 0..1);
+            // The grid, over the background and under all that follows.
+            if let Some(buffer) = guide_buffer.as_ref().filter(|_| grid_end > 0) {
+                pass.set_pipeline(&self.guide_grid);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..grid_end, 0..1);
+            }
             for (k, obj) in scene.objects.iter().enumerate() {
                 let Some(up) = self.objects.get(&obj.id()) else { continue };
                 let Some(pipeline) = self.surfaces.get(k.min(RANKS - 1)) else { continue };
@@ -1233,6 +1431,20 @@ impl Gpu {
                         pass.set_bind_group(1, group, &[]);
                         pass.draw(0..n.saturating_mul(vertices), 0..1);
                     }
+                }
+            }
+            // The origin's squares, then its lines, as the CPU view draws them after the
+            // wireframes and points.
+            if let Some(buffer) = &guide_buffer {
+                pass.set_bind_group(1, &target.marks, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                if squares_end > grid_end {
+                    pass.set_pipeline(&self.guide_squares);
+                    pass.draw(grid_end..squares_end, 0..1);
+                }
+                if lines_end > squares_end {
+                    pass.set_pipeline(&self.guide_lines);
+                    pass.draw(squares_end..lines_end, 0..1);
                 }
             }
         }
@@ -1544,6 +1756,7 @@ fn with_constants(source: &str, depth_front: f32) -> String {
         "const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n\
          const EDGE: f32 = {EDGE:?};\nconst EDGE_REACH: f32 = {reach:?};\nconst LINE: f32 = {LINE:?};\n\
          const AHEAD: f32 = {AHEAD:?};\nconst CPU_FRONT: f32 = {CPU_FRONT:?};\n\
+         const SQUARE_FRONT: f32 = {SQUARE_FRONT:?};\n\
          const DEPTH_FRONT: f32 = {depth_front:?};\n{source}"
     )
 }
@@ -1946,11 +2159,17 @@ mod tests {
 
     /// The CPU's and the GPU's image of `scene` with `style`, at 240 × 180.
     fn both(scene: &Scene, style: &mut Style) -> Option<(Vec<u8>, Vec<u8>)> {
+        both_from(scene, style, View::Iso, 1.0)
+    }
+
+    /// As [`both`], seen from `view`, `away` times as far.
+    fn both_from(scene: &Scene, style: &mut Style, view: View, away: f64) -> Option<(Vec<u8>, Vec<u8>)> {
         let (adapter, device, queue) = device()?;
         let mut gpu = Gpu::new(&adapter, &device, &queue).unwrap();
         let size = [240u32, 180u32];
         (style.width, style.height) = (size[0], size[1]);
-        let camera = Camera::fit(View::Iso, &scene.bbox().unwrap(), 240.0 / 180.0);
+        let mut camera = Camera::fit(view, &scene.bbox().unwrap(), 240.0 / 180.0);
+        camera.distance *= away;
         let cpu = draw(scene, &camera, style).rgba;
         let image = read_back(&device, &queue, gpu.draw(scene, &camera, style, size, next()).unwrap());
         Some((cpu, image))
@@ -2258,6 +2477,69 @@ mod tests {
         assert_eq!(changed(&cpu, &cpu_plain, 0), 0);
         let through = changed(&image, &gpu_plain, 6);
         assert_eq!(through, 0, "{through} pixels of the selection seen through the box in front");
+    }
+
+    #[test]
+    fn the_grid_and_the_origin_are_drawn_as_the_cpu_view_draws_them() {
+        // The box a little off the origin: its planes and axes beside it, not in its faces,
+        // and the camera further away to see both. The grid under it, on the dark background
+        // and on the light one, seen from the side, from above and from below the ground. Then
+        // the box at the origin, the squares in its faces: opaque, selected, half transparent.
+        let mut scene = Scene::new(Vec3::new(0.5, 0.5, 0.5));
+        let mut obj = mesh_box(&scene, 1.0);
+        for p in &mut obj.points {
+            p[0] -= 1.6;
+            p[1] -= 1.6;
+        }
+        scene.objects.push(obj);
+        let light = Some([umcf_render::raster::LIGHT_TOP, umcf_render::raster::LIGHT_BOTTOM]);
+        let guides = umcf_render::guides::Guides::ALL;
+        let mut cases = vec![];
+        for (background, view) in [(None, View::Iso), (light, View::Iso), (None, View::Top), (None, View::Bottom)] {
+            cases.push((scene.clone(), view, Style { guides, background, ..Style::default() }));
+        }
+        let mut at_origin = Scene::new(Vec3::new(0.5, 0.5, 0.5));
+        at_origin.objects.push(mesh_box(&at_origin, 1.0));
+        let every: Vec<(usize, u32)> = (0..3).map(|c| (0, c)).collect();
+        cases.push((at_origin.clone(), View::Iso, Style { guides, ..Style::default() }));
+        cases.push((at_origin.clone(), View::Iso, Style { guides, selected: every.clone(), ..Style::default() }));
+        let mut glass = Style { guides, ..Style::default() };
+        for c in &every {
+            glass.display.insert(*c, Display { mode: Mode::Surface, opacity: 0.5 });
+        }
+        cases.push((at_origin, View::Iso, glass));
+        // Each with both guides, and with the origin alone (its squares are few pixels beside
+        // the grid's lines).
+        let origin = umcf_render::guides::Guides { grid: false, origin: true };
+        for (scene, view, style) in cases {
+            for which in [guides, origin] {
+                let mut style = Style { guides: which, ..style.clone() };
+                let case = (view, which.grid, style.background.is_some(), style.selected.len(), style.display.len());
+                let Some((cpu, image)) = both_from(&scene, &mut style, view, 2.5) else { return };
+                let (cpu_bare, gpu_bare) =
+                    both_from(&scene, &mut Style { guides: Default::default(), ..style.clone() }, view, 2.5).unwrap();
+                // What the guides add on each: about as many pixels, mostly the same ones
+                // (one-pixel lines are rasterised a little otherwise, as wireframes).
+                let on = |with: &[u8], without: &[u8]| -> Vec<bool> {
+                    with.chunks(4)
+                        .zip(without.chunks(4))
+                        .map(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 2))
+                        .collect()
+                };
+                let (on_cpu, on_gpu) = (on(&cpu, &cpu_bare), on(&image, &gpu_bare));
+                let (a, b) = (on_cpu.iter().filter(|x| **x).count(), on_gpu.iter().filter(|x| **x).count());
+                let shared = on_cpu.iter().zip(&on_gpu).filter(|(x, y)| **x && **y).count();
+                eprintln!("{case:?}: {a} on the CPU, {b} on the GPU, {shared} both");
+                assert!(a > if which.grid { 1000 } else { 20 }, "{case:?}: the guides change {a} pixels");
+                assert!(
+                    b.abs_diff(a) <= a / 5 && shared >= a * 6 / 10,
+                    "{case:?}: {a} on the CPU, {b} on the GPU, {shared} both"
+                );
+                // The rest the same.
+                let off = differing(&cpu, &image, 24);
+                assert!(off < 0.05, "{case:?}: {:.2}% of the pixels differ by more than 24", off * 100.0);
+            }
+        }
     }
 
     #[test]

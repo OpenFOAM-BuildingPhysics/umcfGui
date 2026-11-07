@@ -121,16 +121,6 @@ impl Tokens {
         }
     }
 
-    /// The 3D view's background, top and bottom, as the renderer takes it.
-    pub fn view_background(&self) -> [[f32; 3]; 2] {
-        let f = |c: Color32| [c.r(), c.g(), c.b()].map(|x| f32::from(x) / 255.0);
-        if self.dark {
-            [f(Color32::from_rgb(0x34, 0x39, 0x42)), f(Color32::from_rgb(0x1e, 0x21, 0x26))]
-        } else {
-            [f(Color32::from_rgb(0xf3, 0xf5, 0xf8)), f(Color32::from_rgb(0xd2, 0xd8, 0xe0))]
-        }
-    }
-
     /// A floating card's frame.
     pub fn card_frame(&self) -> egui::Frame {
         egui::Frame::new()

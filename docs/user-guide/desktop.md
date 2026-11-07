@@ -6,7 +6,7 @@ history and can be undone, and a script can do the same. Selecting is a command 
 journal, not in the undo history); what the view shows, the camera and the theme are the
 window's own.
 
-![umcfGui with the 3×3 case: the browser on the left, the buildings surface in the view with its roofs selected, the properties and the results of a case check on the right](../images/desktop.png)
+![umcfGui with the 3×3 case: the browser on the left, the street, buildings and roofs regions in the dark view over its grid, the roofs patch selected, its properties and the results of a case check on the right](../images/desktop.png)
 
 ```sh
 umcf-gui path/to/case
@@ -53,9 +53,11 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   selects what is under the cursor (`select.pick`), Ctrl+click toggles it, Shift+click adds it.
   The name of what is under the cursor shows in the history bar.
 - **The axis triad** (top right): click an axis to look along it.
+- **The view's guides and background**: a grid on the ground and the origin's planes and axes,
+  over a dark background ([below](#the-grid-the-origin-and-the-dark-view)).
 - **The navigation bar** (bottom): orbit, pan or *Box select*, zoom, fit, the standard views, the
-  faces' edges, *GPU* (where the window runs on a GPU device), *Pick faces* and *Select
-  through*.
+  faces' edges, *Grid*, *Origin*, *Dark view*, *GPU* (where the window runs on a GPU device),
+  *Pick faces* and *Select through*.
   - *Pick faces*: a click then picks the mesh face under it rather than its patch (Ctrl+click
     adds or takes away one, Shift+click adds one), drawn in the selection colour.
   - *Box select*: a drag draws a rectangle that selects what is in it (`select.rect`): the
@@ -86,6 +88,28 @@ running shows no dialog at all, so install `zenity` or `xdg-desktop-portal` ther
 Shortcuts come from the commands: Ctrl+O open, Ctrl+S save, Ctrl+Z undo, Ctrl+Shift+Z redo, F7
 check. Escape closes the parameter card, the condition card, the results and the search (not a card
 whose command waits or runs: its outcome closes it).
+
+## The grid, the origin and the dark view
+
+The 3D view is dark (a flat dark grey), whatever the window's theme; turning *Dark view* off (in
+the *View* tab's *Display* group and the navigation bar) makes it light. Over it:
+
+- **The grid** lies on the ground, the plane z = 0, around where the view's axis meets it. Its
+  lines are a step of 1, 2 or 5 times a power of ten apart, 10 to 25 of them over half the
+  view's height, and every fifth is brighter; zooming changes the step. It fades out with the
+  distance from the middle of the view. It lies under everything: the case hides it, it never
+  hides the case, also where the case goes below z = 0. *Grid* turns it off.
+- **The origin**: three small translucent squares on its xy, xz and yz planes (each on the
+  positive side of its two axes), 7.5 % of the view's height, outlined, and the x, y and z axes
+  (red, green, blue), solid to the squares' side and dashed beyond. What the case shows in front
+  of them hides them; a square on a patch (the origin at a corner of the domain, say) is seen on
+  it, unless the patch is selected (the selection is drawn nearer). A transparent layer behind a
+  square is still seen through it. *Origin* turns them off.
+
+Both are drawn the same by the GPU and the CPU, and in snapshots (`scene.snapshot`'s `grid`,
+`origin` and `dark`, `umcf-cli render`'s `--no-grid`, `--no-origin` and `--light`; the
+*Snapshot* card starts with them as the view has them switched). Like *Edges*, the switches are
+settings of the window, not commands.
 
 ## The GPU view
 
@@ -229,7 +253,7 @@ Select the patches in the view or the browser (Ctrl+click adds one), then *Set c
 edit in the history, undone with Ctrl+Z, and the results card lists what the case check finds
 about the new conditions.
 
-![The condition card for two patches of the 3×3 case's air region](../images/bc-card.png)
+![The condition card for two patches (west and south) of the 3×3 case's air region, in the dark view](../images/bc-card.png)
 
 ## Limits
 
