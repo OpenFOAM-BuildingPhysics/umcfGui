@@ -1588,6 +1588,38 @@ fn what_a_case_needs_from_its_regions_and_patches() {
     let d = &errors(&fs)[0];
     assert_eq!((d.path.as_str(), d.patch.as_deref()), ("0/street/Ts", Some("street_to_air")));
     assert!(d.message.contains("`air_to_street`") && d.message.contains("qrNbr"), "{}", d.message);
+    // ... seen after many other entries.
+    let many: String = (0..40).map(|i| format!(" k{i} v;")).collect();
+    let mut fs = only_canopy();
+    edit(
+        &mut fs,
+        "0/street/Ts",
+        "CFDHAMsolidTemperatureCoupledMixed;",
+        &format!("CFDHAMsolidTemperatureCoupledMixed;{many} qrNbr qr;"),
+    );
+    assert_eq!(only(&fs), ["case.vegetation-patch"]);
+    // Given twice, the last counts, as OpenFOAM reads it.
+    let mut fs = only_canopy();
+    edit(
+        &mut fs,
+        "0/street/Ts",
+        "CFDHAMsolidTemperatureCoupledMixed;",
+        "CFDHAMsolidTemperatureCoupledMixed; qrNbr qr; qrNbr none;",
+    );
+    assert_eq!(only(&fs), Vec::<&str>::new());
+    edit(&mut fs, "0/street/Ts", "qrNbr qr; qrNbr none;", "qrNbr none; qrNbr qr;");
+    assert_eq!(only(&fs), ["case.vegetation-patch"]);
+    // A backup of a field (`Ts.bak`) isn't read by OpenFOAM: no finding from it.
+    let mut fs = only_canopy();
+    let ts = fs.read("0/street/Ts", 1 << 20).unwrap().unwrap();
+    let ts = String::from_utf8(ts)
+        .unwrap()
+        .replace("CFDHAMsolidTemperatureCoupledMixed;", "CFDHAMsolidTemperatureCoupledMixed; qrNbr qr;");
+    fs.insert("0/street/Ts.bak", ts);
+    assert!(!has(&fs, "case.vegetation-patch"), "{:?}", errors(&fs));
+    edit(&mut fs, "constant/street/polyMesh/boundary", "type mappedWall;", "type wall;");
+    fs.insert("0/street/Ts", field("volScalarField", "    street_to_air { type zeroGradient; }\n"));
+    assert!(!has(&fs, "bc.patch-type"), "{:?}", errors(&fs));
     // ... and in OpenFOAM-8, through samplePatch.
     let mut of8 = of8_case();
     of8.insert(

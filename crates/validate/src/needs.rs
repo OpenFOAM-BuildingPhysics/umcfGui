@@ -25,6 +25,20 @@ const CANOPY: &str = "air_to_vegetation";
 const SOLID_TEMPERATURE: [&str; 2] =
     ["compressible::CFDHAMsolidTemperatureCoupledMixed", "compressible::CFDHAMsolidTemperatureTransferCoeff"];
 
+/// urbanMicroclimateFoam's conditions that stop on a patch that isn't mapped (`isA` on
+/// `mappedFvPatchBaseBase` in OpenFOAM-12, `mappedPatchBase` in OpenFOAM-8): every `CFDHAM…`
+/// condition but `CFDHAMsolidTemperatureTransferCoeffInterior`, in both versions.
+const NEED_MAPPED: [&str; 8] = [
+    "compressible::CFDHAMfluidMoistureCoupledImpermeable",
+    "compressible::CFDHAMfluidMoistureCoupledMixed",
+    "compressible::CFDHAMfluidTemperatureCoupledMixed",
+    "compressible::CFDHAMsolidMoistureCoupledImpermeable",
+    "compressible::CFDHAMsolidMoistureCoupledMixed",
+    "compressible::CFDHAMsolidMoistureTransferCoeff",
+    "compressible::CFDHAMsolidTemperatureCoupledMixed",
+    "compressible::CFDHAMsolidTemperatureTransferCoeff",
+];
+
 pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     // A meshing step or a single-region case is not run by the solver as it is.
     if case.layout.kind != CaseKind::Solver {
@@ -157,10 +171,11 @@ fn names(case: &Case, fluids: &[&Region], vegetation: &[&Region], file: &str, ou
     }
 }
 
-/// The solid temperature conditions in use, as (region, field path, condition).
+/// The solid temperature conditions in use, as (region, field path, condition); not in copies
+/// and backups (`Ts.orig`, `Ts~`), which OpenFOAM doesn't read.
 fn solid_temperatures(case: &Case) -> impl Iterator<Item = (&Region, &str, &Bc)> {
     case.regions.iter().filter(|r| r.kind == RegionKind::Solid).flat_map(|r| {
-        r.fields.iter().flat_map(move |f| {
+        r.fields.iter().filter(|f| crate::is_field(f)).flat_map(move |f| {
             f.bcs
                 .iter()
                 .flatten()
@@ -188,8 +203,9 @@ fn there(case: &Case, file: &str) -> Option<bool> {
 /// the case's directory).
 fn ambient(case: &Case, out: &mut Vec<Diagnostic>) {
     let rain = there(case, "0/air/rainTemp") == Some(true);
+    // Only OpenFOAM-12's is known not to find it; a version not told takes it found.
     let blind = |b: &Bc| {
-        case.layout.version != Some(OfVersion::V8)
+        case.layout.version == Some(OfVersion::V12)
             && b.kind.as_deref() == Some("compressible::CFDHAMsolidTemperatureCoupledMixed")
     };
     let Some((r, path, bc)) = solid_temperatures(case).find(|(_, _, b)| !rain || blind(b)) else { return };
@@ -286,6 +302,15 @@ fn grass_reads(case: &Case, fluid: &Region, veg: &Region, out: &mut Vec<Diagnost
     }
 }
 
+/// The patches by name, the first of a name kept (OpenFOAM stops on a name given twice).
+fn first_by_name(patches: &[Patch]) -> std::collections::HashMap<&str, &Patch> {
+    let mut map = std::collections::HashMap::new();
+    for p in patches {
+        map.entry(p.name.as_str()).or_insert(p);
+    }
+    map
+}
+
 fn boundary(r: &Region) -> String {
     format!("{}/boundary", umcf_foam_mesh::mesh_dir(&r.name))
 }
@@ -318,8 +343,9 @@ fn canopy(veg: &Region, version: Option<OfVersion>, out: &mut Vec<Diagnostic>) {
 /// vegetation region's counts for the radiation.
 fn sky_surface(fluid: &Region, veg: &Region, version: Option<OfVersion>, out: &mut Vec<Diagnostic>) {
     let (Some(fluid_patches), Some(veg_patches)) = (&fluid.patches, &veg.patches) else { return };
+    let by_name = first_by_name(veg_patches);
     for p in fluid_patches {
-        let Some(q) = veg_patches.iter().find(|q| q.name == p.name && q.name != CANOPY) else { continue };
+        let Some(q) = by_name.get(p.name.as_str()).filter(|q| q.name != CANOPY) else { continue };
         let (a, b) = (surface(p, version), surface(q, version));
         if a == b {
             continue;
@@ -354,20 +380,24 @@ fn sky_surface(fluid: &Region, veg: &Region, version: Option<OfVersion>, out: &m
 /// `mappedLeafTemperature` a `mappedInternal` one in OpenFOAM-12 (a mapped one in OpenFOAM-8).
 /// The run stops where the condition is built.
 fn coupled_types(case: &Case, version: Option<OfVersion>, out: &mut Vec<Diagnostic>) {
-    let mapped = mapped(version);
+    let mapped_types = mapped(version);
     for r in &case.regions {
         let Some(patches) = &r.patches else { continue };
-        for f in &r.fields {
+        let by_name = first_by_name(patches);
+        // Not copies and backups, which OpenFOAM doesn't read.
+        for f in r.fields.iter().filter(|f| crate::is_field(f)) {
             for bc in f.bcs.iter().flatten().filter(|b| !b.pattern) {
-                let (Some(kind), Some(p)) = (bc.kind.as_deref(), patches.iter().find(|p| p.name == bc.patch)) else {
+                let (Some(kind), Some(p)) = (bc.kind.as_deref(), by_name.get(bc.patch.as_str())) else {
                     continue;
                 };
-                let on_mapped = mapped.contains(&p.kind.as_str());
-                let need = if kind.contains("CFDHAM") && !kind.ends_with("TransferCoeffInterior") {
-                    (!on_mapped).then(|| format!("a mapped patch ({})", mapped.join(", ")))
+                let on_mapped = mapped_types.contains(&p.kind.as_str());
+                let need = if NEED_MAPPED.contains(&kind) {
+                    (!on_mapped).then(|| format!("a mapped patch ({})", mapped_types.join(", ")))
                 } else if kind == "mappedLeafTemperature" {
                     match version {
-                        Some(OfVersion::V8) => (!on_mapped).then(|| format!("a mapped patch ({})", mapped.join(", "))),
+                        Some(OfVersion::V8) => {
+                            (!on_mapped).then(|| format!("a mapped patch ({})", mapped_types.join(", ")))
+                        }
                         Some(OfVersion::V12) => {
                             (p.kind != "mappedInternal").then(|| "a mappedInternal patch".to_string())
                         }
