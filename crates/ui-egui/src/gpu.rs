@@ -928,8 +928,18 @@ mod tests {
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// A device to draw on, when this machine has one the view can use (else the test is skipped).
+    /// A device to draw on, when this machine has one the view can use (else the test is skipped;
+    /// with `UMCF_GPU_TESTS=1`, as on the Linux CI with its software driver, it fails).
     fn device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+        let found = any_device();
+        assert!(
+            found.is_some() || std::env::var("UMCF_GPU_TESTS").is_err(),
+            "UMCF_GPU_TESTS is set but there is no GPU device the view can use"
+        );
+        found
+    }
+
+    fn any_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
             eprintln!("SKIP: no GPU adapter");

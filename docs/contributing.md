@@ -102,6 +102,7 @@ when they are unset:
 | `UMCF_FIELDS_ALL_TIMES` | with `UMCF_CASES`: read the fields of every time directory, not only the first and last |
 | `UMCF_FIELD_PAIR` | `<ascii case>:<binary case>`: a copy converted with `writeFormat binary;` and `foamFormatConvert -region <r>` must read back bit for bit the same, fields and meshes |
 | `UMCF_FUZZ_ITERS` | more iterations for the dictionary and field fuzz tests |
+| `UMCF_GPU_TESTS` | the GPU view's tests fail, not skip, without a GPU device (set on the Linux CI, which installs the software Vulkan driver lavapipe); unset, they run where there is one |
 
 ```sh
 UMCF_DICT_TREES=$HOME/OpenFOAM-8/tutorials:$HOME/OpenFOAM-12/tutorials cargo test -p umcf-foam-dict --test corpus
