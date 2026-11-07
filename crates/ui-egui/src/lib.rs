@@ -2220,10 +2220,11 @@ pub struct Options {
 
 /// What draws the 3D view at the start (`--renderer`). The window runs on a GPU device (wgpu)
 /// where there is a hardware one, and the view can then be switched in it; else, and with
-/// `--renderer cpu`, it runs on OpenGL (glow). A software device (lavapipe, llvmpipe, WARP: most
-/// remote sessions and virtual machines) is no faster than the CPU view and is passed over, as
-/// a window wgpu can't show would not open (eframe can't fall back once it has started); the
-/// error then names `--renderer cpu`.
+/// `--renderer cpu`, it runs on OpenGL (glow). A software device (lavapipe, llvmpipe, WARP) is
+/// no faster than the CPU view and a virtual machine's may not show a window: both are passed
+/// over unless `--renderer gpu` asks for them. A GPU window that doesn't open is opened again
+/// on OpenGL; one that fails after it opened (`ssh -X` to a machine with a GPU, say) can stop the
+/// app, whose error names `--renderer cpu`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Start {
     /// The CPU, with the window on a hardware GPU where there is one, so that the view can be
@@ -2251,7 +2252,53 @@ impl Start {
 }
 
 /// Whether this machine has a GPU device the 3D view can be drawn on (wgpu with storage buffers
-/// in vertex shaders), and whether it is a software one (lavapipe, llvmpipe, WARP); why not.
+/// in vertex shaders), and whether it is passed over (software: lavapipe, llvmpipe, WARP; or a
+/// virtual machine's); why not.
+/// What makes the window's app: takes the app from `slot` (once), attaches the GPU view where
+/// the window runs on a device it can use, and sets what draws the 3D view at the start.
+fn creator(
+    slot: std::sync::Arc<std::sync::Mutex<Option<Desktop>>>,
+    start: Start,
+    probe: Result<(), String>,
+) -> eframe::AppCreator<'static> {
+    Box::new(move |cc: &eframe::CreationContext<'_>| {
+        let Some(mut desktop) = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else {
+            return Err("the app was already started".into());
+        };
+        let viewport = &mut desktop.app.viewport;
+        let attached = match (&cc.wgpu_render_state, &probe) {
+            // `auto` and the default take a hardware device only: the window's own may differ from
+            // the probe's.
+            (Some(state), _)
+                if matches!(start, Start::Auto | Start::Ready) && passed_over(state.adapter.get_info().device_type) =>
+            {
+                Err("the GPU device is a software or virtual one".to_string())
+            }
+            (Some(state), _) => viewport.attach_gpu(state, &cc.egui_ctx),
+            (None, Err(e)) => Err(e.clone()),
+            (None, Ok(())) => Err("the window doesn't run on a GPU device".to_string()),
+        };
+        if let Err(e) = &attached {
+            viewport.no_gpu = Some(e.clone());
+        }
+        viewport.renderer = match start {
+            Start::Gpu | Start::Auto if viewport.has_gpu() => Renderer::Gpu,
+            _ => Renderer::Cpu,
+        };
+        if let (Start::Gpu, Err(e)) = (start, &attached) {
+            eprintln!("umcf-gui: --renderer gpu: the 3D view is drawn on the CPU: {e}");
+        }
+        Ok(Box::new(desktop) as Box<dyn eframe::App>)
+    })
+}
+
+/// Whether a device of `kind` is passed over unless the GPU is asked for: a software one (no
+/// faster than the CPU view) or a virtual machine's (whose window may not show).
+fn passed_over(kind: eframe::egui_wgpu::wgpu::DeviceType) -> bool {
+    use eframe::egui_wgpu::wgpu::DeviceType;
+    matches!(kind, DeviceType::Cpu | DeviceType::VirtualGpu)
+}
+
 fn gpu_probe() -> Result<bool, String> {
     use eframe::egui_wgpu::wgpu;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2259,7 +2306,7 @@ fn gpu_probe() -> Result<bool, String> {
         wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() };
     let adapter = pollster::block_on(instance.request_adapter(&options)).map_err(|e| format!("no GPU device: {e}"))?;
     gpu::usable(&adapter)?;
-    Ok(adapter.get_info().device_type == wgpu::DeviceType::Cpu)
+    Ok(passed_over(adapter.get_info().device_type))
 }
 
 /// The wgpu set-up of the window: egui's, with the device given all the adapter allows (the 3D
@@ -2425,63 +2472,49 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     app.start_up(options.open.as_deref())?;
     let (w, h) = options.size.unwrap_or((1440.0, 900.0));
-    // The GPU only when asked for (see [`Start`]); `auto` passes a software one over.
+    // The window on a GPU device where there is one (see [`Start`]); without --renderer and with
+    // `auto`, a software or virtual one is passed over.
     let probe: Result<(), String> = match options.renderer {
         Start::Cpu => Err("started with --renderer cpu: the window runs on OpenGL".to_string()),
         Start::Gpu => gpu_probe().map(|_| ()),
         Start::Auto | Start::Ready => match gpu_probe() {
             Ok(false) => Ok(()),
-            Ok(true) => Err("the GPU device is a software one".to_string()),
+            Ok(true) => Err("the GPU device is a software or virtual one".to_string()),
             Err(e) => Err(e),
         },
     };
-    let native = eframe::NativeOptions {
+    let native = |renderer| eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]).with_title("umcfGui"),
-        renderer: if probe.is_ok() { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow },
+        renderer,
         wgpu_options: wgpu_options(),
         ..Default::default()
     };
     let failed: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let wanted = options.screenshot.clone();
     let done: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
-    let mut desktop = Desktop {
+    // The app waits here until the window is made: a GPU window that doesn't open leaves it,
+    // and it is started again on OpenGL.
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(Desktop {
         app,
         screenshot: options.screenshot,
         frames: 0,
         asked: None,
         done: done.clone(),
         failed: failed.clone(),
-    };
+    })));
     let start = options.renderer;
-    let created = move |cc: &eframe::CreationContext<'_>| {
-        let viewport = &mut desktop.app.viewport;
-        let attached = match (&cc.wgpu_render_state, &probe) {
-            // `auto` and the default take a hardware device only: the window's own may differ from
-            // the probe's.
-            (Some(state), _)
-                if matches!(start, Start::Auto | Start::Ready)
-                    && state.adapter.get_info().device_type == eframe::egui_wgpu::wgpu::DeviceType::Cpu =>
-            {
-                Err("the GPU device is a software one".to_string())
-            }
-            (Some(state), _) => viewport.attach_gpu(state, &cc.egui_ctx),
-            (None, Err(e)) => Err(e.clone()),
-            (None, Ok(())) => Err("the window doesn't run on a GPU device".to_string()),
-        };
-        if let Err(e) = &attached {
-            viewport.no_gpu = Some(e.clone());
+    let on_gpu = probe.is_ok();
+    let renderer = if on_gpu { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow };
+    let mut result = eframe::run_native("umcfGui", native(renderer), creator(slot.clone(), start, probe));
+    if on_gpu && let Err(e) = &result {
+        let waiting = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
+        if waiting {
+            let why = format!("the window didn't open on the GPU device ({e}): it runs on OpenGL");
+            eprintln!("umcf-gui: {why}");
+            result = eframe::run_native("umcfGui", native(eframe::Renderer::Glow), creator(slot, start, Err(why)));
         }
-        viewport.renderer = match start {
-            Start::Gpu | Start::Auto if viewport.has_gpu() => Renderer::Gpu,
-            _ => Renderer::Cpu,
-        };
-        if let (Start::Gpu, Err(e)) = (start, &attached) {
-            eprintln!("umcf-gui: --renderer gpu: the 3D view is drawn on the CPU: {e}");
-        }
-        Ok(Box::new(desktop) as Box<dyn eframe::App>)
-    };
-    let on_gpu = native.renderer == eframe::Renderer::Wgpu;
-    eframe::run_native("umcfGui", native, Box::new(created)).map_err(|e| {
+    }
+    result.map_err(|e| {
         if on_gpu {
             format!("{e} (the window ran on the GPU device: start with --renderer cpu to run it on OpenGL)")
         } else {

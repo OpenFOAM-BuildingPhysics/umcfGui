@@ -101,13 +101,13 @@ draw on the CPU.
 
 - **When there is a GPU view.** At the start the app looks for a GPU device it can draw on
   (Vulkan, Metal or Direct3D 12, or OpenGL with storage buffers in vertex shaders, through
-  wgpu), and the whole window runs on it. A software one (most remote sessions and virtual
-  machines) is passed over, as it is no faster than the CPU, unless `--renderer gpu` asks for
-  it. Without one, and with `--renderer cpu`, the window runs on OpenGL and the view is drawn
-  by the CPU: *GPU* is grey in the ribbon, its tooltip saying why, and left out of the
-  navigation bar. `--renderer gpu` or `auto` start the view on the GPU. A window wgpu can't
-  show would not open (the window's backend can't change once it has started): the error then
-  says to start with `--renderer cpu`.
+  wgpu), and the whole window runs on it. A software one (no faster than the CPU) and a virtual
+  machine's are passed over unless `--renderer gpu` asks for them. Without one, and with
+  `--renderer cpu`, the window runs on OpenGL and the view is drawn by the CPU: *GPU* is grey
+  in the ribbon, its tooltip saying why, and left out of the navigation bar. `--renderer gpu`
+  or `auto` start the view on the GPU. A GPU window that doesn't open is opened again on OpenGL
+  (the tooltip says why). One that opens but can't show, as over `ssh -X` to a machine with a
+  GPU, may fail or stop the app: start it there with `--renderer cpu`.
 - **When the GPU fails** (out of its memory, a limit of the device), the view goes back to the CPU
   for the rest of the session and the tooltip says why.
 - **What it draws.** The same picture as the CPU: each patch or surface region in its colour,
