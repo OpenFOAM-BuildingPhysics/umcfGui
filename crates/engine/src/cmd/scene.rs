@@ -131,7 +131,8 @@ type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
 /// Each job comes with an estimate of the memory it holds while it runs. A job starts only while
 /// the estimates of the jobs running and its own fit in `budget`; the biggest start first, and a
 /// job runs alone when nothing else runs, whatever its estimate. [`UNKNOWN`] (a read whose size
-/// can't be told) runs alone, unless the budget is unbounded.
+/// can't be told) runs alone, unless `budget` is `u64::MAX` (only tests pass that; a session's
+/// is at most half of it).
 fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Result<Vec<T>, Error> {
     use std::sync::{Condvar, Mutex};
     struct State<'a, T> {
@@ -1191,15 +1192,21 @@ mod tests {
     /// Jobs that note the estimates running together (saturating: [`UNKNOWN`] is the most there
     /// is); the most seen.
     fn run(costs: &[u64], budget: u64) -> (Vec<usize>, u64) {
+        run_with(costs, budget).0
+    }
+
+    /// [`run`], and the most jobs that ran together with an [`UNKNOWN`] one among them.
+    fn run_with(costs: &[u64], budget: u64) -> ((Vec<usize>, u64), usize) {
         use std::sync::Mutex;
         // What runs now: each job's estimate, by its index.
         let running: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
         let most = AtomicU64::new(0);
+        let with_unknown = std::sync::atomic::AtomicUsize::new(0);
         let jobs: Vec<(u64, Job<'_, usize>)> = costs
             .iter()
             .enumerate()
             .map(|(k, &c)| -> (u64, Job<'_, usize>) {
-                let (running, most) = (&running, &most);
+                let (running, most, with_unknown) = (&running, &most, &with_unknown);
                 (
                     c,
                     Box::new(move || {
@@ -1208,6 +1215,9 @@ mod tests {
                             r.push((k, c));
                             let now = r.iter().fold(0u64, |a, (_, c)| a.saturating_add(*c));
                             most.fetch_max(now, Ordering::SeqCst);
+                            if r.iter().any(|(_, c)| *c == UNKNOWN) {
+                                with_unknown.fetch_max(r.len(), Ordering::SeqCst);
+                            }
                         }
                         std::thread::sleep(std::time::Duration::from_millis(20));
                         running.lock().unwrap().retain(|(j, _)| *j != k);
@@ -1217,7 +1227,7 @@ mod tests {
             })
             .collect();
         let out = parallel("test", jobs, budget).unwrap();
-        (out, most.load(Ordering::SeqCst))
+        ((out, most.load(Ordering::SeqCst)), with_unknown.load(Ordering::SeqCst))
     }
 
     #[test]
@@ -1284,8 +1294,8 @@ mod tests {
 
     #[test]
     fn reads_of_unknown_size_run_alone() {
-        let (out, most) = run(&[UNKNOWN, 10, UNKNOWN, 10], 100);
+        let ((out, _), together) = run_with(&[UNKNOWN, 10, UNKNOWN, 10], 100);
         assert_eq!(out, [0, 1, 2, 3]);
-        assert_eq!(most, UNKNOWN, "an unknown read held the whole budget alone");
+        assert_eq!(together, 1, "an unknown read ran with another");
     }
 }

@@ -207,6 +207,11 @@ as it was, isn't done.
 - **Every pull request targets `main`**, never another pull request's branch; at most 300 files;
   squash-merged. It is ready only when a CodeRabbit review covers its head: every thread is
   answered and resolved, and its outside-diff comments are read. (Since #16.)
+- **The Claude Code review (`/claude-review`) is for substantial changes only.** A substantial
+  change is a new feature, a change of behaviour across crates, or a change to how case files
+  are read or written. Docs, tests, CI and small fixes don't get one. The review counts against
+  a subscription's usage, and it starts only when asked: the maintainer, or an agent with the
+  maintainer's go, comments `/claude-review`.
 - **Merges are manual.** No auto-merge: the maintainer merges. `--admin` only for the one pull
   request the maintainer names, never carried over to the next. Remote branches are deleted
   only when the maintainer says so. (Since #43.)
