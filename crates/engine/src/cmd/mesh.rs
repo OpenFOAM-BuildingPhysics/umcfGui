@@ -19,7 +19,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     label: "Check mesh",
     menu: "Mesh/Check",
     shortcut: None,
-    params: "region: one region (default: every region with a mesh). Counts its progress (the mesh files' bytes read, then the faces checked) and stops when cancelled, within 65,536 faces. Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
+    params: "region: one region (default: every region with a mesh). Counts its progress (the mesh files' bytes read, then the faces checked) and stops when cancelled, within 65,536 faces (all_geometry's own checks only at their end). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
     enabled: needs_case,
     run: check,
     journal: false,
@@ -445,6 +445,10 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 (Some(q), sets)
             }
             Err(e) => {
+                // Its quality steps, counted up front, are done: there is nothing to check.
+                if let Some(f) = noted {
+                    progress.advance(quality_steps(*f, all_geometry));
+                }
                 d.insert(0, unreadable(r, &e.to_string()));
                 (None, Vec::new())
             }

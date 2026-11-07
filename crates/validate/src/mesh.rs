@@ -349,6 +349,11 @@ fn quality_or_stop(mesh: &PolyMesh, all_geometry: bool, work: &Work) -> Option<Q
     let (centres, vols) = cell_centres_volumes_with(mesh, work)?;
     let mut q = quality_of(mesh, &centres, &vols, work)?;
     if all_geometry {
+        // `checkMesh -allGeometry`'s checks stop only at their end: a cancel before them is seen
+        // here.
+        if work.cancel.is_some_and(umcf_core::Cancel::is_cancelled) {
+            return None;
+        }
         q.all = Some(all::all_geometry(mesh, &centres, &vols, q.directions));
         // The extra checks count as one pass, done at once.
         if let Some(c) = work.cancel {

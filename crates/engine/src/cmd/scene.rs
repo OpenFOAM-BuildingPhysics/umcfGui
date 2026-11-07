@@ -481,8 +481,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         let mut read = read;
         if moved {
             let again: Vec<&Key> = wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).collect();
-            progress.start(2 * (missing.len() + again.len()) as u64);
-            progress.advance(missing.len() as u64);
+            progress.add_steps(2 * again.len() as u64);
             progress.expect(again.iter().map(|k| read_bytes(case, fs, &k.source)).fold(0u64, u64::saturating_add));
             read.extend(parallel(id, jobs_for(&again), budget.read, progress)?);
             missing.extend(again);

@@ -239,7 +239,8 @@ impl Session {
     /// The flag that stops the command running now, from another thread (a *Cancel* button):
     /// the files of a case `case.open` opened are read no more, and the command fails as
     /// [`Error::Cancelled`] with the case as it was. It stays set until reset, so whoever sets it
-    /// resets it before the next command.
+    /// resets it before the next command. Its progress adds up over commands until reset too
+    /// (the desktop app resets it for each job; the CLI shows none).
     pub fn canceller(&self) -> umcf_core::Cancel {
         self.cancel.clone()
     }

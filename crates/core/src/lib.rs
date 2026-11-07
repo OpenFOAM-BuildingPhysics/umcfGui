@@ -136,6 +136,8 @@ pub struct Progress(std::sync::Arc<Counts>);
 struct Counts {
     bytes: std::sync::atomic::AtomicU64,
     expected: std::sync::atomic::AtomicU64,
+    /// The bytes read before the job said what it expects: not part of it.
+    base: std::sync::atomic::AtomicU64,
     done: std::sync::atomic::AtomicU64,
     total: std::sync::atomic::AtomicU64,
 }
@@ -146,17 +148,24 @@ pub struct ProgressNow {
     /// Steps done, of `total` (0: the job doesn't count steps).
     pub done: u64,
     pub total: u64,
-    /// Bytes read, of `expected` (0: the job doesn't say what it will read).
+    /// Bytes read in all, and of them, `bytes - base` of `expected` (0: the job doesn't say
+    /// what it will read; `base`: what it read before it said).
     pub bytes: u64,
     pub expected: u64,
+    pub base: u64,
 }
 
 impl ProgressNow {
+    /// The bytes read of those expected: since the job said what it expects.
+    pub fn expected_read(&self) -> u64 {
+        self.bytes.saturating_sub(self.base)
+    }
+
     /// How far the job is, from 0 to 1, where it can be told: the share of the expected bytes
     /// read and the share of the steps done, the mean of both where the job counts both.
     pub fn fraction(&self) -> Option<f64> {
         let part = |n: u64, of: u64| (of > 0).then(|| (n as f64 / of as f64).clamp(0.0, 1.0));
-        match (part(self.bytes, self.expected), part(self.done, self.total)) {
+        match (part(self.expected_read(), self.expected), part(self.done, self.total)) {
             (Some(r), Some(s)) => Some((r + s) / 2.0),
             (r, s) => r.or(s),
         }
@@ -185,9 +194,14 @@ impl Progress {
         self.0.done.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The job will read about `bytes` more (on top of what it said before).
+    /// The job will read about `bytes` more (on top of what it said before). What it read before
+    /// it first said so doesn't count towards them.
     pub fn expect(&self, bytes: u64) {
-        self.0.expected.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.0.expected.load(Relaxed) == 0 {
+            self.0.base.store(self.0.bytes.load(Relaxed), Relaxed);
+        }
+        self.0.expected.fetch_add(bytes, Relaxed);
     }
 
     /// `n` more bytes read.
@@ -203,6 +217,7 @@ impl Progress {
             total: self.0.total.load(Relaxed),
             bytes: self.0.bytes.load(Relaxed),
             expected: self.0.expected.load(Relaxed),
+            base: self.0.base.load(Relaxed),
         }
     }
 
@@ -211,6 +226,7 @@ impl Progress {
         use std::sync::atomic::Ordering::Relaxed;
         self.0.bytes.store(0, Relaxed);
         self.0.expected.store(0, Relaxed);
+        self.0.base.store(0, Relaxed);
         self.0.done.store(0, Relaxed);
         self.0.total.store(0, Relaxed);
     }
@@ -684,6 +700,8 @@ mod tests {
         p.start(4);
         p.advance(1);
         assert_eq!(p.get().fraction(), Some(0.25));
+        // Read before the job says what it expects: not counted towards it.
+        p.read(30);
         p.expect(100);
         p.read(50);
         // The mean of a half and a quarter.
@@ -733,7 +751,7 @@ mod tests {
         // Steps, where the job knows how many.
         p.start(4);
         p.step();
-        assert_eq!(p.get(), ProgressNow { done: 1, total: 4, bytes: 17, expected: 0 });
+        assert_eq!(p.get(), ProgressNow { done: 1, total: 4, bytes: 17, expected: 0, base: 0 });
         // The next job counts from nothing; clones share the counts.
         let shared = cancel.clone();
         cancel.reset();

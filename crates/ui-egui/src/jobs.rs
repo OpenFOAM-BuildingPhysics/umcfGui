@@ -363,7 +363,7 @@ impl App {
             detail.push(format!("{} of {}", now.done, now.total));
         }
         if now.expected > 0 {
-            detail.push(of_megabytes(now.bytes, now.expected));
+            detail.push(of_megabytes(now.expected_read(), now.expected));
         } else if now.bytes > 0 {
             detail.push(megabytes(now.bytes));
         }

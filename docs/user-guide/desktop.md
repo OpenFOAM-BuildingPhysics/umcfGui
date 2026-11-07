@@ -177,7 +177,8 @@ about the new conditions.
   of their own; forms for the others come with meshing.
 - *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,
   but a file read whole (binary meshes, the mesh check's) only once it is read; the mesh check's
-  computing stops within 65,536 faces. The bar of the 3D view and of the mesh check follows
+  computing stops within 65,536 faces, apart from the checks *all geometry* adds, which stop
+  only at their end. The bar of the 3D view and of the mesh check follows
   the bytes of the files they expect to read, from the sizes on disk, and their steps; other
   work besides the field reading shows the megabytes it has read and the seconds it has run, not
   how far it is.

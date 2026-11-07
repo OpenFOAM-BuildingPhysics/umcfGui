@@ -445,8 +445,13 @@ fn mesh_check_goes_on_after_an_unreadable_region() {
     assert_eq!(Session::new().enabled("mesh.check"), Err("no case is open".to_string()));
     let mut fs = fs();
     fs.insert("system/controlDict", control().replace("    fluid (air);\n", "    fluid (air);\n    solid (wall);\n"));
-    // air: only its boundary file (unreadable); wall: a whole cube.
+    // air: only its boundary file and an owner header noting its size (unreadable); wall: a
+    // whole cube.
     cube_mesh(&mut fs, "constant/wall/polyMesh");
+    fs.insert(
+        "constant/air/polyMesh/owner",
+        "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class labelList;\n    note \"nPoints:8 nCells:1 nFaces:6 nInternalFaces:0\";\n    object owner;\n}\n6\n(\n0 0 0 0 0 0\n)\n",
+    );
     fs.insert(
         "0/wall/Ts",
         "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}\ninternalField uniform 300;\nboundaryField\n{\n    inlet { type zeroGradient; }\n}\n",
