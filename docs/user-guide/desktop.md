@@ -163,6 +163,9 @@ about the new conditions.
 - The 3D view is drawn by the CPU renderer, at the window's resolution (at half of it while the
   view turns). It keeps up with surfaces and meshes of a few hundred thousand boundary faces;
   a GPU view comes later.
+- The 3D view reads regions at once and keeps hidden ones within a share of the memory free when
+  the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
+  dropped past it is read again when it is shown.
 - A command's parameters are typed as JSON, apart from boundary conditions, which have a card
   of their own; forms for the others come with meshing.
 - *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,

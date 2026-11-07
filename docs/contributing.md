@@ -9,6 +9,9 @@ The short version:
 - **Never crash:** no `unwrap`, `expect`, `panic!` or `unsafe` outside tests; case files and
   solver processes are hostile input.
 - **Everything is a command**, and the [layering](architecture.md) is enforced.
+- **Linux, Windows and macOS equally:** every feature works the same on all three (OpenFOAM
+  itself is reached through WSL, a virtual machine or a remote machine where it doesn't run);
+  CI builds and tests on each.
 - **The solver is the spec.** Read the urbanMicroclimateFoam source freely; ported code keeps
   its copyright line and names its source file and commit.
 - **Pull requests** target `main`, never another pull request; each push is first reviewed by

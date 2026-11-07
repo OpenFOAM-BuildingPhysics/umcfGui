@@ -284,6 +284,28 @@ impl Object {
     pub fn bvh(&self) -> &Bvh {
         self.bvh.get_or_init(|| Bvh::new(&self.points, &self.triangles))
     }
+
+    /// About how many bytes the object holds: its lists, and its BVH and edges once they were
+    /// built.
+    pub fn bytes(&self) -> u64 {
+        use std::mem::size_of;
+        fn of<T>(v: &Vec<T>) -> u64 {
+            (v.capacity() * size_of::<T>()) as u64
+        }
+        let names = |v: &[String]| v.iter().map(|x| (x.capacity() + size_of::<String>()) as u64).sum::<u64>();
+        let groups = self.groups.iter().map(|g| names(g) + size_of::<Vec<String>>() as u64).sum::<u64>();
+        let wire = self.wire.get().map_or(0, |w| of(&w.edges) + of(&w.points));
+        of(&self.points)
+            + of(&self.triangles)
+            + of(&self.class)
+            + of(&self.origin_index)
+            + of(&self.edges)
+            + names(&self.classes)
+            + names(&self.kinds)
+            + groups
+            + self.bvh.get().map_or(0, Bvh::bytes)
+            + wire
+    }
 }
 
 impl Scene {

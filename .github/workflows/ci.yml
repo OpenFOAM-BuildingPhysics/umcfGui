@@ -63,8 +63,9 @@ jobs:
         run: cargo xtask make-examples --check
 
   desktop:
-    # The desktop app on the other systems it runs on: built, and its interface tests run (the
-    # folder dialog is the system's own on each: IFileDialog, NSOpenPanel, the desktop portal).
+    # Windows and macOS, supported as Linux is (AGENTS.md §4): the desktop app built and every
+    # test run (the folder dialog is the system's own on each: IFileDialog, NSOpenPanel, the
+    # desktop portal; so are the free memory the session plans with, paths and links).
     name: desktop (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -80,5 +81,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the desktop app
         run: cargo build -p umcf-gui --locked
-      - name: Test the desktop interface
-        run: cargo test -p umcf-ui-egui --locked
+      - name: Test everything
+        run: cargo test --workspace --locked

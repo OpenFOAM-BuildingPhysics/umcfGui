@@ -1,6 +1,6 @@
 # umcfGui roadmap
 
-**Stage:** M0 — foundation. *Last updated: 2026-11-06.*
+**Stage:** M0 — foundation. *Last updated: 2026-11-07.*
 
 | Area | State |
 |---|---|
@@ -71,3 +71,4 @@ Ranked work list: [`docs/gaps.md`](docs/gaps.md).
 - 2026-11-06 — M0.46 field files read at open as outlines (`Field::outline`: streamed, lists by kind and length, numbers checked but not kept, at most 4 MB of text kept), up to 16 files at once; every field up to 8 GB decompressed gets its boundary conditions (those over 256 MB checked, not edited); the `field.size` check (a field's length against the cells, internal faces or points in the `owner` header of the mesh the run reads). The Hong Kong project opens and checks at its latest time in 2.6 s and 210 MB (was 11 s and 720 MB, without the conditions of `U` and `phi`).
 - 2026-11-06 — M0.47 the edit cards' *Set* (`bc.set`, `patch.set`, `patch.create`) and the history bar's undo and redo run as jobs: the window keeps drawing, the card waits behind the busy card and closes when the command worked, or shows its error.
 - 2026-11-06 — M0.48 the desktop app stays in use while a job runs (it draws from a copy of the session; what is asked meanwhile waits and runs after, in order), apart from opening and saving a case; the job's progress, *Cancel* and what waits in the status bar (files done where known, megabytes read); a case opens with its field files listed, its view's scene read first and its fields after (`case.fields`, `fields.pending`).
+- 2026-11-07 — M0.49 a memory budget (`Budget`: the memory free when the session starts, as Linux, Windows or macOS tell it, or `UMCF_MEMORY`): the 3D scene's readers start, biggest first, only while their estimates fit half of it, and the objects it keeps while hidden stay within a quarter, the ones shown least recently dropped first; a mesh's boundary keeps only the points its faces use. The Hong Kong project drawn whole: 4.3 s and 1.27 GB (was 5.95 s and 1.84 GB), 1.05 GB with `UMCF_MEMORY=1000`. Linux, Windows and macOS supported equally (AGENTS.md §4); CI runs every test on all three

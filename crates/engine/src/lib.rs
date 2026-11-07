@@ -35,9 +35,11 @@ use serde_json::{Value, json};
 use umcf_core::{CaseFs, CaseWrite, FsError};
 use umcf_model::{Case, OpenOptions};
 
+mod budget;
 mod cmd;
 mod params;
 
+pub use budget::Budget;
 pub use cmd::COMMANDS;
 pub use cmd::display::{DisplayEntry, Layer, parse as parse_display, style as display_style};
 pub use cmd::scene::{Sel, camera_json, selected_faces};
@@ -168,6 +170,8 @@ pub struct Session {
     scene: Option<std::sync::Arc<cmd::scene::Cached>>,
     /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
     cancel: umcf_core::Cancel,
+    /// The memory the session plans with (see [`Budget`]).
+    budget: Budget,
 }
 
 impl std::fmt::Debug for Session {
@@ -218,7 +222,18 @@ impl Session {
             selection: Vec::new(),
             scene: None,
             cancel: umcf_core::Cancel::new(),
+            budget: Budget::system(),
         }
+    }
+
+    /// The memory the session plans with.
+    pub fn budget(&self) -> Budget {
+        self.budget
+    }
+
+    /// Plans with `budget` from now on (the next scene built keeps to it).
+    pub fn set_budget(&mut self, budget: Budget) {
+        self.budget = budget;
     }
 
     /// The flag that stops the command running now, from another thread (a *Cancel* button):
@@ -443,6 +458,7 @@ impl Session {
         s.opens = self.opens;
         s.selection = self.selection.clone();
         s.scene = if with_scene { self.scene.clone() } else { None };
+        s.budget = self.budget;
         s
     }
 }

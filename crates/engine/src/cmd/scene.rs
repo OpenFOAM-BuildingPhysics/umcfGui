@@ -127,18 +127,53 @@ type Job<'a, T> = Box<dyn FnOnce() -> Result<T, Error> + Send + 'a>;
 /// Runs `jobs` on up to one worker thread per core and on the calling thread, which takes
 /// jobs too (so they all run, one after the other, where no thread starts: wasm, or a thread
 /// limit); their results in order, or the first error. A job that panics is a `Panicked` error.
-fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
-    use std::sync::Mutex;
+///
+/// Each job comes with an estimate of the memory it holds while it runs. A job starts only while
+/// the estimates of the jobs running and its own fit in `budget`; the biggest start first, and a
+/// job runs alone when nothing else runs, whatever its estimate.
+fn parallel<T: Send>(id: &str, jobs: Vec<(u64, Job<'_, T>)>, budget: u64) -> Result<Vec<T>, Error> {
+    use std::sync::{Condvar, Mutex};
+    struct State<'a, T> {
+        /// The jobs not started, the biggest first.
+        queue: Vec<(usize, u64, Job<'a, T>)>,
+        /// The estimates of the jobs running, together.
+        held: u64,
+        running: usize,
+    }
     let n = jobs.len();
-    let queue: Mutex<Vec<(usize, Job<'_, T>)>> = Mutex::new(jobs.into_iter().enumerate().rev().collect());
+    let mut queue: Vec<(usize, u64, Job<'_, T>)> = jobs.into_iter().enumerate().map(|(k, (c, j))| (k, c, j)).collect();
+    queue.sort_by_key(|(k, c, _)| (std::cmp::Reverse(*c), *k));
+    let state = Mutex::new(State { queue, held: 0, running: 0 });
+    let changed = Condvar::new();
     let done: Mutex<Vec<Option<Result<T, Error>>>> = Mutex::new((0..n).map(|_| None).collect());
     let work = || {
         loop {
-            let next = match queue.lock() {
-                Ok(mut q) => q.pop(),
-                Err(_) => None,
+            // The next job that fits, waiting for a running one to end while none does.
+            let next = {
+                let Ok(mut st) = state.lock() else { return };
+                loop {
+                    if st.queue.is_empty() {
+                        break None;
+                    }
+                    let fits = if st.running == 0 {
+                        Some(0)
+                    } else {
+                        let held = st.held;
+                        st.queue.iter().position(|(_, c, _)| held.saturating_add(*c) <= budget)
+                    };
+                    if let Some(i) = fits {
+                        let job = st.queue.remove(i);
+                        st.held = st.held.saturating_add(job.1);
+                        st.running += 1;
+                        break Some(job);
+                    }
+                    st = match changed.wait(st) {
+                        Ok(st) => st,
+                        Err(_) => return,
+                    };
+                }
             };
-            let Some((k, job)) = next else { return };
+            let Some((k, cost, job)) = next else { return };
             // A panic is the engine's `Panicked`, as the guard around every command makes it.
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|payload| {
                 Err(Error::Panicked { id: id.to_string(), message: crate::panic_message(payload.as_ref()) })
@@ -148,6 +183,11 @@ fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
             {
                 *slot = Some(r);
             }
+            if let Ok(mut st) = state.lock() {
+                st.held = st.held.saturating_sub(cost);
+                st.running = st.running.saturating_sub(1);
+            }
+            changed.notify_all();
         }
     };
     let workers = std::thread::available_parallelism().map_or(1, |c| c.get()).min(n).saturating_sub(1);
@@ -163,6 +203,39 @@ fn parallel<T: Send>(id: &str, jobs: Vec<Job<'_, T>>) -> Result<Vec<T>, Error> {
     done.into_iter()
         .map(|r| r.unwrap_or_else(|| Err(Error::Failed(format!("{id}: a reader job did not run")))))
         .collect()
+}
+
+/// About how much memory reading region `region`'s boundary holds while it runs: every point
+/// of the mesh (read whole, then only the boundary's kept) and the boundary faces, from the
+/// counts the `owner` header notes; without them, from the size of the points file.
+fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
+    let dir = mesh_dir(region);
+    let counts = umcf_foam_mesh::counts(fs, &dir, &Limits::default()).unwrap_or_default();
+    if let Some(points) = counts.points {
+        let boundary = counts.faces.zip(counts.internal_faces).map_or(0, |(f, i)| f.saturating_sub(i));
+        return points.saturating_mul(32).saturating_add(boundary.saturating_mul(32));
+    }
+    let plain = fs.size(&format!("{dir}/points")).map(|n| n.saturating_mul(2));
+    let gz = || fs.size(&format!("{dir}/points.gz")).map(|n| n.saturating_mul(3));
+    plain.or_else(gz).unwrap_or(0)
+}
+
+/// About how much memory reading surface `file` holds while it runs: its bytes, what is read of
+/// them and the object built.
+fn surface_need(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
+    let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file)).unwrap_or(0);
+    size.saturating_mul(3)
+}
+
+/// Drops the first of `spare` (the ones shown least recently) while they hold more than `budget`.
+fn trim_spare(spare: &mut Vec<(Key, Object)>, budget: u64) {
+    let mut held: u64 = spare.iter().map(|(_, o)| o.bytes()).sum();
+    let mut drop = 0;
+    while held > budget && drop < spare.len() {
+        held = held.saturating_sub(spare.get(drop).map_or(0, |(_, o)| o.bytes()));
+        drop += 1;
+    }
+    spare.drain(..drop);
 }
 
 /// The parameters that say what the scene shows.
@@ -283,44 +356,53 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             Mesh(BoundaryMesh),
             Surface(stl::Stl),
         }
-        let jobs_for = |keys: &[&Key]| -> Vec<Job<'_, Read>> {
-            let mut jobs: Vec<Job<'_, Read>> = Vec::new();
+        let budget = s.budget;
+        let jobs_for = |keys: &[&Key]| -> Vec<(u64, Job<'_, Read>)> {
+            let mut jobs: Vec<(u64, Job<'_, Read>)> = Vec::new();
             for k in keys {
                 match &k.source {
                     Source::Mesh { region } => {
                         let r = region.clone();
-                        jobs.push(Box::new(move || {
-                            let mut mesh = BoundaryMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
-                                let which = if r.is_empty() { String::new() } else { format!(" of region {r}") };
-                                Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
-                            })?;
-                            // The patches as the case has them (renamed or retyped and not saved
-                            // yet), when they are the same faces.
-                            if let Some(patches) = case.region(&r).and_then(|x| x.patches.as_ref())
-                                && patches.len() == mesh.boundary.len()
-                                && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
-                            {
-                                mesh.boundary = patches.clone();
-                            }
-                            Ok(Read::Mesh(mesh))
-                        }));
+                        jobs.push((
+                            mesh_need(fs, &r),
+                            Box::new(move || {
+                                let mut mesh =
+                                    BoundaryMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
+                                        let which =
+                                            if r.is_empty() { String::new() } else { format!(" of region {r}") };
+                                        Error::Failed(format!("{id}: the mesh{which} can't be read: {e}"))
+                                    })?;
+                                // The patches as the case has them (renamed or retyped and not saved
+                                // yet), when they are the same faces.
+                                if let Some(patches) = case.region(&r).and_then(|x| x.patches.as_ref())
+                                    && patches.len() == mesh.boundary.len()
+                                    && patches.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
+                                {
+                                    mesh.boundary = patches.clone();
+                                }
+                                Ok(Read::Mesh(mesh))
+                            }),
+                        ));
                     }
                     Source::Surface { file } => {
                         let f = file.clone();
-                        jobs.push(Box::new(move || {
-                            let bytes = case
-                                .file(fs, &f)?
-                                .ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
-                            let stl =
-                                stl::read(&bytes, &limits()).map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
-                            Ok(Read::Surface(stl))
-                        }));
+                        jobs.push((
+                            surface_need(case, fs, &f),
+                            Box::new(move || {
+                                let bytes = case
+                                    .file(fs, &f)?
+                                    .ok_or_else(|| Error::Failed(format!("{id}: there is no surface {f}")))?;
+                                let stl = stl::read(&bytes, &limits())
+                                    .map_err(|e| Error::Failed(format!("{id}: {f}: {e}")))?;
+                                Ok(Read::Surface(stl))
+                            }),
+                        ));
                     }
                 }
             }
             jobs
         };
-        let read = parallel(id, jobs_for(&missing))?;
+        let read = parallel(id, jobs_for(&missing), budget.read)?;
 
         // The origin: the middle of what is shown, so that points far from the world's origin
         // (projected coordinates) stay precise in single precision. The previous scene's is kept
@@ -351,32 +433,38 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         let mut read = read;
         if moved {
             let again: Vec<&Key> = wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).collect();
-            read.extend(parallel(id, jobs_for(&again))?);
+            read.extend(parallel(id, jobs_for(&again), budget.read)?);
             missing.extend(again);
         }
-        let built: Vec<Job<'_, Object>> = missing
+        // Building an object reads nothing more: what it holds is the object's, kept anyway.
+        let built: Vec<(u64, Job<'_, Object>)> = missing
             .iter()
             .zip(read)
-            .map(|(k, x)| -> Job<'_, Object> {
+            .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
-                Box::new(move || {
-                    Ok(match (source, x) {
-                        (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
-                        (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
-                        _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
-                    })
-                })
+                (
+                    0,
+                    Box::new(move || {
+                        Ok(match (source, x) {
+                            (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
+                            (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
+                            _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
+                        })
+                    }),
+                )
             })
             .collect();
-        let mut fresh: Vec<(Key, Object)> = missing.into_iter().cloned().zip(parallel(id, built)?).collect();
+        let mut fresh: Vec<(Key, Object)> =
+            missing.into_iter().cloned().zip(parallel(id, built, budget.read)?).collect();
 
         // The new scene: each object taken from what was read, else from before; what was
-        // there and isn't shown now is kept aside.
+        // there and isn't shown now is kept aside, the ones shown least recently first (those
+        // hidden before, then those hidden now), within the budget for them.
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
                 // Copied only while a copy of the session still holds it.
                 let c = std::sync::Arc::try_unwrap(c).unwrap_or_else(|shared| (*shared).clone());
-                c.keys.into_iter().zip(c.scene.objects).chain(c.spare).collect()
+                c.spare.into_iter().chain(c.keys.into_iter().zip(c.scene.objects)).collect()
             }
             _ => Vec::new(),
         };
@@ -387,7 +475,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                 .iter()
                 .position(|(x, _)| x.same(&k))
                 .map(|i| fresh.swap_remove(i))
-                .or_else(|| pool.iter().position(|(x, _)| x.same(&k)).map(|i| pool.swap_remove(i)));
+                .or_else(|| pool.iter().position(|(x, _)| x.same(&k)).map(|i| pool.remove(i)));
             let Some((k, o)) = found else {
                 return Err(Error::Failed(format!("{id}: an object of the scene was neither read nor kept")));
             };
@@ -396,6 +484,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         // An object of files a command has put since (another version) can't be shown again.
         pool.retain(|(k, _)| k.files.iter().all(|(f, v)| case_put(s, f, v)));
+        trim_spare(&mut pool, budget.spare);
         // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
         // the faces picked on it go.
         if reload {
@@ -1070,5 +1159,61 @@ impl Session {
             id: "surfaces".to_string(),
             message: crate::panic_message(payload.as_ref()),
         })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Jobs that note the estimates running together; the most seen.
+    fn run(costs: &[u64], budget: u64) -> (Vec<usize>, u64) {
+        let held = AtomicU64::new(0);
+        let most = AtomicU64::new(0);
+        let jobs: Vec<(u64, Job<'_, usize>)> = costs
+            .iter()
+            .enumerate()
+            .map(|(k, &c)| -> (u64, Job<'_, usize>) {
+                let (held, most) = (&held, &most);
+                (
+                    c,
+                    Box::new(move || {
+                        let now = held.fetch_add(c, Ordering::SeqCst) + c;
+                        most.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        held.fetch_sub(c, Ordering::SeqCst);
+                        Ok(k)
+                    }),
+                )
+            })
+            .collect();
+        let out = parallel("test", jobs, budget).unwrap();
+        (out, most.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn jobs_start_only_while_they_fit_the_budget() {
+        let (out, most) = run(&[60, 50, 40, 10, 30], 100);
+        assert_eq!(out, [0, 1, 2, 3, 4], "results in the jobs' order");
+        assert!(most <= 100, "{most}");
+        // A job bigger than the budget runs, alone.
+        let (out, most) = run(&[500, 20, 20], 100);
+        assert_eq!(out, [0, 1, 2]);
+        assert_eq!(most, 500);
+        // A big budget runs them together (where threads start).
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) > 1 {
+            assert!(run(&[10, 10, 10], u64::MAX).1 > 10);
+        }
+    }
+
+    #[test]
+    fn a_failing_or_panicking_job_fails_the_whole() {
+        let jobs: Vec<(u64, Job<'_, u32>)> = vec![
+            (5, Box::new(|| Ok(1))),
+            (5, Box::new(|| Err(Error::Failed("no".into())))),
+            (5, Box::new(|| panic!("boom"))),
+        ];
+        assert!(parallel("test", jobs, 5).is_err());
     }
 }

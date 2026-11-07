@@ -148,15 +148,29 @@ fn read_boundary_mesh(fs: &MemFs) -> Result<BoundaryMesh> {
 /// The boundary read alone is the whole mesh's boundary: the same points, patches and boundary
 /// faces, and no internal face.
 fn assert_same_boundary(b: &BoundaryMesh, m: &PolyMesh) {
-    assert_eq!(b.points, m.points);
+    assert_eq!(b.n_points(), m.n_points());
     assert_eq!(b.boundary, m.boundary);
     assert_eq!((b.n_faces(), b.first_boundary_face()), (m.n_faces(), m.n_internal_faces()));
     for i in 0..m.n_internal_faces() {
         assert_eq!(b.face(i), None, "internal face {i}");
     }
     for i in m.n_internal_faces()..m.n_faces() + 1 {
-        assert_eq!(b.face(i), m.face(i), "face {i}");
+        assert_eq!(boundary_face_points(b, i), mesh_face_points(m, i), "face {i}");
     }
+    // Only the points the boundary uses are kept.
+    let used: std::collections::BTreeSet<u32> =
+        (m.n_internal_faces()..m.n_faces()).flat_map(|i| m.face(i).unwrap().to_vec()).collect();
+    assert_eq!(b.points.len(), used.len());
+}
+
+/// The coordinates of face `i` of a boundary read alone.
+fn boundary_face_points(b: &BoundaryMesh, i: usize) -> Option<Vec<[f64; 3]>> {
+    Some(b.face(i)?.iter().map(|p| b.points[*p as usize]).collect())
+}
+
+/// The coordinates of face `i` of a whole mesh.
+fn mesh_face_points(m: &PolyMesh, i: usize) -> Option<Vec<[f64; 3]>> {
+    Some(m.face(i)?.iter().map(|p| m.points[*p as usize]).collect())
 }
 
 fn assert_two_hexes(m: &PolyMesh) {
@@ -388,7 +402,7 @@ fn fuzz_mutations_never_panic() {
             // The same for the boundary alone: every boundary face resolves, its points in range.
             for i in b.first_boundary_face()..b.n_faces() {
                 let face = b.face(i).unwrap();
-                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.n_points()));
+                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.points.len()));
             }
         }
     }
@@ -561,14 +575,16 @@ fn compressed_faces_stream_past_the_internal_ones() {
         let b = read_boundary_mesh(&faces_gz(&plain)).unwrap();
         assert!(same_boundary_meshes(&a, &b), "{extra} internal faces");
         assert_eq!((b.first_boundary_face(), b.n_faces()), (extra + 1, extra + 11));
-        assert_eq!(b.face(extra + 1), Some(&[0, 6, 9, 3][..]));
+        let mesh_points = points();
+        let at = |labels: &[u32]| labels.iter().map(|p| mesh_points[*p as usize]).collect::<Vec<_>>();
+        assert_eq!(boundary_face_points(&b, extra + 1), Some(at(&[0, 6, 9, 3])));
         // Both are read as a stream: against the whole-file reader.
         let text = faces_text_of(&plain);
         let (n, offsets, points) = open("f", &text).unwrap().1.face_list_from(&Limits::default(), extra + 1).unwrap();
         assert_eq!(n, b.n_faces());
         for (k, w) in offsets.windows(2).enumerate() {
-            let want = points.get(w[0] as usize..w[1] as usize);
-            assert_eq!(a.face(extra + 1 + k), want, "{extra}: face {}", extra + 1 + k);
+            let want = points.get(w[0] as usize..w[1] as usize).map(at);
+            assert_eq!(boundary_face_points(&a, extra + 1 + k), want, "{extra}: face {}", extra + 1 + k);
         }
     }
     // The two hexes as they are, compressed: the same as the whole mesh's boundary.
@@ -627,7 +643,7 @@ fn compressed_fuzz_mutations_never_panic() {
         if let Ok(b) = &b {
             for i in b.first_boundary_face()..b.n_faces() {
                 let face = b.face(i).unwrap();
-                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.n_points()));
+                assert!(face.len() >= 3 && face.iter().all(|p| (*p as usize) < b.points.len()));
             }
         }
         if let (Ok(a), Ok(b)) = (&a, &b) {

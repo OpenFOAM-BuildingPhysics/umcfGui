@@ -131,6 +131,13 @@ Full detail: [`docs/architecture.md`](docs/architecture.md). Enforced by `cargo 
   hand-roll calendar math.
 - **Rust only** (no handwritten JS/TS, no Python in the product). L0–L3 stay wasm-clean
   (`cargo xtask wasm`) so a web results viewer stays possible.
+- **Linux, Windows and macOS are supported equally.** The desktop app, the CLI and every
+  feature work the same on all three. The one exception is OpenFOAM itself, which runs only on
+  Linux: on the others the runner reaches it through WSL, a virtual machine or container, or a
+  remote machine. Whatever asks the system (free memory, files and paths, dialogs, processes,
+  threads) uses a cross-platform crate or code of its own for each of the three. It is never
+  written for Linux with a fixed guess for the others. CI builds and tests on all three, and code
+  that asks the system is tested on each.
 
 ## 5. Assets
 

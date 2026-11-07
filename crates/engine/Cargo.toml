@@ -17,6 +17,7 @@ umcf-render.workspace = true
 umcf-foam-mesh.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+sysinfo.workspace = true
 
 [lints]
 workspace = true
