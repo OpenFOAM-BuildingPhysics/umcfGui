@@ -35,9 +35,6 @@ use umcf_render::{Object, Scene};
 const RANKS: usize = 8;
 const BIAS: i32 = 8;
 const SLOPE: f32 = 2.0;
-/// How far the selection is pulled forward: past every object's push.
-const FRONT: i32 = 128;
-const FRONT_SLOPE: f32 = 32.0;
 
 /// The colours' texture's width: texels past it go on the next rows (the shader's 1024). Each
 /// class has two: its colour and what it is (the alpha: one of the `CODE`s), then its opacity.
@@ -248,8 +245,8 @@ fn edging(in: Out) -> f32 {
     return 1.0;
 }
 
-@fragment
-fn fs(in: Out) -> Pixel {
+// An opaque surface's pixel: its colour (darkened on an edge), its class and its depth.
+fn surface(in: Out) -> Pixel {
     if in.colour.a < 0.5 {
         discard;
     }
@@ -264,6 +261,33 @@ fn fs(in: Out) -> Pixel {
         depth = depth * (1.0 + CPU_FRONT);
     }
     out.depth = bitcast<u32>(depth);
+    return out;
+}
+
+@fragment
+fn fs(in: Out) -> Pixel {
+    return surface(in);
+}
+
+// The selection (selected classes, selected faces): as `fs`, its depth 1 + DEPTH_FRONT nearer
+// (CPU_FRONT, as the CPU view puts it, where the depth buffer keeps that precision), so that it is seen over what lies in the same place, and only there (a
+// bias that grows with the surface's slope would bring surfaces behind others to the front,
+// near their edges).
+struct Front {
+    @location(0) colour: vec4<f32>,
+    @location(1) id: u32,
+    @location(2) depth: u32,
+    @builtin(frag_depth) z: f32,
+};
+
+@fragment
+fn fs_front(in: Out) -> Front {
+    let p = surface(in);
+    var out: Front;
+    out.colour = p.colour;
+    out.id = p.id;
+    out.depth = p.depth;
+    out.z = min(in.pos.z * (1.0 + DEPTH_FRONT), 1.0);
     return out;
 }
 
@@ -684,13 +708,17 @@ impl Gpu {
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        // How much nearer the selection's depth is written: the CPU view's 1e-5, but where
+        // the depth goes through -1..1 (OpenGL, as wgpu maps it there) that is below the
+        // precision of depths near the middle of the range: 1e-4.
+        let depth_front = if adapter.get_info().backend == wgpu::Backend::Gl { 1e-4 } else { CPU_FRONT };
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umcf view"),
-            source: wgpu::ShaderSource::Wgsl(with_constants(SHADER).into()),
+            source: wgpu::ShaderSource::Wgsl(with_constants(SHADER, depth_front).into()),
         });
         let outline_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umcf outlines"),
-            source: wgpu::ShaderSource::Wgsl(with_constants(OUTLINES).into()),
+            source: wgpu::ShaderSource::Wgsl(with_constants(OUTLINES, depth_front).into()),
         });
         let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
             binding,
@@ -827,10 +855,17 @@ impl Gpu {
             })
             .collect();
         // The selection in front of what lies in the same place, whichever object it is in;
-        // the selected faces over their own triangles too.
-        let front = wgpu::DepthBiasState { constant: FRONT, slope_scale: FRONT_SLOPE, clamp: 0.0 };
-        let selected =
-            pipeline("umcf selection", &layout, "vs", "fs", wgpu::CompareFunction::GreaterEqual, front, None);
+        // the selected faces over their own triangles too: its fragments write their depth a
+        // little nearer (`fs_front`), as the CPU view does, no bias.
+        let selected = pipeline(
+            "umcf selection",
+            &layout,
+            "vs",
+            "fs_front",
+            wgpu::CompareFunction::GreaterEqual,
+            wgpu::DepthBiasState::default(),
+            None,
+        );
         // Wireframes and points test their depth themselves, against the surfaces' without the
         // bias above, as the CPU view does.
         let none = wgpu::DepthBiasState::default();
@@ -1497,13 +1532,14 @@ const BACKGROUND: [[f32; 3]; 2] = [TOP, BOTTOM];
 /// `source` with the CPU view's constants it uses (the selection's colour, how much outlines,
 /// edges, wireframes and points darken, how near an edge is, how far in front they are seen)
 /// written in, so that the two views share them.
-fn with_constants(source: &str) -> String {
+fn with_constants(source: &str, depth_front: f32) -> String {
     let [r, g, b] = SELECTED;
     let reach = EDGE_REACH as f32;
     format!(
         "const SELECTED: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\nconst OUTLINE: f32 = {OUTLINE:?};\n\
          const EDGE: f32 = {EDGE:?};\nconst EDGE_REACH: f32 = {reach:?};\nconst LINE: f32 = {LINE:?};\n\
-         const AHEAD: f32 = {AHEAD:?};\nconst CPU_FRONT: f32 = {CPU_FRONT:?};\n{source}"
+         const AHEAD: f32 = {AHEAD:?};\nconst CPU_FRONT: f32 = {CPU_FRONT:?};\n\
+         const DEPTH_FRONT: f32 = {depth_front:?};\n{source}"
     )
 }
 
@@ -2167,6 +2203,22 @@ mod tests {
             "{on_gpu} orange with, {} without",
             orange_in(&gpu_alone)
         );
+    }
+
+    #[test]
+    fn a_selected_patch_behind_another_surface_stays_behind_it() {
+        // A box a hundredth smaller inside another, opaque, its faces selected: hidden, as on
+        // the CPU (the selection is put in front of what lies in the same place only; a bias
+        // growing with the slope brought it through near the faces' edges).
+        let mut scene = mesh_scene();
+        scene.objects.push(mesh_box(&scene, 0.99));
+        let mut style = Style { selected: vec![(1, 0), (1, 1), (1, 2)], ..Style::default() };
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        let (cpu_plain, gpu_plain) = both(&scene, &mut Style::default()).unwrap();
+        assert_eq!(cpu.chunks(4).filter(|p| orange(p)).count(), 0);
+        assert_eq!(changed(&cpu, &cpu_plain, 0), 0);
+        let through = changed(&image, &gpu_plain, 6);
+        assert_eq!(through, 0, "{through} pixels of the selection seen through the box in front");
     }
 
     #[test]
