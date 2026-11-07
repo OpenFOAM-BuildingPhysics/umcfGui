@@ -2073,6 +2073,7 @@ impl App {
         }
         more(ui, nu - show_undone);
         let mut cancel = false;
+        let mut switch = false;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let Some(p) = &progress {
                 if p.cancellable {
@@ -2103,7 +2104,8 @@ impl App {
                     if h.chars().count() > 28 { h.chars().take(27).collect::<String>() + "…" } else { h.clone() };
                 ui.label(RichText::new(short).size(12.0));
             }
-            // What drew the 3D view, and why the CPU did when the GPU was asked for.
+            // What drew the 3D view, and why the CPU did when the GPU was asked for; a click
+            // switches between the two where there is a GPU view (as *GPU* in the ribbon).
             if self.session.case().is_some() {
                 let (by, why) = self.viewport.drawn_with();
                 ui.separator();
@@ -2113,7 +2115,24 @@ impl App {
                     (None, Renderer::Cpu, Some(no)) => format!("The 3D view is drawn on the CPU: {no}"),
                     (None, _, _) => format!("The 3D view is drawn on the {}", by.name()),
                 };
-                ui.label(RichText::new(by.name()).size(12.0).color(colour)).on_hover_text(tip);
+                let can = self.viewport.has_gpu();
+                let label = egui::Label::new(RichText::new(by.name()).size(12.0).color(colour)).sense(if can {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                });
+                let other = match self.viewport.renderer {
+                    Renderer::Cpu => Renderer::Gpu,
+                    Renderer::Gpu => Renderer::Cpu,
+                };
+                let r = ui.add(label);
+                let r = if can {
+                    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("{tip}. Click to draw it on the {}.", other.name()))
+                } else {
+                    r.on_hover_text(tip)
+                };
+                switch = can && r.clicked();
             }
             if let Some(case) = self.session.case() {
                 let n = case.changed().len();
@@ -2125,6 +2144,9 @@ impl App {
         });
         if cancel && let Some(job) = &self.job {
             job.cancel.cancel();
+        }
+        if switch {
+            self.toggle_renderer();
         }
         if let Some(k) = target {
             self.go_to(k);
