@@ -1819,7 +1819,7 @@ mod tests {
         small.chunk = 16;
         // Faces of the wireframe, of the points and of the side's surface (its triangles, in
         // chunks too, drawn in the selection's colour).
-        for faces in [vec![], vec![(0, 0), (0, 2), (0, 4)]] {
+        for faces in [vec![], vec![(0, 0), (0, 2), (0, 4), (0, 5)]] {
             style.selected_faces = faces.into_iter().collect();
             let selection = next();
             let a = read_back(&device, &queue, whole.draw(&scene, &camera, &style, size, selection).unwrap());
@@ -1828,6 +1828,7 @@ mod tests {
         }
         let up = small.objects.values().next().unwrap();
         assert!(up.chunks.len() > 1 && up.lines.as_ref().unwrap().len() > 1 && up.dots.as_ref().unwrap().len() > 1);
+        assert!(up.selected.1.len() > 1, "the side's selected faces in one chunk");
     }
 
     #[test]
