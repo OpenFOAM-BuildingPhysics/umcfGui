@@ -212,8 +212,8 @@ In the order of the [gaps](gaps.md):
 
 | Row | |
 |---|---|
-| 4 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
-| 5 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
-| 6–8 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
-| 9 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
-| 12 | The runner: native, WSL, a VM or container, ssh and batch jobs |
+| 3 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
+| 4 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
+| 5–7 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
+| 8 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
+| 11 | The runner: native, WSL, a VM or container, ssh and batch jobs |

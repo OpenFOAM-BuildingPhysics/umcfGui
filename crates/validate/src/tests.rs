@@ -1957,7 +1957,21 @@ fn radiation_tables_view_factors_and_the_vegetation_entry() {
     let sun = d.iter().find(|d| d.2 == "constant/sunPosVector").unwrap();
     assert_eq!(sun.0, Level::Warning);
     assert!(
-        sun.3.contains("covers 0 to 3600 s") && sun.3.contains("0 to 7200 s") && sun.3.contains("last value"),
+        sun.3.contains("covers 0 to 3600 s")
+            && sun.3.contains("0 to 7200 s")
+            && sun.3.contains(": past the end of it, OpenFOAM holds its last value, read by simplifiedVegetation"),
+        "{}",
+        sun.3
+    );
+    // A table missing both ends of the run: both said.
+    let mut fs = case();
+    fs.insert("constant/sunPosVector", "(\n(600 (0 0 1))\n(1800 (0 0 1))\n)\n");
+    let d = found(&fs);
+    let sun = d.iter().find(|d| d.1 == "case.table-span" && d.2 == "constant/sunPosVector").unwrap();
+    assert!(
+        sun.3.contains(
+            ": before the start of it, OpenFOAM holds its first value, and past the end of it, OpenFOAM holds its last value"
+        ),
         "{}",
         sun.3
     );
@@ -2073,6 +2087,18 @@ fn radiation_tables_view_factors_and_the_vegetation_entry() {
         "{:?}",
         found(&mapped)
     );
+    // A pattern OpenFOAM reads otherwise (`\d` is a `d` for its POSIX matcher): not judged, and
+    // said so.
+    let mut posix = fs.clone();
+    edit(&mut posix, "system/viewFactorsDict", "\"air_to_.*\" {", "\"air_to_\\d*.*\" {");
+    let d = found(&posix);
+    assert!(d.iter().any(|d| d.1 == "case.view-factors" && d.3.contains("isn't checked")), "{d:?}");
+    // faceAgglomerate over all regions reads each region's own: not judged.
+    let mut all = fs.clone();
+    edit(&mut all, "system/viewFactorsDict", "\"air_to_.*\" {", "air_to_vegetation {");
+    assert!(found(&all).iter().any(|d| d.1 == "case.view-factors"));
+    all.insert("Allprepare", "#!/bin/sh\nfaceAgglomerate -allRegions\n");
+    assert!(!found(&all).iter().any(|d| d.1 == "case.view-factors"), "{:?}", found(&all));
     // A fixed value other than viewFactorSky's own stops it.
     edit(
         &mut fs,

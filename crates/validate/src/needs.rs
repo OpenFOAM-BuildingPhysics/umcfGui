@@ -637,13 +637,18 @@ fn tables(case: &Case, out: &mut Vec<Diagnostic>) {
                         "case.table-span",
                         &t.path,
                         format!(
-                            "{} covers {} to {} s, and the run goes from {s} to {e} s: {} it, OpenFOAM holds its {} \
-                             value, read by {by}",
+                            "{} covers {} to {} s, and the run goes from {s} to {e} s: {}, read by {by}",
                             t.path,
                             span.first,
                             span.last,
-                            if late.is_some() { "past the end of" } else { "before the start of" },
-                            if late.is_some() { "last" } else { "first" }
+                            [
+                                early.map(|_| "before the start of it, OpenFOAM holds its first value"),
+                                late.map(|_| "past the end of it, OpenFOAM holds its last value")
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(", and ")
                         ),
                     ));
                 }
@@ -715,11 +720,6 @@ const FIXED_VALUE: [&str; 56] = [
     "specieTransferVelocity",
 ];
 
-/// A pattern key matched whole, as OpenFOAM's regExp does; `None` when it can't be read here.
-fn whole(pattern: &str) -> Option<regex::Regex> {
-    regex::RegexBuilder::new(&format!("^(?:{pattern})$")).size_limit(1 << 20).build().ok()
-}
-
 /// The patches the radiation exchanges through without an entry in the `viewFactorsDict`
 /// `faceAgglomerate` reads: it leaves them unagglomerated, a coarse face for each face, so
 /// `viewFactorsGen` and the run are slow and big. The radiating patches are those whose `qr`
@@ -780,8 +780,14 @@ fn view_factors(case: &Case, out: &mut Vec<Diagnostic>) {
             umcf_model::script::StepKind::Run(run) if run.app == "faceAgglomerate" => Some(run),
             _ => None,
         })
-        .filter(|run| run.region.as_deref().unwrap_or("") == r.name)
         .collect();
+    // A run over all regions reads each region's own dictionary in a way not followed here
+    // (as validate::workflow leaves it): not judged.
+    if runs.iter().any(|run| run.all_regions) {
+        return;
+    }
+    let runs: Vec<&umcf_model::script::Run> =
+        runs.into_iter().filter(|run| run.region.as_deref().unwrap_or("") == r.name).collect();
     let default = umcf_model::script::Run {
         app: "faceAgglomerate".to_string(),
         args: Vec::new(),
@@ -808,11 +814,26 @@ fn view_factors(case: &Case, out: &mut Vec<Diagnostic>) {
     // be read here leaves the check out).
     let mut names: Vec<&str> = Vec::new();
     let mut patterns: Vec<regex::Regex> = Vec::new();
+    let mut cx = crate::Patterns::default();
     for e in doc.root.entries().filter(|e| e.dict().is_some()) {
         let key = e.key.text.as_str();
         if key.starts_with('"') {
-            let Some(re) = whole(umcf_foam_dict::unquote(key)) else { return };
-            patterns.push(re);
+            // Read as OpenFOAM's POSIX matcher reads it (as the boundary conditions' patterns).
+            match cx.get(umcf_foam_dict::unquote(key)) {
+                Ok(re) => patterns.push(re.clone()),
+                Err(why) => {
+                    out.push(
+                        Diagnostic::new(
+                            Level::Warning,
+                            "case.view-factors",
+                            path,
+                            format!("`{key}` {why}: which patches have an entry isn't checked"),
+                        )
+                        .region(&r.name),
+                    );
+                    return;
+                }
+            }
         } else {
             names.push(key);
         }
