@@ -333,8 +333,12 @@ fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
             }
         }
         let diag = |code, message: String| Diagnostic::new(Level::Error, code, &file, message).region(&r.name);
-        // The first zone of a name, as OpenFOAM finds it.
-        let zone = |name: &str| zones.iter().find(|z| z.name == name);
+        // The first zone of a name, as OpenFOAM finds it (a map: the files may name very many).
+        let mut first_zone: std::collections::HashMap<&str, &umcf_foam_mesh::Zone> = Default::default();
+        for z in zones.iter() {
+            first_zone.entry(z.name.as_str()).or_insert(z);
+        }
+        let zone = |name: &str| first_zone.get(name).copied();
         let missing: Vec<&str> = names.iter().map(String::as_str).filter(|n| zone(n).is_none()).collect();
         for m in &missing {
             out.push(diag(
@@ -355,10 +359,12 @@ fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
         // Where each material's labels start, by when, to tell whose a label is.
         let mut starts: Vec<(u32, usize)> = Vec::new();
         let mut repeat = None;
+        // The materials gathered so far, by name: the first index of each.
+        let mut seen: std::collections::HashMap<&str, usize> = Default::default();
         for (i, name) in names.iter().enumerate() {
             let Some(z) = zone(name) else { break };
             let Ok(at) = u32::try_from(met.len()) else { continue 'regions };
-            if let Some(&(_, j)) = starts.iter().find(|(_, j)| names.get(*j) == Some(name)) {
+            if let Some(&j) = seen.get(name.as_str()) {
                 if let Some(&c) = z.cells.first() {
                     repeat = Some((c, at, j, i));
                     break;
@@ -369,6 +375,7 @@ fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
                 continue 'regions;
             }
             starts.push((at, i));
+            seen.insert(name.as_str(), i);
             for (k, &c) in z.cells.iter().enumerate() {
                 met.push((c, at + k as u32));
             }
@@ -380,7 +387,13 @@ fn materials(case: &Case, out: &mut Vec<Diagnostic>) {
         // Where the solver stops first: a cell past the region's (it indexes past them), a cell
         // met a second time, or a material's zone assigned again.
         let past = n.and_then(|n| met.iter().filter(|(c, _)| u64::from(*c) >= n).min_by_key(|(_, t)| *t).copied());
-        let again = met.windows(2).filter(|w| w[0].0 == w[1].0).map(|w| (w[0], w[1])).min_by_key(|(_, b)| b.1);
+        let again = met
+            .windows(2)
+            .filter_map(|w| match *w {
+                [a, b] if a.0 == b.0 => Some((a, b)),
+                _ => None,
+            })
+            .min_by_key(|(_, b)| b.1);
         let mut events: Vec<(u32, (&'static str, String))> = Vec::new();
         if let Some((c, t)) = past {
             let name = names.get(whose(t)).map_or("?", String::as_str);
