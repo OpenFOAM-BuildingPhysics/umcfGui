@@ -657,3 +657,24 @@ fn the_scripts_copy_only_the_described_regions() {
     assert!(!allrun(&some).contains("constant/vegetation/"), "{}", allrun(&some));
     assert!(allrun(&some).contains("constant/street/thermophysicalTransport"), "{}", allrun(&some));
 }
+
+#[test]
+fn the_import_finds_a_temperature_limit_where_openfoam_reads_it() {
+    let limit = format!(
+        "{}limitT {{ type limitTemperature; selectionMode all; min 273; max 373; }}\n",
+        header("dictionary", "fvOptions")
+    );
+    for rel in [
+        "constant/air/fvOptions",
+        "system/air/fvOptions",
+        "system/air/fvConstraints",
+        "constant/air/fvConstraints",
+        "constant/air/fvModels",
+        "system/air/fvModels",
+    ] {
+        let c = Case::open(&canyon().with(rel, limit.clone())).unwrap();
+        assert!(Description::import(&c).0.components.temperature_limit, "{rel}");
+    }
+    let c = Case::open(&canyon()).unwrap();
+    assert!(!Description::import(&c).0.components.temperature_limit);
+}

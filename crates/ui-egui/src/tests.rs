@@ -1795,3 +1795,14 @@ fn new_case_starts_from_the_air_alone_and_opens_what_it_makes() {
     assert!(app.log.last().unwrap().ok);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_job_names_the_folder_it_makes_or_opens() {
+    use crate::jobs::folder_name;
+    assert_eq!(folder_name("/runs/canyon/"), Some("canyon"));
+    assert_eq!(folder_name("C:\\runs\\canyon\\"), Some("canyon"));
+    assert_eq!(folder_name("canyon"), Some("canyon"));
+    for none in ["", "  ", "/", "C:\\", "C:"] {
+        assert_eq!(folder_name(none), None, "{none:?}");
+    }
+}

@@ -192,8 +192,11 @@ fn the_settings_are_the_profile_s_files_as_they_are() {
         }
     }
     let m = make(&canyon(OfVersion::V8, Profile::Hk)).unwrap();
+    // As checked out: with CRLF line ends on Windows, say.
     let hk = |path: &str| {
-        std::fs::read_to_string(format!("{}/../schema/templates/hk/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        std::fs::read_to_string(format!("{}/../schema/templates/hk/{path}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap()
+            .replace("\r\n", "\n")
     };
     assert_eq!(file(&m, "system/air/fvSchemes").unwrap(), hk("fluid/fvSchemes"));
     assert_eq!(file(&m, "system/street/fvSolution").unwrap(), hk("solid/fvSolution"));

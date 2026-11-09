@@ -173,7 +173,7 @@ reconstruct yes;
 
 `workflow.import` writes it from the case: the scripts read as above, the region kinds, the
 components its files switch on (a fluid's `grassProperties`, a `limitTemperature` entry in a
-fluid's `fvOptions`, `fvConstraints` or `fvModels`, `blending` on in `controlDict`),
+fluid's `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`, `blending` on in `controlDict`),
 each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
 lists them (a material or its model given by a macro or a directive is noted and left out, and
 a name listed more than once keeps its first entry). Coupled patches and their partners come from the mesh

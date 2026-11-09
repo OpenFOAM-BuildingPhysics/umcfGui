@@ -535,7 +535,9 @@ impl Description {
 
 /// The components the case's files switch on (see [`Components`]): a fluid region's
 /// `grassProperties`, a `limitTemperature` entry in a fluid's `fvOptions`, `fvConstraints` or
-/// `fvModels`, `blending` on in `controlDict`.
+/// `fvModels` (in `constant/` or `system/`: OpenFOAM-8 looks for `fvOptions` in `constant/`
+/// first, OpenFOAM-12 for each in its own place, then the other), `blending` on in
+/// `controlDict`.
 fn case_components(case: &Case) -> Components {
     let mut c = Components::default();
     let fluids = case.regions.iter().filter(|r| r.kind == RegionKind::Fluid);
@@ -543,11 +545,10 @@ fn case_components(case: &Case) -> Components {
         if case.exists(&format!("constant/{}/grassProperties", r.name)) == Some(true) {
             c.grass = true;
         }
-        for rel in [
-            format!("system/{}/fvOptions", r.name),
-            format!("system/{}/fvConstraints", r.name),
-            format!("constant/{}/fvModels", r.name),
-        ] {
+        for rel in ["fvOptions", "fvConstraints", "fvModels"]
+            .into_iter()
+            .flat_map(|f| [format!("constant/{}/{f}", r.name), format!("system/{}/{f}", r.name)])
+        {
             let limits = case.dict(&rel).is_some_and(|d| {
                 d.root.entries().any(|e| {
                     e.dict().and_then(|b| b.get("type")).and_then(single).as_deref() == Some("limitTemperature")

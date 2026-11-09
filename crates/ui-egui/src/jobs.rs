@@ -163,12 +163,23 @@ fn modal(work: &Work) -> bool {
     matches!(work, Work::Command { id, .. } if matches!(id.as_str(), "case.open" | "case.new" | "case.save"))
 }
 
+/// The last name of a folder's path, with `/` or `\\` between names (`runs\\canyon\\` →
+/// `canyon`); `None` for a path without one (`/`, `C:\\`, blank).
+pub(crate) fn folder_name(path: &str) -> Option<&str> {
+    let name = path.trim().trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next()?;
+    (!name.is_empty() && !name.ends_with(':')).then_some(name)
+}
+
 fn label(work: &Work) -> String {
     match work {
         Work::Command { id, params, .. } => match id.as_str() {
             "case.fields" => "Reading the field files".to_string(),
-            "case.open" => match params.get("path").and_then(Value::as_str) {
-                Some(p) => format!("Opening {}", p.trim_end_matches('/').rsplit('/').next().unwrap_or(p)),
+            "case.new" => match params.get("path").and_then(Value::as_str).and_then(folder_name) {
+                Some(name) => format!("Making {name}"),
+                None => "Making a case".to_string(),
+            },
+            "case.open" => match params.get("path").and_then(Value::as_str).and_then(folder_name) {
+                Some(name) => format!("Opening {name}"),
                 None => "Opening a case".to_string(),
             },
             _ => umcf_engine::Session::command(id).map_or(id.clone(), |s| s.label.to_string()),
