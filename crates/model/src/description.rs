@@ -10,7 +10,6 @@
 //!
 //! ```c++
 //! version     12;
-//! profile     tutorial;
 //! regions
 //! {
 //!     air
@@ -47,7 +46,6 @@ use std::fmt::Write as _;
 
 use umcf_core::OfVersion;
 use umcf_foam_dict::{Document, Entry, Node, unquote};
-use umcf_schema::Profile;
 
 use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Workflow};
 use crate::{Case, Patch, RegionKind};
@@ -150,7 +148,7 @@ pub struct RegionDesc {
 /// The components a case has that its regions don't tell (the air, the solids' heat and
 /// moisture and the vegetation are its regions' kinds, the radiation is
 /// [`Description::radiation`]). Each is switched on in the solver by a file or an entry of its
-/// own (`umcf_schema::profile`).
+/// own (`umcf_schema::defaults`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Components {
     /// `grassProperties` in a fluid region.
@@ -185,8 +183,6 @@ impl Components {
 pub struct Description {
     /// The OpenFOAM version the scripts and dictionaries are for.
     pub version: Option<OfVersion>,
-    /// The settings the case was made from (`case.new`); `None`: not told (an imported case).
-    pub profile: Option<Profile>,
     /// In the order their meshes are built (regions without one last).
     pub regions: Vec<RegionDesc>,
     /// `surfaceFeatures` runs first.
@@ -301,7 +297,6 @@ impl Description {
         }
         let d = Description {
             version: case.layout.version,
-            profile: None,
             components: case_components(case),
             regions,
             features: wf.features,
@@ -362,9 +357,6 @@ impl Description {
         );
         if let Some(v) = self.version {
             let _ = writeln!(s, "version     {};\n", number(v));
-        }
-        if let Some(p) = self.profile {
-            let _ = writeln!(s, "profile     {};\n", p.name());
         }
         s.push_str("regions\n{\n");
         for r in &self.regions {
@@ -456,10 +448,8 @@ impl Description {
                     Some("12") => d.version = Some(OfVersion::V12),
                     _ => problem(key, "is 8 or 12".into()),
                 },
-                "profile" => match single(e).as_deref().map(|w| (w, Profile::parse(w))) {
-                    Some((_, Some(p))) => d.profile = Some(p),
-                    _ => problem(key, profile_choices()),
-                },
+                // Written by `case.new` before there was one configuration: read, and left out.
+                "profile" => {}
                 "components" => match list(e) {
                     Some(items) => {
                         let mut seen = HashSet::new();
@@ -564,12 +554,6 @@ pub(crate) fn case_components(case: &Case) -> Components {
         .and_then(|e| e.words())
         .is_some_and(|w| matches!(w.as_slice(), [v] if umcf_foam_dict::switch(v) == Some(true)));
     c
-}
-
-/// What a `profile` entry may be.
-fn profile_choices() -> String {
-    let names: Vec<&str> = Profile::ALL.iter().map(|p| p.name()).collect();
-    format!("is one of: {}", names.join(", "))
 }
 
 fn number(v: OfVersion) -> u32 {

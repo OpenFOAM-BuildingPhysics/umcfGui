@@ -2404,8 +2404,7 @@ fn case_new_writes_a_case_and_opens_it() {
         let mut s = Session::with_backup(".umcfgui/backup/test");
         let out = s.execute("case.new", &canyon_params(&dir, version)).unwrap();
         assert!(
-            out.message
-                .starts_with(&format!("made {}: OpenFOAM-{version}, 3 regions, the tutorial profile", dir.display())),
+            out.message.starts_with(&format!("made {}: OpenFOAM-{version}, 3 regions;", dir.display())),
             "{}",
             out.message
         );
@@ -2419,7 +2418,7 @@ fn case_new_writes_a_case_and_opens_it() {
         assert_eq!(case.regions.len(), 3);
         assert!(case.changed().is_empty());
         let show = s.execute("workflow.show", &Value::Null).unwrap();
-        assert_eq!(show.data["description"]["profile"], json!("tutorial"));
+        assert!(show.data["description"].get("profile").is_none());
         assert_eq!(show.data["description"]["components"], json!(["grass", "temperatureLimit"]));
         // What the check finds is what case.new leaves to later steps: the tables the radiation
         // reads, the meshes, the start time's fields.
@@ -2468,8 +2467,7 @@ fn case_new_refuses_before_it_writes() {
     s = Session::with_backup(".umcfgui/backup/test");
     for (params, want) in [
         (with("version", json!(10)), "version is 8 or 12"),
-        (with("profile", json!("big")), "profile is tutorial or hk"),
-        (with("profile", json!("hk")), "the hk profile has no files for OpenFOAM-12"),
+        (with("profile", json!("hk")), "unknown parameter `profile`"),
         (with("regions", json!([{"name": "air", "kind": "gas"}])), "kind is fluid, solid or vegetation"),
         (with("regions", json!([{"name": "street", "kind": "solid"}])), "needs a fluid region"),
         (
@@ -2499,9 +2497,8 @@ fn case_new_refuses_before_it_writes() {
     assert_eq!(s.location(), a.to_str());
     let mut p = canyon_params(&dir, 8);
     p["discard"] = json!(true);
-    p["profile"] = json!("hk");
     let out = s.execute("case.new", &p).unwrap();
-    assert!(out.message.contains("the hk profile"), "{}", out.message);
+    assert!(out.message.starts_with("made "), "{}", out.message);
     assert_eq!(s.location(), dir.to_str());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&a);

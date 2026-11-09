@@ -6,13 +6,8 @@ use crate::new_case::{NewCase, make};
 
 /// A case made by `case.new`: the air, a street, every component but grass as asked.
 fn made(version: OfVersion, up: Up, temperature_limit: bool) -> MemFs {
-    made_with(Profile::Tutorial, version, up, temperature_limit)
-}
-
-fn made_with(profile: Profile, version: OfVersion, up: Up, temperature_limit: bool) -> MemFs {
     let spec = NewCase {
         version,
-        profile,
         regions: vec![
             NewRegion { name: "air".into(), kind: RegionKind::Fluid, materials: vec![] },
             NewRegion { name: "street".into(), kind: RegionKind::Solid, materials: vec![] },
@@ -264,23 +259,17 @@ fn gravity_given_by_a_macro_is_not_copied() {
 }
 
 #[test]
-fn the_settings_are_those_of_the_description_s_profile() {
-    // A case made with hk gets hk's files.
-    let fs = made_with(Profile::Hk, OfVersion::V8, Up::Z, false);
-    let mut c = Case::open(&fs).unwrap();
-    c.add_region(&fs, &solid("roofs", &[])).unwrap();
-    // As checked out: with CRLF line ends on Windows, say; case.new makes them LF.
-    let hk = include_str!("../../schema/templates/hk/solid/fvSolution").replace("\r\n", "\n");
-    assert_eq!(c.dict("system/roofs/fvSolution").unwrap().to_string(), hk);
-    // A profile without files for the case's version is refused, nothing changed.
-    let mut fs = made(OfVersion::V12, Up::Z, false);
-    let text = String::from_utf8(fs.read(crate::description::PATH, 1 << 20).unwrap().unwrap()).unwrap();
-    assert!(text.contains("profile     tutorial;"), "{text}");
-    fs.insert(crate::description::PATH, text.replace("profile     tutorial;", "profile     hk;"));
-    let mut c = Case::open(&fs).unwrap();
-    match c.add_region(&fs, &solid("roofs", &[])) {
-        Err(Error::NewCase(m)) => assert!(m.contains("the hk profile has no files for OpenFOAM-12"), "{m}"),
-        other => panic!("{other:?}"),
+fn a_new_region_s_files_are_the_configuration_s() {
+    for v in [OfVersion::V8, OfVersion::V12] {
+        let fs = made(v, Up::Z, false);
+        let mut c = Case::open(&fs).unwrap();
+        c.add_region(&fs, &solid("roofs", &[])).unwrap();
+        for (rel, t) in
+            [("system/roofs/fvSolution", Template::SolidSolution), ("system/roofs/fvSchemes", Template::SolidSchemes)]
+        {
+            // As checked out: with CRLF line ends on Windows, say; the case gets LF.
+            let want = umcf_schema::defaults::template(v, t).unwrap().replace("\r\n", "\n");
+            assert_eq!(c.dict(rel).unwrap().to_string(), want, "{v:?} {rel}");
+        }
     }
-    assert_eq!(c.changed(), Vec::<String>::new());
 }

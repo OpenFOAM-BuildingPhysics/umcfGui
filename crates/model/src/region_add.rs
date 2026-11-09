@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use umcf_core::{CaseFs, OfVersion};
 use umcf_foam_dict::Document;
-use umcf_schema::{Profile, Template};
+use umcf_schema::Template;
 
 use crate::new_case::{NewRegion, Up, check_region, region_files, template};
 use crate::{CONTROL_DICT, Case, Error, Region, RegionKind, Result};
@@ -45,7 +45,7 @@ fn kind_word(k: RegionKind) -> &'static str {
 impl Case {
     /// Adds region `r` to the case: its name in the region list (OpenFOAM-12's `controlDict`,
     /// OpenFOAM-8's `constant/regionProperties`), the settings files of its kind (the
-    /// tutorials', or the description's `profile` for a case `case.new` made with one), a
+    /// configuration's, as `case.new` writes them), a
     /// fluid's with the gravity of the case's fluids and its temperature limit when the case has
     /// one, and the vegetation's model in `air` when it isn't there. A file that is there
     /// already is kept. The region is in the case without a mesh, and in the workflow
@@ -115,10 +115,6 @@ impl Case {
                 ))
             };
         }
-        let p = description.as_ref().and_then(|d| d.profile).unwrap_or(Profile::Tutorial);
-        if !p.versions().contains(&v) {
-            return refuse(format!("the {} profile has no files for {} (yet)", p.name(), v.label()));
-        }
         let components = match &description {
             Some(d) => d.components,
             None => crate::description::case_components(self),
@@ -132,12 +128,12 @@ impl Case {
             // A vector written out, not a macro or a directive the new file wouldn't have.
             .filter(|g| g.starts_with('(') && !g.contains(['$', '#']))
             .unwrap_or_else(|| Up::Z.gravity().to_string());
-        let mut files = region_files(p, v, r, &gravity, components.temperature_limit, &mut notes)?;
+        let mut files = region_files(v, r, &gravity, components.temperature_limit, &mut notes)?;
         if r.kind == RegionKind::Vegetation {
             if self.region("air").is_some_and(|a| a.kind == RegionKind::Fluid) {
                 files.push((
                     "constant/air/vegetationProperties".to_string(),
-                    template(p, v, Template::Vegetation)?.to_string(),
+                    template(v, Template::Vegetation)?.to_string(),
                 ));
             } else {
                 notes.push("the trees' model is air's: the case has no fluid region named air".to_string());

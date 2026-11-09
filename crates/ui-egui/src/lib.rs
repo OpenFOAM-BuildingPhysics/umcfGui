@@ -163,7 +163,7 @@ const ADD_REGION: &str = "{\n  \"region\": \"\",\n  \"kind\": \"solid\",\n  \"ma
 
 /// The *New case* card's parameters to start with: the air alone, for OpenFOAM-12, from the
 /// tutorials' settings.
-const NEW_CASE: &str = "{\n  \"path\": \"\",\n  \"version\": 12,\n  \"profile\": \"tutorial\",\n  \"regions\": [\n    { \"name\": \"air\", \"kind\": \"fluid\" }\n  ]\n}";
+const NEW_CASE: &str = "{\n  \"path\": \"\",\n  \"version\": 12,\n  \"regions\": [\n    { \"name\": \"air\", \"kind\": \"fluid\" }\n  ]\n}";
 
 /// A registry shortcut (`Ctrl+Shift+Z`, `F7`) as egui's.
 pub fn shortcut(text: &str) -> Option<KeyboardShortcut> {

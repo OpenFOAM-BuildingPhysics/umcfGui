@@ -257,7 +257,6 @@ fn odd_names_come_back_as_they_were() {
             }),
             solver: Some(odd.into()),
             reconstruct: true,
-            profile: Some(umcf_schema::Profile::Hk),
             components: crate::description::Components { grass: true, temperature_limit: false, blending: true },
         };
         let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
@@ -677,4 +676,18 @@ fn the_import_finds_a_temperature_limit_where_openfoam_reads_it() {
     }
     let c = Case::open(&canyon()).unwrap();
     assert!(!Description::import(&c).0.components.temperature_limit);
+}
+
+#[test]
+fn a_profile_written_before_there_was_one_configuration_is_read_and_left_out() {
+    for p in ["tutorial", "hk", "anything"] {
+        let text = format!(
+            "{}version 8;\nprofile {p};\nregions {{ air {{ kind fluid; }} }}\n",
+            header("dictionary", "umcfWorkflow")
+        );
+        let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+        assert_eq!(problems, vec![], "{p}");
+        assert_eq!(d.version, Some(OfVersion::V8));
+        assert!(!d.write().contains("profile"), "{p}");
+    }
 }

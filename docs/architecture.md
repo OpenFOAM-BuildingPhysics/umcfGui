@@ -38,7 +38,7 @@ L1  foam-dict   lossless FoamFile dictionary CST: parse, edit-in-place, write
                 the boundary alone (BoundaryMesh) for drawing and picking; ASCII points
                 (and the boundary's faces) parsed as a stream (CaseFs::reader)
 L2  schema      catalog of solver types and keywords (generated in part by xtask catalog); the
-                profiles a new case's settings come from (the tutorials', the benchmark's)
+                one configuration a new case's settings come from (defaults: the tutorials')
     model       typed Case built on foam-dict nodes: regions, materials, BCs, controls, sun/weather;
                 the workflow description, its edits, a new case's files (new_case), a region
                 added to a case (region_add)

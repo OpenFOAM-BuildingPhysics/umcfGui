@@ -1,7 +1,8 @@
 # A new case
 
 `case.new` makes an urbanMicroclimateFoam case in a new (or empty) directory and opens it: its
-regions, the components it uses, and the settings of each from a *profile*. It is the start of
+regions, the components it uses, and the settings of each from [one configuration](#the-configuration).
+It is the start of
 [the common workflow](../common-workflow.md): the case's [workflow
 description](workflow.md#the-workflow-description), `system/umcfWorkflow`, names what was made.
 
@@ -31,14 +32,13 @@ an entry of its own, so a case has a component's files only when it uses it:
 | a temperature limit (`temperatureLimit`) | a `limitTemperature` entry | OpenFOAM-8: `system/<air>/fvOptions`; OpenFOAM-12: `limitT` in `fvConstraints` (`select all`) |
 | the blending layer (`blending`) | `blending` in `controlDict` | `blending true` and `blendingCoeffs` |
 
-And for every case: `system/controlDict` (the profile's run controls without its function
+And for every case: `system/controlDict` (the examples' run controls without their function
 objects, `application urbanMicroclimateFoam`, and OpenFOAM-12's `regions { fluid (…); solid (…);
 vegetation (…); }`, a kind without regions left out), OpenFOAM-8's `constant/regionProperties`
 (every kind, an empty one too: OpenFOAM-8's solver and `solarRayTracingGen` look each one up and
-stop without it), and `system/umcfWorkflow` with the profile and the components:
+stop without it), and `system/umcfWorkflow` with the components:
 
 ```c++
-profile     tutorial;
 components  ( grass temperatureLimit );
 ```
 
@@ -50,19 +50,28 @@ the OpenFOAM-8 tutorials has z up); a solid's `g` is none, and the vegetation re
 
 A solid's materials (`[{"name": "soil", "model": "Soil"}]`, each the cell zone built of it) go
 into its `buildingMaterials`, each with the coefficients (`rho`, `cap`, `lambda1`, …) of the
-profile's first material of that model; a model the profile has no material of gets none, and a
+tutorials' first material of that model (`Soil`, `Hamstad5Brick`); another model gets none, and a
 note says to add them. A model the solver doesn't have for the version is refused.
 
-## Profiles
+## The configuration
 
-The settings each component's files start from:
+There is one: every new case starts from the same settings, for OpenFOAM-8 and -12,
+and is then changed with the commands that edit a case (`control.set`, `dict.set`, `bc.set`, …).
+The settings are those of the urbanMicroclimateFoam tutorials, as [the
+examples](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md) have
+them: `streetCanyon_CFDHAM` (the air, the solids, the radiation), `_grass`, `_veg`, byte for byte
+with line ends made LF (`crates/schema/src/defaults.rs`). The examples change the tutorials'
+run controls (`endTime 7200`, `maxFluidIteration 30`) and lower the air's relaxation (`p_rgh`
+0.3, `U` 0.5, `h` 0.5) so that their coarse meshes' first iterations stay stable, and a new
+case starts from that too. The tutorials have no temperature limit: its bounds (273.15 to
+373.15 K) are the 3×3 reference cases', and its OpenFOAM-8 `fvOptions` is written here
+(`crates/schema/templates/of8/`); nor a blending layer: its coefficients are the Hong Kong
+benchmark's.
 
-| Profile | Versions | From |
-|---|---|---|
-| `tutorial` (the default) | 8, 12 | the urbanMicroclimateFoam tutorials, as [the examples](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md) have them: `streetCanyon_CFDHAM` (the air, the solids, the radiation), `_grass`, `_veg`. Byte for byte, line ends made LF. The tutorials have no temperature limit: its bounds (273.15 to 373.15 K) are the 3×3 reference cases', its OpenFOAM-8 file the benchmark's; nor a blending layer: its coefficients are the benchmark's |
-| `hk` | 8 | the Hong Kong benchmark (`3_umcFoam_vegLAD1`), its settings in `crates/schema/templates/hk/`: `realizableKE`, its `fvSchemes` and `fvSolution`, one solid iteration per step, `limitTemperature` 283.15 to 370.15 K, the blending layer, Picard tolerances. OpenFOAM-12 comes later |
+A `profile` entry that an earlier `case.new` wrote into `system/umcfWorkflow` is read and left
+out.
 
-The tutorial's OpenFOAM-12 `fvConstraints` has a `limitPressure` entry, which the case check
+The tutorials' OpenFOAM-12 `fvConstraints` has a `limitPressure` entry, which the case check
 points out has no effect in urbanMicroclimateFoam (`fv.limit-pressure`): it is the tutorials'
 file, kept as it is.
 
@@ -80,7 +89,7 @@ the air's patches `west`, `east`, `north` and `south` and crashes without one: t
 Before anything is written:
 
 - a directory that isn't empty, a path with `..`, an open case with unsaved changes (unless
-  `discard`), a profile without the version;
+  `discard`);
 - a region name that isn't a plain word (letters, digits, `_`, `.`, `-`, not starting with a
   digit or `-`, not ending with `.`), the name of a file or directory directly in `constant/` or
   `system/` (`polyMesh`, `controlDict`, `fvSchemes`, `g`, `IDN`, …, in any case), a name Windows
@@ -118,8 +127,7 @@ The list keeps its layout and comments; a name that would follow a `// …` comm
 line of its own. It then writes the settings of the region's kind, as
 `case.new` does:
 
-- the settings are the tutorials', or those of the description's `profile` for a case made with
-  one;
+- the settings are the [configuration](#the-configuration)'s;
 - a fluid gets the gravity of the case's fluids (when it is a vector written out), and the
   temperature limit when the case has one;
 - a solid given no materials takes those the description gives it, when it is described already
@@ -141,9 +149,7 @@ In the desktop app it is *Add a region…* in the *More* group of the *Case* tab
 
 ## Tested
 
-- `case.new`: the street canyon's regions made with each profile and version, with the example's
-  meshes, fields and tables copied in, run with the solver: OpenFOAM-12 and -8 with `tutorial`,
-  OpenFOAM-8 with `hk` (without the blending layer, which needs the four sides the canyon doesn't
-  have).
+- `case.new`: the street canyon's regions made for each version, with the example's meshes,
+  fields and tables copied in, run with the solver: OpenFOAM-12 and -8.
 - `region.add`: the same, with the case made with `air` and `street` only, and `leeward` and
   `windward` added with `region.add`.

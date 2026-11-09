@@ -61,12 +61,12 @@ tutorials, byte for byte.
 
 ## The settings of a new case
 
-`case.new`'s `tutorial` profile takes the settings of each component from these cases, as they
-are here (`crates/schema/src/profile.rs`, built in with `include_str!`): `streetCanyon_CFDHAM`'s
+`case.new` takes the settings of each component from these cases, as they
+are here (`crates/schema/src/defaults.rs`, built in with `include_str!`): `streetCanyon_CFDHAM`'s
 air, `street` and radiation files, `_grass`'s `grassProperties`, `_veg`'s vegetation region and
 `vegetationProperties` ([A new case](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/docs/user-guide/new-case.md)).
 A change made here (by `make-examples`) changes what new cases start from: the air's lower
-relaxation above is the profile's too.
+relaxation above is a new case's too.
 
 `cargo xtask make-examples` writes both directories again; `cargo xtask make-examples --check`
 fails unless they are what it makes, byte for byte (CI runs it). It reads the tutorials from
