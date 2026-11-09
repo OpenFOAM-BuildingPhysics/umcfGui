@@ -293,3 +293,38 @@ fn a_new_fluid_is_turbulent_and_limited_as_the_case_s_fluids() {
     let l = c.dict("system/wind/fvConstraints").unwrap();
     assert_eq!(l.value(&["limitT", "min"]).as_deref(), Some("283.15"));
 }
+
+#[test]
+fn the_description_s_settings_come_first_and_differing_fluids_are_noted() {
+    let mut fs = made(OfVersion::V12, Up::Z, false);
+    let mut c = Case::open(&fs).unwrap();
+    c.add_region(&fs, &NewRegion { name: "air2".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    c.save(&mut fs, None).unwrap();
+    let mt = String::from_utf8(fs.read("constant/air2/momentumTransport", 1 << 20).unwrap().unwrap()).unwrap();
+    fs.insert("constant/air2/momentumTransport", mt.replace("kEpsilon", "realizableKE"));
+    // The fluids differ: the configuration's, with a note.
+    let mut c = Case::open(&fs).unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    assert!(
+        added.notes.iter().any(|n| n.contains("RAS models differ") && n.contains("wind gets the configuration's")),
+        "{:?}",
+        added.notes
+    );
+    // The description chose one: that one, with no note.
+    let mut c = Case::open(&fs).unwrap();
+    c.set(crate::description::PATH, &["settings", "turbulence"], "kOmegaSST").unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("kOmegaSST"));
+    assert!(!added.notes.iter().any(|n| n.contains("RAS models differ")), "{:?}", added.notes);
+    // One the version doesn't have: left out, with a note.
+    let mut c = Case::open(&fs).unwrap();
+    c.set(crate::description::PATH, &["settings", "turbulence"], "kOmegaSSTx").unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    assert!(added.notes.iter().any(|n| n.contains("kOmegaSSTx is not a RAS model")), "{:?}", added.notes);
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("kEpsilon"));
+}

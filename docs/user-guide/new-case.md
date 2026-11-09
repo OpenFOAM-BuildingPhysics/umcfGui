@@ -127,12 +127,13 @@ umcf-cli run --case canyon \
 It names the region in the list the case's version reads: OpenFOAM-12's `controlDict`
 (`solid ( street roofs );`) or OpenFOAM-8's `constant/regionProperties` (`solid (street roofs)`).
 The list keeps its layout and comments; a name that would follow a `// …` comment goes on a
-line of its own. It then writes the settings of the region's kind, as
-`case.new` does:
+line of its own. It then writes the settings of the region's kind, as `case.new` does, the
+[configuration](#the-configuration)'s but for these:
 
-- the settings are the [configuration](#the-configuration)'s;
-- a fluid gets the gravity of the case's fluids (when it is a vector written out), their RAS
-  model, and the temperature limit with their bounds when the case has one;
+- a fluid gets the gravity of the case's fluids (when it is a vector written out), the
+  temperature limit when the case has one, and the RAS model and limit bounds the description's
+  [settings](workflow.md#settings) choose, else those of the case's fluids when they agree (a
+  note says when they don't, and the configuration's are taken);
 - a solid given no materials takes those the description gives it, when it is described already
   (one without a model is left out, with a note; one whose model the version doesn't have is
   refused, saying it is the description's);
