@@ -3,7 +3,7 @@
 //! comments, order and layout stay. They change the description only; the scripts and
 //! dictionaries follow once they are written from it (gaps rows 4–8).
 
-use umcf_foam_dict::Document;
+use umcf_foam_dict::{Document, Node, unquote};
 
 use crate::description::{PATH, Role};
 use crate::{Case, Error, RegionKind, Result};
@@ -88,6 +88,30 @@ fn once(doc: &Document, path: &[&str]) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Every patch's partner as the file has it (region, patch, partner region, partner patch),
+/// whatever else the reader makes of the region or patch (a region whose kind it can't read is
+/// one it leaves out): the partners a rename follows, or a region taken out leaves.
+fn partners(doc: &Document) -> Vec<(String, String, String, String)> {
+    let mut out = Vec::new();
+    let Some(regions) = doc.get(&["regions"]).and_then(|e| e.dict()) else { return out };
+    for r in regions.entries() {
+        let Some(patches) = r.dict().and_then(|b| b.get("patches")).and_then(|e| e.dict()) else { continue };
+        for p in patches.entries() {
+            let Some(partner) = p.dict().and_then(|b| b.get("partner")) else { continue };
+            let [Node::List { items, .. }] = partner.value.as_slice() else { continue };
+            if let [Node::Atom(a), Node::Atom(b)] = items.as_slice() {
+                out.push((
+                    r.key().to_string(),
+                    p.key().to_string(),
+                    unquote(&a.text).to_string(),
+                    unquote(&b.text).to_string(),
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// An entry of the dictionary at `path` that ends without `;` (`{ role inlet }`, which OpenFOAM
@@ -200,21 +224,17 @@ impl Case {
         }
         self.remove(PATH, &["regions", region])?;
         let mut dangling = Vec::new();
-        if let Some((d, _)) = self.description() {
-            for r in &d.regions {
-                for p in &r.patches {
-                    if p.partner.as_ref().is_some_and(|(pr, _)| pr == region) {
-                        dangling.push(format!("{}/{}", r.name, p.name));
-                    }
-                }
+        for (r, p, pr, _) in partners(self.editable()?) {
+            if pr == region {
+                dangling.push(format!("{r}/{p}"));
             }
-            if let Some(rad) = &d.radiation {
-                if rad.region == region {
-                    dangling.push("radiation".to_string());
-                }
-                if rad.lai_region.as_deref() == Some(region) {
-                    dangling.push("radiation lai".to_string());
-                }
+        }
+        if let Some(rad) = self.description().and_then(|(d, _)| d.radiation) {
+            if rad.region == region {
+                dangling.push("radiation".to_string());
+            }
+            if rad.lai_region.as_deref() == Some(region) {
+                dangling.push("radiation lai".to_string());
             }
         }
         Ok(EditReport { dangling, ..EditReport::default() })
@@ -260,17 +280,11 @@ impl Case {
             if once(doc, &["regions", region, "patches", to])? {
                 return Err(refuse(format!("region {region} has a patch {to} already")));
             }
-            if let Some((d, _)) = self.description() {
-                for r in &d.regions {
-                    for p in &r.patches {
-                        // Its own partner, when this call sets it, is the one given.
-                        let own = r.name == region && p.name == patch;
-                        if p.partner.as_ref().is_some_and(|(pr, pp)| pr == region && pp == patch)
-                            && !(own && edit.partner.is_some())
-                        {
-                            naming.push((r.name.clone(), p.name.clone()));
-                        }
-                    }
+            for (r, p, pr, pp) in partners(doc) {
+                // Its own partner, when this call sets it, is the one given.
+                let own = r == region && p == patch;
+                if pr == region && pp == patch && !(own && edit.partner.is_some()) {
+                    naming.push((r, p));
                 }
             }
             for (r, p) in &naming {

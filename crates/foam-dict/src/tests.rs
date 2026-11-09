@@ -402,3 +402,14 @@ fn a_value_on_the_next_line_stays_there_when_set() {
     d.set(&["a", "value"], "uniform 1").unwrap();
     assert_eq!(d.to_string(), "a\n{\n    value\n        uniform 1;\n}\n");
 }
+
+/// A comment in front of an inline dictionary's brace stays when it is set again.
+#[test]
+fn a_comment_before_an_inline_dictionary_stays() {
+    let text = "p\n{\n    west // the wind\n    {\n        role inlet;\n    }\n}\n";
+    let mut d = Document::parse(text).unwrap();
+    d.set_inline(&["p", "west"], "{ role side; }").unwrap();
+    let out = d.to_string();
+    assert!(out.contains("west // the wind\n    { role side; }"), "{out}");
+    assert_eq!(Document::parse(&out).unwrap().value(&["p", "west", "role"]).as_deref(), Some("side"));
+}

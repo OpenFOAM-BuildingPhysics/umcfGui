@@ -40,7 +40,14 @@ pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str, i
                     n.first_tok_mut().lead = match old_lead {
                         // A value's own layout stays (on the next line, say); an inline dictionary
                         // over one laid out by hand goes on the key's line.
-                        Some(l) if !l.is_empty() && (was_value || (inline && !l.contains('\n'))) => l,
+                        // A comment in front of it stays, with the line break that ends it.
+                        Some(l)
+                            if !l.is_empty()
+                                && (was_value
+                                    || (inline && (!l.contains('\n') || l.contains("//") || l.contains("/*")))) =>
+                        {
+                            l
+                        }
                         _ => pad_hint,
                     };
                 }

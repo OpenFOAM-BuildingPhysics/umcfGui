@@ -384,3 +384,18 @@ fn an_empty_materials_goes_with_the_solid() {
     let doc = Document::parse(&text(&c)).unwrap();
     assert!(doc.get(&["regions", "roofs", "materials"]).is_none(), "{}", text(&c));
 }
+
+/// A partner in a region the reader leaves out (its kind unreadable) follows a rename too.
+#[test]
+fn a_partner_the_reader_leaves_out_follows_a_rename() {
+    let mut c = described_with(
+        "regions\n{\n",
+        "regions\n{\n    shade { kind $k; patches { a { role coupled; partner ( air air_to_street ); } } }\n",
+    );
+    let r = c
+        .describe_patch("air", "air_to_street", &PatchEdit { rename: Some("x".into()), ..PatchEdit::default() })
+        .unwrap();
+    assert!(r.followed.contains(&"shade/a".to_string()), "{r:?}");
+    assert!(text(&c).contains("a { role coupled; partner ( air x ); }"), "{}", text(&c));
+    assert!(!text(&c).contains("air_to_street )"), "{}", text(&c));
+}
