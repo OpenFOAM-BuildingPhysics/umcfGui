@@ -1666,6 +1666,7 @@ fn workflow_show_and_import() {
     assert!(s.execute("workflow.import", &json!({ "replace": "yes" })).is_err());
 }
 
+/// The three edit commands through the session: each change, its history and journal, saving, and the refusals.
 #[test]
 fn the_description_is_edited_entry_by_entry() {
     let mut s = session();

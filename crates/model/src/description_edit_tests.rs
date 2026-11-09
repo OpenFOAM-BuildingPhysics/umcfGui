@@ -15,6 +15,7 @@ fn described() -> (MemFs, Case) {
     (fs, c)
 }
 
+/// The description's text as the case holds it.
 fn text(c: &Case) -> String {
     c.dict(PATH).unwrap().to_string()
 }
@@ -26,11 +27,13 @@ fn read(c: &Case) -> Description {
     d
 }
 
+/// The lines of `after` that `before` doesn't have.
 fn changed_lines(before: &str, after: &str) -> Vec<String> {
     let b: Vec<&str> = before.lines().collect();
     after.lines().filter(|l| !b.contains(l)).map(str::to_string).collect()
 }
 
+/// Setting a role rewrites only that patch's line.
 #[test]
 fn a_role_changes_one_line_and_keeps_the_rest() {
     let (_, mut c) = described();
@@ -49,6 +52,7 @@ fn a_role_changes_one_line_and_keeps_the_rest() {
     assert_eq!(read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "odd").unwrap().role, None);
 }
 
+/// A patch the region doesn't list is added, with or without a role or partner.
 #[test]
 fn a_patch_is_added_and_partnered() {
     let (_, mut c) = described();
@@ -70,6 +74,7 @@ fn a_patch_is_added_and_partnered() {
     assert!(read(&c).region("street").unwrap().patches.iter().any(|p| p.name == "z" && p.role.is_none()));
 }
 
+/// A rename changes the partners that named the patch; a clash or a missing patch changes nothing.
 #[test]
 fn a_rename_is_followed_by_the_partners_that_named_it() {
     let (_, mut c) = described();
@@ -114,6 +119,7 @@ fn a_rename_is_followed_by_the_partners_that_named_it() {
     assert_eq!(text(&c), before);
 }
 
+/// Regions are added, given another kind and taken out; a solid with materials stays one.
 #[test]
 fn regions_are_added_given_a_kind_and_taken_out() {
     let (_, mut c) = described();
@@ -132,6 +138,7 @@ fn regions_are_added_given_a_kind_and_taken_out() {
     assert!(c.undescribe_region("street").is_err());
 }
 
+/// A solid's materials are added, given or lose a model, and are taken out; other kinds have none.
 #[test]
 fn a_solids_materials_are_added_given_a_model_and_taken_out() {
     let (_, mut c) = described();
@@ -158,6 +165,7 @@ fn a_solids_materials_are_added_given_a_model_and_taken_out() {
     assert!(c.describe_material("nowhere", "brick", None).is_err());
 }
 
+/// No description, names that need quotes, nothing to change, a key given twice: refused.
 #[test]
 fn what_cant_be_edited_is_refused_and_changes_nothing() {
     // No description.
@@ -191,6 +199,7 @@ fn what_cant_be_edited_is_refused_and_changes_nothing() {
     assert!(e.contains("`regions/air` is given 2 times"), "{e}");
 }
 
+/// A patch over several lines is edited key by key, its comment kept.
 #[test]
 fn a_patch_laid_out_by_hand_keeps_its_comments() {
     let fs = canyon();
@@ -219,6 +228,7 @@ fn a_patch_laid_out_by_hand_keeps_its_comments() {
     assert_eq!(read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "west").unwrap().partner, None);
 }
 
+/// The description's text (as `text`).
 fn text_of(c: &Case) -> String {
     text(c)
 }
@@ -234,6 +244,7 @@ fn described_with(from: &str, to: &str) -> Case {
     c
 }
 
+/// What the reader can't read in a one-line patch, a quoted name and a macro survive an edit.
 #[test]
 fn what_the_reader_cant_read_in_a_patch_is_kept() {
     // A role it can't read, kept when only the partner changes; a quoted partner kept when only
@@ -268,6 +279,7 @@ fn what_the_reader_cant_read_in_a_patch_is_kept() {
     assert!(text(&c).contains("brick           { model \"My Brick\"; }"), "{}", text(&c));
 }
 
+/// A rename onto its own name is refused; a patch coupled to itself follows its rename.
 #[test]
 fn a_rename_onto_itself_is_refused_and_a_self_partner_follows() {
     let (_, mut c) = described();
@@ -281,6 +293,7 @@ fn a_rename_onto_itself_is_refused_and_a_self_partner_follows() {
     assert_eq!(p.partner, Some(("air".into(), "even".into())));
 }
 
+/// A rename whose follower can't be edited is refused before anything changes.
 #[test]
 fn a_rename_that_cant_follow_changes_nothing() {
     // A follower's region given twice: the reader takes the first, which names the patch.
@@ -294,6 +307,7 @@ fn a_rename_that_cant_follow_changes_nothing() {
     assert_eq!(text(&c), before);
 }
 
+/// A solid whose materials aren't one dictionary keeps its kind.
 #[test]
 fn a_solid_whose_materials_cant_all_be_seen_keeps_its_kind() {
     // Not a dictionary, or given twice (the reader takes the first, which has some).
@@ -304,6 +318,7 @@ fn a_solid_whose_materials_cant_all_be_seen_keeps_its_kind() {
     }
 }
 
+/// Taking the radiation's region out lists the radiation.
 #[test]
 fn taking_a_region_out_lists_what_still_names_it() {
     let (_, mut c) = described();
@@ -312,6 +327,7 @@ fn taking_a_region_out_lists_what_still_names_it() {
     assert!(r.dangling.contains(&"radiation".to_string()), "{r:?}");
 }
 
+/// A patch or material with an entry ending without `;` is refused, one-line or not.
 #[test]
 fn an_entry_without_its_semicolon_is_not_added_to() {
     let mut c = described_with("west            { role inlet; }", "west            { role inlet }");
@@ -334,6 +350,7 @@ fn an_entry_without_its_semicolon_is_not_added_to() {
     assert_eq!(text(&c), before);
 }
 
+/// A patch coupled to itself, renamed while its partner is set or taken away, keeps that.
 #[test]
 fn a_self_coupled_patch_renamed_with_a_new_partner_keeps_it() {
     let (_, mut c) = described();
@@ -354,6 +371,7 @@ fn a_self_coupled_patch_renamed_with_a_new_partner_keeps_it() {
     assert_eq!(p.partner, None);
 }
 
+/// An empty `materials { }` goes when the solid becomes another kind.
 #[test]
 fn an_empty_materials_goes_with_the_solid() {
     let (_, mut c) = described();

@@ -134,6 +134,7 @@ pub(super) const REGION: CommandSpec = CommandSpec {
     reads_only: false,
 };
 
+/// `workflow.region`: adds a region, gives it a kind, or takes it out.
 fn region(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(REGION.id, p, &["region", "kind", "remove"])?;
     let region = p.required_str("region")?;
@@ -181,6 +182,7 @@ pub(super) const PATCH: CommandSpec = CommandSpec {
     reads_only: false,
 };
 
+/// `workflow.patch`: a patch's role, partner and name.
 fn patch(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(PATCH.id, p, &["region", "patch", "role", "partner", "name"])?;
     let region = p.required_str("region")?;
@@ -241,6 +243,7 @@ pub(super) const MATERIAL: CommandSpec = CommandSpec {
     reads_only: false,
 };
 
+/// `workflow.material`: a solid's material and its model, or taking it out.
 fn material(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(MATERIAL.id, p, &["region", "material", "model", "remove"])?;
     let region = p.required_str("region")?;

@@ -359,6 +359,7 @@ fn append_adds_a_list_item_like_the_ones_before() {
     assert_eq!(doc.to_string(), "pointSync false;\n");
 }
 
+/// `Document::rename` changes only the key, and says when there is nothing to rename.
 #[test]
 fn rename_at_a_path_keeps_the_rest() {
     let text = "a\n{\n    // the west\n    west            { role inlet; }\n    east            { role outlet; }\n}\n";
@@ -371,6 +372,7 @@ fn rename_at_a_path_keeps_the_rest() {
     assert!(doc.rename(&[], "y").is_err());
 }
 
+/// `Document::set_inline` keeps a dictionary value on the key's line, new or replaced.
 #[test]
 fn an_inline_dictionary_stays_on_its_line() {
     let text = "p\n{\n    // west\n    west            { role inlet; }\n    odd             { }\n    east\n    {\n        role outlet;\n    }\n}\n";
@@ -392,6 +394,7 @@ fn an_inline_dictionary_stays_on_its_line() {
     assert_eq!(back.to_string(), out);
 }
 
+/// Plain `set` keeps a value's own layout: on the line after its key, it stays there.
 #[test]
 fn a_value_on_the_next_line_stays_there_when_set() {
     let text = "a\n{\n    value\n        uniform 0;\n}\n";

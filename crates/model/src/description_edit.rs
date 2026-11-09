@@ -39,6 +39,7 @@ pub fn plain_name(s: &str) -> bool {
         && !s.starts_with(|c: char| c.is_ascii_digit() || c == '-')
 }
 
+/// The word for `k` in the description (`Single` never gets there: it is refused first).
 fn kind_name(k: RegionKind) -> &'static str {
     match k {
         RegionKind::Solid => "solid",
@@ -47,10 +48,12 @@ fn kind_name(k: RegionKind) -> &'static str {
     }
 }
 
+/// An edit refused, with why.
 fn refuse(message: String) -> Error {
     Error::Describe(message)
 }
 
+/// `s` as a name the edit takes, or why not (`what` names it in the message).
 fn name(what: &str, s: &str) -> Result<()> {
     if plain_name(s) {
         Ok(())
@@ -371,6 +374,7 @@ impl Case {
         Ok(EditReport::default())
     }
 
+    /// Gives the description's entry at `path` the key `to`; an error when it isn't there.
     fn rename_described(&mut self, path: &[&str], to: &str) -> Result<()> {
         let doc = self.dict_mut(PATH)?;
         let renamed = doc.rename(path, to).map_err(|source| Error::Dict { path: PATH.to_string(), source })?;
