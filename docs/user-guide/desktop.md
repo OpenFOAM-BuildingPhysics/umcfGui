@@ -37,8 +37,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   parameters opens its card on the right: what it takes, and its parameters as JSON
   (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *Read fields*,
-  *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*
-  and *Describe a material* on *Case*, *Tree crowns* on *Geometry*.
+  *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
+  *Describe a material* and *Write the scripts* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
   that can run, or opens its card when it asks for parameters, as its ribbon button does.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and

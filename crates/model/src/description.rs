@@ -291,6 +291,21 @@ impl Description {
         wf
     }
 
+    /// The scripts (`Allprepare`, `Allrun`, `Allclean`) written from the description for
+    /// `version`, with what only the case can tell: the dictionaries in each described region's
+    /// `constant/<region>/` that Allrun copies into `processor*/`. A name that isn't safe in a
+    /// script is refused ([`Workflow::generate`]).
+    pub fn scripts(
+        &self,
+        case: &Case,
+        version: OfVersion,
+    ) -> std::result::Result<Vec<(&'static str, String)>, crate::workflow::UnsafeName> {
+        let mut wf = self.workflow();
+        wf.constant_files =
+            case.workflow().constant_files.into_iter().filter(|(r, _)| self.region(r).is_some()).collect();
+        wf.generate(version)
+    }
+
     pub fn region(&self, name: &str) -> Option<&RegionDesc> {
         self.regions.iter().find(|r| r.name == name)
     }

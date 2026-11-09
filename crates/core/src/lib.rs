@@ -112,6 +112,13 @@ pub trait CaseFs {
 /// parent directories are created.
 pub trait CaseWrite: CaseFs {
     fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError>;
+
+    /// Writes a script as [`CaseWrite::write`] does, executable by whoever may read it (on
+    /// Unix; elsewhere there is no such flag, and the scripts run through WSL, a virtual
+    /// machine or a remote machine). Where nothing can be made executable, a plain write.
+    fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.write(rel, bytes)
+    }
 }
 
 /// Rejects absolute paths and `..`, so a path taken from a dictionary can't leave the case.
@@ -348,6 +355,10 @@ impl<F: CaseWrite> CaseWrite for Cancellable<F> {
     fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         self.inner.write(rel, bytes)
     }
+
+    fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.inner.write_executable(rel, bytes)
+    }
 }
 
 /// A case directory on disk.
@@ -475,6 +486,18 @@ impl CaseFs for DirFs {
 
 impl CaseWrite for DirFs {
     fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.write_mode(rel, bytes, false)
+    }
+
+    fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.write_mode(rel, bytes, true)
+    }
+}
+
+impl DirFs {
+    /// The write of [`CaseWrite`]; `executable`: the file is made executable where it is
+    /// readable (Unix).
+    fn write_mode(&mut self, rel: &str, bytes: &[u8], executable: bool) -> Result<(), FsError> {
         use std::io::Write;
         let path = self.path(rel).ok_or_else(|| FsError::BadPath(rel.to_string()))?;
         let io = |source| FsError::Io { path: rel.to_string(), source };
@@ -525,10 +548,22 @@ impl CaseWrite for DirFs {
             // Keep the mode of the file being replaced (an executable script stays executable).
             // Unix only: elsewhere a read-only flag would make the rename fail.
             #[cfg(unix)]
-            if let Ok(m) = std::fs::metadata(&target) {
+            {
                 use std::os::unix::fs::PermissionsExt;
-                f.set_permissions(std::fs::Permissions::from_mode(m.permissions().mode()))?;
+                let old = std::fs::metadata(&target).ok().map(|m| m.permissions().mode());
+                let mode = match old {
+                    Some(m) => Some(m),
+                    None if executable => Some(f.metadata()?.permissions().mode()),
+                    None => None,
+                };
+                // Executable where readable: r-- becomes r-x.
+                let mode = mode.map(|m| if executable { m | ((m & 0o444) >> 2) } else { m });
+                if let Some(m) = mode {
+                    f.set_permissions(std::fs::Permissions::from_mode(m))?;
+                }
             }
+            #[cfg(not(unix))]
+            let _ = executable;
             f.sync_all()?;
             drop(f);
             std::fs::rename(&tmp, &target)?;
@@ -889,5 +924,34 @@ mod tests {
         assert!(d.list("no-such-dir").unwrap().is_empty());
         assert!(d.list("Cargo.toml").unwrap().is_empty());
         assert!(matches!(d.read("Cargo.toml", 3), Err(FsError::TooLarge { .. })));
+    }
+
+    /// A script written executable is new with r-x where r--, and an existing one keeps its
+    /// mode plus that; a plain write leaves the mode alone. Unix only.
+    #[cfg(unix)]
+    #[test]
+    fn a_script_is_written_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("umcf-core-exec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut d = DirFs::new(&root);
+        let mode = |n: &str| std::fs::metadata(root.join(n)).unwrap().permissions().mode() & 0o777;
+        d.write_executable("Allrun", b"#!/bin/sh\n").unwrap();
+        let m = mode("Allrun");
+        assert_eq!(m & 0o100, 0o100, "{m:o}");
+        assert_eq!((m & 0o444) >> 2, m & 0o111, "x where r: {m:o}");
+        std::fs::set_permissions(root.join("Allrun"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        d.write_executable("Allrun", b"#!/bin/sh\necho\n").unwrap();
+        assert_eq!(mode("Allrun"), 0o750);
+        d.write("Allrun", b"x").unwrap();
+        assert_eq!(mode("Allrun"), 0o750);
+        d.write("plain", b"x").unwrap();
+        assert_eq!(mode("plain") & 0o111, 0);
+        // Through the wrapper a case is opened with, too.
+        let mut c = Cancellable::new(DirFs::new(&root), Cancel::default());
+        c.write_executable("Allprepare", b"#!/bin/sh\n").unwrap();
+        assert_eq!(mode("Allprepare") & 0o100, 0o100, "{:o}", mode("Allprepare"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

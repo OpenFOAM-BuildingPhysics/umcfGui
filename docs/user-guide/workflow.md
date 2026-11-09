@@ -83,18 +83,38 @@ with `-dict` is the same dictionary. A region step with its own
 Run on the 3×3 test case (OpenFOAM-12, two processes), the written scripts mesh, pre-process
 and run the case through to its first written time.
 
-For now this is the `workflow` example of the `umcf-model` crate:
-`cargo run -p umcf-model --example workflow -- <case> [--write]` prints the scripts, or with
-`--write` replaces the case's, writing each atomically; the old ones are kept as `<name>.bak`, then
-`<name>.1.bak`, `<name>.2.bak`, … (a backup is never overwritten).
+`workflow.scripts` writes them from the case's [workflow description](#the-workflow-description),
+for its OpenFOAM version (the case's when it names none): every region's mesh and steps, the
+radiation pre-processing and the solver as the description has them, and the dictionaries Allrun
+copies into `processor*/` from the case. `case.save` writes them executable (on Linux and macOS;
+Windows has no such flag, and the scripts run through WSL, a virtual machine or a remote
+machine), after a backup of each one there in `.umcfgui/backup/`.
+
+```sh
+umcf-cli run --case path/to/case --cmd 'workflow.import={}' \
+  --cmd 'workflow.scripts={"replace":true}' --cmd 'case.save={}'
+```
+
+- Scripts that are there and differ are written over only with `replace: true`; ones that are
+  as the description has them already are left alone. A script that is a symbolic link isn't
+  written over.
+- `workflow.show` with `scripts: true` returns the three scripts without writing them (or why
+  none can be written).
+- The case's checks and `workflow.import` read them as written, before they are saved.
+- A description with problems is refused (what can't be read would be left out of the
+  scripts; `workflow.show` lists them), and so is a name that isn't safe in a script.
+
+The `workflow` example of the `umcf-model` crate
+(`cargo run -p umcf-model --example workflow -- <case> [--write]`) still writes them from the
+case's own scripts, read as above, without a description.
 
 ## The workflow description
 
 The workflow is also kept in the case itself, as `system/umcfWorkflow`: an OpenFOAM-style
 dictionary that names each region with its kind, how its mesh is built and the steps after it,
 each patch with its role and partner, the radiation pre-processing and the solver. It is the
-first piece of [the common workflow](../common-workflow.md); the scripts and dictionaries are
-to be written from it.
+first piece of [the common workflow](../common-workflow.md): the scripts are written from it
+(`workflow.scripts`, [above](#writing-the-scripts)), and the dictionaries are to be.
 
 ```c++
 version     12;

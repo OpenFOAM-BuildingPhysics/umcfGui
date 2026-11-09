@@ -23,6 +23,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     workflow::REGION,
     workflow::PATCH,
     workflow::MATERIAL,
+    workflow::SCRIPTS,
     case::CHECK,
     geometry::IMPORT,
     geometry::TREES,

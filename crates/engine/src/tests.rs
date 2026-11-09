@@ -1742,6 +1742,61 @@ fn the_description_is_edited_entry_by_entry() {
     assert!(s.case().unwrap().changed().is_empty());
 }
 
+/// The scripts written from the description: refused without one or with problems in it,
+/// previewed, written new, refused over different ones without `replace`, saved, undone.
+#[test]
+fn the_scripts_are_written_from_the_description() {
+    let mut s = session();
+    let e = s.execute("workflow.scripts", &Value::Null).unwrap_err();
+    assert!(e.to_string().contains("workflow.import"), "{e}");
+    // Nor previewed from the import a show makes up.
+    let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+    assert!(
+        out.data["scripts"].is_null()
+            && out.data["scriptsError"].as_str().is_some_and(|m| m.contains("workflow.import"))
+    );
+    s.execute("workflow.import", &Value::Null).unwrap();
+    // Shown with the description, they change nothing and leave no step in the history.
+    let undo = s.can_undo();
+    let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+    let names: Vec<&str> = out.data["scripts"].as_array().unwrap().iter().filter_map(|x| x["file"].as_str()).collect();
+    assert_eq!(names, ["Allprepare", "Allrun", "Allclean"]);
+    assert_eq!(s.case().unwrap().put_paths().count(), 0);
+    assert_eq!(s.can_undo(), undo);
+    assert!(s.execute("workflow.scripts", &json!({ "preview": true })).is_err(), "no preview here");
+    // None there yet: written.
+    let out = s.execute("workflow.scripts", &Value::Null).unwrap();
+    assert!(
+        out.message.starts_with("Allprepare, Allrun, Allclean: written from system/umcfWorkflow"),
+        "{}",
+        out.message
+    );
+    let allrun = out.data["scripts"][1]["text"].as_str().unwrap().to_string();
+    assert!(allrun.starts_with("#!"), "{allrun}");
+    // As written: nothing to do.
+    let out = s.execute("workflow.scripts", &Value::Null).unwrap();
+    assert!(out.message.contains("nothing to write"), "{}", out.message);
+    s.execute("case.save", &Value::Null).unwrap();
+    assert_eq!(text(&s, "Allrun"), allrun);
+    // The case reads the scripts as written: its workflow is theirs.
+    assert!(s.case().unwrap().scripts.iter().any(|x| x.path == "Allrun" && !x.steps.is_empty()));
+    // The description changes: the scripts there differ, and are written over only on request.
+    s.execute("workflow.region", &json!({ "region": "roofs", "kind": "solid" })).unwrap();
+    let e = s.execute("workflow.scripts", &Value::Null).unwrap_err();
+    assert!(e.to_string().contains("pass \"replace\": true"), "{e}");
+    let out = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap();
+    assert!(!out.data["changed"].as_array().unwrap().is_empty());
+    assert!(out.data["scripts"][1]["text"].as_str().unwrap().contains("roofs"));
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert!(s.execute("workflow.show", &json!({ "scripts": true })).unwrap().data["scripts"].is_array());
+    // A description with a problem: refused.
+    s.execute("dict.set", &json!({ "file": "system/umcfWorkflow", "path": ["colour"], "value": "blue" })).unwrap();
+    let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err();
+    assert!(e.to_string().contains("1 problem (colour: is not a key of the description)"), "{e}");
+    let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+    assert!(out.data["scripts"].is_null() && out.data["scriptsError"].as_str().is_some_and(|m| m.contains("problems")));
+}
+
 #[test]
 fn workflow_show_says_a_directory_there_is_unreadable() {
     let mut s = Session::with_backup(".umcfgui/backup/test");

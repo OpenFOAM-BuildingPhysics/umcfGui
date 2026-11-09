@@ -631,3 +631,27 @@ fn materials_problems_are_named() {
     assert!(d.region("air").unwrap().materials.is_empty());
     assert_eq!(materials(&d, "street"), [("brick".into(), None), ("soil".into(), None)]);
 }
+
+/// The scripts from a description copy into `processor*/` only the dictionaries of the regions
+/// it describes.
+#[test]
+fn the_scripts_copy_only_the_described_regions() {
+    let fs = canyon()
+        .with(
+            "constant/vegetation/vegetationProperties",
+            format!("{}a 1;\n", header("dictionary", "vegetationProperties")),
+        )
+        .with(
+            "constant/street/thermophysicalTransport",
+            format!("{}a 1;\n", header("dictionary", "thermophysicalTransport")),
+        );
+    let c = Case::open(&fs).unwrap();
+    let (mut d, _) = Description::import(&c);
+    let all = d.scripts(&c, OfVersion::V12).unwrap();
+    let allrun = |s: &[(&str, String)]| s.iter().find(|(n, _)| *n == "Allrun").map(|(_, t)| t.clone()).unwrap();
+    assert!(allrun(&all).contains("constant/vegetation/vegetationProperties"), "{}", allrun(&all));
+    d.regions.retain(|r| r.name != "vegetation");
+    let some = d.scripts(&c, OfVersion::V12).unwrap();
+    assert!(!allrun(&some).contains("constant/vegetation/"), "{}", allrun(&some));
+    assert!(allrun(&some).contains("constant/street/thermophysicalTransport"), "{}", allrun(&some));
+}
