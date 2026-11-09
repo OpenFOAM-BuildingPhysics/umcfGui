@@ -463,3 +463,92 @@ fn switches_read_as_openfoam_reads_them() {
         assert_eq!(crate::switch(w), None, "{w}");
     }
 }
+
+#[test]
+fn a_word_goes_into_the_list_after_its_key_word() {
+    let add = |src: &str, word: &str, value: &str| {
+        let mut doc = Document::parse(src).unwrap();
+        doc.add_to_sublist("regions", word, value).unwrap();
+        doc.to_string()
+    };
+    let tutorial =
+        "regions\n(\n    fluid   (air)\n\tsolid   (street windward leeward)\n    vegetation ()\n);\n// end\n";
+    assert_eq!(
+        add(tutorial, "solid", "roofs"),
+        "regions\n(\n    fluid   (air)\n\tsolid   (street windward leeward roofs)\n    vegetation ()\n);\n// end\n"
+    );
+    assert_eq!(
+        add(tutorial, "vegetation", "vegetation"),
+        "regions\n(\n    fluid   (air)\n\tsolid   (street windward leeward)\n    vegetation (vegetation)\n);\n// end\n"
+    );
+    assert_eq!(add("regions ( fluid ( ) );", "fluid", "air"), "regions ( fluid ( air ) );");
+    // A word that isn't there: a new pair, its list at the first pair's column.
+    assert_eq!(
+        add("regions\n(\n    fluid       (air)\n);\n", "solid", "street"),
+        "regions\n(\n    fluid       (air)\n    solid       (street)\n);\n"
+    );
+    // On their own lines, items stay so.
+    assert_eq!(
+        add("regions\n(\n    solid\n    (\n        a\n    )\n);\n", "solid", "b"),
+        "regions\n(\n    solid\n    (\n        a\n        b\n    )\n);\n"
+    );
+    let mut doc = Document::parse("regions { fluid (air); }").unwrap();
+    assert!(doc.add_to_sublist("regions", "solid", "x").is_err());
+    let mut doc = Document::parse("regions ( fluid air );").unwrap();
+    assert!(doc.add_to_sublist("regions", "fluid", "x").is_err());
+}
+
+#[test]
+fn a_word_added_to_a_list_keeps_its_layout_and_comments() {
+    let add = |src: &str| {
+        let mut doc = Document::parse(src).unwrap();
+        doc.add_word(&["regions", "solid"], "roofs").unwrap();
+        doc.to_string()
+    };
+    assert_eq!(add("regions { solid ( street ); }"), "regions { solid ( street roofs ); }");
+    assert_eq!(add("regions { solid (street); }"), "regions { solid (street roofs); }");
+    assert_eq!(add("regions { solid (street /* c */); }"), "regions { solid (street /* c */ roofs); }");
+    assert_eq!(add("regions { solid (); }"), "regions { solid (roofs); }");
+    assert_eq!(add("regions { solid ( ); }"), "regions { solid ( roofs ); }");
+    assert_eq!(add("regions { solid ( /* none */ ); }"), "regions { solid ( /* none */ roofs ); }");
+    assert_eq!(
+        add(
+            "regions\n{\n    solid\n        (\n            street // the street\n            /* end */\n        );\n}\n"
+        ),
+        "regions\n{\n    solid\n        (\n            street // the street\n            /* end */\n            roofs\n        );\n}\n"
+    );
+    let mut doc = Document::parse("regions { solid 1(street); }").unwrap();
+    assert!(doc.add_word(&["regions", "solid"], "roofs").is_err());
+    // One line, a pair that isn't there: on the line.
+    let mut doc = Document::parse("regions ( fluid (air) solid (street) );").unwrap();
+    doc.add_to_sublist("regions", "vegetation", "vegetation").unwrap();
+    assert_eq!(doc.to_string(), "regions ( fluid (air) solid (street) vegetation (vegetation) );");
+}
+
+#[test]
+fn a_word_added_after_a_line_comment_gets_a_line_of_its_own() {
+    let add = |src: &str| {
+        let mut doc = Document::parse(src).unwrap();
+        doc.add_word(&["regions", "solid"], "roofs").unwrap();
+        let out = doc.to_string();
+        // Read again, the list has the word: no comment swallowed it.
+        let again = Document::parse(&out).unwrap();
+        assert!(again.value(&["regions", "solid"]).unwrap().contains("roofs"), "{out}");
+        out
+    };
+    assert_eq!(add("regions { solid (a // c\n); }"), "regions { solid (a // c\n    roofs\n); }");
+    assert_eq!(add("regions { solid ( // none\n); }"), "regions { solid ( // none\n    roofs\n); }");
+    assert_eq!(add("regions { solid (a // c\n    ); }"), "regions { solid (a // c\n        roofs\n    ); }");
+    // OpenFOAM-8: in a pair's list, and a new pair after a comment.
+    let mut doc = Document::parse("regions ( fluid (air) solid ( street // x\n    ) );").unwrap();
+    doc.add_to_sublist("regions", "solid", "roofs").unwrap();
+    assert_eq!(doc.to_string(), "regions ( fluid (air) solid ( street // x\n        roofs\n    ) );");
+    let mut doc = Document::parse("regions ( fluid (air) solid (street) // c\n);").unwrap();
+    doc.add_to_sublist("regions", "vegetation", "vegetation").unwrap();
+    let out = doc.to_string();
+    assert_eq!(out, "regions ( fluid (air) solid (street) // c\n    vegetation (vegetation)\n);");
+    // No spaces left at the end of a line.
+    let mut doc = Document::parse("regions ( );").unwrap();
+    doc.add_to_sublist("regions", "vegetation", "vegetation").unwrap();
+    assert_eq!(doc.to_string(), "regions (\n    vegetation (vegetation)\n);");
+}

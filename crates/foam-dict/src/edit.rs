@@ -95,9 +95,20 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
         Node::Dict { .. } => layout_dict(&mut node, &indent),
         other => other.first_tok_mut().lead = format!("\n{indent}"),
     }
-    // What is before the `)` (`( a /* note */ )`, `( a // note` and a new line) stays after the
-    // items it follows: in front of the new one. The `)` keeps its own line, or gets one.
-    // A comment on the `)`'s own line (`    /* one */ )`) goes too: the `)` gets a line of its own.
+    let kept = before_close(close, &key_indent);
+    if !kept.is_empty() {
+        let lead = &mut node.first_tok_mut().lead;
+        *lead = format!("{kept}{lead}");
+    }
+    items.push(node);
+    Ok(())
+}
+
+/// What is before a list's `)` that stays in front of an item added on a line of its own (`( a
+/// /* note */ )`, `( a // note` and a new line): taken from the `)`'s lead, which keeps its own
+/// line, or gets one. A comment on the `)`'s own line (`    /* one */ )`) goes too: the `)` gets
+/// a line of its own.
+fn before_close(close: &mut Tok, key_indent: &str) -> String {
     let (kept, rest) = match last_free_newline(&close.lead) {
         Some(i) => {
             let tail = close.lead.get(i..).unwrap_or("");
@@ -109,12 +120,107 @@ pub fn append(dict: &mut Dict, path: &[&str], mut node: Node) -> Result<()> {
         }
         None => (close.lead.clone(), format!("\n{key_indent}")),
     };
-    if !kept.is_empty() {
-        let lead = &mut node.first_tok_mut().lead;
-        *lead = format!("{kept}{lead}");
-    }
     close.lead = rest;
-    items.push(node);
+    kept
+}
+
+/// Adds the word `value` at the end of a list's `items`, laid out as the list is: on a line of
+/// its own like the item before when the items are on lines of their own, else after a space
+/// (`()` gets `(a)`, `( )` gets `( a )`). What is before the `)` on the last item's line (a
+/// comment) stays after that item, in front of the new one.
+fn push_word(items: &mut Vec<Node>, close: &mut Tok, value: &str) {
+    let lead = match items.last().map(first_lead) {
+        Some(l) if l.contains('\n') => format!("\n{}", trailing_indent(l)),
+        Some(_) => " ".to_string(),
+        None if close.lead.is_empty() => String::new(),
+        None => " ".to_string(),
+    };
+    // On one line: what is there but the spaces before the `)`.
+    let at = last_free_newline(&close.lead).unwrap_or_else(|| close.lead.trim_end().len());
+    let kept = close.lead.get(..at).unwrap_or("").to_string();
+    close.lead = close.lead.get(at..).unwrap_or("").to_string();
+    // After a `// …` comment the word needs a line of its own, or the comment swallows it:
+    // one step in from the `)`.
+    let lead = if ends_in_line_comment(&kept) && !lead.starts_with('\n') {
+        format!("\n{}{STEP}", trailing_indent(&close.lead))
+    } else {
+        lead
+    };
+    items.push(Node::Atom(Tok::new(format!("{kept}{lead}"), value)));
+}
+
+/// Adds the word `value` at the end of the list that is the entry at `path` (`solid ( street );`
+/// in a dictionary), laid out as the list is, its comments kept where they are.
+pub fn add_word(dict: &mut Dict, path: &[&str], value: &str) -> Result<()> {
+    let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
+    let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
+    if !rest.is_empty() {
+        let sub = entry.dict_mut().ok_or_else(|| Error::NotADict(key.to_string()))?;
+        return add_word(sub, rest, value);
+    }
+    let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
+        return Err(Error::NotAList(key.to_string()));
+    };
+    push_word(items, close, value);
+    Ok(())
+}
+
+/// In the list that is the entry `key` of `dict`, made of words each followed by a list
+/// (`regions ( fluid (air) solid (street) vegetation () );`), adds the word `value` at the end
+/// of the list after `word`, on its line. Without `word`, adds `word (value)` at the end, on a
+/// line of its own like the pairs before. Nothing else changes.
+pub fn add_to_sublist(dict: &mut Dict, key: &str, word: &str, value: &str) -> Result<()> {
+    let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
+    let key_indent = trailing_indent(&entry.key.lead).to_string();
+    let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
+        return Err(Error::NotAList(key.to_string()));
+    };
+    let is_word = |n: &Node| matches!(n, Node::Atom(t) if unquote(&t.text) == word);
+    let at = items.iter().position(is_word);
+    if let Some(i) = at {
+        let Some(Node::List { items: inner, close: inner_close, .. }) = items.get_mut(i + 1) else {
+            return Err(Error::NotAList(format!("{key}/{word}")));
+        };
+        push_word(inner, inner_close, value);
+        return Ok(());
+    }
+    // A list on one line gets the pair on it: `( fluid (air) solid (x) )`; not after a `// …`
+    // comment, which would swallow it.
+    if items.first().is_some_and(|n| !first_lead(n).contains('\n')) && !ends_in_line_comment(close.lead.trim_end()) {
+        let trailing = close.lead.len() - close.lead.trim_end().len();
+        let at = close.lead.len() - trailing;
+        let (kept, rest) =
+            (close.lead.get(..at).unwrap_or("").to_string(), close.lead.get(at..).unwrap_or("").to_string());
+        close.lead = rest;
+        items.push(Node::Atom(Tok::new(format!("{kept} "), word)));
+        items.push(Node::List {
+            open: Tok::new(" ", "("),
+            items: vec![Node::Atom(Tok::new("", value))],
+            close: Tok::new("", ")"),
+        });
+        return Ok(());
+    }
+    // A new pair, laid out like the first one: its indent, its word's list at the same column.
+    let (indent, column) = match items.first() {
+        Some(Node::Atom(t)) if t.lead.contains('\n') => {
+            let gap = match items.get(1) {
+                Some(Node::List { open, .. }) => open.lead.len(),
+                _ => 1,
+            };
+            (trailing_indent(&t.lead).to_string(), t.text.len() + gap)
+        }
+        _ => (format!("{key_indent}{STEP}"), word.len() + 1),
+    };
+    let mut kept = before_close(close, &key_indent);
+    // No spaces left at the end of the line the pair's word leaves.
+    kept.truncate(kept.trim_end_matches([' ', '\t']).len());
+    let gap = " ".repeat(column.saturating_sub(word.len()).max(1));
+    items.push(Node::Atom(Tok::new(format!("{kept}\n{indent}"), word)));
+    items.push(Node::List {
+        open: Tok::new(gap, "("),
+        items: vec![Node::Atom(Tok::new("", value))],
+        close: Tok::new("", ")"),
+    });
     Ok(())
 }
 
@@ -144,6 +250,32 @@ fn last_free_newline(t: &str) -> Option<usize> {
         i += 1;
     }
     last
+}
+
+/// Whether trivia `t` ends inside a `// …` comment (one not ended by a line break).
+fn ends_in_line_comment(t: &str) -> bool {
+    let b = t.as_bytes();
+    let at = |i: usize| b.get(i).copied();
+    let (mut i, mut block, mut line) = (0, false, false);
+    while let Some(c) = at(i) {
+        let next = at(i + 1);
+        if block {
+            if c == b'*' && next == Some(b'/') {
+                block = false;
+                i += 1;
+            }
+        } else if c == b'\n' {
+            line = false;
+        } else if !line && c == b'/' && next == Some(b'*') {
+            block = true;
+            i += 1;
+        } else if !line && c == b'/' && next == Some(b'/') {
+            line = true;
+            i += 1;
+        }
+        i += 1;
+    }
+    line
 }
 
 /// Removes every entry with the key at the end of `path`. The second flag tells the caller that

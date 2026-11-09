@@ -538,7 +538,7 @@ impl Description {
 /// `fvModels` (in `constant/` or `system/`: OpenFOAM-8 looks for `fvOptions` in `constant/`
 /// first, OpenFOAM-12 for each in its own place, then the other), `blending` on in
 /// `controlDict`.
-fn case_components(case: &Case) -> Components {
+pub(crate) fn case_components(case: &Case) -> Components {
     let mut c = Components::default();
     let fluids = case.regions.iter().filter(|r| r.kind == RegionKind::Fluid);
     for r in fluids {

@@ -335,7 +335,8 @@ fn what_can_t_be_made_is_refused() {
     refused(&|s| s.regions.push(region("nul", RegionKind::Solid)), "device");
     refused(&|s| s.regions.push(region("COM1.x", RegionKind::Solid)), "device");
     refused(&|s| s.regions[2].name = "trees".into(), "named `vegetation`");
-    refused(&|s| s.regions.push(region("vegetation2", RegionKind::Vegetation)), "one vegetation region");
+    refused(&|s| s.regions.push(region("vegetation2", RegionKind::Vegetation)), "named `vegetation`");
+    refused(&|s| s.regions.push(region("vegetation", RegionKind::Vegetation)), "given twice");
     refused(&|s| s.radiation = Some("air".into()), "needs the radiation on it");
     refused(&|s| s.radiation = None, "needs the radiation on it");
     refused(

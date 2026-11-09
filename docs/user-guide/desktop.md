@@ -37,7 +37,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   parameters opens its card on the right: what it takes, and its parameters as JSON
   (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *New case…* (its
-  card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Read fields*,
+  card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Add a region…*
+  (a solid to name), *Read fields*,
   *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
   *Describe a material* and *Write the scripts* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first

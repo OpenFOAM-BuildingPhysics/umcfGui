@@ -153,6 +153,21 @@ impl Document {
         edit::append(&mut self.root, path, node)
     }
 
+    /// Adds the word `value` at the end of the list that is the entry at `path`
+    /// (`regions/solid` of `regions { solid ( street ); }`), laid out as the list is: after a
+    /// space on one line, on a line of its own like the items before; comments stay where they
+    /// are. Nothing else changes.
+    pub fn add_word(&mut self, path: &[&str], value: &str) -> Result<()> {
+        edit::add_word(&mut self.root, path, value)
+    }
+
+    /// In the list that is the top-level entry `key`, made of words each followed by a list
+    /// (`regions ( fluid (air) solid (street) );`), adds the word `value` to the list after
+    /// `word`, or adds `word (value)` at the end when there is none. Nothing else changes.
+    pub fn add_to_sublist(&mut self, key: &str, word: &str, value: &str) -> Result<()> {
+        edit::add_to_sublist(&mut self.root, key, word, value)
+    }
+
     /// Gives the entry at `path` the key `to`, keeping its value, comments and layout, as
     /// [`Dict::rename`] does. `false` when there is no such entry.
     pub fn rename(&mut self, path: &[&str], to: &str) -> Result<bool> {
