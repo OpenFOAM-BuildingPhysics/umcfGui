@@ -134,7 +134,10 @@ impl Case {
         let (mut case_settings, case_notes) = crate::settings::Settings::from_case(self);
         let mut chosen = description.as_ref().map(|d| d.settings.clone()).unwrap_or_default();
         // A model written into the description by hand that the version doesn't have.
-        if let Err(Error::NewCase(m)) = crate::settings::check_turbulence(&chosen, v) {
+        // (One the case's fluids all have already, of its own library say, is kept.)
+        if chosen.turbulence != case_settings.turbulence
+            && let Err(Error::NewCase(m)) = crate::settings::check_turbulence(&chosen, v)
+        {
             notes.push(format!("{}: {m}: left out", crate::description::PATH));
             chosen.turbulence = None;
         }

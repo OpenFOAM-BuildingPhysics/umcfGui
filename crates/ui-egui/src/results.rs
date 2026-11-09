@@ -216,6 +216,8 @@ mod tests {
             "description": {
                 "version": "OpenFOAM-8", "features": true, "solver": "urbanMicroclimateFoam", "reconstruct": true,
                 "components": ["grass", "temperatureLimit", "blending"],
+                "settings": { "deltaT": "1800", "temperatureLimit": ["283.15", "370.15"],
+                              "blending": { "dampingThickness": "60", "alphaCoeffU": "0.3", "alphaCoeffT": "0.3" } },
                 "radiation": { "region": "street", "lai": "air", "viewFactors": true, "solarRayTracing": false },
                 "regions": [
                     { "name": "air", "kind": "fluid", "mesh": "blocks",
@@ -245,6 +247,11 @@ mod tests {
                 (
                     Kind::Text,
                     "for OpenFOAM-8, surfaceFeatures, radiation on street (view factors, LAI on air), grass, temperature limit, blending layer, solver urbanMicroclimateFoam, reconstructed"
+                        .to_string()
+                ),
+                (
+                    Kind::Text,
+                    "settings: blending alphaCoeffT 0.3, alphaCoeffU 0.3, dampingThickness 60; deltaT 1800; temperatureLimit 283.15 to 370.15"
                         .to_string()
                 ),
                 (

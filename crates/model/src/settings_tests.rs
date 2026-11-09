@@ -272,3 +272,20 @@ fn a_new_case_notes_a_limit_or_blending_it_has_no_place_for() {
     assert_eq!(m.notes.len(), 2, "{:?}", m.notes);
     assert_eq!(m.description.settings, chosen);
 }
+
+#[test]
+fn values_a_case_has_that_the_settings_refuse_are_noted_and_left_out() {
+    let s = spec(OfVersion::V12, Settings::default(), true, false);
+    let c = edited(&s, CONTROL_DICT, |t| t.replace("deltaT          3600;", "deltaT          0;"));
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.delta_t.is_none());
+    assert!(notes.iter().any(|n| n.contains("controlDict deltaT is 0")), "{notes:?}");
+    let c = edited(&s, "system/air/fvConstraints", |t| t.replace("min 273.15; max 373.15;", "min 300; max 280;"));
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.temperature_limit.is_none());
+    assert!(notes.iter().any(|n| n.contains("not 0 < min < max")), "{notes:?}");
+    // The imported description has no problems, so the scripts can be written from it.
+    let (d, _) = Description::import(&c);
+    let (_, problems) = Description::read(&Document::parse(&d.write()).unwrap());
+    assert_eq!(problems, vec![]);
+}

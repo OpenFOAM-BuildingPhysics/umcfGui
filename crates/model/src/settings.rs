@@ -51,6 +51,16 @@ fn number(text: &str) -> Option<f64> {
     text.trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
+/// A run time as the settings take it: above 0, `endTime` 0 too.
+fn run_time(key: &str, text: &str) -> bool {
+    number(text).is_some_and(|n| n > 0.0 || (key == "endTime" && n >= 0.0))
+}
+
+/// Temperature-limit bounds as the settings take them: `0 < min < max`, in kelvin.
+fn limit_bounds(min: &str, max: &str) -> bool {
+    matches!((number(min), number(max)), (Some(x), Some(y)) if 0.0 < x && x < y)
+}
+
 /// A word as the settings take it: letters, digits and `_` (a model's name).
 fn model_word(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -83,7 +93,7 @@ impl Settings {
             };
             match key {
                 "deltaT" | "endTime" | "writeInterval" => {
-                    let v = one().filter(|w| number(w).is_some_and(|n| n > 0.0 || (key == "endTime" && n >= 0.0)));
+                    let v = one().filter(|w| run_time(key, w));
                     let Some(v) = v else {
                         problem(&at, "is a number above 0".into());
                         continue;
@@ -108,8 +118,7 @@ impl Settings {
                         },
                         _ => None,
                     };
-                    match pair.filter(|(a, b)| matches!((number(a), number(b)), (Some(x), Some(y)) if 0.0 < x && x < y))
-                    {
+                    match pair.filter(|(a, b)| limit_bounds(a, b)) {
                         Some(p) => s.temperature_limit = Some(p),
                         None => problem(&at, "is ( min max ), in kelvin, min below max".into()),
                     }
@@ -198,19 +207,20 @@ impl Settings {
     pub fn from_case(case: &Case) -> (Settings, Vec<String>) {
         let mut s = Settings::default();
         let mut notes = Vec::new();
-        let plain = |v: String, what: &str, notes: &mut Vec<String>| -> Option<String> {
-            if number(&v).is_some() {
+        // As `read` takes them: a value it would refuse is noted and left out.
+        let plain = |k: &str, v: String, notes: &mut Vec<String>| -> Option<String> {
+            if run_time(k, &v) {
                 Some(v)
             } else {
-                notes.push(format!("{what} is {v}: not a number the settings take, left out"));
+                notes.push(format!("controlDict {k} is {v}: not a number the settings take, left out"));
                 None
             }
         };
         if let Some(d) = case.dict(CONTROL_DICT) {
             let get = |k: &str| d.value(&[k]).map(|v| v.trim().to_string());
-            s.delta_t = get("deltaT").and_then(|v| plain(v, "controlDict deltaT", &mut notes));
-            s.end_time = get("endTime").and_then(|v| plain(v, "controlDict endTime", &mut notes));
-            s.write_interval = get("writeInterval").and_then(|v| plain(v, "controlDict writeInterval", &mut notes));
+            s.delta_t = get("deltaT").and_then(|v| plain("deltaT", v, &mut notes));
+            s.end_time = get("endTime").and_then(|v| plain("endTime", v, &mut notes));
+            s.write_interval = get("writeInterval").and_then(|v| plain("writeInterval", v, &mut notes));
             if d.get(&["blendingCoeffs"]).is_some() {
                 let c: Vec<Option<String>> = BLENDING_KEYS
                     .iter()
@@ -261,10 +271,10 @@ impl Settings {
         match agreed(&pairs) {
             Some(_) => {
                 let (a, b) = limits.swap_remove(0);
-                if number(&a).is_some() && number(&b).is_some() {
+                if limit_bounds(&a, &b) {
                     s.temperature_limit = Some((a, b));
                 } else {
-                    notes.push(format!("the temperature limit is ( {a} {b} ): not numbers, left out"));
+                    notes.push(format!("the temperature limit is ( {a} {b} ): not 0 < min < max, left out"));
                 }
             }
             None if !pairs.is_empty() => notes.push("the fluids' temperature limits differ: left out".to_string()),
