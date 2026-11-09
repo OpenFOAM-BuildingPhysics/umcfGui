@@ -1414,6 +1414,100 @@ fn the_workflow_description_against_the_case() {
 }
 
 #[test]
+fn a_solids_materials_in_the_description_against_the_case() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    assert_eq!(d.region("street").map(|r| r.materials.len()), Some(1));
+    let with = |fs: &mut MemFs, list: &str| {
+        let text = d.write();
+        fs.insert(PATH, text.replace("            brick           { model Hamstad5Brick; }\n", list));
+        let c = Case::open(&complete(fs)).unwrap();
+        check(&c)
+            .into_iter()
+            .filter(|d| d.code == "workflow.description")
+            .map(|d| (d.level, d.message))
+            .collect::<Vec<_>>()
+    };
+    // As imported: nothing said of the materials.
+    let m = with(&mut fs, "            brick           { model Hamstad5Brick; }\n");
+    assert!(!m.iter().any(|(_, x)| x.contains("material")), "{m:#?}");
+    // Another model, and one the solver doesn't have that the case doesn't list.
+    let m =
+        with(&mut fs, "            brick           { model Soil; }\n            glass           { model Glass; }\n");
+    let has = |l: Level, s: &str| m.iter().any(|(level, x)| *level == l && x.contains(s));
+    assert!(
+        has(
+            Level::Warning,
+            "material brick of region street is Soil, constant/street/transportProperties has it Hamstad5Brick"
+        ),
+        "{m:#?}"
+    );
+    assert!(has(Level::Warning, "`Glass` is not one the solver has"), "{m:#?}");
+    assert!(has(Level::Warning, "material glass of region street is not in the buildingMaterials"), "{m:#?}");
+    // A model of the other version only: OSB is OpenFOAM-12's, fine here, not in an OpenFOAM-8 case.
+    let m = with(
+        &mut fs,
+        "            brick           { model Hamstad5Brick; }\n            board           { model OSB; }\n",
+    );
+    assert!(!m.iter().any(|(_, x)| x.contains("`OSB`")), "{m:#?}");
+    let mut of8 = of8_case();
+    let m = with(
+        &mut of8,
+        "            brick           { model Hamstad5Brick; }\n            board           { model OSB; }\n",
+    );
+    assert!(m.iter().any(|(_, x)| x.contains("`OSB` is not one the solver has for OpenFOAM-8")), "{m:#?}");
+    // One a library may add.
+    edit(&mut fs, "system/controlDict", "application", "libs (\"libMine.so\");\napplication");
+    let m = with(
+        &mut fs,
+        "            brick           { model Hamstad5Brick; }\n            glass           { model Glass; }\n",
+    );
+    assert!(
+        m.iter()
+            .any(|(_, x)| x.contains("`Glass` is not one the solver has") && x.contains("unless one of the libraries")),
+        "{m:#?}"
+    );
+    // The case's own model is the case check's to judge, not said again.
+    edit(&mut fs, "constant/street/transportProperties", "Hamstad5Brick", "Brick");
+    let m = with(&mut fs, "            brick           { model Brick; }\n");
+    assert!(!m.iter().any(|(_, x)| x.contains("is not one the solver has")), "{m:#?}");
+    edit(&mut fs, "constant/street/transportProperties", "Brick;", "Hamstad5Brick;");
+    let m = with(&mut fs, "");
+    assert!(
+        m.iter().any(|(l, x)| *l == Level::Info
+            && x.contains(
+                "material brick of region street (constant/street/transportProperties) is not in the description"
+            )),
+        "{m:#?}"
+    );
+    // A name the case lists three times, left out of the description: said once.
+    let mut thrice = fs.clone();
+    edit(
+        &mut thrice,
+        "constant/street/transportProperties",
+        "(\n",
+        "(\n    { name soil; buildingMaterialModel Soil; }\n    { name soil; buildingMaterialModel Soil; }\n    { name soil; buildingMaterialModel Soil; }\n",
+    );
+    let m = with(&mut thrice, "            brick           { model Hamstad5Brick; }\n");
+    assert_eq!(m.iter().filter(|(_, x)| x.contains("material soil of region street")).count(), 1, "{m:#?}");
+    // A region the case has as another kind: its kind is said, not its materials.
+    let mut other = fs.clone();
+    edit(&mut other, "system/controlDict", "fluid (air);", "fluid (air street);");
+    edit(&mut other, "system/controlDict", "solid (street);", "solid ();");
+    let m = with(&mut other, "            brick           { model Glass; }\n");
+    assert!(m.iter().any(|(_, x)| x.contains("region street is solid, the case has it fluid")), "{m:#?}");
+    assert!(!m.iter().any(|(_, x)| x.contains("material")), "{m:#?}");
+    // Without the case's list.
+    fs.insert("constant/street/transportProperties", dict(""));
+    let m = with(&mut fs, "            brick           { model Hamstad5Brick; }\n");
+    assert!(
+        m.iter().any(|(_, x)| x.contains("its materials are not listed in constant/street/transportProperties")),
+        "{m:#?}"
+    );
+}
+
+#[test]
 fn description_partners_and_roles_are_checked_without_a_mesh() {
     use umcf_model::description::PATH;
     let mut fs = case();

@@ -13,7 +13,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     label: "Workflow description",
     menu: "Case/Workflow description",
     shortcut: None,
-    params: "none. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, and patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner.",
+    params: "none. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
     enabled: needs_case,
     run: show,
     journal: false,
@@ -68,7 +68,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, and each patch's role and partner as its mesh and velocity condition tell. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, and each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -197,7 +197,9 @@ pub(crate) fn to_json(d: &Description) -> Value {
                     })
                 })
                 .collect();
-            json!({ "name": r.name, "kind": kind, "mesh": mesh, "steps": steps, "patches": patches })
+            let materials: Vec<Value> =
+                r.materials.iter().map(|m| json!({ "name": m.name, "model": m.model })).collect();
+            json!({ "name": r.name, "kind": kind, "mesh": mesh, "steps": steps, "patches": patches, "materials": materials })
         })
         .collect();
     json!({

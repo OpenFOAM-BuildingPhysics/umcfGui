@@ -109,6 +109,13 @@ fn canyon() -> MemFs {
                 ("canopy8", "mappedWall", "        sampleMode nearestCell;\n        sampleRegion air;\n"),
             ]),
         )
+        .with(
+            "constant/street/transportProperties",
+            format!(
+                "{}buildingMaterials\n(\n    {{ name soil; buildingMaterialModel Soil; rho 1150; }}\n    {{ name brick; buildingMaterialModel Hamstad5Brick; }}\n    {{ name plaster; }}\n);\n",
+                header("dictionary", "transportProperties")
+            ),
+        )
         .with("Allprepare", PREPARE)
         .with("Allrun", RUN)
 }
@@ -239,6 +246,7 @@ fn odd_names_come_back_as_they_were() {
                     role: Some(Role::Coupled),
                     partner: Some((odd.into(), odd.into())),
                 }],
+                materials: vec![MaterialDesc { name: odd.into(), model: Some(odd.into()) }],
             }],
             features: false,
             radiation: Some(Radiation {
@@ -532,4 +540,94 @@ fn a_description_linked_to_another_dictionary_is_not_written() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(matches!(saved, Err(crate::Error::IsLink(_))), "{saved:?}");
     assert_eq!(shared, text);
+}
+
+fn materials(d: &Description, region: &str) -> Vec<(String, Option<String>)> {
+    d.region(region).unwrap().materials.iter().map(|m| (m.name.clone(), m.model.clone())).collect()
+}
+
+#[test]
+fn a_solids_materials_are_imported_written_and_read_back() {
+    let c = Case::open(&canyon()).unwrap();
+    let (d, notes) = Description::import(&c);
+    let some = |s: &str| Some(s.to_string());
+    assert_eq!(
+        materials(&d, "street"),
+        [("soil".into(), some("Soil")), ("brick".into(), some("Hamstad5Brick")), ("plaster".into(), None)]
+    );
+    assert!(d.region("air").unwrap().materials.is_empty());
+    assert!(!notes.iter().any(|n| n.contains("buildingMaterials")), "{notes:#?}");
+    let text = d.write();
+    assert!(text.contains("        materials\n        {\n            soil            { model Soil; }\n"), "{text}");
+    assert!(text.contains("            plaster         { }\n"), "{text}");
+    let (back, problems) = Description::read(&Document::parse(&text).unwrap());
+    assert_eq!(problems, []);
+    assert_eq!(back, d);
+}
+
+#[test]
+fn materials_given_otherwise_are_noted_and_left_out() {
+    let fs = canyon().with(
+        "constant/street/transportProperties",
+        format!(
+            "{}buildingMaterials\n(\n    {{ name $m; buildingMaterialModel Soil; }}\n    plain\n    {{ name brick; buildingMaterialModel #calc \"x\"; }}\n);\n",
+            header("dictionary", "transportProperties")
+        ),
+    );
+    let (d, notes) = Description::import(&Case::open(&fs).unwrap());
+    assert_eq!(materials(&d, "street"), [("brick".into(), None)]);
+    assert!(notes.iter().any(|n| n.contains("region street") && n.contains("left out")), "{notes:#?}");
+    // A model given by a macro, and a name listed twice: noted, and the round trip is clean.
+    let fs = canyon().with(
+        "constant/street/transportProperties",
+        format!(
+            "{}buildingMaterials\n(\n    {{ name soil; buildingMaterialModel $m; }}\n    {{ name brick; buildingMaterialModel Hamstad5Brick; }}\n    {{ name brick; buildingMaterialModel Soil; }}\n    {{ name brick; }}\n);\n",
+            header("dictionary", "transportProperties")
+        ),
+    );
+    let (d, notes) = Description::import(&Case::open(&fs).unwrap());
+    assert_eq!(materials(&d, "street"), [("soil".into(), None), ("brick".into(), Some("Hamstad5Brick".into()))]);
+    assert!(
+        notes.iter().any(|n| n.contains("material soil: its buildingMaterialModel isn't a plain name")),
+        "{notes:#?}"
+    );
+    assert_eq!(
+        notes.iter().filter(|n| n.contains("material brick: listed more than once: the first kept")).count(),
+        1,
+        "{notes:#?}"
+    );
+    assert!(!notes.iter().any(|n| n.contains("isn't one plain entry")), "{notes:#?}");
+    let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
+    assert_eq!((back, problems), (d, vec![]));
+    // Without the list, a note says so.
+    let mut fs = canyon();
+    fs.insert("constant/street/transportProperties", header("dictionary", "transportProperties"));
+    let (d, notes) = Description::import(&Case::open(&fs).unwrap());
+    assert!(d.region("street").unwrap().materials.is_empty());
+    assert!(notes.iter().any(|n| n.contains("no buildingMaterials list in constant/street/transportProperties")));
+}
+
+#[test]
+fn materials_problems_are_named() {
+    let text = format!(
+        "{}regions\n{{\n    air {{ kind fluid; materials {{ brick {{ }} }} }}\n    vegetation {{ kind vegetation; materials {{ }} }}\n    street {{ kind solid; materials {{ brick {{ model A B; }} soil {{ colour red; }} brick {{ }} glass x; }} }}\n    wall {{ kind solid; materials none; }}\n}}\n",
+        header("dictionary", "umcfWorkflow")
+    );
+    let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(
+        at,
+        [
+            "regions/air/materials",
+            "regions/vegetation/materials",
+            "regions/street/materials/brick/model",
+            "regions/street/materials/soil/colour",
+            "regions/street/materials/brick",
+            "regions/street/materials/glass",
+            "regions/wall/materials",
+        ],
+        "{problems:#?}"
+    );
+    assert!(d.region("air").unwrap().materials.is_empty());
+    assert_eq!(materials(&d, "street"), [("brick".into(), None), ("soil".into(), None)]);
 }
