@@ -2380,3 +2380,185 @@ fn patch_edits_wait_for_the_fields() {
     s.execute("case.fields", &json!({})).unwrap();
     s.execute("patch.set", &rename).unwrap();
 }
+
+fn canyon_params(path: &std::path::Path, version: u32) -> Value {
+    json!({
+        "path": path.to_str().unwrap(),
+        "version": version,
+        "regions": [
+            {"name": "air", "kind": "fluid"},
+            {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]},
+            {"name": "vegetation", "kind": "vegetation"},
+        ],
+        "radiation": "vegetation",
+        "grass": ["air_to_street"],
+        "temperatureLimit": true,
+    })
+}
+
+#[test]
+fn case_new_writes_a_case_and_opens_it() {
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-new-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        let out = s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        assert!(
+            out.message
+                .starts_with(&format!("made {}: OpenFOAM-{version}, 3 regions, the tutorial profile", dir.display())),
+            "{}",
+            out.message
+        );
+        let written = out.data["written"].as_array().unwrap();
+        assert!(written.iter().all(|w| dir.join(w.as_str().unwrap()).is_file()));
+        assert!(
+            dir.join("system/air/fvSchemes").is_file() && dir.join("constant/street/transportProperties").is_file()
+        );
+        assert_eq!(s.location(), dir.to_str());
+        let case = s.case().unwrap();
+        assert_eq!(case.regions.len(), 3);
+        assert!(case.changed().is_empty());
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["profile"], json!("tutorial"));
+        assert_eq!(show.data["description"]["components"], json!(["grass", "temperatureLimit"]));
+        // What the check finds is what case.new leaves to later steps: the tables the radiation
+        // reads, the meshes, the start time's fields.
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        for d in check.data["diagnostics"].as_array().unwrap() {
+            let code = d["code"].as_str().unwrap();
+            assert!(
+                ["case.table", "region.no-mesh", "case.note", "fv.limit-pressure"].contains(&code),
+                "{version}: {d}"
+            );
+        }
+        // Not empty now: a second one is refused, and nothing is written.
+        let e = s.execute("case.new", &canyon_params(&dir, version)).unwrap_err();
+        assert!(e.to_string().contains("is not empty"), "{e}");
+        // Nothing is left of the staging.
+        let stray: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".umcfgui-new-"))
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn case_new_refuses_before_it_writes() {
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-new-refused", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let with = |k: &str, v: Value| {
+        let mut p = canyon_params(&dir, 12);
+        p[k] = v;
+        p
+    };
+    // An empty directory is fine: the case takes its place.
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut p = canyon_params(&dir, 12);
+    p["regions"] = json!([{"name": "air", "kind": "fluid"}]);
+    p["radiation"] = Value::Null;
+    p.as_object_mut().unwrap().remove("radiation");
+    p.as_object_mut().unwrap().remove("grass");
+    s.execute("case.new", &p).unwrap();
+    assert!(dir.join("system/controlDict").is_file());
+    std::fs::remove_dir_all(&dir).unwrap();
+    s = Session::with_backup(".umcfgui/backup/test");
+    for (params, want) in [
+        (with("version", json!(10)), "version is 8 or 12"),
+        (with("profile", json!("big")), "profile is tutorial or hk"),
+        (with("profile", json!("hk")), "the hk profile has no files for OpenFOAM-12"),
+        (with("regions", json!([{"name": "air", "kind": "gas"}])), "kind is fluid, solid or vegetation"),
+        (with("regions", json!([{"name": "street", "kind": "solid"}])), "needs a fluid region"),
+        (
+            {
+                let mut p = with("radiation", json!("street"));
+                p["regions"] = json!([{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid"}]);
+                p
+            },
+            "a solid has no radiation",
+        ),
+        (with("up", json!("w")), "up is x, y or z"),
+        (with("grass", json!("lawn")), "grass is true, or a list"),
+        (with("colour", json!("red")), "colour"),
+        (with("path", json!(" ")), "path is the directory"),
+    ] {
+        let e = s.execute("case.new", &params).unwrap_err().to_string();
+        assert!(e.contains(want), "{e} (wanted {want})");
+        assert!(!dir.exists(), "{want}: something was written");
+    }
+    // An open case with unsaved changes stays, unless given up.
+    let a = scratch("new-open");
+    s.execute("case.open", &json!({ "path": a.to_str().unwrap() })).unwrap();
+    s.execute("control.set", &json!({ "endTime": 9 })).unwrap();
+    let e = s.execute("case.new", &canyon_params(&dir, 8)).unwrap_err().to_string();
+    assert!(e.contains("unsaved changes"), "{e}");
+    assert!(!dir.exists());
+    assert_eq!(s.location(), a.to_str());
+    let mut p = canyon_params(&dir, 8);
+    p["discard"] = json!(true);
+    p["profile"] = json!("hk");
+    let out = s.execute("case.new", &p).unwrap();
+    assert!(out.message.contains("the hk profile"), "{}", out.message);
+    assert_eq!(s.location(), dir.to_str());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&a);
+}
+
+#[test]
+fn case_new_leaves_things_as_they_were_when_it_fails() {
+    let base = std::env::temp_dir().join(format!("umcf-engine-{}-new-fail", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let params = |path: &std::path::Path| json!({ "path": path.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}] });
+    // `..` is refused.
+    let e = s.execute("case.new", &params(&base.join("a/../b"))).unwrap_err().to_string();
+    assert!(e.contains("without `..`"), "{e}");
+    assert!(!base.join("a").exists() && !base.join("b").exists());
+    // A parent made on the way goes again when the case's own directory can't be made.
+    let long = base.join("q").join("n".repeat(300));
+    let e = s.execute("case.new", &params(&long)).unwrap_err().to_string();
+    assert!(e.contains("nothing was made"), "{e}");
+    assert!(!base.join("q").exists());
+    // `.` components are no directories of their own.
+    s.execute("case.new", &params(&base.join("c/d/."))).unwrap();
+    assert!(base.join("c/d/system/controlDict").is_file());
+    s = Session::with_backup(".umcfgui/backup/test");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The directories made on the way are taken away again: here the case's own can't be
+        // made inside a directory that can't be written.
+        let locked = base.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = std::fs::File::create(locked.join("probe")).is_ok();
+        if !writable {
+            let e = s.execute("case.new", &params(&locked.join("x/y"))).unwrap_err().to_string();
+            assert!(e.contains("nothing was made"), "{e}");
+            assert_eq!(std::fs::read_dir(&locked).unwrap().count(), 0);
+            // An empty directory of the user's stays, with its mode, whatever happens: one that
+            // can't be written into is left as it was.
+            let mine = base.join("mine");
+            std::fs::create_dir(&mine).unwrap();
+            std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let e = s.execute("case.new", &params(&mine)).unwrap_err().to_string();
+            assert!(e.contains("nothing was made"), "{e}");
+            assert_eq!(std::fs::read_dir(&mine).unwrap().count(), 0);
+            assert_eq!(std::fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o555);
+            std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A user's directory made beforehand keeps its mode once the case is in it.
+        let kept = base.join("kept");
+        std::fs::create_dir(&kept).unwrap();
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o750)).unwrap();
+        s.execute("case.new", &params(&kept)).unwrap();
+        assert_eq!(std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777, 0o750);
+        assert!(kept.join("system/controlDict").is_file());
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}

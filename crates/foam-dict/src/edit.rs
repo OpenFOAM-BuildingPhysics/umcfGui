@@ -19,8 +19,15 @@ pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str, i
             push(dict, entry);
         }
         let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
-        let sub = entry.dict_mut().ok_or_else(|| Error::NotADict(key.to_string()))?;
-        return set(sub, rest, nodes, &child_indent, inline);
+        let Some(Node::Dict { body, close, .. }) = entry.value.first_mut() else {
+            return Err(Error::NotADict(key.to_string()));
+        };
+        let before = body.items.len();
+        set(body, rest, nodes, &child_indent, inline)?;
+        if body.items.len() > before {
+            adopt_same_line(&mut close.lead, body);
+        }
+        return Ok(());
     }
     let dict_value = matches!(nodes.as_slice(), [Node::Dict { .. }]);
     let is_dict = dict_value && !inline;
@@ -178,6 +185,35 @@ pub fn strip_same_line(lead: &mut String) {
     if head.trim_start().starts_with("//") || head.trim().is_empty() {
         *lead = lead.get(first_line..).unwrap_or("").to_string();
     }
+}
+
+/// Gives the entry just appended to `dict` the comments that followed the entry before it on its
+/// line (at the start of `trivia`, what comes after the dictionary's last item: its closing
+/// brace's lead, or the document's tail), so they stay with that entry: a `//` comment, and
+/// `/* … */` comments whole, one going on over lines too.
+pub fn adopt_same_line(trivia: &mut String, dict: &mut Dict) {
+    let mut end = 0;
+    loop {
+        let rest = trivia.get(end..).unwrap_or("");
+        let skipped = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        let after = rest.get(skipped..).unwrap_or("");
+        if after.starts_with("//") {
+            end += skipped + after.find('\n').unwrap_or(after.len());
+            break;
+        }
+        match after.strip_prefix("/*").and_then(|b| b.find("*/")) {
+            Some(close) => end += skipped + 2 + close + 2,
+            None => break,
+        }
+    }
+    if end == 0 {
+        return;
+    }
+    let Some(last) = dict.items.last_mut() else { return };
+    let head = trivia.get(..end).unwrap_or("").to_string();
+    let lead = &mut last.key_tok_mut().lead;
+    *lead = format!("{head}{lead}");
+    *trivia = trivia.get(end..).unwrap_or("").to_string();
 }
 
 fn empty_dict() -> Node {

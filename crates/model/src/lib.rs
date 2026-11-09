@@ -46,6 +46,7 @@ use umcf_schema::{CaseKind, Layout, Note, Severity};
 mod controls;
 pub mod description;
 pub mod description_edit;
+pub mod new_case;
 pub mod script;
 pub mod tables;
 pub mod workflow;
@@ -83,6 +84,9 @@ pub enum Error {
     /// An edit of the workflow description that can't be made, and why.
     #[error("{0}")]
     Describe(String),
+    /// A new case that can't be made, and why.
+    #[error("{0}")]
+    NewCase(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
 }

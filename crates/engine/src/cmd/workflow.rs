@@ -108,7 +108,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, and each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict). The profile a case was made from isn't in its files: the description written has none. What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -491,6 +491,8 @@ pub(crate) fn to_json(d: &Description) -> Value {
         .collect();
     json!({
         "version": d.version.map(|v| v.label()),
+        "profile": d.profile.map(umcf_schema::Profile::name),
+        "components": d.components.words().into_iter().filter(|(_, on)| *on).map(|(w, _)| w).collect::<Vec<_>>(),
         "regions": regions,
         "features": d.features,
         "radiation": d.radiation.as_ref().map(|r| json!({

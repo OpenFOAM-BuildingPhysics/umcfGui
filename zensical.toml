@@ -22,6 +22,7 @@ nav = [
     "user-guide/desktop.md",
     "user-guide/checks.md",
     "user-guide/workflow.md",
+    "user-guide/new-case.md",
     "user-guide/command-line.md",
   ] },
   { "What a Case Needs" = "case-requirements.md" },

@@ -157,6 +157,10 @@ pub const LOG: usize = 200;
 
 const SEARCH_ID: &str = "command-search";
 
+/// The *New case* card's parameters to start with: the air alone, for OpenFOAM-12, from the
+/// tutorials' settings.
+const NEW_CASE: &str = "{\n  \"path\": \"\",\n  \"version\": 12,\n  \"profile\": \"tutorial\",\n  \"regions\": [\n    { \"name\": \"air\", \"kind\": \"fluid\" }\n  ]\n}";
+
 /// A registry shortcut (`Ctrl+Shift+Z`, `F7`) as egui's.
 pub fn shortcut(text: &str) -> Option<KeyboardShortcut> {
     let mut mods = Modifiers::NONE;
@@ -445,7 +449,7 @@ impl App {
     /// What follows a command, here or as a job: it is logged, the view draws again, and what
     /// is shown follows the case.
     fn after(&mut self, id: &str, result: Result<Outcome, umcf_engine::Error>) -> Result<Outcome, String> {
-        let opens = id == "case.open";
+        let opens = matches!(id, "case.open" | "case.new");
         self.revision += 1;
         let entry = match &result {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
@@ -504,7 +508,11 @@ impl App {
             self.start(jobs::Work::Command { id: id.to_string(), params: json!({}), then: jobs::Then::Nothing });
         } else {
             self.close_idle_cards();
-            let params = if id == "scene.snapshot" { self.snapshot_params() } else { "{}".to_string() };
+            let params = match id {
+                "scene.snapshot" => self.snapshot_params(),
+                "case.new" => NEW_CASE.to_string(),
+                _ => "{}".to_string(),
+            };
             self.dialog = Some(Dialog { id, params, error: None });
         }
     }

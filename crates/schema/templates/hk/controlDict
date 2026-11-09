@@ -1,0 +1,103 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2.2.2                               |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+application     urbanMicroclimateFoam;
+
+startFrom       latestTime;
+
+startTime       0;
+
+stopAt          endTime;
+
+endTime         316800;//232200;//316800;
+
+deltaT          1800;
+
+writeControl    timeStep;
+
+writeInterval   1;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+
+writePrecision  8;
+
+writeCompression on;
+
+timeFormat      general;
+
+timePrecision   14;
+
+runTimeModifiable true;
+
+functions
+{
+    probes
+    {
+        // Where to load it from
+        libs            ("libsampling.so");
+
+        type            probes;
+
+        // Name of the directory for probe data
+        name            probesMonitor;
+
+        // Write at same frequency as fields
+        writeControl    timeStep;
+        writeInterval   10;
+
+        // Fields to be probed
+        fields          (T U);
+        region air;
+
+        probeLocations
+        (
+            (741.9 1156.3 15.6)
+            (753.1 1036.2 13.6)
+            (852.8 1109.6 27.3)
+            (921.1 1119.6 31.5)
+            (733.1 1232.5 15.8)
+        );
+    }
+}
+
+//urbanMicroclimateFoam controls
+
+initialSolidTimestepFactor	2.777777778e-4;
+
+minDeltaT       1E-7;
+
+maxDeltaT       100;//600;//30;
+
+PicardTolerancews 0.1;
+PicardToleranceTs 0.1;
+
+minFluidIteration	500;
+maxFluidIteration	4000;//10000;//3000;
+
+pcEqnForm    pc-based; //'pc-based' or 'mixed' - default is 'pc-based'
+
+blending true;
+blendingCoeffs
+{
+    dampingThickness 60;
+    alphaCoeffU 0.3;
+    alphaCoeffT 0.3;
+}
+
+// ************************************************************************* //

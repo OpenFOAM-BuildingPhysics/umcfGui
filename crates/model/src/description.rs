@@ -10,6 +10,7 @@
 //!
 //! ```c++
 //! version     12;
+//! profile     tutorial;
 //! regions
 //! {
 //!     air
@@ -36,6 +37,7 @@
 //!     }
 //! }
 //! radiation   { region vegetation; lai air; viewFactors yes; solarRayTracing yes; }
+//! components  ( grass temperatureLimit );
 //! solver      urbanMicroclimateFoam;
 //! reconstruct yes;
 //! ```
@@ -45,6 +47,7 @@ use std::fmt::Write as _;
 
 use umcf_core::OfVersion;
 use umcf_foam_dict::{Document, Entry, Node, unquote};
+use umcf_schema::Profile;
 
 use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Workflow};
 use crate::{Case, Patch, RegionKind};
@@ -144,16 +147,52 @@ pub struct RegionDesc {
     pub materials: Vec<MaterialDesc>,
 }
 
+/// The components a case has that its regions don't tell (the air, the solids' heat and
+/// moisture and the vegetation are its regions' kinds, the radiation is
+/// [`Description::radiation`]). Each is switched on in the solver by a file or an entry of its
+/// own (`umcf_schema::profile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Components {
+    /// `grassProperties` in a fluid region.
+    pub grass: bool,
+    /// A `limitTemperature` entry: OpenFOAM-8's `fvOptions`, OpenFOAM-12's `fvConstraints`.
+    pub temperature_limit: bool,
+    /// The blending layer: `blending` in `controlDict`.
+    pub blending: bool,
+}
+
+impl Components {
+    /// The words of the description's `components` list, in its order, with whether each is
+    /// on.
+    pub fn words(&self) -> [(&'static str, bool); 3] {
+        [("grass", self.grass), ("temperatureLimit", self.temperature_limit), ("blending", self.blending)]
+    }
+
+    /// Switches the component `word` names on; `false` when there is no such component.
+    pub fn switch_on(&mut self, word: &str) -> bool {
+        match word {
+            "grass" => self.grass = true,
+            "temperatureLimit" => self.temperature_limit = true,
+            "blending" => self.blending = true,
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// A case's `system/umcfWorkflow`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Description {
     /// The OpenFOAM version the scripts and dictionaries are for.
     pub version: Option<OfVersion>,
+    /// The settings the case was made from (`case.new`); `None`: not told (an imported case).
+    pub profile: Option<Profile>,
     /// In the order their meshes are built (regions without one last).
     pub regions: Vec<RegionDesc>,
     /// `surfaceFeatures` runs first.
     pub features: bool,
     pub radiation: Option<Radiation>,
+    pub components: Components,
     /// The solver run in parallel; `None`: the scripts run none.
     pub solver: Option<String>,
     pub reconstruct: bool,
@@ -262,6 +301,8 @@ impl Description {
         }
         let d = Description {
             version: case.layout.version,
+            profile: None,
+            components: case_components(case),
             regions,
             features: wf.features,
             radiation: wf.radiation.clone(),
@@ -322,6 +363,9 @@ impl Description {
         if let Some(v) = self.version {
             let _ = writeln!(s, "version     {};\n", number(v));
         }
+        if let Some(p) = self.profile {
+            let _ = writeln!(s, "profile     {};\n", p.name());
+        }
         s.push_str("regions\n{\n");
         for r in &self.regions {
             let _ = writeln!(s, "    {}\n    {{", word(&r.name));
@@ -376,6 +420,10 @@ impl Description {
                 yes(rad.solar_ray_tracing)
             );
         }
+        let on: Vec<&str> = self.components.words().into_iter().filter(|(_, on)| *on).map(|(w, _)| w).collect();
+        if !on.is_empty() {
+            let _ = writeln!(s, "components  ( {} );", on.join(" "));
+        }
         match &self.solver {
             Some(app) => {
                 let _ = writeln!(s, "solver      {};", word(app));
@@ -407,6 +455,29 @@ impl Description {
                     Some("8") => d.version = Some(OfVersion::V8),
                     Some("12") => d.version = Some(OfVersion::V12),
                     _ => problem(key, "is 8 or 12".into()),
+                },
+                "profile" => match single(e).as_deref().map(|w| (w, Profile::parse(w))) {
+                    Some((_, Some(p))) => d.profile = Some(p),
+                    _ => problem(key, profile_choices()),
+                },
+                "components" => match list(e) {
+                    Some(items) => {
+                        let mut seen = HashSet::new();
+                        for n in items {
+                            match atom(n).map(unescaped) {
+                                Some(w) if !seen.insert(w.clone()) => {
+                                    problem(&format!("components/{w}"), "is given twice".into())
+                                }
+                                Some(w) if d.components.switch_on(&w) => {}
+                                Some(w) => problem(
+                                    &format!("components/{w}"),
+                                    "is not a component (grass, temperatureLimit, blending)".into(),
+                                ),
+                                None => problem(key, "is a list of words".into()),
+                            }
+                        }
+                    }
+                    None => problem(key, "is a list: ( grass temperatureLimit blending ), or some of them".into()),
                 },
                 "features" => match flag(e) {
                     Some(b) => d.features = b,
@@ -460,6 +531,45 @@ impl Description {
         }
         (d, problems)
     }
+}
+
+/// The components the case's files switch on (see [`Components`]): a fluid region's
+/// `grassProperties`, a `limitTemperature` entry in a fluid's `fvOptions`, `fvConstraints` or
+/// `fvModels` (in `constant/` or `system/`: OpenFOAM-8 looks for `fvOptions` in `constant/`
+/// first, OpenFOAM-12 for each in its own place, then the other), `blending` on in
+/// `controlDict`.
+fn case_components(case: &Case) -> Components {
+    let mut c = Components::default();
+    let fluids = case.regions.iter().filter(|r| r.kind == RegionKind::Fluid);
+    for r in fluids {
+        if case.exists(&format!("constant/{}/grassProperties", r.name)) == Some(true) {
+            c.grass = true;
+        }
+        for rel in ["fvOptions", "fvConstraints", "fvModels"]
+            .into_iter()
+            .flat_map(|f| [format!("constant/{}/{f}", r.name), format!("system/{}/{f}", r.name)])
+        {
+            let limits = case.dict(&rel).is_some_and(|d| {
+                d.root.entries().any(|e| {
+                    e.dict().and_then(|b| b.get("type")).and_then(single).as_deref() == Some("limitTemperature")
+                })
+            });
+            c.temperature_limit |= limits;
+        }
+    }
+    // Read as the solver reads it (`lookupOrDefault<bool>`), not as the description's yes/no.
+    c.blending = case
+        .dict(crate::CONTROL_DICT)
+        .and_then(|d| d.get(&["blending"]))
+        .and_then(|e| e.words())
+        .is_some_and(|w| matches!(w.as_slice(), [v] if umcf_foam_dict::switch(v) == Some(true)));
+    c
+}
+
+/// What a `profile` entry may be.
+fn profile_choices() -> String {
+    let names: Vec<&str> = Profile::ALL.iter().map(|p| p.name()).collect();
+    format!("is one of: {}", names.join(", "))
 }
 
 fn number(v: OfVersion) -> u32 {

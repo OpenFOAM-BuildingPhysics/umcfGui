@@ -103,6 +103,7 @@ pub fn check(case: &Case) -> Vec<Diagnostic> {
         ));
     }
     controls(case, &mut out);
+    blending(case, &mut out);
     let mut patterns = Patterns::default();
     for r in &case.regions {
         region(case, r, &mut patterns, &mut out);
@@ -213,6 +214,55 @@ fn controls(case: &Case, out: &mut Vec<Diagnostic>) {
             "control.step",
             format!("with writeControl timeStep, writeInterval counts time steps and must be at least 1, not {v}"),
         ));
+    }
+}
+
+/// The patches the blending layer looks up by name in each fluid region
+/// (`_LIB/blendingLayer/blendingLayer.C`): without one, the solver crashes as it starts.
+const BLENDING_PATCHES: [&str; 4] = ["west", "east", "north", "south"];
+
+/// The blending layer (`blending` on in `controlDict`): its coefficients, and the patches it
+/// takes the inflow from.
+fn blending(case: &Case, out: &mut Vec<Diagnostic>) {
+    let Some(doc) = case.dict(CONTROL_DICT) else { return };
+    let on = doc
+        .get(&["blending"])
+        .and_then(|e| e.words())
+        .is_some_and(|w| matches!(w.as_slice(), [v] if umcf_foam_dict::switch(v) == Some(true)));
+    if !on {
+        return;
+    }
+    let missing: Vec<&str> = ["dampingThickness", "alphaCoeffU", "alphaCoeffT"]
+        .into_iter()
+        .filter(|k| doc.get(&["blendingCoeffs", k]).is_none())
+        .collect();
+    if !missing.is_empty() {
+        out.push(Diagnostic::new(
+            Level::Error,
+            "control.blending",
+            CONTROL_DICT,
+            format!("blending is on, and blendingCoeffs has no {}: the run stops", missing.join(", ")),
+        ));
+    }
+    for r in case.regions.iter().filter(|r| r.kind == RegionKind::Fluid) {
+        let Some(patches) = &r.patches else { continue };
+        let absent: Vec<&str> =
+            BLENDING_PATCHES.into_iter().filter(|w| !patches.iter().any(|p| p.name == *w)).collect();
+        if !absent.is_empty() {
+            out.push(
+                Diagnostic::new(
+                    Level::Error,
+                    "control.blending",
+                    CONTROL_DICT,
+                    format!(
+                        "blending is on: the blending layer takes the inflow from the patches west, east, north and south of each fluid region, and region {} has no {}: the solver crashes as it starts",
+                        r.name,
+                        absent.join(", ")
+                    ),
+                )
+                .region(&r.name),
+            );
+        }
     }
 }
 

@@ -73,6 +73,17 @@ pub fn unquote(s: &str) -> &str {
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }
 
+/// A switch as OpenFOAM reads it (`Switch`, and a `bool` entry): `true`, `on`, `yes`, `y`, `t`,
+/// `any` or a non-zero integer is on; `false`, `off`, `no`, `n`, `f`, `none` or `0` off;
+/// anything else `None`.
+pub fn switch(word: &str) -> Option<bool> {
+    match unquote(word) {
+        "true" | "on" | "yes" | "y" | "t" | "any" => Some(true),
+        "false" | "off" | "no" | "n" | "f" | "none" => Some(false),
+        w => w.parse::<i64>().ok().map(|n| n != 0),
+    }
+}
+
 impl Document {
     pub fn parse(src: &str) -> Result<Document> {
         cst::parse(src, &Limits::default())
@@ -110,14 +121,24 @@ impl Document {
     /// parent dictionaries) is appended to its parent, indented like its siblings.
     pub fn set(&mut self, path: &[&str], value: &str) -> Result<()> {
         let nodes = cst::parse_value(value, &Limits::default())?;
-        edit::set(&mut self.root, path, nodes, "", false)
+        let before = self.root.items.len();
+        edit::set(&mut self.root, path, nodes, "", false)?;
+        if self.root.items.len() > before {
+            edit::adopt_same_line(&mut self.tail, &mut self.root);
+        }
+        Ok(())
     }
 
     /// Sets the entry at `path` as [`Document::set`] does, but a dictionary value stays as it
     /// is written (`{ role side; }` on the key's line) instead of being laid out over lines.
     pub fn set_inline(&mut self, path: &[&str], value: &str) -> Result<()> {
         let nodes = cst::parse_value(value, &Limits::default())?;
-        edit::set(&mut self.root, path, nodes, "", true)
+        let before = self.root.items.len();
+        edit::set(&mut self.root, path, nodes, "", true)?;
+        if self.root.items.len() > before {
+            edit::adopt_same_line(&mut self.tail, &mut self.root);
+        }
+        Ok(())
     }
 
     /// Appends `value` (one value: `{ name a; }`, `b`) to the list that is the entry at `path`
