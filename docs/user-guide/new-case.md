@@ -118,7 +118,8 @@ The list keeps its layout and comments; a name that would follow a `// …` comm
 line of its own. It then writes the settings of the region's kind, as
 `case.new` does:
 
-- the profile is `profile` if given, else the description's, else `tutorial`;
+- the settings are the tutorials', or those of the description's `profile` for a case made with
+  one;
 - a fluid gets the gravity of the case's fluids (when it is a vector written out), and the
   temperature limit when the case has one;
 - a solid given no materials takes those the description gives it, when it is described already

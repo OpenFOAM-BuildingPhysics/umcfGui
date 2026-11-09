@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 use umcf_model::RegionKind;
 use umcf_model::description::MaterialDesc;
 use umcf_model::new_case::NewRegion;
-use umcf_schema::Profile;
 
 use crate::params::Params;
 use crate::{CommandSpec, Error, Outcome, Session, needs_case};
@@ -14,7 +13,7 @@ pub(super) const ADD: CommandSpec = CommandSpec {
     label: "Add a region…",
     menu: "Case/Add a region…",
     shortcut: None,
-    params: "region: its name (required; a plain name that no region of the case has, nor one differing only by case, nor a file of constant/ or system/; the vegetation region is named vegetation, as the solver looks it up). kind: fluid, solid or vegetation (required). materials: a solid's, [{\"name\": \"brick\", \"model\": \"Hamstad5Brick\"}] (each the cell zone built of it; without them, those the workflow description gives it). profile: tutorial or hk, the settings its files start from (default: the workflow description's, else tutorial). Lists the region where the case's version reads it (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties) and writes the settings of its kind as case.new does (docs/user-guide/new-case.md): a fluid's with the gravity of the case's fluids and the temperature limit when the case has one; a solid's materials with the coefficients of the profile's material of their model; for the vegetation, air's vegetationProperties. A file that is there already is kept. The region has no mesh yet; system/umcfWorkflow describes it when the case has one. case.save writes it all.",
+    params: "region: its name (required; a plain name that no region of the case has, nor one differing only by case, nor a file of constant/ or system/; the vegetation region is named vegetation, as the solver looks it up). kind: fluid, solid or vegetation (required). materials: a solid's, [{\"name\": \"brick\", \"model\": \"Hamstad5Brick\"}] (each the cell zone built of it; without them, those the workflow description gives it). Lists the region where the case's version reads it (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties) and writes the settings of its kind as case.new does (docs/user-guide/new-case.md), the tutorials' or, for a case made with a profile, those of the workflow description's profile: a fluid's with the gravity of the case's fluids and the temperature limit when the case has one; a solid's materials with the coefficients of that profile's material of their model; for the vegetation, air's vegetationProperties. A file that is there already is kept. The region has no mesh yet; system/umcfWorkflow describes it when the case has one. case.save writes it all.",
     enabled: needs_case,
     run: add,
     journal: true,
@@ -24,7 +23,7 @@ pub(super) const ADD: CommandSpec = CommandSpec {
 
 /// `region.add`: a region added to the case.
 fn add(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let p = Params::new(ADD.id, p, &["region", "kind", "materials", "profile"])?;
+    let p = Params::new(ADD.id, p, &["region", "kind", "materials"])?;
     let bad = |m: &str| Error::Params(format!("{}: {m}", ADD.id));
     let name = p.required_str("region")?;
     let kind = match p.required_str("kind")? {
@@ -47,13 +46,9 @@ fn add(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         Some(_) => return Err(bad("materials is a list of {\"name\", \"model\"}")),
     }
-    let profile = match p.str("profile")? {
-        None => None,
-        Some(n) => Some(Profile::parse(n).ok_or_else(|| bad("profile is tutorial or hk"))?),
-    };
     let region = NewRegion { name: name.to_string(), kind, materials };
     let o = s.opened_mut()?;
-    let added = o.case.add_region(o.fs.as_ref(), &region, profile)?;
+    let added = o.case.add_region(o.fs.as_ref(), &region)?;
     let word = match kind {
         RegionKind::Solid => "solid",
         RegionKind::Vegetation => "vegetation",

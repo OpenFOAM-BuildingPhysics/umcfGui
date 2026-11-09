@@ -1,5 +1,5 @@
 //! A region added to a case (`region.add`): its name in the region list the case's version
-//! reads, the settings files of its kind from a profile (`umcf_schema::profile`, as `case.new`
+//! reads, the settings files of its kind (as `case.new`
 //! writes them), the region in the case as one without a mesh yet, and in the workflow
 //! description when the case has one.
 
@@ -44,24 +44,24 @@ fn kind_word(k: RegionKind) -> &'static str {
 
 impl Case {
     /// Adds region `r` to the case: its name in the region list (OpenFOAM-12's `controlDict`,
-    /// OpenFOAM-8's `constant/regionProperties`), the settings files of its kind from `profile`
-    /// (else the description's, else the tutorials'), a fluid's with the gravity of the case's
-    /// fluids and its temperature limit when the case has one, and the vegetation's model in
-    /// `air` when it isn't there. A file that is there already is kept. The region is in the
-    /// case without a mesh, and in the workflow description when the case has one.
-    /// [`Case::save`] writes it all. Refused, with nothing changed: a case without a version or
+    /// OpenFOAM-8's `constant/regionProperties`), the settings files of its kind (the
+    /// tutorials', or the description's `profile` for a case `case.new` made with one), a
+    /// fluid's with the gravity of the case's fluids and its temperature limit when the case has
+    /// one, and the vegetation's model in `air` when it isn't there. A file that is there
+    /// already is kept. The region is in the case without a mesh, and in the workflow
+    /// description when the case has one. [`Case::save`] writes it all. Refused, with nothing changed: a case without a version or
     /// a region list, a name the case has (or one differing only by case), what `case.new`
     /// refuses of a region, a link where a file would go.
-    pub fn add_region(&mut self, fs: &dyn CaseFs, r: &NewRegion, profile: Option<Profile>) -> Result<AddedRegion> {
+    pub fn add_region(&mut self, fs: &dyn CaseFs, r: &NewRegion) -> Result<AddedRegion> {
         // Made on a copy, which becomes the case once all of it is done: a refusal half-way
         // leaves the case as it was. (A copy is cheap: the files are shared until changed.)
         let mut next = self.clone();
-        let added = next.add_region_to(fs, r, profile)?;
+        let added = next.add_region_to(fs, r)?;
         *self = next;
         Ok(added)
     }
 
-    fn add_region_to(&mut self, fs: &dyn CaseFs, r: &NewRegion, profile: Option<Profile>) -> Result<AddedRegion> {
+    fn add_region_to(&mut self, fs: &dyn CaseFs, r: &NewRegion) -> Result<AddedRegion> {
         let Some(v) = self.layout.version else {
             return refuse("the case's OpenFOAM version isn't known: its regions can't be listed".to_string());
         };
@@ -115,7 +115,7 @@ impl Case {
                 ))
             };
         }
-        let p = profile.or(description.as_ref().and_then(|d| d.profile)).unwrap_or(Profile::Tutorial);
+        let p = description.as_ref().and_then(|d| d.profile).unwrap_or(Profile::Tutorial);
         if !p.versions().contains(&v) {
             return refuse(format!("the {} profile has no files for {} (yet)", p.name(), v.label()));
         }
