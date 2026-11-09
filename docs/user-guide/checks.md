@@ -212,6 +212,7 @@ A dictionary whose entries can come from elsewhere (`#include`, `$macro`) or mat
 | `control.value` | Error | `startFrom` or `stopAt` has a value OpenFOAM doesn't know |
 | `control.end-time` | Error | `endTime` is not after the start time, with `stopAt endTime` and `startFrom startTime` (or `firstTime`) |
 | `control.finished` | Info | The run resumes from the latest time (`startFrom latestTime`, also OpenFOAM's default), which is already at `endTime`: it does nothing until `endTime` is raised |
+| `control.blending` | Error | `blending` is on and `blendingCoeffs` lacks `dampingThickness`, `alphaCoeffU` or `alphaCoeffT`, or a fluid region with a mesh has no patch `west`, `east`, `north` or `south`: the blending layer looks them up by name, and the solver crashes as it starts |
 | `control.step` | Error | `deltaT` or `writeInterval` is zero or negative, or `writeInterval` is below 1 with `writeControl timeStep` |
 | `case.version` | Warning | The OpenFOAM version can't be told from the case, or the case has files for both (a partly ported case) |
 | `case.note` | Warning / Info | What opening the case reported: files that didn't read, a missing start time, files the version ignores |

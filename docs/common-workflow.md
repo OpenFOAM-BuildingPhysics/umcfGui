@@ -51,7 +51,9 @@ Where the names are written:
 
 An OpenFOAM-style dictionary, so it travels with the case, reads with the same tools and can be
 edited by hand. What is built so far (regions, their kinds, the meshing steps as the scripts run
-them, patches with roles and partners, a solid's materials, radiation and the solver; its import from a case, its check and its edits entry by entry) is described in [the case
+them, patches with roles and partners, a solid's materials, radiation, the profile and the
+components, and the solver; its import from a case, its check, its edits entry by entry, and a
+[new case](user-guide/new-case.md) made from it) is described in [the case
 workflow](user-guide/workflow.md#the-workflow-description). A sketch of where it goes (the
 meshing keys settle as rows 5–7 are built):
 
@@ -212,7 +214,7 @@ In the order of the [gaps](gaps.md):
 
 | Row | |
 |---|---|
-| 3 | `umcfWorkflow`: the rest of the format (solids' materials); commands that edit it (rename, add a region, a solid, a material); a new case from it (`case.new`). The format and the import from the 3×3 pattern are there |
+| 3 | `umcfWorkflow`: adding a region to a case (`region.add`), switching a component on or off in a case, the `hk` profile for OpenFOAM-12. The format with the solids' materials, the profile and the components, its import, its edits entry by entry, the scripts from it and a new case from it ([`case.new`](user-guide/new-case.md)) are there |
 | 4 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
 | 5–7 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
 | 8 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |

@@ -59,6 +59,15 @@ The files these change are written again: the `blockMeshDict`s and the weather t
 line endings, and all five tables with spaces instead of tabs. Everything else is as in the
 tutorials, byte for byte.
 
+## The settings of a new case
+
+`case.new`'s `tutorial` profile takes the settings of each component from these cases, as they
+are here (`crates/schema/src/profile.rs`, built in with `include_str!`): `streetCanyon_CFDHAM`'s
+air, `street` and radiation files, `_grass`'s `grassProperties`, `_veg`'s vegetation region and
+`vegetationProperties` ([A new case](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/docs/user-guide/new-case.md)).
+A change made here (by `make-examples`) changes what new cases start from: the air's lower
+relaxation above is the profile's too.
+
 `cargo xtask make-examples` writes both directories again; `cargo xtask make-examples --check`
 fails unless they are what it makes, byte for byte (CI runs it). It reads the tutorials from
 `UMCF_TUTORIALS` (a clone that has both commits), else it fetches them from GitHub. It refuses to

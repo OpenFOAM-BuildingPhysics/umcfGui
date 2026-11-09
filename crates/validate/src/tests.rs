@@ -2245,3 +2245,21 @@ fn radiation_tables_view_factors_and_the_vegetation_entry() {
     edit(&mut fs, "system/controlDict", "    vegetation (vegetation);\n", "");
     assert!(entries(&fs).is_empty());
 }
+
+#[test]
+fn the_blending_layer_needs_its_coefficients_and_the_air_s_four_sides() {
+    let mut fs = case();
+    edit(
+        &mut fs,
+        "system/controlDict",
+        "deltaT 60;",
+        "deltaT 60;\nblending true;\nblendingCoeffs { alphaCoeffU 0.3; }",
+    );
+    let e: Vec<String> = errors(&fs).into_iter().filter(|d| d.code == "control.blending").map(|d| d.message).collect();
+    assert_eq!(e.len(), 2, "{e:?}");
+    assert!(e[0].contains("blendingCoeffs has no dampingThickness, alphaCoeffT"), "{e:?}");
+    assert!(e[1].contains("region air has no west, east, north, south"), "{e:?}");
+    // Off, nothing is asked.
+    edit(&mut fs, "system/controlDict", "blending true;", "blending false;");
+    assert!(!codes(&fs).contains(&(Level::Error, "control.blending")));
+}

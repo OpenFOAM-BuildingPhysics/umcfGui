@@ -36,7 +36,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   View). A command that can't run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
   (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
-  Commands without a place of their own are in a *More* group of their tab: *Read fields*,
+  Commands without a place of their own are in a *More* group of their tab: *New case…* (its
+  card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Read fields*,
   *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
   *Describe a material* and *Write the scripts* on *Case*, *Tree crowns* on *Geometry*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first

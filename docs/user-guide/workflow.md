@@ -118,6 +118,7 @@ first piece of [the common workflow](../common-workflow.md): the scripts are wri
 
 ```c++
 version     12;
+profile     tutorial;
 
 regions
 {
@@ -152,6 +153,7 @@ regions
 
 features    no;
 radiation   { region vegetation; lai air; viewFactors yes; solarRayTracing yes; }
+components  ( grass temperatureLimit );
 solver      urbanMicroclimateFoam;
 reconstruct yes;
 ```
@@ -159,6 +161,7 @@ reconstruct yes;
 | Key | What |
 |---|---|
 | `version` | `8` or `12`: the OpenFOAM version the scripts are for |
+| `profile` | the settings the case was made from by [`case.new`](new-case.md#profiles): `tutorial` or `hk`; an imported case has none |
 | `kind` | `fluid`, `solid` or `vegetation` |
 | `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
@@ -166,8 +169,11 @@ reconstruct yes;
 | `partner` | the region and patch a coupled patch is mapped to |
 | `materials` | a solid region's materials, in the order of its `buildingMaterials`: each the name of the cell zone built of it, with its `model` (`buildingMaterialModel`); the coefficients stay in the region's `transportProperties` |
 | `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
+| `components` | the [components](new-case.md#components) the regions don't tell: `grass`, `temperatureLimit`, `blending` |
 
-`workflow.import` writes it from the case: the scripts read as above, the region kinds,
+`workflow.import` writes it from the case: the scripts read as above, the region kinds, the
+components its files switch on (a fluid's `grassProperties`, a `limitTemperature` entry in a
+fluid's `fvOptions`, `fvConstraints` or `fvModels`, `blending` on in `controlDict`),
 each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
 lists them (a material or its model given by a macro or a directive is noted and left out, and
 a name listed more than once keeps its first entry). Coupled patches and their partners come from the mesh
@@ -185,9 +191,10 @@ import would write it; it also says when a file is there that doesn't load (not 
 directory, or over the size limit), or one the open case doesn't hold (written or undone since it was opened).
 `workflow.import` writes over neither, nor a symbolic link (to a dictionary, a field or
 nothing: the save would write the file it points to); with `replace` it writes over the case's own, whose
-comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
+comments and hand edits are not kept (`edit.undo` brings them back), nor its `profile` (the
+case's files don't tell it). In the desktop app, both
 commands show in the results card the problems and the import's notes first, then the settings
-(version, radiation, solver), then the regions with their meshes, steps, patch roles and
+(version, profile, radiation, components, solver), then the regions with their meshes, steps, patch roles and
 materials. The case
 check reads the file against the case (`workflow.description`): what can't be read in it, regions
 and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, a

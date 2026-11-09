@@ -157,10 +157,10 @@ pub(crate) fn cancellable(work: &Work) -> bool {
     }
 }
 
-/// Whether `work` takes the whole window while it runs: opening a case (what the window shows
-/// would be of the case before) and saving it.
+/// Whether `work` takes the whole window while it runs: opening or making a case (what the
+/// window shows would be of the case before) and saving it.
 fn modal(work: &Work) -> bool {
-    matches!(work, Work::Command { id, .. } if id == "case.open" || id == "case.save")
+    matches!(work, Work::Command { id, .. } if matches!(id.as_str(), "case.open" | "case.new" | "case.save"))
 }
 
 fn label(work: &Work) -> String {

@@ -1768,3 +1768,30 @@ fn the_triad_stays_while_the_scene_is_built() {
         assert!(waiting.query_by_label(axis).is_some(), "{axis}");
     }
 }
+
+#[test]
+fn new_case_starts_from_the_air_alone_and_opens_what_it_makes() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-new", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut app = App::new(Session::new());
+    app.invoke("case.new");
+    let d = app.dialog.take().unwrap();
+    assert_eq!(d.id, "case.new");
+    let mut params: serde_json::Value = serde_json::from_str(&d.params).unwrap();
+    assert_eq!(params["regions"], json!([{ "name": "air", "kind": "fluid" }]));
+    // Without a path, the card stays with why.
+    app.start(crate::jobs::Work::Command {
+        id: "case.new".into(),
+        params: params.clone(),
+        then: crate::jobs::Then::Dialog(d.clone()),
+    });
+    app.wait_for_job();
+    assert!(app.dialog.as_ref().and_then(|d| d.error.as_ref()).is_some());
+    params["path"] = json!(dir.to_str().unwrap());
+    app.start(crate::jobs::Work::Command { id: "case.new".into(), params, then: crate::jobs::Then::Dialog(d) });
+    app.wait_for_job();
+    assert_eq!(app.session().location(), dir.to_str());
+    assert_eq!(app.log.last().unwrap().command, "case.new");
+    assert!(app.log.last().unwrap().ok);
+    let _ = std::fs::remove_dir_all(&dir);
+}

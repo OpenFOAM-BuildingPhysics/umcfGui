@@ -413,3 +413,53 @@ fn a_comment_before_an_inline_dictionary_stays() {
     assert!(out.contains("west // the wind\n    { role side; }"), "{out}");
     assert_eq!(Document::parse(&out).unwrap().value(&["p", "west", "role"]).as_deref(), Some("side"));
 }
+
+#[test]
+fn a_new_last_entry_leaves_the_comment_on_the_line_before_where_it_was() {
+    // At the root: the comment is in the document's tail.
+    let mut doc = Document::parse("a 1; // one\nb 2; // two\n").unwrap();
+    doc.set(&["c"], "3").unwrap();
+    assert_eq!(doc.to_string(), "a 1; // one\nb 2; // two\nc               3;\n");
+    // In a dictionary: in its closing brace's lead; with a new parent, too.
+    let mut doc = Document::parse("d\n{\n    a 1; // one\n}\nx 1; /* x */\n").unwrap();
+    doc.set(&["d", "b"], "2").unwrap();
+    doc.set(&["e", "f"], "3").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "d\n{\n    a 1; // one\n    b               2;\n}\nx 1; /* x */\ne\n{\n    f               3;\n}\n"
+    );
+    // A block comment going on past the line stays whole, the new entry after it.
+    let mut doc = Document::parse("a 1;\nb 2; /* two\n  more */\n").unwrap();
+    doc.set(&["c"], "3").unwrap();
+    assert_eq!(doc.to_string(), "a 1;\nb 2; /* two\n  more */\nc               3;\n");
+    assert_eq!(doc.value(&["c"]).as_deref(), Some("3"));
+    let mut doc = Document::parse("d\n{\n    a 1; /* x\n    y */\n}\n").unwrap();
+    doc.set(&["d", "b"], "2").unwrap();
+    assert_eq!(doc.to_string(), "d\n{\n    a 1; /* x\n    y */\n    b               2;\n}\n");
+    // Several on the line, and what is on the lines after stays after.
+    let mut doc = Document::parse("a 1; /* x */ // y\n// z\n").unwrap();
+    doc.set(&["b"], "2").unwrap();
+    assert_eq!(doc.to_string(), "a 1; /* x */ // y\nb               2;\n// z\n");
+    // A block comment that never ends is left where it is.
+    let mut doc = Document::parse("a 1;").unwrap();
+    doc.tail = " /* open".into();
+    doc.set(&["b"], "2").unwrap();
+    assert!(doc.to_string().ends_with(" /* open"));
+    // A comment on a line of its own after the last entry stays where it is.
+    let mut doc = Document::parse("a 1;\n// end\n").unwrap();
+    doc.set(&["b"], "2").unwrap();
+    assert_eq!(doc.to_string(), "a 1;\nb               2;\n// end\n");
+}
+
+#[test]
+fn switches_read_as_openfoam_reads_them() {
+    for w in ["true", "on", "yes", "y", "t", "any", "1", "-2", "\"yes\""] {
+        assert_eq!(crate::switch(w), Some(true), "{w}");
+    }
+    for w in ["false", "off", "no", "n", "f", "none", "0"] {
+        assert_eq!(crate::switch(w), Some(false), "{w}");
+    }
+    for w in ["maybe", "1.5", "", "True"] {
+        assert_eq!(crate::switch(w), None, "{w}");
+    }
+}

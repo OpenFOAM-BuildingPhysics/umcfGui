@@ -72,7 +72,8 @@ The zones come from `topoSet` *12* or `setSet -batch` *8*. The case check judges
 (`initialSolidTimestepFactor`, `minDeltaT`, `maxDeltaT`, the Picard tolerances), the fluid
 iterations (`minFluidIteration`, `maxFluidIteration`), `viewFactorWorkflow` (`sparse` or `dense`;
 read from `controlDict` before the model's coefficients), and `blending` with `blendingCoeffs` for
-meso-scale nudging. `deltaT` is the fluid and radiation step; the solids step inside it.
+meso-scale nudging (the blending layer takes the air's patches `west`, `east`, `north` and
+`south` by name, and crashes without one: `_LIB/blendingLayer/blendingLayer.C`). `deltaT` is the fluid and radiation step; the solids step inside it.
 
 ## Fields
 

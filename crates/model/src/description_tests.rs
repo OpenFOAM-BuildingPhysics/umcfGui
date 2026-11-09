@@ -257,6 +257,8 @@ fn odd_names_come_back_as_they_were() {
             }),
             solver: Some(odd.into()),
             reconstruct: true,
+            profile: Some(umcf_schema::Profile::Hk),
+            components: crate::description::Components { grass: true, temperature_limit: false, blending: true },
         };
         let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
         assert_eq!((back, problems), (d, vec![]), "{odd}");

@@ -106,6 +106,9 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
     if let Some(v) = d.get("version").and_then(Value::as_str) {
         settings.push(format!("for {v}"));
     }
+    if let Some(p) = d.get("profile").and_then(Value::as_str) {
+        settings.push(format!("the {p} profile"));
+    }
     if d.get("features").and_then(Value::as_bool) == Some(true) {
         settings.push("surfaceFeatures".to_string());
     }
@@ -122,6 +125,18 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
         }
         let what = if what.is_empty() { String::new() } else { format!(" ({})", what.join(", ")) };
         settings.push(format!("radiation on {}{what}", s(r, "region")));
+    }
+    let components: Vec<&str> = list(d, "components")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|c| match c {
+            "temperatureLimit" => "temperature limit",
+            "blending" => "blending layer",
+            other => other,
+        })
+        .collect();
+    if !components.is_empty() {
+        settings.push(components.join(", "));
     }
     match d.get("solver").and_then(Value::as_str) {
         Some(sv) => settings.push(format!("solver {sv}")),
@@ -183,7 +198,8 @@ mod tests {
     fn a_description_is_shown_problems_first_then_settings_then_regions() {
         let data = json!({
             "description": {
-                "version": "OpenFOAM-8", "features": true, "solver": "urbanMicroclimateFoam", "reconstruct": true,
+                "version": "OpenFOAM-8", "profile": "hk", "features": true, "solver": "urbanMicroclimateFoam", "reconstruct": true,
+                "components": ["grass", "temperatureLimit", "blending"],
                 "radiation": { "region": "street", "lai": "air", "viewFactors": true, "solarRayTracing": false },
                 "regions": [
                     { "name": "air", "kind": "fluid", "mesh": "blocks",
@@ -212,7 +228,7 @@ mod tests {
                 (Kind::Info, "a note".to_string()),
                 (
                     Kind::Text,
-                    "for OpenFOAM-8, surfaceFeatures, radiation on street (view factors, LAI on air), solver urbanMicroclimateFoam, reconstructed"
+                    "for OpenFOAM-8, the hk profile, surfaceFeatures, radiation on street (view factors, LAI on air), grass, temperature limit, blending layer, solver urbanMicroclimateFoam, reconstructed"
                         .to_string()
                 ),
                 (
