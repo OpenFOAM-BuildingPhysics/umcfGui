@@ -189,6 +189,8 @@ pub struct Description {
     pub features: bool,
     pub radiation: Option<Radiation>,
     pub components: Components,
+    /// The settings the case chose (`settings`); what isn't there is the default.
+    pub settings: crate::settings::Settings,
     /// The solver run in parallel; `None`: the scripts run none.
     pub solver: Option<String>,
     pub reconstruct: bool,
@@ -295,9 +297,12 @@ impl Description {
                 notes.push(format!("{} line {}: not in the description: {}", u.script, u.line, u.what));
             }
         }
+        let (settings, settings_notes) = crate::settings::Settings::from_case(case);
+        notes.extend(settings_notes);
         let d = Description {
             version: case.layout.version,
             components: case_components(case),
+            settings,
             regions,
             features: wf.features,
             radiation: wf.radiation.clone(),
@@ -416,6 +421,11 @@ impl Description {
         if !on.is_empty() {
             let _ = writeln!(s, "components  ( {} );", on.join(" "));
         }
+        let settings = self.settings.write();
+        if !settings.is_empty() {
+            s.push('\n');
+            s.push_str(&settings);
+        }
         match &self.solver {
             Some(app) => {
                 let _ = writeln!(s, "solver      {};", word(app));
@@ -450,6 +460,10 @@ impl Description {
                 },
                 // Written by `case.new` before there was one configuration: read, and left out.
                 "profile" => {}
+                "settings" => match e.dict() {
+                    Some(body) => d.settings = crate::settings::Settings::read(body, &mut problem),
+                    None => problem(key, "is a dictionary".into()),
+                },
                 "components" => match list(e) {
                     Some(items) => {
                         let mut seen = HashSet::new();

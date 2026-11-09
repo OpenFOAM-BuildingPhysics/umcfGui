@@ -11,7 +11,7 @@ mod mesh;
 mod patch;
 mod region;
 pub(crate) mod scene;
-mod workflow;
+pub(crate) mod workflow;
 
 /// Every command, in menu order.
 pub static COMMANDS: &[CommandSpec] = &[
@@ -26,6 +26,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     workflow::REGION,
     workflow::PATCH,
     workflow::MATERIAL,
+    workflow::SETTINGS,
     workflow::SCRIPTS,
     case::CHECK,
     geometry::IMPORT,

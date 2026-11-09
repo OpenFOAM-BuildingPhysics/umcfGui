@@ -134,6 +134,8 @@ pub struct NewCase {
     /// The patches `grassProperties` names, with [`Components::grass`].
     pub grass_patches: Vec<String>,
     pub up: Up,
+    /// The settings chosen; what isn't is the configuration's.
+    pub settings: crate::settings::Settings,
 }
 
 /// A new case's files.
@@ -163,6 +165,18 @@ pub fn make(spec: &NewCase) -> Result<Made> {
     let fluids: Vec<&NewRegion> = spec.regions.iter().filter(|r| r.kind == RegionKind::Fluid).collect();
     let vegetation = spec.regions.iter().any(|r| r.kind == RegionKind::Vegetation);
     let mut notes = Vec::new();
+    if spec.settings.temperature_limit.is_some() && !spec.components.temperature_limit {
+        notes.push(
+            "the case has no temperature limit: its bounds are kept in the description for when it gets one"
+                .to_string(),
+        );
+    }
+    if spec.settings.blending.is_some() && !spec.components.blending {
+        notes.push(
+            "the case has no blending layer: its coefficients are kept in the description for when it gets one"
+                .to_string(),
+        );
+    }
 
     let description = Description {
         version: Some(v),
@@ -186,6 +200,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
             solar_ray_tracing: true,
         }),
         components: spec.components,
+        settings: spec.settings.clone(),
         solver: Some(SOLVER.to_string()),
         reconstruct: true,
     };
@@ -198,7 +213,14 @@ pub fn make(spec: &NewCase) -> Result<Made> {
         files.push(("constant/regionProperties".to_string(), doc.to_string()));
     }
     for r in ordered(spec) {
-        files.extend(region_files(v, r, spec.up.gravity(), spec.components.temperature_limit, &mut notes)?);
+        files.extend(region_files(
+            v,
+            r,
+            spec.up.gravity(),
+            spec.components.temperature_limit,
+            &spec.settings,
+            &mut notes,
+        )?);
     }
     // The grass and the trees' model are `air`'s, which the solver looks them up in (there is one
     // whenever either is asked for: they need the radiation, which needs it).
@@ -237,7 +259,8 @@ pub fn make(spec: &NewCase) -> Result<Made> {
 }
 
 /// The settings files of region `r` by its kind, from the configuration for version `v`: a fluid's
-/// with gravity `gravity` (the value of `g`) and the temperature limit when `temperature_limit`;
+/// with gravity `gravity` (the value of `g`), the temperature limit when `temperature_limit` and
+/// the RAS model and limit bounds `settings` chooses (the configuration's otherwise);
 /// a solid's with its materials (a note for one the tutorials have no coefficients for, and for
 /// none at all).
 pub(crate) fn region_files(
@@ -245,6 +268,7 @@ pub(crate) fn region_files(
     r: &NewRegion,
     gravity: &str,
     temperature_limit: bool,
+    settings: &crate::settings::Settings,
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, String)>> {
     let n = &r.name;
@@ -256,13 +280,22 @@ pub(crate) fn region_files(
     match r.kind {
         RegionKind::Fluid | RegionKind::Single => {
             put(format!("constant/{n}/thermophysicalProperties"), Template::FluidThermo)?;
-            put(format!("constant/{n}/momentumTransport"), Template::FluidMomentum)?;
             put(format!("system/{n}/fvSchemes"), Template::FluidSchemes)?;
             put(format!("system/{n}/fvSolution"), Template::FluidSolution)?;
+            let mut m = template(v, Template::FluidMomentum)?;
+            if let Some(model) = &settings.turbulence {
+                // The key the configuration's file has (`RASModel` in the tutorials').
+                let key = if m.get(&["RAS", "model"]).is_some() { "model" } else { "RASModel" };
+                set(&mut m, &["RAS", key], model, Template::FluidMomentum)?;
+            }
+            files.push((format!("constant/{n}/momentumTransport"), m.to_string()));
             let mut g = template(v, Template::FluidG)?;
             set(&mut g, &["value"], gravity, Template::FluidG)?;
             files.push((format!("constant/{n}/g"), g.to_string()));
-            let (min, max) = defaults::TEMPERATURE_LIMIT;
+            let (min, max) = match &settings.temperature_limit {
+                Some((a, b)) => (a.as_str(), b.as_str()),
+                None => defaults::TEMPERATURE_LIMIT,
+            };
             match v {
                 OfVersion::V12 => {
                     let mut c = template(v, Template::FluidConstraints)?;
@@ -374,6 +407,7 @@ fn check(spec: &NewCase) -> Result<()> {
     if !spec.regions.iter().any(|r| r.kind == RegionKind::Fluid) {
         return refuse("a case needs a fluid region (the air)".to_string());
     }
+    crate::settings::check_turbulence(&spec.settings, spec.version)?;
     let mut names = HashSet::new();
     let mut folded = HashSet::new();
     for r in &spec.regions {
@@ -494,9 +528,20 @@ fn control_dict(spec: &NewCase) -> Result<String> {
         if doc.get(&["blendingCoeffs"]).is_none() {
             doc.set(&["blendingCoeffs"], defaults::BLENDING_COEFFS).map_err(err)?;
         }
+        if let Some(c) = &spec.settings.blending {
+            for (k, v) in crate::settings::BLENDING_KEYS.iter().zip(c) {
+                doc.set(&["blendingCoeffs", k], v).map_err(err)?;
+            }
+        }
     } else {
         doc.remove(&["blending"]).map_err(err)?;
         doc.remove(&["blendingCoeffs"]).map_err(err)?;
+    }
+    let s = &spec.settings;
+    for (k, v) in [("deltaT", &s.delta_t), ("endTime", &s.end_time), ("writeInterval", &s.write_interval)] {
+        if let Some(v) = v {
+            doc.set(&[k], v).map_err(err)?;
+        }
     }
     doc.remove(&["regions"]).map_err(err)?;
     if spec.version == OfVersion::V12 {

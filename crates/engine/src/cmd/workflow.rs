@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use umcf_model::RegionKind;
 use umcf_model::description::{self, Description, PATH};
 use umcf_model::description_edit::{EditReport, PatchEdit};
+use umcf_model::settings::Settings;
 use umcf_model::workflow::{MeshBuild, RegionStep, RootStep};
 
 use crate::params::Params;
@@ -108,7 +109,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -311,6 +312,123 @@ fn material(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     edited(s, message, &r)
 }
 
+pub(super) const SETTINGS: CommandSpec = CommandSpec {
+    id: "workflow.settings",
+    label: "Choose settings",
+    menu: "Case/Workflow/Choose settings",
+    shortcut: None,
+    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
+    enabled: needs_case,
+    run: settings,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+/// The settings given as command parameters (`deltaT`, …, `temperatureLimit`, `blending`),
+/// checked as the description's `settings` block is.
+pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
+    let bad = |m: String| Error::Params(format!("{id}: {m}"));
+    let Some(map) = p.as_object() else {
+        return Err(bad("the settings are an object: {\"deltaT\": 3600, …}".into()));
+    };
+    let text_of = |v: &Value| -> Option<String> {
+        match v {
+            Value::Number(n) => Some(n.to_string()),
+            Value::String(s) if !s.contains(['{', '}', '(', ')', ';', '"', '/', '$', '#']) && !s.trim().is_empty() => {
+                Some(s.trim().to_string())
+            }
+            _ => None,
+        }
+    };
+    let mut body = String::new();
+    for (k, v) in map {
+        let value = match (k.as_str(), v) {
+            ("temperatureLimit", Value::Array(a)) => {
+                let t: Option<Vec<String>> = a.iter().map(text_of).collect();
+                format!("( {} )", t.ok_or_else(|| bad("temperatureLimit is [min, max]".into()))?.join(" "))
+            }
+            ("blending", Value::Object(o)) => {
+                let mut b = String::from("{");
+                for (ck, cv) in o {
+                    let t = text_of(cv).filter(|_| ck.bytes().all(|c| c.is_ascii_alphanumeric()));
+                    let t = t.ok_or_else(|| bad(format!("blending/{ck} is a number")))?;
+                    b.push_str(&format!(" {ck} {t};"));
+                }
+                b.push_str(" }");
+                b
+            }
+            (_, v) => text_of(v).ok_or_else(|| bad(format!("{k} is a number or a name")))?,
+        };
+        if !k.bytes().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(bad(format!("{k} is not a setting")));
+        }
+        let end = if value.starts_with('{') { "" } else { ";" };
+        body.push_str(&format!("{k} {value}{end}\n"));
+    }
+    let doc = umcf_foam_dict::Document::parse(&body).map_err(|e| bad(e.to_string()))?;
+    let mut problems = Vec::new();
+    let s = Settings::read(&doc.root, &mut |at: &str, m: String| {
+        problems.push(format!("{} {m}", at.trim_start_matches("settings/")))
+    });
+    if !problems.is_empty() {
+        return Err(bad(problems.join("; ")));
+    }
+    Ok(s)
+}
+
+/// `workflow.settings`: settings chosen, into the files and the description.
+fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let chosen = settings_params(SETTINGS.id, p)?;
+    if chosen.is_empty() {
+        return Err(Error::Params(format!(
+            "{}: give a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending)",
+            SETTINGS.id
+        )));
+    }
+    let o = s.opened_mut()?;
+    let c = o.case.choose_settings(&chosen)?;
+    let names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
+    let mut message = format!("settings chosen: {}", names.join(", "));
+    if !c.applied.changed.is_empty() {
+        message.push_str(&format!("; written into {}", c.applied.changed.join(", ")));
+    }
+    if c.described {
+        message.push_str(&format!("; in {PATH}"));
+    }
+    for n in &c.applied.notes {
+        message.push_str(&format!("; {n}"));
+    }
+    Ok(Outcome::new(
+        message,
+        json!({ "settings": settings_json(&chosen), "changed": c.applied.changed, "described": c.described, "notes": c.applied.notes }),
+    ))
+}
+
+/// The settings as JSON, as `workflow.settings` takes them.
+pub fn settings_json(s: &Settings) -> Value {
+    let mut m = serde_json::Map::new();
+    for (k, v) in [
+        ("deltaT", &s.delta_t),
+        ("endTime", &s.end_time),
+        ("writeInterval", &s.write_interval),
+        ("turbulence", &s.turbulence),
+    ] {
+        if let Some(v) = v {
+            m.insert(k.into(), json!(v));
+        }
+    }
+    if let Some((a, b)) = &s.temperature_limit {
+        m.insert("temperatureLimit".into(), json!([a, b]));
+    }
+    if let Some(c) = &s.blending {
+        let o: serde_json::Map<String, Value> =
+            umcf_model::settings::BLENDING_KEYS.iter().zip(c).map(|(k, v)| ((*k).to_string(), json!(v))).collect();
+        m.insert("blending".into(), Value::Object(o));
+    }
+    Value::Object(m)
+}
+
 pub(super) const SCRIPTS: CommandSpec = CommandSpec {
     id: "workflow.scripts",
     label: "Write the scripts",
@@ -492,6 +610,7 @@ pub(crate) fn to_json(d: &Description) -> Value {
     json!({
         "version": d.version.map(|v| v.label()),
         "components": d.components.words().into_iter().filter(|(_, on)| *on).map(|(w, _)| w).collect::<Vec<_>>(),
+        "settings": settings_json(&d.settings),
         "regions": regions,
         "features": d.features,
         "radiation": d.radiation.as_ref().map(|r| json!({

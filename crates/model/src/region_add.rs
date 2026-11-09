@@ -128,7 +128,9 @@ impl Case {
             // A vector written out, not a macro or a directive the new file wouldn't have.
             .filter(|g| g.starts_with('(') && !g.contains(['$', '#']))
             .unwrap_or_else(|| Up::Z.gravity().to_string());
-        let mut files = region_files(v, r, &gravity, components.temperature_limit, &mut notes)?;
+        // A new fluid falls, is limited and is turbulent as the case's fluids are.
+        let (case_settings, _) = crate::settings::Settings::from_case(self);
+        let mut files = region_files(v, r, &gravity, components.temperature_limit, &case_settings, &mut notes)?;
         if r.kind == RegionKind::Vegetation {
             if self.region("air").is_some_and(|a| a.kind == RegionKind::Fluid) {
                 files.push((

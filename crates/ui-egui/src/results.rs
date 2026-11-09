@@ -143,6 +143,25 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
         settings.push("reconstructed".to_string());
     }
     desc.push(Kind::Text, || settings.join(", "));
+    if let Some(chosen) = d.get("settings").and_then(Value::as_object).filter(|o| !o.is_empty()) {
+        let text: Vec<String> = chosen
+            .iter()
+            .map(|(k, v)| match v {
+                Value::Array(a) => {
+                    format!("{k} {}", a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" to "))
+                }
+                Value::Object(o) => format!(
+                    "{k} {}",
+                    o.iter()
+                        .map(|(ck, cv)| format!("{ck} {}", cv.as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                other => format!("{k} {}", other.as_str().unwrap_or("")),
+            })
+            .collect();
+        desc.push(Kind::Text, || format!("settings: {}", text.join("; ")));
+    }
     for r in list(d, "regions") {
         let patches = list(r, "patches");
         let materials = list(r, "materials");

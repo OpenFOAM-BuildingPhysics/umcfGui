@@ -2614,3 +2614,46 @@ fn region_add_to_an_example_without_a_description() {
     assert!(rp.contains("solid   (street windward leeward roofs)"), "{rp}");
     // Only in memory: the example isn't written.
 }
+
+#[test]
+fn workflow_settings_go_into_the_files_and_the_description_and_are_undone_whole() {
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-settings-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        let mut p = canyon_params(&dir, version);
+        p["settings"] = json!({ "deltaT": 1800, "turbulence": "realizableKE" });
+        s.execute("case.new", &p).unwrap();
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["settings"], json!({ "deltaT": "1800", "turbulence": "realizableKE" }));
+        let case = s.case().unwrap();
+        assert_eq!(case.dict("system/controlDict").unwrap().value(&["deltaT"]).as_deref(), Some("1800"));
+        let out =
+            s.execute("workflow.settings", &json!({ "endTime": 86400, "temperatureLimit": [283.15, 370.15] })).unwrap();
+        assert!(out.message.starts_with("settings chosen: endTime, temperatureLimit; written into"), "{}", out.message);
+        assert_eq!(out.data["described"], json!(true));
+        let case = s.case().unwrap();
+        assert_eq!(case.dict("system/controlDict").unwrap().value(&["endTime"]).as_deref(), Some("86400"));
+        let (d, problems) = case.description().unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(d.settings.temperature_limit, Some(("283.15".into(), "370.15".into())));
+        assert_eq!(d.settings.delta_t.as_deref(), Some("1800"));
+        s.execute("edit.undo", &Value::Null).unwrap();
+        let case = s.case().unwrap();
+        assert_eq!(case.dict("system/controlDict").unwrap().value(&["endTime"]).as_deref(), Some("7200"));
+        assert!(case.description().unwrap().0.settings.temperature_limit.is_none());
+        for (params, want) in [
+            (json!({}), "give a setting"),
+            (json!({ "deltaT": -1 }), "deltaT is a number above 0"),
+            (json!({ "deltaT": "$dt" }), "deltaT is a number or a name"),
+            (json!({ "temperatureLimit": [370, 280] }), "temperatureLimit is ( min max )"),
+            (json!({ "blending": { "dampingThickness": 60 } }), "blending gives dampingThickness"),
+            (json!({ "colour": "red" }), "colour is not a setting"),
+            (json!({ "turbulence": "k e" }), "turbulence is the name of a RAS model"),
+        ] {
+            let e = s.execute("workflow.settings", &params).unwrap_err().to_string();
+            assert!(e.contains(want), "{params}: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

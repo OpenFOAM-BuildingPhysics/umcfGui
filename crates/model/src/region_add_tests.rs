@@ -16,6 +16,7 @@ fn made(version: OfVersion, up: Up, temperature_limit: bool) -> MemFs {
         components: Components { temperature_limit, ..Default::default() },
         grass_patches: vec![],
         up,
+        settings: Default::default(),
     };
     let mut fs = MemFs::new();
     for (p, t) in make(&spec).unwrap().files {
@@ -272,4 +273,23 @@ fn a_new_region_s_files_are_the_configuration_s() {
             assert_eq!(c.dict(rel).unwrap().to_string(), want, "{v:?} {rel}");
         }
     }
+}
+
+#[test]
+fn a_new_fluid_is_turbulent_and_limited_as_the_case_s_fluids() {
+    let mut fs = made(OfVersion::V12, Up::Z, true);
+    let mut c = Case::open(&fs).unwrap();
+    c.choose_settings(&crate::settings::Settings {
+        turbulence: Some("realizableKE".into()),
+        temperature_limit: Some(("283.15".into(), "370.15".into())),
+        ..Default::default()
+    })
+    .unwrap();
+    c.save(&mut fs, None).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("realizableKE"));
+    let l = c.dict("system/wind/fvConstraints").unwrap();
+    assert_eq!(l.value(&["limitT", "min"]).as_deref(), Some("283.15"));
 }
