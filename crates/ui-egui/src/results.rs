@@ -163,11 +163,11 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
             desc.push(Kind::Text, || format!("    {}: {role}{partner}", s(p, "name")));
         }
         if !materials.is_empty() {
-            let names = materials.iter().map(|m| match m.get("model").and_then(Value::as_str) {
+            let names = some(materials.iter().map(|m| match m.get("model").and_then(Value::as_str) {
                 Some(model) => format!("{} ({model})", s(m, "name")),
                 None => s(m, "name"),
-            });
-            desc.push(Kind::Text, || format!("    materials: {}", names.collect::<Vec<_>>().join(", ")));
+            }));
+            desc.push(Kind::Text, || format!("    materials: {}", names.join(", ")));
         }
     }
     desc.end();
@@ -227,6 +227,18 @@ mod tests {
                 (Kind::Text, "    materials: soil (Soil), plaster".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn a_long_materials_list_is_cut_short() {
+        let materials: Vec<Value> = (0..ITEMS + 3).map(|i| json!({ "name": format!("m{i}"), "model": null })).collect();
+        let data = json!({ "description": { "regions": [
+            { "name": "wall", "kind": "solid", "patches": [], "materials": materials },
+        ], "solver": null }, "problems": [], "notes": [] });
+        let shown = lines(&data);
+        let line = shown.iter().find(|(_, l)| l.starts_with("    materials:")).map(|(_, l)| l.as_str()).unwrap_or("");
+        assert!(line.ends_with(", … and 3 more"), "{line}");
+        assert_eq!(line.matches(", m").count(), ITEMS - 1, "{line}");
     }
 
     #[test]

@@ -2,7 +2,9 @@
 //! and where it and the case disagree (regions, their kinds, patches, partners, a solid's
 //! materials, the version).
 
-use umcf_model::description::{PATH, RegionDesc, Role, case_materials, materials_file};
+use std::collections::{HashMap, HashSet};
+
+use umcf_model::description::{CaseMaterial, PATH, RegionDesc, Role, case_materials, materials_file};
 use umcf_model::{Case, RegionKind};
 
 use crate::{Diagnostic, Level};
@@ -148,6 +150,17 @@ fn materials(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
     let diag = |level, message: String| Diagnostic::new(level, CODE, PATH, message).region(&r.name);
     let file = materials_file(&r.name);
     let case_list = case_materials(case, &r.name);
+    // Maps and sets, not scans: both files may name very many materials. The case's first
+    // entry of a name is the one compared, as the solver meets it first.
+    let mut first: HashMap<&str, &CaseMaterial> = HashMap::new();
+    let mut pairs: HashSet<(&str, &str)> = HashSet::new();
+    for c in case_list.iter().flat_map(|(l, _)| l) {
+        first.entry(c.name.as_str()).or_insert(c);
+        if let Some(model) = &c.model {
+            pairs.insert((c.name.as_str(), model.as_str()));
+        }
+    }
+    let described: HashSet<&str> = r.materials.iter().map(|m| m.name.as_str()).collect();
     // A model the solver doesn't have, for the case's version. One the case's file gives as
     // well is the case check's to judge (`model.unknown`), not said twice.
     let cat = umcf_schema::catalog::catalog();
@@ -155,9 +168,7 @@ fn materials(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
     let libs = case.dict("system/controlDict").is_some_and(|d| d.get(&["libs"]).is_some());
     for m in &r.materials {
         let Some(model) = &m.model else { continue };
-        let in_case = case_list
-            .as_ref()
-            .is_some_and(|(l, _)| l.iter().any(|c| c.name == m.name && c.model.as_deref() == Some(model.as_str())));
+        let in_case = pairs.contains(&(m.name.as_str(), model.as_str()));
         let Some(family) = family.filter(|_| !in_case) else { continue };
         let known = match (cat.find(family, model), case.layout.version) {
             (Some(t), Some(v)) => t.in_version(v),
@@ -176,16 +187,16 @@ fn materials(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
             ));
         }
     }
-    let Some((listed, all)) = case_list else {
+    let Some((listed, all)) = &case_list else {
         if !r.materials.is_empty() {
             out.push(diag(Level::Warning, format!("region {}: its materials are not listed in {file}", r.name)));
         }
         return;
     };
     for m in &r.materials {
-        match listed.iter().find(|c| c.name == m.name) {
+        match first.get(m.name.as_str()) {
             // A list not read whole may name it otherwise.
-            None if all => out.push(diag(
+            None if *all => out.push(diag(
                 Level::Warning,
                 format!("material {} of region {} is not in the buildingMaterials of {file}", m.name, r.name),
             )),
@@ -202,8 +213,10 @@ fn materials(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
             }
         }
     }
-    for c in &listed {
-        if !r.materials.iter().any(|m| m.name == c.name) {
+    // Once a name, however often the case lists it.
+    let mut said: HashSet<&str> = HashSet::new();
+    for c in listed {
+        if !described.contains(c.name.as_str()) && said.insert(c.name.as_str()) {
             out.push(diag(
                 Level::Info,
                 format!("material {} of region {} ({file}) is not in the description", c.name, r.name),

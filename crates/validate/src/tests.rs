@@ -1481,6 +1481,16 @@ fn a_solids_materials_in_the_description_against_the_case() {
             )),
         "{m:#?}"
     );
+    // A name the case lists three times, left out of the description: said once.
+    let mut thrice = fs.clone();
+    edit(
+        &mut thrice,
+        "constant/street/transportProperties",
+        "(\n",
+        "(\n    { name soil; buildingMaterialModel Soil; }\n    { name soil; buildingMaterialModel Soil; }\n    { name soil; buildingMaterialModel Soil; }\n",
+    );
+    let m = with(&mut thrice, "            brick           { model Hamstad5Brick; }\n");
+    assert_eq!(m.iter().filter(|(_, x)| x.contains("material soil of region street")).count(), 1, "{m:#?}");
     // A region the case has as another kind: its kind is said, not its materials.
     let mut other = fs.clone();
     edit(&mut other, "system/controlDict", "fluid (air);", "fluid (air street);");

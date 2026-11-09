@@ -218,19 +218,22 @@ impl Description {
                                 "region {name}: a material of its buildingMaterials isn't one plain entry with a plain name (a macro, a directive): left out"
                             ));
                         }
-                        let mut twice: Vec<String> = Vec::new();
+                        // Sets, not scans: the list may be very long.
+                        let mut kept: HashSet<String> = HashSet::new();
+                        let mut twice: HashSet<String> = HashSet::new();
                         for m in list {
-                            if materials.iter().any(|x: &MaterialDesc| x.name == m.name) {
+                            if kept.contains(&m.name) {
                                 // One note a name, however often it is listed again.
                                 if !twice.contains(&m.name) {
                                     notes.push(format!(
                                         "region {name}, material {}: listed more than once: the first kept, the others (and their models) left out",
                                         m.name
                                     ));
-                                    twice.push(m.name);
+                                    twice.insert(m.name);
                                 }
                                 continue;
                             }
+                            kept.insert(m.name.clone());
                             if m.model.is_none() && m.model_given {
                                 notes.push(format!(
                                     "region {name}, material {}: its buildingMaterialModel isn't a plain name (a macro, a directive): left out",
