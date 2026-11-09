@@ -509,8 +509,6 @@ fn case_library(case: &Case) -> (Library, Vec<String>) {
                     None => plain = false,
                 }
             }
-            // The same coefficients in another order are the same.
-            coeffs.sort();
             if !plain {
                 notes.push(format!(
                     "{rel}, material {name} ({model}): a coefficient isn't a number the library takes, left out"
@@ -525,7 +523,8 @@ fn case_library(case: &Case) -> (Library, Vec<String>) {
                     first.push((model.clone(), at.clone()));
                     lib.push((model, coeffs));
                 }
-                Some((_, f)) if *f != coeffs => match differ.iter_mut().find(|(m, _)| *m == model) {
+                // The same coefficients in another order are the same.
+                Some((_, f)) if sorted(f) != sorted(&coeffs) => match differ.iter_mut().find(|(m, _)| *m == model) {
                     Some((_, names)) => names.push(at.clone()),
                     None => differ.push((model, vec![at.clone()])),
                 },
@@ -541,6 +540,30 @@ fn case_library(case: &Case) -> (Library, Vec<String>) {
         ));
     }
     (lib, notes)
+}
+
+fn sorted(c: &[(String, String)]) -> Vec<(String, String)> {
+    let mut c = c.to_vec();
+    c.sort();
+    c
+}
+
+/// The material models the case's solids have (every material's, a macro among its
+/// coefficients or not): a library entry for one of them is taken even when the solver's catalog
+/// lacks it (a model of the case's own library).
+pub(crate) fn case_models(case: &Case) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, doc) in solid_materials(case) {
+        for item in items(doc) {
+            if let umcf_foam_dict::Node::Dict { body, .. } = item
+                && let Some(m) = model_of(body)
+                && !out.contains(&m)
+            {
+                out.push(m);
+            }
+        }
+    }
+    out
 }
 
 /// Refuses a library model that isn't a material model of the solver for `version`.
@@ -678,9 +701,9 @@ impl Case {
         }
         if let Some(v) = self.layout.version {
             // The models the case's solids have already (of its own library, say) are kept.
-            let own = Settings::from_case(self).0.materials;
+            let own = case_models(self);
             let new = Settings {
-                materials: s.materials.iter().filter(|(m, _)| !own.iter().any(|(o, _)| o == m)).cloned().collect(),
+                materials: s.materials.iter().filter(|(m, _)| !own.contains(m)).cloned().collect(),
                 ..Default::default()
             };
             check_materials(&new, v)?;

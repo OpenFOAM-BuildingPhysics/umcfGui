@@ -350,7 +350,7 @@ fn ordered(spec: &NewCase) -> Vec<&NewRegion> {
 /// none of the case's own files nor a Windows device, a fluid, a solid or the vegetation (named
 /// `vegetation`, as the solver looks it up), and a solid's materials each with a model the
 /// solver has, once each.
-pub(crate) fn check_region(r: &NewRegion, version: OfVersion) -> Result<()> {
+pub(crate) fn check_region(r: &NewRegion, version: OfVersion, own: &[String]) -> Result<()> {
     let n = r.name.as_str();
     if !plain_name(n) || n.contains(':') {
         return refuse(format!(
@@ -390,7 +390,9 @@ pub(crate) fn check_region(r: &NewRegion, version: OfVersion) -> Result<()> {
         let Some(model) = &m.model else {
             return refuse(format!("region {n}, material {}: its model (buildingMaterialModel) is missing", m.name));
         };
-        let known = family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(version));
+        // A model the case's solids have already (of its own library) is taken too.
+        let known =
+            own.contains(model) || family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(version));
         if !known {
             let models = family.map(|f| cat.choices(f, version).join(", ")).unwrap_or_default();
             return refuse(format!(
@@ -413,7 +415,7 @@ fn check(spec: &NewCase) -> Result<()> {
     let mut folded = HashSet::new();
     for r in &spec.regions {
         let n = r.name.as_str();
-        check_region(r, spec.version)?;
+        check_region(r, spec.version, &[])?;
         if !names.insert(n) {
             return refuse(format!("region {n} is given twice"));
         }

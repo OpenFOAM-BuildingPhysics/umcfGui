@@ -143,8 +143,9 @@ line of its own. It then writes the settings of the region's kind, as `case.new`
 
 A file that is there already is kept as it is. The region has no mesh yet. The workflow
 description names it, with its materials, when the case has one. The whole addition is one step
-in the history, and `case.save` writes it. What `case.new` refuses of a region is refused here
-too, and so are:
+in the history, and `case.save` writes it. A material model the case's solids have already
+is taken even when the solver's catalog lacks it (one of the case's own library). Otherwise
+what `case.new` refuses of a region is refused here too, and so are:
 
 - a name the case has, or one differing from it only by case;
 - a case without a known version or a region list (a meshing step);

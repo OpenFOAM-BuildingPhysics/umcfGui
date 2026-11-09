@@ -397,7 +397,8 @@ fn the_library_is_read_from_a_case_s_solids_and_leaves_their_materials_as_they_a
         format!("{}rho     1300;{}", &t[..i], &t[i + "rho     1150;".len()..])
     });
     let (s, notes) = Settings::from_case(&c);
-    assert!(s.materials[0].1.contains(&("rho".to_string(), "1150".to_string())), "{:?}", s.materials);
+    // In the case's order.
+    assert_eq!(s.materials[0].1[0], ("rho".to_string(), "1150".to_string()));
     assert_eq!(
         notes,
         ["Soil materials differ (street/c besides street/a): the library has the first's, for new Soil materials"]
@@ -463,6 +464,25 @@ fn the_case_s_own_models_are_kept_and_a_materials_block_given_twice_is_refused()
     let (mine, _) = Settings::from_case(&c);
     assert_eq!(mine.materials[0].0, "MyBrick");
     c.choose_settings(&mine).unwrap();
+    // region.add takes the description's MyBrick, without a note.
+    let mut chosen = mine.clone();
+    chosen.materials[0].1 = vec![("rho".to_string(), "777".to_string())];
+    c.choose_settings(&chosen).unwrap();
+    let fs2 = MemFs::new();
+    let r = NewRegion {
+        name: "walls".into(),
+        kind: RegionKind::Solid,
+        materials: vec![crate::description::MaterialDesc { name: "w".into(), model: Some("MyBrick".into()) }],
+    };
+    let added = c.add_region(&fs2, &r).unwrap();
+    assert!(!added.notes.iter().any(|n| n.contains("MyBrick")), "{:?}", added.notes);
+    assert!(
+        c.dict("constant/walls/transportProperties")
+            .unwrap()
+            .value(&["buildingMaterials"])
+            .unwrap()
+            .contains("rho 777")
+    );
     // A materials block given twice in the description: refused.
     let mut fs = MemFs::new();
     let text = Description { settings: Settings { materials: concrete(), ..Default::default() }, ..Default::default() }
@@ -473,6 +493,11 @@ fn the_case_s_own_models_are_kept_and_a_materials_block_given_twice_is_refused()
     let mut c = Case::open(&fs).unwrap();
     let e = c.choose_settings(&Settings { materials: concrete(), ..Default::default() }).unwrap_err();
     assert!(e.to_string().contains("settings/materials is given twice"), "{e}");
+    let once = text.replace("    materials\n    {\n", "    materials\n    {\n        HamstadConcrete  { rho 1; }\n");
+    fs.insert(crate::description::PATH, once);
+    let mut c = Case::open(&fs).unwrap();
+    let e = c.choose_settings(&Settings { materials: concrete(), ..Default::default() }).unwrap_err();
+    assert!(e.to_string().contains("settings/materials/HamstadConcrete is given twice"), "{e}");
 }
 
 #[test]

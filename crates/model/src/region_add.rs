@@ -99,7 +99,7 @@ impl Case {
         }
         let from_description = r.materials.is_empty() && !region.materials.is_empty();
         let r = &region;
-        check_region(r, v).map_err(|e| match e {
+        check_region(r, v, &crate::settings::case_models(self)).map_err(|e| match e {
             Error::NewCase(m) if from_description => Error::NewCase(format!(
                 "{m}: the material is the description's (fix it there, or give the region its materials)"
             )),
@@ -148,9 +148,11 @@ impl Case {
             case_settings.temperature_limit = chosen.temperature_limit.clone();
         }
         // A model written into the description's library by hand that the solver doesn't have.
+        let own = crate::settings::case_models(self);
         let bad: Vec<String> = chosen
             .materials
             .iter()
+            .filter(|(m, _)| !own.contains(m))
             .filter(|(m, _)| {
                 crate::settings::check_materials(
                     &crate::settings::Settings { materials: vec![(m.clone(), Vec::new())], ..Default::default() },
