@@ -122,6 +122,11 @@ regions
             street          { role coupled; partner ( air street ); }
             interior        { role interior; }
         }
+        materials
+        {
+            soil            { model Soil; }
+            brick           { model Hamstad5Brick; }
+        }
     }
 }
 
@@ -139,10 +144,13 @@ reconstruct yes;
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
+| `materials` | a solid region's materials, in the order of its `buildingMaterials`: each the name of the cell zone built of it, with its `model` (`buildingMaterialModel`); the coefficients stay in the region's `transportProperties` |
 | `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
 
-`workflow.import` writes it from the case: the scripts read as above, the region kinds, and
-each patch's role. Coupled patches and their partners come from the mesh
+`workflow.import` writes it from the case: the scripts read as above, the region kinds,
+each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
+lists them (a material or its model given by a macro or a directive is noted and left out, and
+a name listed more than once keeps its first entry). Coupled patches and their partners come from the mesh
 (`neighbourRegion`/`neighbourPatch`, or `sampleRegion`/`samplePatch` in OpenFOAM-8); the canopy
 is the vegetation patch that maps to the air's cells; the air's inlet, outlet and sides come
 from the patch's own velocity condition, not one given by a group or a pattern
@@ -159,8 +167,11 @@ directory, or over the size limit), or one the open case doesn't hold (written o
 nothing: the save would write the file it points to); with `replace` it writes over the case's own, whose
 comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
 commands show in the results card the problems and the import's notes first, then the settings
-(version, radiation, solver), then the regions with their meshes, steps and patch roles. The case
+(version, radiation, solver), then the regions with their meshes, steps, patch roles and
+materials. The case
 check reads the file against the case (`workflow.description`): what can't be read in it, regions
-and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, and
-another OpenFOAM version.
+and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, a
+solid's materials the case doesn't list (or lists with another model), a model the solver
+doesn't have for the case's version (one the case's file has too is the case check's to say),
+materials of the case it leaves out, and another OpenFOAM version.
 

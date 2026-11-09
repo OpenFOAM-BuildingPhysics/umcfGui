@@ -1,7 +1,7 @@
 //! The case's workflow description, `system/umcfWorkflow` (see `docs/common-workflow.md`): an
 //! OpenFOAM-style dictionary that travels with the case. It names every region with its kind,
-//! how its mesh is built and the steps after, the patches with their roles and partners, the
-//! radiation pre-processing and the solver.
+//! how its mesh is built and the steps after, the patches with their roles and partners, a
+//! solid's materials, the radiation pre-processing and the solver.
 //!
 //! [`Description::import`] makes one from a case (its scripts, read into a
 //! [`crate::workflow::Workflow`], and its meshes); [`Description::write`] gives the file's text;
@@ -28,6 +28,11 @@
 //!         kind        solid;
 //!         mesh        blocks;
 //!         …
+//!         materials
+//!         {
+//!             soil        { model Soil; }
+//!             brick       { model Hamstad5Brick; }
+//!         }
 //!     }
 //! }
 //! radiation   { region vegetation; lai air; viewFactors yes; solarRayTracing yes; }
@@ -116,6 +121,15 @@ pub struct PatchDesc {
     pub partner: Option<(String, String)>,
 }
 
+/// A solid's material: the cell zone of its name is built of it
+/// (`solid/updatebuildingMaterials.H`), its coefficients in the region's `transportProperties`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialDesc {
+    pub name: String,
+    /// Its `buildingMaterialModel` (`Hamstad5Brick`); `None`: not given.
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionDesc {
     pub name: String,
@@ -126,6 +140,8 @@ pub struct RegionDesc {
     /// The steps after the mesh.
     pub steps: Vec<RegionStep>,
     pub patches: Vec<PatchDesc>,
+    /// A solid's materials, in the order of its `buildingMaterials`; none for other kinds.
+    pub materials: Vec<MaterialDesc>,
 }
 
 /// A case's `system/umcfWorkflow`.
@@ -193,12 +209,47 @@ impl Description {
                 }
                 patches.push(PatchDesc { name: p.name.clone(), role, partner });
             }
+            let mut materials = Vec::new();
+            if region.kind == RegionKind::Solid {
+                match case_materials(case, name) {
+                    Some((list, all)) => {
+                        if !all {
+                            notes.push(format!(
+                                "region {name}: a material of its buildingMaterials isn't one plain entry with a plain name (a macro, a directive): left out"
+                            ));
+                        }
+                        let mut twice: Vec<String> = Vec::new();
+                        for m in list {
+                            if materials.iter().any(|x: &MaterialDesc| x.name == m.name) {
+                                // One note a name, however often it is listed again.
+                                if !twice.contains(&m.name) {
+                                    notes.push(format!(
+                                        "region {name}, material {}: listed more than once: the first kept, the others (and their models) left out",
+                                        m.name
+                                    ));
+                                    twice.push(m.name);
+                                }
+                                continue;
+                            }
+                            if m.model.is_none() && m.model_given {
+                                notes.push(format!(
+                                    "region {name}, material {}: its buildingMaterialModel isn't a plain name (a macro, a directive): left out",
+                                    m.name
+                                ));
+                            }
+                            materials.push(MaterialDesc { name: m.name, model: m.model });
+                        }
+                    }
+                    None => notes.push(format!("region {name}: no buildingMaterials list in {}", materials_file(name))),
+                }
+            }
             regions.push(RegionDesc {
                 name: name.to_string(),
                 kind: region.kind,
                 mesh: mesh.map(|m| m.build.clone()),
                 steps: mesh.map(|m| m.steps.clone()).unwrap_or_default(),
                 patches,
+                materials,
             });
         }
         for u in &wf.unmatched {
@@ -278,6 +329,14 @@ impl Description {
                         let _ = write!(body, " partner ( {} {} );", word(region), word(patch));
                     }
                     let _ = writeln!(s, "            {:<15} {{{body} }}", word(&p.name));
+                }
+                s.push_str("        }\n");
+            }
+            if !r.materials.is_empty() {
+                s.push_str("        materials\n        {\n");
+                for m in &r.materials {
+                    let body = m.model.as_ref().map(|x| format!(" model {};", word(x))).unwrap_or_default();
+                    let _ = writeln!(s, "            {:<15} {{{body} }}", word(&m.name));
                 }
                 s.push_str("        }\n");
             }
@@ -576,8 +635,10 @@ fn read_region(
         mesh: None,
         steps: Vec::new(),
         patches: Vec::new(),
+        materials: Vec::new(),
     };
     let mut kind = None;
+    let mut materials_given = false;
     // One `patches` (or `kind`, …) per region: a second is a problem, not read.
     let mut seen = HashSet::new();
     for e in body.entries() {
@@ -627,12 +688,39 @@ fn read_region(
                 }
                 None => problem(&here, "is a dictionary".into()),
             },
+            "materials" => match e.dict() {
+                Some(mb) => {
+                    materials_given = true;
+                    let mut names: HashSet<String> = HashSet::new();
+                    for m in mb.entries() {
+                        let mname = entry_name(m);
+                        let mat = if mname.is_empty() { format!("{here}/\"\"") } else { format!("{here}/{mname}") };
+                        if mname.is_empty() {
+                            problem(&mat, "is not a name".into());
+                            continue;
+                        }
+                        if !names.insert(mname.clone()) {
+                            problem(&mat, "is given twice: the later ones are left out".into());
+                            continue;
+                        }
+                        match m.dict() {
+                            Some(b) => r.materials.push(read_material(&mname, b, &mat, problem)),
+                            None => problem(&mat, "is a dictionary: { [model <buildingMaterialModel>;] }".into()),
+                        }
+                    }
+                }
+                None => problem(&here, "is a dictionary".into()),
+            },
             _ => problem(&here, "is not a key of a region".into()),
         }
     }
     match kind {
         Some(k) => {
             r.kind = k;
+            if k != RegionKind::Solid && materials_given {
+                problem(&format!("{at}/materials"), "are a solid region's: left out".into());
+                r.materials.clear();
+            }
             Some(r)
         }
         None => {
@@ -669,6 +757,75 @@ fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut i
         }
     }
     p
+}
+
+fn read_material(
+    name: &str,
+    body: &umcf_foam_dict::Dict,
+    at: &str,
+    problem: &mut impl FnMut(&str, String),
+) -> MaterialDesc {
+    let mut m = MaterialDesc { name: name.to_string(), model: None };
+    let mut seen = HashSet::new();
+    for e in body.entries() {
+        let here = format!("{at}/{}", e.key());
+        if twice(&mut seen, e, &here, problem) {
+            continue;
+        }
+        match e.key() {
+            "model" => match single(e) {
+                Some(x) => m.model = Some(x),
+                None => problem(&here, "is the material's buildingMaterialModel, one name".into()),
+            },
+            _ => problem(&here, "is not a key of a material".into()),
+        }
+    }
+    m
+}
+
+/// Where a solid region's materials are: its `transportProperties`.
+pub fn materials_file(region: &str) -> String {
+    format!("constant/{region}/transportProperties")
+}
+
+/// A material as a solid's `transportProperties` lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseMaterial {
+    pub name: String,
+    /// Its `buildingMaterialModel`, when it is a plain name.
+    pub model: Option<String>,
+    /// Whether it has a `buildingMaterialModel` at all (a macro, say, when `model` is `None`).
+    pub model_given: bool,
+}
+
+/// A solid region's materials as its `transportProperties` lists them (`buildingMaterials`),
+/// in order (a name listed twice, twice), and whether every one was read: an entry that isn't a
+/// dictionary, or a name given by a macro or a directive (`$m`, `#calc`), is left out. `None`
+/// without the list.
+pub fn case_materials(case: &Case, region: &str) -> Option<(Vec<CaseMaterial>, bool)> {
+    let list = case.dict(&materials_file(region))?.get(&["buildingMaterials"])?;
+    let [Node::List { items, .. }] = list.value.as_slice() else { return Some((Vec::new(), false)) };
+    let plain = |v: &str| {
+        let v = v.trim();
+        (!v.is_empty() && !v.starts_with('$') && !v.starts_with('#')).then(|| unquote(v).to_string())
+    };
+    let mut out = Vec::new();
+    let mut all = true;
+    for item in items {
+        let Node::Dict { body, .. } = item else {
+            all = false;
+            continue;
+        };
+        match body.get("name").and_then(Entry::value_text).and_then(|v| plain(&v)) {
+            Some(name) => {
+                let given = body.get("buildingMaterialModel");
+                let model = given.and_then(Entry::value_text).and_then(|v| plain(&v));
+                out.push(CaseMaterial { name, model, model_given: given.is_some() });
+            }
+            None => all = false,
+        }
+    }
+    Some((out, all))
 }
 
 /// `blockMesh ["dict"] createPatch snappyHexMesh ["dict"]`, in any order.

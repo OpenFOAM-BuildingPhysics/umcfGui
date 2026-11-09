@@ -146,7 +146,7 @@ bad arguments.
 | `case.info` | The case: OpenFOAM version, kind, regions with their patch and field counts, `processor*` directories, unsaved files, what didn't read |
 | `case.check` | The [case check](checks.md) |
 | `workflow.show` | The [workflow description](workflow.md#the-workflow-description): `system/umcfWorkflow` as read, with its problems, or as `workflow.import` would write it when the case has none |
-| `workflow.import` | Writes `system/umcfWorkflow` from the case's scripts and meshes, with notes on what it couldn't tell: `replace` (`true` writes over the case's own) |
+| `workflow.import` | Writes `system/umcfWorkflow` from the case's scripts, meshes and solids' materials, with notes on what it couldn't tell: `replace` (`true` writes over the case's own) |
 | `geometry.import` | Copies an STL file into `constant/triSurface` ([Surfaces](surfaces.md#importing)): `path` (required), `name`, `replace`, `scale` |
 | `geometry.trees` | Writes [tree crowns](surfaces.md#tree-crowns) as one surface in `constant/triSurface`: the trees from `table` (a file of the case), `path` (a file outside it) or `trees` (`[{"x": 10, "y": 5, "z": 0, "diameter": 6, "height": 8}]`); `name` (default `trees.stl`), `solid` (default `trees`), `replace` |
 | `geometry.check` | The [surface checks](surfaces.md#checks): `file` (one surface of the case), `path` (a file anywhere, no case needed), or neither (every STL surface in `constant/triSurface`) |
