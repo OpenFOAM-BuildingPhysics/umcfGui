@@ -307,6 +307,8 @@ struct RawFile {
     /// Put whole ([`Case::put_file`]), not an edit of the file there: never written through a
     /// link, which the save checks again.
     whole: bool,
+    /// A script ([`Case::put_script`]): saved executable.
+    script: bool,
 }
 
 /// The bytes a command edits a file from, and the fingerprint of the file they came from.
@@ -1210,6 +1212,26 @@ impl Case {
         Ok(())
     }
 
+    /// Puts a script whole, as [`Case::put_file`] does; [`Case::save`] writes it executable
+    /// ([`CaseWrite::write_executable`]). A script the case reads (`Allrun`, … at its root) is read
+    /// again from the new text, so its workflow and checks are of the script as it now is (the
+    /// notes the open gave on the old one stay until the case is opened again).
+    pub fn put_script(&mut self, fs: &dyn CaseFs, rel: &str, bytes: Vec<u8>) -> Result<()> {
+        let read = !rel.contains('/') && script::is_script_name(rel) && bytes.len() as u64 <= self.options.dict_bytes;
+        let parsed = read.then(|| script::parse(rel, &String::from_utf8_lossy(&bytes)));
+        self.put_file(fs, rel, bytes)?;
+        if let Some(f) = self.raw.get_mut(rel) {
+            f.script = true;
+        }
+        if let Some(s) = parsed {
+            match self.scripts.iter_mut().find(|x| x.path == rel) {
+                Some(old) => *old = s,
+                None => self.scripts.push(s),
+            }
+        }
+        Ok(())
+    }
+
     /// [`Case::put_file`] with the fingerprint of the file the new bytes were made from.
     fn put_based(&mut self, rel: &str, bytes: Vec<u8>, base: Option<Fingerprint>) -> Result<()> {
         self.puttable(rel)?;
@@ -1221,7 +1243,8 @@ impl Case {
         let fingerprint = fingerprint(&bytes);
         // An edit of a file put whole is still a file put whole.
         let whole = self.raw.get(rel).is_some_and(|f| f.whole);
-        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base, whole });
+        let script = self.raw.get(rel).is_some_and(|f| f.script);
+        self.raw.insert(rel.to_string(), RawFile { bytes: Arc::new(bytes), fingerprint, base, whole, script });
         Ok(())
     }
 
@@ -2362,7 +2385,8 @@ impl Case {
             // file grown past the limit, which did change.
             let result = match fs.read(&rel, limit) {
                 Ok(on_disk) if on_disk.as_deref() == original.as_deref().map(Vec::as_slice) => {
-                    fs.write(&rel, &text).map_err(Error::from)
+                    let script = matches!(pending, Pending::Raw(..)) && self.raw.get(&rel).is_some_and(|f| f.script);
+                    if script { fs.write_executable(&rel, &text) } else { fs.write(&rel, &text) }.map_err(Error::from)
                 }
                 Ok(_) | Err(FsError::TooLarge { .. }) => Err(Error::Conflict { path: rel.clone() }),
                 Err(e) => Err(e.into()),

@@ -14,7 +14,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     label: "Workflow description",
     menu: "Case/Workflow description",
     shortcut: None,
-    params: "none. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
+    params: "scripts: true to also return the scripts workflow.scripts would write from it (scripts, version; scriptsError when none can be: a description with problems, no version, a name unsafe in a script), without writing them. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
     enabled: needs_case,
     run: show,
     journal: false,
@@ -23,7 +23,8 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
 };
 
 fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    Params::new(SHOW.id, p, &[])?;
+    let p = Params::new(SHOW.id, p, &["scripts"])?;
+    let with_scripts = p.bool("scripts")?.unwrap_or(false);
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let elsewhere = if case.description().is_none() { on_disk(case, fs) } else { OnDisk::None };
     let (d, source, problems, notes) = match case.description() {
@@ -54,13 +55,40 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             count(notes.len(), "note")
         ),
     };
-    let data = json!({
+    let mut data = json!({
         "file": PATH,
         "source": source,
         "description": to_json(&d),
         "problems": problems.iter().map(|p| json!({ "at": p.at, "message": p.message })).collect::<Vec<_>>(),
         "notes": notes,
     });
+    if with_scripts && let Some(o) = data.as_object_mut() {
+        // The scripts workflow.scripts would write from this description; nothing is written.
+        match d.version.or(case.layout.version) {
+            _ if !problems.is_empty() => {
+                o.insert(
+                    "scriptsError".into(),
+                    json!("the description has problems: workflow.scripts writes none from it until they are mended"),
+                );
+            }
+            None => {
+                o.insert(
+                    "scriptsError".into(),
+                    json!("no OpenFOAM version: the description names none, and the case's can't be told"),
+                );
+            }
+            Some(v) => match d.scripts(case, v) {
+                Ok(written) => {
+                    o.insert("version".into(), json!(v.to_string()));
+                    let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
+                    o.insert("scripts".into(), Value::Array(texts));
+                }
+                Err(e) => {
+                    o.insert("scriptsError".into(), json!(format!("`{}` isn't safe in a script", e.0)));
+                }
+            },
+        }
+    }
     Ok(Outcome::new(message, data))
 }
 
@@ -270,6 +298,86 @@ fn material(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         (r, format!("{PATH}: material {material} of region {region} {done}"))
     };
     edited(s, message, &r)
+}
+
+pub(super) const SCRIPTS: CommandSpec = CommandSpec {
+    id: "workflow.scripts",
+    label: "Write the scripts",
+    menu: "Case/Workflow/Write the scripts",
+    shortcut: None,
+    params: "replace: true to write over scripts that are there and differ (case.save keeps a backup of each; a script that is a symbolic link isn't written over). Writes Allprepare, Allrun and Allclean from system/umcfWorkflow, for its OpenFOAM version (the case's when it names none): every region's mesh and steps, the radiation pre-processing and the solver, as the description has them; the dictionaries Allrun copies into processor*/ are the case's. A description with problems is refused (workflow.show lists them), and so is a name that isn't safe in a script. case.save writes them, executable; the case check reads them as written. workflow.show with scripts: true returns them without writing.",
+    enabled: needs_case,
+    run: scripts,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+/// `workflow.scripts`: the scripts written from the description.
+fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(SCRIPTS.id, p, &["replace"])?;
+    let replace = p.bool("replace")?.unwrap_or(false);
+    let o = s.opened_mut()?;
+    let Some((d, problems)) = o.case.description() else {
+        return Err(Error::Failed(format!(
+            "the case has no {PATH} (or it doesn't load): workflow.import writes one from the case first"
+        )));
+    };
+    if let Some(first) = problems.first() {
+        return Err(Error::Failed(format!(
+            "{PATH} has {} ({}: {}): mend it first, as the scripts would leave out what can't be read (workflow.show lists them)",
+            count(problems.len(), "problem"),
+            first.at,
+            first.message
+        )));
+    }
+    let Some(version) = d.version.or(o.case.layout.version) else {
+        return Err(Error::Failed(format!(
+            "{PATH} names no OpenFOAM version, and the case's can't be told: set version 8 or 12"
+        )));
+    };
+    let written = d.scripts(&o.case, version).map_err(|e| {
+        Error::Failed(format!("{}: `{}` isn't safe in a script: no script is written", SCRIPTS.id, e.0))
+    })?;
+    let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
+    // What is there now, put by a command or on disk.
+    let mut changed = Vec::new();
+    let mut differ = Vec::new();
+    for (name, text) in &written {
+        match o.case.file(o.fs.as_ref(), name)? {
+            Some(old) if old.as_slice() == text.as_bytes() => {}
+            Some(_) => {
+                differ.push(*name);
+                changed.push(*name);
+            }
+            None => changed.push(*name),
+        }
+    }
+    if !differ.is_empty() && !replace {
+        return Err(Error::Failed(format!(
+            "{} {} there and {}: pass \"replace\": true to write over {} (case.save keeps a backup of each)",
+            differ.join(", "),
+            if differ.len() == 1 { "is" } else { "are" },
+            if differ.len() == 1 { "differs" } else { "differ" },
+            if differ.len() == 1 { "it" } else { "them" }
+        )));
+    }
+    for (name, text) in &written {
+        if changed.contains(name) {
+            o.case.put_script(o.fs.as_ref(), name, text.clone().into_bytes()).map_err(|e| match e {
+                umcf_model::Error::IsLink(_) => Error::Failed(format!(
+                    "{name} is a symbolic link (to another file or nothing): it isn't written over"
+                )),
+                e => e.into(),
+            })?;
+        }
+    }
+    let message = if changed.is_empty() {
+        format!("the scripts are as {PATH} has them already, for {version}: nothing to write")
+    } else {
+        format!("{}: written from {PATH}, for {version}", changed.join(", "))
+    };
+    Ok(Outcome::new(message, json!({ "version": version.to_string(), "changed": changed, "scripts": texts })))
 }
 
 /// The outcome of an edit: the message, and the description as it is now.
