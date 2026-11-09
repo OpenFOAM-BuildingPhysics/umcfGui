@@ -252,8 +252,13 @@ impl Settings {
                         path.push(k);
                         d.value(&path).map(|v| v.trim().to_string())
                     };
-                    if let (Some(a), Some(b)) = (v("min"), v("max")) {
-                        limits.push((a, b));
+                    match (v("min"), v("max")) {
+                        (Some(a), Some(b)) => limits.push((a, b)),
+                        // Incomplete: noted, and no bounds agree with it.
+                        _ => {
+                            notes.push(format!("{rel}: its limitTemperature entry has no min or no max"));
+                            limits.push(("?".to_string(), "?".to_string()));
+                        }
                     }
                 }
             }
@@ -273,7 +278,8 @@ impl Settings {
                 let (a, b) = limits.swap_remove(0);
                 if limit_bounds(&a, &b) {
                     s.temperature_limit = Some((a, b));
-                } else {
+                } else if a != "?" {
+                    // (Incomplete entries are noted where they are found.)
                     notes.push(format!("the temperature limit is ( {a} {b} ): not 0 < min < max, left out"));
                 }
             }

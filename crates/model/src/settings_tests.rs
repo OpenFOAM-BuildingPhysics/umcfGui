@@ -289,3 +289,24 @@ fn values_a_case_has_that_the_settings_refuse_are_noted_and_left_out() {
     let (_, problems) = Description::read(&Document::parse(&d.write()).unwrap());
     assert_eq!(problems, vec![]);
 }
+
+#[test]
+fn an_incomplete_temperature_limit_agrees_with_no_bounds() {
+    let mut s = spec(OfVersion::V12, Settings::default(), true, false);
+    s.regions.push(NewRegion { name: "air2".into(), kind: RegionKind::Fluid, materials: vec![] });
+    let c = edited(&s, "system/air2/fvConstraints", |t| t.replace("min 273.15; ", ""));
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.temperature_limit.is_none());
+    assert!(
+        notes.iter().any(|n| n.contains("system/air2/fvConstraints: its limitTemperature entry has no min or no max")),
+        "{notes:?}"
+    );
+    assert!(notes.iter().any(|n| n.contains("temperature limits differ")), "{notes:?}");
+    // Every fluid's incomplete: one note each, no other.
+    let c = edited(&spec(OfVersion::V12, Settings::default(), true, false), "system/air/fvConstraints", |t| {
+        t.replace("min 273.15; ", "")
+    });
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.temperature_limit.is_none());
+    assert_eq!(notes, ["system/air/fvConstraints: its limitTemperature entry has no min or no max"]);
+}
