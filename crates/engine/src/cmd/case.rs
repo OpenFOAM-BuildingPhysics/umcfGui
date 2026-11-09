@@ -5,7 +5,7 @@ use umcf_core::{Cancellable, CaseWrite, DirFs, OfVersion};
 use umcf_model::description::{Components, MaterialDesc};
 use umcf_model::new_case::{self, NewCase, NewRegion, Up};
 use umcf_model::{Case, OpenOptions, RegionKind};
-use umcf_schema::{CaseKind, Profile, Severity};
+use umcf_schema::{CaseKind, Severity};
 use umcf_validate::{Diagnostic, Level};
 
 use crate::params::Params;
@@ -63,7 +63,7 @@ pub(super) const NEW: CommandSpec = CommandSpec {
     label: "New case…",
     menu: "Case/New…",
     shortcut: None,
-    params: "path: a directory that isn't there or is empty (required). version: 8 or 12 (required). regions: [{\"name\": \"air\", \"kind\": \"fluid\"}, {\"name\": \"street\", \"kind\": \"solid\", \"materials\": [{\"name\": \"soil\", \"model\": \"Soil\"}]}, {\"name\": \"vegetation\", \"kind\": \"vegetation\"}, …] (required; at least one fluid; plain names that don't differ only by case and aren't those of the files in constant/ or system/; the vegetation region is named vegetation, as the solver looks it up, and needs the radiation on it). profile: tutorial (the urbanMicroclimateFoam tutorials' settings, the default) or hk (the Hong Kong benchmark's, OpenFOAM-8 only). The components: radiation: the region it is computed on (a fluid or the vegetation; it needs a fluid named air); grass: true, or the patches the grass grows on (it needs the radiation); temperatureLimit: true; blending: true (the blending layer: it needs z up, and the air's patches west, east, north and south once meshed). up: the axis that points up, x, y or z (default z): gravity points down it. discard: true to replace an open case with unsaved changes. Writes system/umcfWorkflow (the description, with the profile and components), the region list (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties), controlDict's run controls (the profile's, without its function objects) and each region's settings by its kind and the components' (docs/user-guide/new-case.md lists them), then opens the case. The files are written into a directory of their own inside path and moved up once all are: a failure leaves things as they were (a directory there stays, with its owner and mode; one made for the case goes again). A path with `..` is refused. A solid's material gets the coefficients of the profile's first material of its model; one the profile has none of gets none (a note says so). Not written: meshes, the fields of 0/, decomposeParDict, the weather and sun tables, the view factor dictionary.",
+    params: "path: a directory that isn't there or is empty (required). version: 8 or 12 (required). regions: [{\"name\": \"air\", \"kind\": \"fluid\"}, {\"name\": \"street\", \"kind\": \"solid\", \"materials\": [{\"name\": \"soil\", \"model\": \"Soil\"}]}, {\"name\": \"vegetation\", \"kind\": \"vegetation\"}, …] (required; at least one fluid; plain names that don't differ only by case and aren't those of the files in constant/ or system/; the vegetation region is named vegetation, as the solver looks it up, and needs the radiation on it). The components: radiation: the region it is computed on (a fluid or the vegetation; it needs a fluid named air); grass: true, or the patches the grass grows on (it needs the radiation); temperatureLimit: true; blending: true (the blending layer: it needs z up, and the air's patches west, east, north and south once meshed). up: the axis that points up, x, y or z (default z): gravity points down it. discard: true to replace an open case with unsaved changes. The settings are one configuration, the urbanMicroclimateFoam tutorials'. Writes system/umcfWorkflow (the description, with the components), the region list (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties), controlDict's run controls (the tutorials', without their function objects) and each region's settings by its kind and the components' (docs/user-guide/new-case.md lists them), then opens the case. The files are written into a directory of their own inside path and moved up once all are: a failure leaves things as they were (a directory there stays, with its owner and mode; one made for the case goes again). A path with `..` is refused. A solid's material gets the coefficients of the tutorials' first material of its model (Soil, Hamstad5Brick); one of another model gets none (a note says so). Not written: meshes, the fields of 0/, decomposeParDict, the weather and sun tables, the view factor dictionary.",
     enabled: always,
     run: new_case,
     // Not journaled: a journal runs again on whichever case is open.
@@ -77,18 +77,7 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(
         NEW.id,
         p,
-        &[
-            "path",
-            "version",
-            "profile",
-            "regions",
-            "radiation",
-            "grass",
-            "temperatureLimit",
-            "blending",
-            "up",
-            "discard",
-        ],
+        &["path", "version", "regions", "radiation", "grass", "temperatureLimit", "blending", "up", "discard"],
     )?;
     let bad = |m: &str| Error::Params(format!("{}: {m}", NEW.id));
     let path = p.required_str("path")?;
@@ -101,10 +90,6 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         Value::String(v) if v == "8" => OfVersion::V8,
         Value::String(v) if v == "12" => OfVersion::V12,
         _ => return Err(bad("version is 8 or 12")),
-    };
-    let profile = match p.str("profile")? {
-        None => Profile::Tutorial,
-        Some(name) => Profile::parse(name).ok_or_else(|| bad("profile is tutorial or hk"))?,
     };
     let Some(Value::Array(list)) = p.value("regions") else {
         return Err(bad("regions is a list: [{\"name\": \"air\", \"kind\": \"fluid\"}, …]"));
@@ -150,7 +135,6 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     };
     let spec = NewCase {
         version,
-        profile,
         regions,
         radiation: p.str("radiation")?.map(str::to_string),
         components: Components {
@@ -181,10 +165,9 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         return Err(Error::Failed(format!("made {path}, but it did not open: {e} (case.open opens it)")));
     }
     let message = format!(
-        "made {path}: {}, {} regions, the {} profile; {} files{}",
+        "made {path}: {}, {} regions; {} files{}",
         version.label(),
         spec.regions.len(),
-        profile.name(),
         written.len(),
         if made.notes.is_empty() { String::new() } else { format!("; {}", made.notes.join("; ")) }
     );

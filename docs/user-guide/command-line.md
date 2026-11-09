@@ -140,7 +140,7 @@ bad arguments.
 
 | Command | Does |
 |---|---|
-| `case.new` | [Makes a case](new-case.md) in a new or empty directory and opens it: `path`, `version` (`8` or `12`) and `regions` (`[{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]`) required; `profile` (`tutorial`, the default, or `hk`), the components `radiation` (a region), `grass` (`true` or the patches), `temperatureLimit`, `blending`; `up` (`x`, `y`, `z`); `discard` |
+| `case.new` | [Makes a case](new-case.md) in a new or empty directory and opens it: `path`, `version` (`8` or `12`) and `regions` (`[{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]`) required; the components `radiation` (a region), `grass` (`true` or the patches), `temperatureLimit`, `blending`; `up` (`x`, `y`, `z`); `discard` |
 | `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files, `"later"` lists them for `case.fields` to read), `discard` (`true` opens even if the open case has unsaved changes) |
 | `case.fields` | Reads the start-time field files of a case opened with `fields: "later"` |
 | `case.save` | Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each; a file a command wrote whole is refused when it is a symbolic link, checked once before anything is written ([Cases](cases.md#editing-and-saving)) |

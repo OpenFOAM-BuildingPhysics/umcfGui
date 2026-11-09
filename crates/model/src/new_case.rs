@@ -1,9 +1,9 @@
-//! A new case (`case.new`): its regions and components, from a profile's files
-//! (`umcf_schema::profile`). [`make`] gives the files' text and the workflow description
+//! A new case (`case.new`): its regions and components, from the one configuration's files
+//! (`umcf_schema::defaults`, the tutorials'). [`make`] gives the files' text and the workflow description
 //! (`system/umcfWorkflow`) that names them.
 //!
 //! What it writes: the region list (OpenFOAM-12's `controlDict`, OpenFOAM-8's
-//! `constant/regionProperties`), the run controls (`controlDict`, without the profile's function
+//! `constant/regionProperties`), the run controls (`controlDict`, without the tutorials' function
 //! objects), and the settings of each region by its kind and of each component switched on.
 //! What it leaves to later steps: the meshes and their dictionaries, the fields of `0/`, the
 //! process counts (`decomposeParDict`), the weather and sun tables, the view factor dictionary.
@@ -13,7 +13,8 @@ use std::fmt::Write as _;
 
 use umcf_core::OfVersion;
 use umcf_foam_dict::{Document, Node};
-use umcf_schema::{Profile, Template};
+use umcf_schema::Template;
+use umcf_schema::defaults;
 
 use crate::description::{Components, Description, MaterialDesc, RegionDesc};
 use crate::description_edit::plain_name;
@@ -125,7 +126,6 @@ impl Up {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewCase {
     pub version: OfVersion,
-    pub profile: Profile,
     /// Fluids first, then solids, then vegetation, is the order the region list gets.
     pub regions: Vec<NewRegion>,
     /// The region the radiation is computed on (a fluid or the vegetation); `None`: none.
@@ -151,8 +151,7 @@ fn refuse<T>(message: String) -> Result<T> {
     Err(Error::NewCase(message))
 }
 
-/// The files of the case `spec` describes. Refused (and nothing made): a profile without the
-/// version, no fluid region, a name that isn't plain or is given twice (names that differ only
+/// The files of the case `spec` describes. Refused (and nothing made): no fluid region, a name that isn't plain or is given twice (names that differ only
 /// by case too: they can't live together on Windows or macOS), materials of a region that
 /// isn't a solid or of a model the solver doesn't have, radiation on a region that isn't a
 /// fluid or the vegetation, what the solver can't run as it looks regions up by name (see
@@ -161,14 +160,12 @@ fn refuse<T>(message: String) -> Result<T> {
 pub fn make(spec: &NewCase) -> Result<Made> {
     check(spec)?;
     let v = spec.version;
-    let p = spec.profile;
     let fluids: Vec<&NewRegion> = spec.regions.iter().filter(|r| r.kind == RegionKind::Fluid).collect();
     let vegetation = spec.regions.iter().any(|r| r.kind == RegionKind::Vegetation);
     let mut notes = Vec::new();
 
     let description = Description {
         version: Some(v),
-        profile: Some(p),
         regions: ordered(spec)
             .into_iter()
             .map(|r| RegionDesc {
@@ -196,14 +193,14 @@ pub fn make(spec: &NewCase) -> Result<Made> {
     let mut files = vec![(crate::description::PATH.to_string(), description.write())];
     files.push((CONTROL_DICT.to_string(), control_dict(spec)?));
     if v == OfVersion::V8 {
-        let mut doc = template(p, v, Template::RegionProperties)?;
+        let mut doc = template(v, Template::RegionProperties)?;
         set(&mut doc, &["regions"], &region_properties(spec), Template::RegionProperties)?;
         files.push(("constant/regionProperties".to_string(), doc.to_string()));
     }
     for r in ordered(spec) {
         let n = &r.name;
         let mut put = |path: String, t: Template| -> Result<()> {
-            files.push((path, template(p, v, t)?.to_string()));
+            files.push((path, template(v, t)?.to_string()));
             Ok(())
         };
         match r.kind {
@@ -212,13 +209,13 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                 put(format!("constant/{n}/momentumTransport"), Template::FluidMomentum)?;
                 put(format!("system/{n}/fvSchemes"), Template::FluidSchemes)?;
                 put(format!("system/{n}/fvSolution"), Template::FluidSolution)?;
-                let mut g = template(p, v, Template::FluidG)?;
+                let mut g = template(v, Template::FluidG)?;
                 set(&mut g, &["value"], spec.up.gravity(), Template::FluidG)?;
                 files.push((format!("constant/{n}/g"), g.to_string()));
-                let (min, max) = p.temperature_limit();
+                let (min, max) = defaults::TEMPERATURE_LIMIT;
                 match v {
                     OfVersion::V12 => {
-                        let mut c = template(p, v, Template::FluidConstraints)?;
+                        let mut c = template(v, Template::FluidConstraints)?;
                         if spec.components.temperature_limit {
                             let limit = format!("{{ type limitTemperature; select all; min {min}; max {max}; }}");
                             c.set_inline(&["limitT"], &limit).map_err(|e| dict_error(Template::FluidConstraints, e))?;
@@ -227,11 +224,9 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                     }
                     OfVersion::V8 => {
                         if spec.components.temperature_limit {
-                            let mut o = template(p, v, Template::FluidOptions)?;
+                            let mut o = template(v, Template::FluidOptions)?;
                             set(&mut o, &["limitT", "min"], min, Template::FluidOptions)?;
                             set(&mut o, &["limitT", "max"], max, Template::FluidOptions)?;
-                            // The benchmark's file says `constant`, from where older versions read it.
-                            set(&mut o, &["FoamFile", "location"], "\"system\"", Template::FluidOptions)?;
                             files.push((format!("system/{n}/fvOptions"), o.to_string()));
                         }
                     }
@@ -241,7 +236,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                 put(format!("constant/{n}/g"), Template::SolidG)?;
                 put(format!("system/{n}/fvSchemes"), Template::SolidSchemes)?;
                 put(format!("system/{n}/fvSolution"), Template::SolidSolution)?;
-                let (text, missing) = transport(p, v, &r.materials)?;
+                let (text, missing) = transport(v, &r.materials)?;
                 files.push((format!("constant/{n}/transportProperties"), text));
                 if r.materials.is_empty() {
                     notes.push(format!(
@@ -250,8 +245,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                 }
                 for (m, model) in missing {
                     notes.push(format!(
-                        "region {n}, material {m}: the {} profile has no {model} material to take its coefficients from: add them to constant/{n}/transportProperties",
-                        p.name()
+                        "region {n}, material {m}: the tutorials have no {model} material to take its coefficients from: add them to constant/{n}/transportProperties"
                     ));
                 }
             }
@@ -270,7 +264,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
         }
         let air = AIR;
         if spec.components.grass {
-            let mut g = template(p, v, Template::Grass)?;
+            let mut g = template(v, Template::Grass)?;
             let model = g.value(&["grassModel"]).unwrap_or_default();
             let mut list = String::from("\n    (\n");
             for g in &spec.grass_patches {
@@ -286,15 +280,13 @@ pub fn make(spec: &NewCase) -> Result<Made> {
             }
         }
         if vegetation {
-            files.push((
-                format!("constant/{air}/vegetationProperties"),
-                template(p, v, Template::Vegetation)?.to_string(),
-            ));
+            files
+                .push((format!("constant/{air}/vegetationProperties"), template(v, Template::Vegetation)?.to_string()));
         }
     }
     if let Some(rad) = &spec.radiation {
-        files.push((format!("constant/{rad}/radiationProperties"), template(p, v, Template::Radiation)?.to_string()));
-        files.push((format!("constant/{rad}/solarLoadProperties"), template(p, v, Template::SolarLoad)?.to_string()));
+        files.push((format!("constant/{rad}/radiationProperties"), template(v, Template::Radiation)?.to_string()));
+        files.push((format!("constant/{rad}/solarLoadProperties"), template(v, Template::SolarLoad)?.to_string()));
     }
     Ok(Made { files, description, notes })
 }
@@ -306,10 +298,6 @@ fn ordered(spec: &NewCase) -> Vec<&NewRegion> {
 }
 
 fn check(spec: &NewCase) -> Result<()> {
-    let p = spec.profile;
-    if !p.versions().contains(&spec.version) {
-        return refuse(format!("the {} profile has no files for {} (yet)", p.name(), spec.version.label()));
-    }
     if !spec.regions.iter().any(|r| r.kind == RegionKind::Fluid) {
         return refuse("a case needs a fluid region (the air)".to_string());
     }
@@ -425,23 +413,23 @@ fn check(spec: &NewCase) -> Result<()> {
     Ok(())
 }
 
-/// The profile's file, read; its line ends made `\n`.
-fn template(p: Profile, v: OfVersion, t: Template) -> Result<Document> {
-    let Some(text) = p.template(v, t) else {
-        return refuse(format!("the {} profile has no {t:?} file for {}", p.name(), v.label()));
+/// The configuration's file, read; its line ends made `\n`.
+fn template(v: OfVersion, t: Template) -> Result<Document> {
+    let Some(text) = defaults::template(v, t) else {
+        return refuse(format!("{} has no {t:?} file", v.label()));
     };
     Document::parse(&text.replace("\r\n", "\n")).map_err(|e| dict_error(t, e))
 }
 
 fn dict_error(t: Template, e: umcf_foam_dict::Error) -> Error {
-    Error::NewCase(format!("the profile's {t:?} file: {e}"))
+    Error::NewCase(format!("the configuration's {t:?} file: {e}"))
 }
 
-/// Sets an entry the profile's file has; one it doesn't have is an error (the file isn't the
+/// Sets an entry the configuration's file has; one it doesn't have is an error (the file isn't the
 /// one expected).
 fn set(doc: &mut Document, path: &[&str], value: &str, t: Template) -> Result<()> {
     if doc.get(path).is_none() {
-        return refuse(format!("the profile's {t:?} file has no {}", path.join("/")));
+        return refuse(format!("the configuration's {t:?} file has no {}", path.join("/")));
     }
     doc.set(path, value).map_err(|e| dict_error(t, e))
 }
@@ -474,18 +462,18 @@ fn region_properties(spec: &NewCase) -> String {
     s
 }
 
-/// `controlDict`: the profile's, without its function objects (they name the profile's
+/// `controlDict`: the tutorials', without their function objects (they name the tutorials'
 /// regions and places), with the region list (OpenFOAM-12) and the blending layer as asked.
 fn control_dict(spec: &NewCase) -> Result<String> {
     let t = Template::ControlDict;
-    let mut doc = template(spec.profile, spec.version, t)?;
+    let mut doc = template(spec.version, t)?;
     let err = |e| dict_error(t, e);
     doc.remove(&["functions"]).map_err(err)?;
     doc.set(&["application"], SOLVER).map_err(err)?;
     if spec.components.blending {
         doc.set(&["blending"], "true").map_err(err)?;
         if doc.get(&["blendingCoeffs"]).is_none() {
-            doc.set(&["blendingCoeffs"], spec.profile.blending_coeffs()).map_err(err)?;
+            doc.set(&["blendingCoeffs"], defaults::BLENDING_COEFFS).map_err(err)?;
         }
     } else {
         doc.remove(&["blending"]).map_err(err)?;
@@ -500,13 +488,13 @@ fn control_dict(spec: &NewCase) -> Result<String> {
     Ok(doc.to_string())
 }
 
-/// A solid's `transportProperties`: the profile's, with `buildingMaterials` the given ones, each
-/// with the coefficients of the profile's first material of its model. Also the materials
-/// whose model the profile has none of (name, model): they get no coefficients.
-fn transport(p: Profile, v: OfVersion, materials: &[MaterialDesc]) -> Result<(String, Vec<(String, String)>)> {
+/// A solid's `transportProperties`: the tutorials', with `buildingMaterials` the given ones, each
+/// with the coefficients of the tutorials' first material of its model. Also the materials
+/// whose model the tutorials have none of (name, model): they get no coefficients.
+fn transport(v: OfVersion, materials: &[MaterialDesc]) -> Result<(String, Vec<(String, String)>)> {
     let t = Template::SolidTransport;
-    let mut doc = template(p, v, t)?;
-    // The profile's materials: model → its coefficients (every entry but the name and model).
+    let mut doc = template(v, t)?;
+    // The tutorials' materials: model → its coefficients (every entry but the name and model).
     let mut library: Vec<(String, Vec<(String, String)>)> = Vec::new();
     if let Some(items) = doc.get(&["buildingMaterials"]).and_then(|e| match e.value.as_slice() {
         [Node::List { items, .. }] => Some(items),

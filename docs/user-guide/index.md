@@ -16,8 +16,8 @@ How umcfGui sees urbanMicroclimateFoam cases, and what it does with them.
 - [Checking a case](checks.md): what the case check finds, code by code.
 - [The case workflow](workflow.md): the scripts read, checked and written again, and the
   workflow description `system/umcfWorkflow`.
-- [A new case](new-case.md): a case made from its regions and components, with the settings of
-  a profile (the tutorials', the Hong Kong benchmark's).
+- [A new case](new-case.md): a case made from its regions and components, with one
+  configuration's settings (the tutorials').
 - [Fields and results](fields.md): reading the solver's field files, ASCII or binary,
   compressed or not.
 - [The desktop app](desktop.md): `umcf-gui`, the window and what each part of it does.

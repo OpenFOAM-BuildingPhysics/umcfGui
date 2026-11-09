@@ -118,7 +118,6 @@ first piece of [the common workflow](../common-workflow.md): the scripts are wri
 
 ```c++
 version     12;
-profile     tutorial;
 
 regions
 {
@@ -161,7 +160,7 @@ reconstruct yes;
 | Key | What |
 |---|---|
 | `version` | `8` or `12`: the OpenFOAM version the scripts are for |
-| `profile` | the settings the case was made from by [`case.new`](new-case.md#profiles): `tutorial` or `hk`; an imported case has none |
+| `profile` | written by an earlier `case.new`: read and left out (there is [one configuration](new-case.md#the-configuration)) |
 | `kind` | `fluid`, `solid` or `vegetation` |
 | `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
@@ -191,10 +190,9 @@ import would write it; it also says when a file is there that doesn't load (not 
 directory, or over the size limit), or one the open case doesn't hold (written or undone since it was opened).
 `workflow.import` writes over neither, nor a symbolic link (to a dictionary, a field or
 nothing: the save would write the file it points to); with `replace` it writes over the case's own, whose
-comments and hand edits are not kept (`edit.undo` brings them back), nor its `profile` (the
-case's files don't tell it). In the desktop app, both
+comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
 commands show in the results card the problems and the import's notes first, then the settings
-(version, profile, radiation, components, solver), then the regions with their meshes, steps, patch roles and
+(version, radiation, components, solver), then the regions with their meshes, steps, patch roles and
 materials. The case
 check reads the file against the case (`workflow.description`): what can't be read in it, regions
 and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, a
