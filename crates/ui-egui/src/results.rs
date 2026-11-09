@@ -147,6 +147,9 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
         let text: Vec<String> = chosen
             .iter()
             .map(|(k, v)| match v {
+                Value::Object(o) if k == "materials" => {
+                    format!("materials {}", o.keys().cloned().collect::<Vec<_>>().join(", "))
+                }
                 Value::Array(a) => {
                     format!("{k} {}", a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" to "))
                 }

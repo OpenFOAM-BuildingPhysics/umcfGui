@@ -147,6 +147,32 @@ impl Case {
         if chosen.temperature_limit.is_some() {
             case_settings.temperature_limit = chosen.temperature_limit.clone();
         }
+        // A model written into the description's library by hand that the solver doesn't have.
+        let bad: Vec<String> = chosen
+            .materials
+            .iter()
+            .filter(|(m, _)| {
+                crate::settings::check_materials(
+                    &crate::settings::Settings { materials: vec![(m.clone(), Vec::new())], ..Default::default() },
+                    v,
+                )
+                .is_err()
+            })
+            .map(|(m, _)| m.clone())
+            .collect();
+        for m in &bad {
+            notes.push(format!(
+                "{}: materials/{m} is not a material model of the solver for {}: left out",
+                crate::description::PATH,
+                v.label()
+            ));
+        }
+        chosen.materials.retain(|(m, _)| !bad.contains(m));
+        // The library the description chose first, then what the case's solids have.
+        for (model, coeffs) in chosen.materials.iter().rev() {
+            case_settings.materials.retain(|(m, _)| m != model);
+            case_settings.materials.insert(0, (model.clone(), coeffs.clone()));
+        }
         if r.kind == RegionKind::Fluid {
             let open = |n: &&String| {
                 (n.contains("RAS model") && chosen.turbulence.is_none())

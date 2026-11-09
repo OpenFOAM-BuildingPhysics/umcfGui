@@ -13,6 +13,7 @@ fn chosen() -> Settings {
         turbulence: Some("realizableKE".into()),
         temperature_limit: Some(("283.15".into(), "370.15".into())),
         blending: Some(["60".into(), "0.3".into(), "0.25".into()]),
+        materials: vec![],
     }
 }
 
@@ -316,4 +317,200 @@ fn an_incomplete_temperature_limit_agrees_with_no_bounds() {
     let (got, notes) = Settings::from_case(&c);
     assert!(got.temperature_limit.is_none());
     assert!(notes.iter().any(|n| n.contains("( ? 373.15 ): not 0 < min < max")), "{notes:?}");
+}
+
+fn concrete() -> Library {
+    vec![(
+        "HamstadConcrete".into(),
+        vec![
+            ("rho".into(), "1950".into()),
+            ("cap".into(), "850".into()),
+            ("lambda1".into(), "1.3".into()),
+            ("lambda2".into(), "0".into()),
+        ],
+    )]
+}
+
+fn with_solid(version: OfVersion, settings: Settings, materials: &[(&str, &str)]) -> NewCase {
+    let mut s = spec(version, settings, false, false);
+    s.regions.push(NewRegion {
+        name: "street".into(),
+        kind: RegionKind::Solid,
+        materials: materials
+            .iter()
+            .map(|(n, m)| crate::description::MaterialDesc { name: (*n).into(), model: Some((*m).into()) })
+            .collect(),
+    });
+    s
+}
+
+#[test]
+fn the_material_library_reads_back_as_written_and_refuses_what_it_isn_t() {
+    let mut lib = concrete();
+    lib.push((
+        "VanGenuchten".into(),
+        vec![("rho".into(), "1000".into()), ("VanGenuchtenCoeffs".into(), "{ n 2; alpha 0.1; }".into())],
+    ));
+    let s = Settings { materials: lib.clone(), ..Default::default() };
+    let text = s.write();
+    assert!(
+        text.contains(
+            "    materials\n    {\n        HamstadConcrete  { rho 1950; cap 850; lambda1 1.3; lambda2 0; }\n"
+        ),
+        "{text}"
+    );
+    let (back, problems) = Description::read(
+        &Document::parse(&Description { settings: s.clone(), ..Default::default() }.write()).unwrap(),
+    );
+    assert_eq!(problems, vec![]);
+    assert_eq!(back.settings.materials, lib);
+    let (s, problems) =
+        read("materials { Soil { rho $r; } \"a b\" { rho 1; } Empty { } Brick { rho 1; rho 2; } Soil { rho 3; } }");
+    assert!(s.materials.is_empty(), "{:?}", s.materials);
+    for want in [
+        "settings/materials/Soil/rho: is a number",
+        "settings/materials/a b: is not a material model's name",
+        "settings/materials/Empty: has no coefficients",
+        "settings/materials/Brick/rho: is a number, or a dictionary of numbers, given once",
+        "settings/materials/Soil: is given twice",
+    ] {
+        assert!(problems.iter().any(|p| p.starts_with(want)), "{want}: {problems:?}");
+    }
+}
+
+#[test]
+fn the_library_is_read_from_a_case_s_solids_and_leaves_their_materials_as_they_are() {
+    for v in [OfVersion::V8, OfVersion::V12] {
+        let (_, mut c) = opened(&with_solid(v, Settings::default(), &[("soil", "Soil"), ("brick", "Hamstad5Brick")]));
+        let (s, notes) = Settings::from_case(&c);
+        assert_eq!(notes, Vec::<String>::new());
+        let models: Vec<&str> = s.materials.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(models, ["Soil", "Hamstad5Brick"], "{v:?}");
+        let soil = vec![("rho".to_string(), "1200".to_string())];
+        let a = c.apply_settings(&Settings { materials: vec![("Soil".into(), soil)], ..Default::default() }).unwrap();
+        assert!(a.changed.is_empty() && a.notes[0].contains("what new materials"), "{a:?}");
+    }
+    // Two materials of one model that differ (layers): one note, the first's taken.
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("a", "Soil"), ("b", "Soil"), ("c", "Soil")]);
+    let c = edited(&s, "constant/street/transportProperties", |t| {
+        let i = t.rfind("rho     1150;").unwrap();
+        format!("{}rho     1300;{}", &t[..i], &t[i + "rho     1150;".len()..])
+    });
+    let (s, notes) = Settings::from_case(&c);
+    assert!(s.materials[0].1.contains(&("rho".to_string(), "1150".to_string())), "{:?}", s.materials);
+    assert_eq!(
+        notes,
+        ["Soil materials differ (street/c besides street/a): the library has the first's, for new Soil materials"]
+    );
+}
+
+#[test]
+fn a_new_solid_takes_the_library_s_coefficients_and_a_model_the_solver_lacks_is_refused() {
+    let m = make(&with_solid(
+        OfVersion::V8,
+        Settings { materials: concrete(), ..Default::default() },
+        &[("pavement", "HamstadConcrete")],
+    ))
+    .unwrap();
+    assert_eq!(m.notes, Vec::<String>::new());
+    let (_, text) = m.files.iter().find(|(p, _)| p == "constant/street/transportProperties").unwrap();
+    assert!(
+        text.contains("buildingMaterialModel HamstadConcrete;\n        rho     1950;\n        cap     850;"),
+        "{text}"
+    );
+    let bad = Settings { materials: vec![("Marble".into(), vec![("rho".into(), "1".into())])], ..Default::default() };
+    assert!(
+        matches!(make(&spec(OfVersion::V12, bad.clone(), false, false)), Err(Error::NewCase(m)) if m.contains("materials/Marble is not a material model"))
+    );
+    let (_, mut c) = opened(&spec(OfVersion::V12, Settings::default(), false, false));
+    assert!(c.choose_settings(&bad).is_err());
+    // region.add: the description's library first.
+    let (fs, mut c) = opened(&spec(OfVersion::V12, Settings::default(), false, false));
+    c.choose_settings(&Settings { materials: concrete(), ..Default::default() }).unwrap();
+    let r = NewRegion {
+        name: "ground".into(),
+        kind: RegionKind::Solid,
+        materials: vec![crate::description::MaterialDesc {
+            name: "pavement".into(),
+            model: Some("HamstadConcrete".into()),
+        }],
+    };
+    let added = c.add_region(&fs, &r).unwrap();
+    assert!(!added.notes.iter().any(|n| n.contains("coefficients")), "{:?}", added.notes);
+    let tp = c.dict("constant/ground/transportProperties").unwrap().value(&["buildingMaterials"]).unwrap();
+    assert!(tp.contains("rho 1950"), "{tp}");
+}
+
+#[test]
+fn a_material_with_a_macro_or_directive_is_noted_and_left_out_of_the_library() {
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("soil", "Soil"), ("brick", "Hamstad5Brick")]);
+    let c = edited(&s, "constant/street/transportProperties", |t| {
+        t.replacen("        rho     1150;", "        $common;\n        rho     1150;", 1)
+    });
+    let (lib, notes) = Settings::from_case(&c);
+    let models: Vec<&str> = lib.materials.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(models, ["Hamstad5Brick"]);
+    assert!(notes.iter().any(|n| n.contains("material soil (Soil)")), "{notes:?}");
+    let (_, problems) = read("materials { Soil { #include \"coeffs\" rho 1; } }");
+    assert!(problems.iter().any(|p| p.contains("settings/materials/Soil: has a macro or a directive")), "{problems:?}");
+}
+
+#[test]
+fn the_case_s_own_models_are_kept_and_a_materials_block_given_twice_is_refused() {
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("brick", "Hamstad5Brick")]);
+    let mut c = edited(&s, "constant/street/transportProperties", |t| t.replace("Hamstad5Brick", "MyBrick"));
+    // MyBrick is the case's own: the card's settings, given back, are taken.
+    let (mine, _) = Settings::from_case(&c);
+    assert_eq!(mine.materials[0].0, "MyBrick");
+    c.choose_settings(&mine).unwrap();
+    // A materials block given twice in the description: refused.
+    let mut fs = MemFs::new();
+    let text = Description { settings: Settings { materials: concrete(), ..Default::default() }, ..Default::default() }
+        .write();
+    fs.insert("system/controlDict", "FoamFile { class dictionary; object controlDict; }\nregions { fluid ( air ); }\n");
+    let twice = text.replace("    materials\n", "    materials { Soil { rho 1; } }\n    materials\n");
+    fs.insert(crate::description::PATH, twice);
+    let mut c = Case::open(&fs).unwrap();
+    let e = c.choose_settings(&Settings { materials: concrete(), ..Default::default() }).unwrap_err();
+    assert!(e.to_string().contains("settings/materials is given twice"), "{e}");
+}
+
+#[test]
+fn a_coefficients_dictionary_goes_into_a_new_material_whole() {
+    let lib = vec![(
+        "VanGenuchten".to_string(),
+        vec![
+            ("rho".to_string(), "1000".to_string()),
+            ("VanGenuchtenCoeffs".to_string(), "{ n 2; alpha 0.1; }".to_string()),
+        ],
+    )];
+    let m = make(&with_solid(
+        OfVersion::V12,
+        Settings { materials: lib.clone(), ..Default::default() },
+        &[("loam", "VanGenuchten")],
+    ))
+    .unwrap();
+    let (_, text) = m.files.iter().find(|(p, _)| p == "constant/street/transportProperties").unwrap();
+    let doc = Document::parse(text).unwrap();
+    assert!(doc.root.problems().is_empty());
+    let list = doc.value(&["buildingMaterials"]).unwrap();
+    assert!(list.contains("VanGenuchtenCoeffs { n 2; alpha 0.1; }"), "{list}");
+}
+
+#[test]
+fn a_new_solid_takes_the_description_s_library_before_the_case_s_materials() {
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("soil", "Soil")]);
+    let (fs, mut c) = opened(&s);
+    let mine = vec![("Soil".to_string(), vec![("rho".to_string(), "999".to_string())])];
+    c.choose_settings(&Settings { materials: mine, ..Default::default() }).unwrap();
+    let r = NewRegion {
+        name: "ground".into(),
+        kind: RegionKind::Solid,
+        materials: vec![crate::description::MaterialDesc { name: "earth".into(), model: Some("Soil".into()) }],
+    };
+    c.add_region(&fs, &r).unwrap();
+    let tp = c.dict("constant/ground/transportProperties").unwrap().value(&["buildingMaterials"]).unwrap();
+    assert!(tp.contains("rho 999") && !tp.contains("1150"), "{tp}");
+    // The case's own solid keeps its own.
+    assert!(c.dict("constant/street/transportProperties").unwrap().to_string().contains("1150"));
 }

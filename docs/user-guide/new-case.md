@@ -49,9 +49,10 @@ the OpenFOAM-8 tutorials has z up); a solid's `g` is none, and the vegetation re
 (the solver doesn't read it).
 
 A solid's materials (`[{"name": "soil", "model": "Soil"}]`, each the cell zone built of it) go
-into its `buildingMaterials`, each with the coefficients (`rho`, `cap`, `lambda1`, …) of the
-tutorials' first material of that model (`Soil`, `Hamstad5Brick`); another model gets none, and a
-note says to add them. A model the solver doesn't have for the version is refused.
+into its `buildingMaterials`, each with the coefficients (`rho`, `cap`, `lambda1`, …) of its model
+in the [material library](workflow.md#settings) chosen (`settings`' `materials`), else of the
+tutorials' first material of that model (`Soil`, `Hamstad5Brick`); another model gets none, and
+a note says to add them. A model the solver doesn't have for the version is refused.
 
 ## The configuration
 
