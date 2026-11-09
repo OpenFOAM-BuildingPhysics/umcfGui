@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use umcf_model::RegionKind;
 use umcf_model::description::{self, Description, PATH};
+use umcf_model::description_edit::{EditReport, PatchEdit};
 use umcf_model::workflow::{MeshBuild, RegionStep, RootStep};
 
 use crate::params::Params;
@@ -118,6 +119,170 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         count(notes.len(), "note")
     );
     Ok(Outcome::new(message, json!({ "file": PATH, "description": to_json(&d), "notes": notes })))
+}
+
+pub(super) const REGION: CommandSpec = CommandSpec {
+    id: "workflow.region",
+    label: "Describe a region",
+    menu: "Case/Workflow/Describe a region",
+    shortcut: None,
+    params: "region: its name; kind: fluid, solid or vegetation (adds the region to system/umcfWorkflow, or gives it that kind; a solid with materials stays one), or remove: true (takes it out; what still names it, coupled patches and the radiation, is listed). Edits the description only, entry by entry: its comments and layout stay. The case's own files follow once they are written from it. A name is one plain OpenFOAM word. workflow.import writes a description first when the case has none.",
+    enabled: needs_case,
+    run: region,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+fn region(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(REGION.id, p, &["region", "kind", "remove"])?;
+    let region = p.required_str("region")?;
+    let kind = p.str("kind")?;
+    let remove = p.bool("remove")?.unwrap_or(false);
+    let o = s.opened_mut()?;
+    let (report, message) = match (kind, remove) {
+        (Some(_), true) | (None, false) => {
+            return Err(Error::Params(format!("{}: give kind (fluid, solid, vegetation) or remove: true", REGION.id)));
+        }
+        (None, true) => {
+            let r = o.case.undescribe_region(region)?;
+            let also = if r.dangling.is_empty() {
+                String::new()
+            } else {
+                format!("; still naming it: {}", r.dangling.join(", "))
+            };
+            (r, format!("{PATH}: region {region} taken out{also}"))
+        }
+        (Some(k), false) => {
+            let kind = match k {
+                "fluid" => RegionKind::Fluid,
+                "solid" => RegionKind::Solid,
+                "vegetation" => RegionKind::Vegetation,
+                _ => return Err(Error::Params(format!("{}: kind is fluid, solid or vegetation", REGION.id))),
+            };
+            let r = o.case.describe_region(region, kind)?;
+            let done = if r.added { "added" } else { "now" };
+            (r, format!("{PATH}: region {region} {done}, {k}"))
+        }
+    };
+    edited(s, message, &report)
+}
+
+pub(super) const PATCH: CommandSpec = CommandSpec {
+    id: "workflow.patch",
+    label: "Describe a patch",
+    menu: "Case/Workflow/Describe a patch",
+    shortcut: None,
+    params: "region, patch: the region of system/umcfWorkflow and its patch (a patch the region doesn't list is added); role: inlet, outlet, side, top, ground, coupled, canopy, interior, bottom or sky (null takes it away); partner: {\"region\", \"patch\"} it is coupled to (null takes it away); name: a new name for the patch (the partners that named it follow). At least one of them. Edits the description only, entry by entry: its comments and layout stay. The case's own files (the mesh, fields, dictionaries) follow once they are written from it; patch.set renames a patch in the case.",
+    enabled: needs_case,
+    run: patch,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+fn patch(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(PATCH.id, p, &["region", "patch", "role", "partner", "name"])?;
+    let region = p.required_str("region")?;
+    let patch = p.required_str("patch")?;
+    let mut edit = PatchEdit::default();
+    match p.value("role") {
+        None => {}
+        Some(Value::Null) => edit.role = Some(None),
+        Some(Value::String(r)) => match description::Role::parse(r) {
+            Some(role) => edit.role = Some(Some(role)),
+            None => {
+                let names: Vec<&str> = description::Role::ALL.iter().map(|r| r.name()).collect();
+                return Err(Error::Params(format!("{}: role is one of {}, or null", PATCH.id, names.join(", "))));
+            }
+        },
+        Some(_) => return Err(Error::Params(format!("{}: role is a name, or null", PATCH.id))),
+    }
+    match p.value("partner") {
+        None => {}
+        Some(Value::Null) => edit.partner = Some(None),
+        Some(v) => {
+            let field = |k: &str| v.get(k).and_then(Value::as_str);
+            match (field("region"), field("patch"), v.as_object().map(serde_json::Map::len)) {
+                (Some(r), Some(q), Some(2)) => edit.partner = Some(Some((r.to_string(), q.to_string()))),
+                _ => {
+                    return Err(Error::Params(format!(
+                        "{}: partner is {{\"region\": …, \"patch\": …}}, or null",
+                        PATCH.id
+                    )));
+                }
+            }
+        }
+    }
+    edit.rename = p.str("name")?.map(str::to_string);
+    let o = s.opened_mut()?;
+    let r = o.case.describe_patch(region, patch, &edit)?;
+    let shown = edit.rename.as_deref().unwrap_or(patch);
+    let mut message = format!("{PATH}: patch {shown} of region {region} {}", if r.added { "added" } else { "changed" });
+    if let Some(to) = &edit.rename {
+        message = format!("{PATH}: patch {patch} of region {region} is now {to}");
+        if !r.followed.is_empty() {
+            message.push_str(&format!("; partners that followed: {}", r.followed.join(", ")));
+        }
+    }
+    edited(s, message, &r)
+}
+
+pub(super) const MATERIAL: CommandSpec = CommandSpec {
+    id: "workflow.material",
+    label: "Describe a material",
+    menu: "Case/Workflow/Describe a material",
+    shortcut: None,
+    params: "region: a solid region of system/umcfWorkflow; material: its name, the cell zone built of it (added when the region doesn't list it); model: its buildingMaterialModel (null takes it away), or remove: true (takes the material out). Edits the description only, entry by entry: its comments and layout stay; the region's transportProperties follows once it is written from it.",
+    enabled: needs_case,
+    run: material,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+fn material(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(MATERIAL.id, p, &["region", "material", "model", "remove"])?;
+    let region = p.required_str("region")?;
+    let material = p.required_str("material")?;
+    let remove = p.bool("remove")?.unwrap_or(false);
+    let model = match p.value("model") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(m)) => Some(Some(m.as_str())),
+        Some(_) => return Err(Error::Params(format!("{}: model is a name, or null", MATERIAL.id))),
+    };
+    if remove && model.is_some() {
+        return Err(Error::Params(format!("{}: give model or remove: true, not both", MATERIAL.id)));
+    }
+    let o = s.opened_mut()?;
+    let (r, message) = if remove {
+        (
+            o.case.undescribe_material(region, material)?,
+            format!("{PATH}: material {material} of region {region} taken out"),
+        )
+    } else {
+        let r = o.case.describe_material(region, material, model)?;
+        let done = if r.added { "added" } else { "changed" };
+        (r, format!("{PATH}: material {material} of region {region} {done}"))
+    };
+    edited(s, message, &r)
+}
+
+/// The outcome of an edit: the message, and the description as it is now.
+fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
+    let (d, problems) = s.case().and_then(umcf_model::Case::description).unwrap_or_default();
+    // What the file has the reader can't read, the edit's or not: shown with it.
+    let problems: Vec<Value> = problems.iter().map(|p| json!({ "at": p.at, "message": p.message })).collect();
+    let message = if problems.is_empty() {
+        message
+    } else {
+        format!("{message} ({} in the file)", count(problems.len(), "problem"))
+    };
+    Ok(Outcome::new(
+        message,
+        json!({ "file": PATH, "description": to_json(&d), "problems": problems, "followed": r.followed, "dangling": r.dangling }),
+    ))
 }
 
 /// What is on disk at the description's path when the open case holds none.

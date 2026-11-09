@@ -1002,4 +1002,4 @@ fn infer(
 
 #[cfg(test)]
 #[path = "description_tests.rs"]
-mod tests;
+pub(crate) mod tests;

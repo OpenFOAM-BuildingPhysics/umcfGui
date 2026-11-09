@@ -358,3 +358,44 @@ fn append_adds_a_list_item_like_the_ones_before() {
     assert!(doc.append(&["pointSync"], "a b").is_err());
     assert_eq!(doc.to_string(), "pointSync false;\n");
 }
+
+#[test]
+fn rename_at_a_path_keeps_the_rest() {
+    let text = "a\n{\n    // the west\n    west            { role inlet; }\n    east            { role outlet; }\n}\n";
+    let mut doc = Document::parse(text).unwrap();
+    assert!(doc.rename(&["a", "west"], "upwind").unwrap());
+    assert_eq!(doc.to_string(), text.replace("west            {", "upwind            {"));
+    assert!(!doc.rename(&["a", "north"], "x").unwrap());
+    assert!(!doc.rename(&["b", "west"], "x").unwrap());
+    assert!(doc.rename(&["a", "east", "role", "x"], "y").is_err());
+    assert!(doc.rename(&[], "y").is_err());
+}
+
+#[test]
+fn an_inline_dictionary_stays_on_its_line() {
+    let text = "p\n{\n    // west\n    west            { role inlet; }\n    odd             { }\n    east\n    {\n        role outlet;\n    }\n}\n";
+    let mut d = Document::parse(text).unwrap();
+    d.set_inline(&["p", "west"], "{ role outlet; partner ( a b ); }").unwrap();
+    d.set_inline(&["p", "odd"], "{ role side; }").unwrap();
+    d.set_inline(&["p", "east"], "{ role side; }").unwrap();
+    d.set_inline(&["p", "new"], "{ role top; }").unwrap();
+    d.set_inline(&["q", "a"], "{ }").unwrap();
+    let out = d.to_string();
+    assert!(out.contains("    // west\n    west            { role outlet; partner ( a b ); }\n"), "{out}");
+    assert!(out.contains("    odd             { role side; }\n"), "{out}");
+    assert!(out.contains("    east            { role side; }\n"), "{out}");
+    assert!(out.contains("    new             { role top; }\n"), "{out}");
+    assert!(out.contains("q\n{\n    a               { }\n}"), "{out}");
+    // It reads back as the same entries.
+    let back = Document::parse(&out).unwrap();
+    assert_eq!(back.value(&["p", "east", "role"]).as_deref(), Some("side"));
+    assert_eq!(back.to_string(), out);
+}
+
+#[test]
+fn a_value_on_the_next_line_stays_there_when_set() {
+    let text = "a\n{\n    value\n        uniform 0;\n}\n";
+    let mut d = Document::parse(text).unwrap();
+    d.set(&["a", "value"], "uniform 1").unwrap();
+    assert_eq!(d.to_string(), "a\n{\n    value\n        uniform 1;\n}\n");
+}

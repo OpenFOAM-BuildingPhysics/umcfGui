@@ -7,19 +7,23 @@ use crate::{Error, Result, unquote};
 const VALUE_COLUMN: usize = 16;
 const STEP: &str = "    ";
 
-pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str) -> Result<()> {
+/// Sets the entry at `path`. `inline`: a dictionary value keeps the layout it is given
+/// (`{ role side; }` on the key's line), as a plain value does; otherwise it is laid out over
+/// lines like its siblings.
+pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str, inline: bool) -> Result<()> {
     let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
     if !rest.is_empty() {
         let child_indent = child_indent(dict, key, indent);
         if dict.get_mut(key).is_none() {
-            let entry = new_entry(dict, key, vec![empty_dict()], indent);
+            let entry = new_entry(dict, key, vec![empty_dict()], indent, false);
             push(dict, entry);
         }
         let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
         let sub = entry.dict_mut().ok_or_else(|| Error::NotADict(key.to_string()))?;
-        return set(sub, rest, nodes, &child_indent);
+        return set(sub, rest, nodes, &child_indent, inline);
     }
-    let is_dict = matches!(nodes.as_slice(), [Node::Dict { .. }]);
+    let dict_value = matches!(nodes.as_slice(), [Node::Dict { .. }]);
+    let is_dict = dict_value && !inline;
     let pad_hint = value_pad(dict, key);
     match dict.get_mut(key) {
         Some(e) => {
@@ -34,18 +38,22 @@ pub fn set(dict: &mut Dict, path: &[&str], mut nodes: Vec<Node>, indent: &str) -
             } else {
                 if let Some(n) = nodes.first_mut() {
                     n.first_tok_mut().lead = match old_lead {
-                        Some(l) if was_value && !l.is_empty() => l,
+                        // A value's own layout stays (on the next line, say); an inline dictionary
+                        // over one laid out by hand goes on the key's line.
+                        Some(l) if !l.is_empty() && (was_value || (inline && !l.contains('\n'))) => l,
                         _ => pad_hint,
                     };
                 }
-                if e.end.is_none() {
+                if dict_value {
+                    e.end = None;
+                } else if e.end.is_none() {
                     e.end = Some(Tok::new("", ";"));
                 }
             }
             e.value = nodes;
         }
         None => {
-            let entry = new_entry(dict, key, nodes, indent);
+            let entry = new_entry(dict, key, nodes, indent, inline);
             push(dict, entry);
         }
     }
@@ -170,7 +178,7 @@ fn empty_dict() -> Node {
 }
 
 /// A new entry formatted like the last sibling (same blank-line spacing and indentation).
-fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str) -> Entry {
+fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str, inline: bool) -> Entry {
     let (newlines, indent) = match dict.items.iter().rev().find(|i| !i.key_tok().text.is_empty()) {
         Some(last) => {
             let ws = trailing_ws(&last.key_tok().lead);
@@ -180,7 +188,8 @@ fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str) -> Entr
         None => (1, indent.to_string()),
     };
     let key_text = if needs_quotes(key) { format!("\"{key}\"") } else { key.to_string() };
-    let is_dict = matches!(nodes.as_slice(), [Node::Dict { .. }]);
+    let dict_value = matches!(nodes.as_slice(), [Node::Dict { .. }]);
+    let is_dict = dict_value && !inline;
     if is_dict {
         if let Some(n) = nodes.first_mut() {
             layout_dict(n, &indent);
@@ -189,7 +198,7 @@ fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str) -> Entr
         n.first_tok_mut().lead = pad(key_text.len(), VALUE_COLUMN);
     }
     let lead = format!("{}{indent}", "\n".repeat(newlines));
-    Entry { key: Tok::new(lead, key_text), value: nodes, end: (!is_dict).then(|| Tok::new("", ";")) }
+    Entry { key: Tok::new(lead, key_text), value: nodes, end: (!dict_value).then(|| Tok::new("", ";")) }
 }
 
 fn push(dict: &mut Dict, entry: Entry) {

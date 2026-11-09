@@ -51,7 +51,7 @@ Where the names are written:
 
 An OpenFOAM-style dictionary, so it travels with the case, reads with the same tools and can be
 edited by hand. What is built so far (regions, their kinds, the meshing steps as the scripts run
-them, patches with roles and partners, a solid's materials, radiation and the solver) is described in [the case
+them, patches with roles and partners, a solid's materials, radiation and the solver; its import from a case, its check and its edits entry by entry) is described in [the case
 workflow](user-guide/workflow.md#the-workflow-description). A sketch of where it goes (the
 meshing keys settle as rows 5–7 are built):
 
