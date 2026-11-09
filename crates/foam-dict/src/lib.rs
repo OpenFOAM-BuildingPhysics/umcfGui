@@ -110,7 +110,14 @@ impl Document {
     /// parent dictionaries) is appended to its parent, indented like its siblings.
     pub fn set(&mut self, path: &[&str], value: &str) -> Result<()> {
         let nodes = cst::parse_value(value, &Limits::default())?;
-        edit::set(&mut self.root, path, nodes, "")
+        edit::set(&mut self.root, path, nodes, "", false)
+    }
+
+    /// Sets the entry at `path` as [`Document::set`] does, but a dictionary value stays as it
+    /// is written (`{ role side; }` on the key's line) instead of being laid out over lines.
+    pub fn set_inline(&mut self, path: &[&str], value: &str) -> Result<()> {
+        let nodes = cst::parse_value(value, &Limits::default())?;
+        edit::set(&mut self.root, path, nodes, "", true)
     }
 
     /// Appends `value` (one value: `{ name a; }`, `b`) to the list that is the entry at `path`
@@ -123,6 +130,18 @@ impl Document {
             _ => return Err(Error::Unexpected { found: value.to_string(), expected: "one value", at: (1, 1) }),
         };
         edit::append(&mut self.root, path, node)
+    }
+
+    /// Gives the entry at `path` the key `to`, keeping its value, comments and layout, as
+    /// [`Dict::rename`] does. `false` when there is no such entry.
+    pub fn rename(&mut self, path: &[&str], to: &str) -> Result<bool> {
+        let (last, parents) = path.split_last().ok_or(Error::EmptyPath)?;
+        let mut dict = &mut self.root;
+        for key in parents {
+            let Some(entry) = dict.get_mut(key) else { return Ok(false) };
+            dict = entry.dict_mut().ok_or_else(|| Error::NotADict((*key).to_string()))?;
+        }
+        Ok(dict.rename(last, to))
     }
 
     /// Removes the entry at `path`, with the comments and blank lines in front of it.
@@ -142,7 +161,7 @@ impl Dict {
     /// siblings.
     pub fn set(&mut self, path: &[&str], value: &str) -> Result<()> {
         let nodes = cst::parse_value(value, &Limits::default())?;
-        edit::set(self, path, nodes, "")
+        edit::set(self, path, nodes, "", false)
     }
 
     /// Gives the entry `key` (the last one with that key) the key `to`, keeping its value,

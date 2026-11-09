@@ -175,3 +175,34 @@ solid's materials the case doesn't list (or lists with another model), a model t
 doesn't have for the case's version (one the case's file has too is the case check's to say),
 materials of the case it leaves out, and another OpenFOAM version.
 
+
+### Editing the description
+
+Three commands change the description entry by entry, so its comments, order and layout stay:
+a patch kept on one line (`west { role inlet; }`) is written on its line again, with what else
+it holds as it was written (a value the reader can't read, a quoted name, another key), and one
+laid out by hand over several lines, or holding a macro or a directive, is edited key by key,
+its comments kept.
+
+| Command | What |
+|---|---|
+| `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, the radiation) is listed. A solid with materials stays one |
+| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`) and `name`. `null` takes a role or partner away; a patch the region doesn't list is added. A new name is followed by the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
+| `workflow.material` | `region` (a solid), `material` (the name of its cell zone) and `model` (its `buildingMaterialModel`, or `null`), or `remove: true` |
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'workflow.patch={"region":"air","patch":"west","role":"inlet"}' \
+  --cmd 'workflow.material={"region":"street","material":"brick","model":"Hamstad5Brick"}' \
+  --cmd 'case.save={}'
+```
+
+They change the description only. The case's own files (the mesh, the fields, the dictionaries
+that name patches and materials) follow once they are written from it ([gaps](../gaps.md) rows
+4–8); until then, `patch.set` renames a patch in the case. A name is one plain OpenFOAM word
+(letters, digits, `_ . - :`, not starting with a digit or `-`). A key the file gives twice (the
+reader takes the first, an edit would change the last), and a patch or material with an entry
+that ends without its `;` (a key set after it would be read as part of it), are refused until
+the file is mended by hand,
+and a case without a description gets one from `workflow.import` first. An edit's outcome lists
+the problems the file still has. Each edit is one step in the history (Ctrl+Z) and the journal.

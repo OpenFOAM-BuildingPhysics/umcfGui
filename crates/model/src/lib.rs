@@ -45,6 +45,7 @@ use umcf_schema::{CaseKind, Layout, Note, Severity};
 
 mod controls;
 pub mod description;
+pub mod description_edit;
 pub mod script;
 pub mod tables;
 pub mod workflow;
@@ -79,6 +80,9 @@ pub enum Error {
     Field { path: String, source: umcf_foam_field::Error },
     #[error("{0}")]
     Bc(String),
+    /// An edit of the workflow description that can't be made, and why.
+    #[error("{0}")]
+    Describe(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
 }
@@ -1081,6 +1085,14 @@ impl Case {
     /// file changes.
     pub fn set(&mut self, rel: &str, path: &[&str], value: &str) -> Result<()> {
         self.dict_mut(rel)?.set(path, value).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
+        self.edited(rel);
+        Ok(())
+    }
+
+    /// Sets the entry at `path` as [`Case::set`] does, a dictionary value kept on the key's
+    /// line as written (`{ role side; }`).
+    pub fn set_inline(&mut self, rel: &str, path: &[&str], value: &str) -> Result<()> {
+        self.dict_mut(rel)?.set_inline(path, value).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
         self.edited(rel);
         Ok(())
     }

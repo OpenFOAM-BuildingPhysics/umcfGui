@@ -1666,6 +1666,82 @@ fn workflow_show_and_import() {
     assert!(s.execute("workflow.import", &json!({ "replace": "yes" })).is_err());
 }
 
+/// The three edit commands through the session: each change, its history and journal, saving, and the refusals.
+#[test]
+fn the_description_is_edited_entry_by_entry() {
+    let mut s = session();
+    // Without a description: refused, saying how to get one.
+    let e = s.execute("workflow.region", &json!({ "region": "roofs", "kind": "solid" })).unwrap_err();
+    assert!(e.to_string().contains("workflow.import"), "{e}");
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let region = |s: &mut Session, name: &str| -> Value {
+        let out = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(out.data["problems"], json!([]));
+        out.data["description"]["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    // A region, a material, a patch with a role and a partner, then renamed.
+    let out = s.execute("workflow.region", &json!({ "region": "roofs", "kind": "solid" })).unwrap();
+    assert_eq!(out.message, "system/umcfWorkflow: region roofs added, solid");
+    assert_eq!(region(&mut s, "roofs")["kind"], "solid");
+    s.execute("workflow.material", &json!({ "region": "roofs", "material": "tiles", "model": "Hamstad5Brick" }))
+        .unwrap();
+    assert_eq!(region(&mut s, "roofs")["materials"], json!([{ "name": "tiles", "model": "Hamstad5Brick" }]));
+    let out = s
+        .execute(
+            "workflow.patch",
+            &json!({ "region": "roofs", "patch": "top", "role": "coupled", "partner": { "region": "air", "patch": "roofs" } }),
+        )
+        .unwrap();
+    assert_eq!(out.message, "system/umcfWorkflow: patch top of region roofs added");
+    let out = s.execute("workflow.patch", &json!({ "region": "roofs", "patch": "top", "name": "outside" })).unwrap();
+    assert_eq!(out.message, "system/umcfWorkflow: patch top of region roofs is now outside");
+    assert_eq!(
+        region(&mut s, "roofs")["patches"],
+        json!([{ "name": "outside", "role": "coupled", "partner": { "region": "air", "patch": "roofs" } }])
+    );
+    s.execute("workflow.patch", &json!({ "region": "roofs", "patch": "outside", "role": null, "partner": null }))
+        .unwrap();
+    assert_eq!(region(&mut s, "roofs")["patches"], json!([{ "name": "outside", "role": null, "partner": null }]));
+    s.execute("workflow.material", &json!({ "region": "roofs", "material": "tiles", "remove": true })).unwrap();
+    assert_eq!(region(&mut s, "roofs")["materials"], json!([]));
+    // Each is one edit in the history and the journal.
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert_eq!(region(&mut s, "roofs")["materials"].as_array().map(Vec::len), Some(1));
+    let out = s.execute("workflow.region", &json!({ "region": "roofs", "remove": true })).unwrap();
+    assert!(out.message.starts_with("system/umcfWorkflow: region roofs taken out"), "{}", out.message);
+    assert_eq!(region(&mut s, "roofs"), Value::Null);
+    let journaled: Vec<&str> =
+        s.journal().iter().filter_map(|j| j["command"].as_str()).filter(|c| c.starts_with("workflow.")).collect();
+    assert!(journaled.contains(&"workflow.patch") && journaled.contains(&"workflow.material"), "{journaled:?}");
+    // Saved, the file reads back the same.
+    s.execute("case.save", &Value::Null).unwrap();
+    assert!(!text(&s, "system/umcfWorkflow").contains("roofs"));
+    // Wrong parameters: refused, nothing changed.
+    let before = text(&s, "system/umcfWorkflow");
+    for (id, p, says) in [
+        ("workflow.region", json!({ "region": "x" }), "give kind"),
+        ("workflow.region", json!({ "region": "x", "kind": "solid", "remove": true }), "give kind"),
+        ("workflow.region", json!({ "region": "x", "kind": "rock" }), "fluid, solid or vegetation"),
+        ("workflow.region", json!({ "region": "a b", "kind": "solid" }), "not a plain OpenFOAM name"),
+        ("workflow.patch", json!({ "region": "air", "patch": "west" }), "nothing to change"),
+        ("workflow.patch", json!({ "region": "air", "patch": "west", "role": "door" }), "role is one of"),
+        ("workflow.patch", json!({ "region": "air", "patch": "west", "partner": "street" }), "partner is"),
+        ("workflow.material", json!({ "region": "air", "material": "brick" }), "not a solid"),
+        ("workflow.material", json!({ "region": "street", "material": "brick", "model": 3 }), "model is a name"),
+    ] {
+        let e = s.execute(id, &p).unwrap_err();
+        assert!(e.to_string().contains(says), "{id} {p}: {e}");
+    }
+    assert_eq!(text(&s, "system/umcfWorkflow"), before);
+    assert!(s.case().unwrap().changed().is_empty());
+}
+
 #[test]
 fn workflow_show_says_a_directory_there_is_unreadable() {
     let mut s = Session::with_backup(".umcfgui/backup/test");

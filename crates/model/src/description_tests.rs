@@ -2,7 +2,7 @@ use umcf_core::MemFs;
 
 use super::*;
 
-fn header(class: &str, object: &str) -> String {
+pub(crate) fn header(class: &str, object: &str) -> String {
     format!(
         "FoamFile\n{{\n    version     2.0;\n    format      ascii;\n    class       {class};\n    object      {object};\n}}\n"
     )
@@ -61,7 +61,7 @@ runApplication urbanMicroclimateFoam\n";
 
 /// A street canyon: air with an inlet, an outlet, slip sides, a top, the ground and the street
 /// coupled to the solid; the solid street; the vegetation region with the air's twins.
-fn canyon() -> MemFs {
+pub(crate) fn canyon() -> MemFs {
     let coupled = |r: &str, p: &str| format!("        neighbourRegion {r};\n        neighbourPatch {p};\n");
     MemFs::new()
         .with("system/controlDict", format!("{}{CONTROL}", header("dictionary", "controlDict")))
