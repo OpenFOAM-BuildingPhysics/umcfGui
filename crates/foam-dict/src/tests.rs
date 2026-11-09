@@ -552,3 +552,22 @@ fn a_word_added_after_a_line_comment_gets_a_line_of_its_own() {
     doc.add_to_sublist("regions", "vegetation", "vegetation").unwrap();
     assert_eq!(doc.to_string(), "regions (\n    vegetation (vegetation)\n);");
 }
+
+#[test]
+fn what_isn_t_one_word_isn_t_added_to_a_list() {
+    for bad in ["", "roof //", "a/*b", "a b", "(a)", "a;", "\"a\"", "a}", "a\tb"] {
+        let src = "regions { solid ( street ); }";
+        let mut doc = Document::parse(src).unwrap();
+        assert!(matches!(doc.add_word(&["regions", "solid"], bad), Err(Error::NotAWord(_))), "{bad:?}");
+        assert_eq!(doc.to_string(), src, "{bad:?}");
+        let src = "regions ( fluid (air) );";
+        let mut doc = Document::parse(src).unwrap();
+        assert!(matches!(doc.add_to_sublist("regions", "fluid", bad), Err(Error::NotAWord(_))), "{bad:?}");
+        assert!(matches!(doc.add_to_sublist("regions", bad, "x"), Err(Error::NotAWord(_))), "{bad:?}");
+        assert_eq!(doc.to_string(), src, "{bad:?}");
+    }
+    // A word with a slash, a dot or a dollar is one.
+    let mut doc = Document::parse("regions { solid ( street ); }").unwrap();
+    doc.add_word(&["regions", "solid"], "a/b.c").unwrap();
+    assert_eq!(doc.to_string(), "regions { solid ( street a/b.c ); }");
+}

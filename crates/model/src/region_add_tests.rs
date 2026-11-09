@@ -269,7 +269,8 @@ fn the_settings_are_those_of_the_description_s_profile() {
     let fs = made_with(Profile::Hk, OfVersion::V8, Up::Z, false);
     let mut c = Case::open(&fs).unwrap();
     c.add_region(&fs, &solid("roofs", &[])).unwrap();
-    let hk = include_str!("../../schema/templates/hk/solid/fvSolution");
+    // As checked out: with CRLF line ends on Windows, say; case.new makes them LF.
+    let hk = include_str!("../../schema/templates/hk/solid/fvSolution").replace("\r\n", "\n");
     assert_eq!(c.dict("system/roofs/fvSolution").unwrap().to_string(), hk);
     // A profile without files for the case's version is refused, nothing changed.
     let mut fs = made(OfVersion::V12, Up::Z, false);

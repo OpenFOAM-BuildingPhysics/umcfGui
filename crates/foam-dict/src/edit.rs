@@ -152,6 +152,7 @@ fn push_word(items: &mut Vec<Node>, close: &mut Tok, value: &str) {
 /// Adds the word `value` at the end of the list that is the entry at `path` (`solid ( street );`
 /// in a dictionary), laid out as the list is, its comments kept where they are.
 pub fn add_word(dict: &mut Dict, path: &[&str], value: &str) -> Result<()> {
+    one_word(value)?;
     let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
     let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
     if !rest.is_empty() {
@@ -170,6 +171,8 @@ pub fn add_word(dict: &mut Dict, path: &[&str], value: &str) -> Result<()> {
 /// of the list after `word`, on its line. Without `word`, adds `word (value)` at the end, on a
 /// line of its own like the pairs before. Nothing else changes.
 pub fn add_to_sublist(dict: &mut Dict, key: &str, word: &str, value: &str) -> Result<()> {
+    one_word(word)?;
+    one_word(value)?;
     let entry = dict.get_mut(key).ok_or_else(|| Error::NotFound(key.to_string()))?;
     let key_indent = trailing_indent(&entry.key.lead).to_string();
     let [Node::List { items, close, .. }] = entry.value.as_mut_slice() else {
@@ -227,6 +230,17 @@ pub fn add_to_sublist(dict: &mut Dict, key: &str, word: &str, value: &str) -> Re
 /// The last line break of trivia `t` that isn't inside a `/* … */` comment (the one ending a
 /// `//` comment counts).
 fn last_free_newline(t: &str) -> Option<usize> {
+    scan_trivia(t).0
+}
+
+/// Whether trivia `t` ends inside a `// …` comment (one not ended by a line break).
+fn ends_in_line_comment(t: &str) -> bool {
+    scan_trivia(t).1
+}
+
+/// Trivia `t` read once: its last line break outside a `/* … */` comment, and whether it ends
+/// inside a `// …` comment.
+fn scan_trivia(t: &str) -> (Option<usize>, bool) {
     let b = t.as_bytes();
     let at = |i: usize| b.get(i).copied();
     let (mut i, mut last, mut block, mut line) = (0, None, false, false);
@@ -249,33 +263,23 @@ fn last_free_newline(t: &str) -> Option<usize> {
         }
         i += 1;
     }
-    last
+    (last, line)
 }
 
-/// Whether trivia `t` ends inside a `// …` comment (one not ended by a line break).
-fn ends_in_line_comment(t: &str) -> bool {
-    let b = t.as_bytes();
-    let at = |i: usize| b.get(i).copied();
-    let (mut i, mut block, mut line) = (0, false, false);
-    while let Some(c) = at(i) {
-        let next = at(i + 1);
-        if block {
-            if c == b'*' && next == Some(b'/') {
-                block = false;
-                i += 1;
-            }
-        } else if c == b'\n' {
-            line = false;
-        } else if !line && c == b'/' && next == Some(b'*') {
-            block = true;
-            i += 1;
-        } else if !line && c == b'/' && next == Some(b'/') {
-            line = true;
-            i += 1;
-        }
-        i += 1;
-    }
-    line
+/// Whether `w` reads back as one token of a list: not empty, without white space, brackets,
+/// `;`, quotes or the start of a comment (a `$macro` or `#directive` is one token too, read as
+/// such).
+fn is_one_word(w: &str) -> bool {
+    !w.is_empty()
+        && !w.contains("//")
+        && !w.contains("/*")
+        && !w
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || matches!(b, b'(' | b')' | b'{' | b'}' | b'[' | b']' | b';' | b'"'))
+}
+
+fn one_word(w: &str) -> Result<()> {
+    if is_one_word(w) { Ok(()) } else { Err(Error::NotAWord(w.to_string())) }
 }
 
 /// Removes every entry with the key at the end of `path`. The second flag tells the caller that
