@@ -157,6 +157,10 @@ pub const LOG: usize = 200;
 
 const SEARCH_ID: &str = "command-search";
 
+/// The *Add a region* card's parameters to start with: a solid, its name and materials to fill
+/// in.
+const ADD_REGION: &str = "{\n  \"region\": \"\",\n  \"kind\": \"solid\",\n  \"materials\": []\n}";
+
 /// The *New case* card's parameters to start with: the air alone, for OpenFOAM-12, from the
 /// tutorials' settings.
 const NEW_CASE: &str = "{\n  \"path\": \"\",\n  \"version\": 12,\n  \"regions\": [\n    { \"name\": \"air\", \"kind\": \"fluid\" }\n  ]\n}";
@@ -511,6 +515,7 @@ impl App {
             let params = match id {
                 "scene.snapshot" => self.snapshot_params(),
                 "case.new" => NEW_CASE.to_string(),
+                "region.add" => ADD_REGION.to_string(),
                 _ => "{}".to_string(),
             };
             self.dialog = Some(Dialog { id, params, error: None });

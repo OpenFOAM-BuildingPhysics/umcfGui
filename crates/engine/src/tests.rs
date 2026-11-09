@@ -2559,3 +2559,58 @@ fn case_new_leaves_things_as_they_were_when_it_fails() {
     }
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn region_add_lists_the_region_and_is_undone_whole() {
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-region-add", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({ "path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}] }),
+    )
+    .unwrap();
+    let out = s
+        .execute(
+            "region.add",
+            &json!({ "region": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}] }),
+        )
+        .unwrap();
+    assert!(
+        out.message.starts_with("region street added, solid: listed in system/controlDict, 4 files written, described"),
+        "{}",
+        out.message
+    );
+    assert_eq!(s.case().unwrap().regions.len(), 2);
+    let show = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(show.data["description"]["regions"][1]["materials"], json!([{ "name": "soil", "model": "Soil" }]));
+    // One step in the history: undone, the case is as it was.
+    s.execute("edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.case().unwrap().regions.len(), 1);
+    assert!(s.case().unwrap().changed().is_empty(), "{:?}", s.case().unwrap().changed());
+    s.execute("edit.redo", &Value::Null).unwrap();
+    s.execute("case.save", &Value::Null).unwrap();
+    assert!(dir.join("constant/street/transportProperties").is_file());
+    s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+    assert_eq!(s.case().unwrap().layout.regions.solid, ["street"]);
+    // Refused: nothing changes.
+    let e = s.execute("region.add", &json!({ "region": "street", "kind": "solid" })).unwrap_err().to_string();
+    assert!(e.contains("there already"), "{e}");
+    let e = s.execute("region.add", &json!({ "region": "x", "kind": "rock" })).unwrap_err().to_string();
+    assert!(e.contains("kind is fluid, solid or vegetation"), "{e}");
+    assert!(s.case().unwrap().changed().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn region_add_to_an_example_without_a_description() {
+    let ex = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/of8/streetCanyon_CFDHAM");
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute("case.open", &json!({ "path": ex, "fields": false })).unwrap();
+    let out = s.execute("region.add", &json!({ "region": "roofs", "kind": "solid" })).unwrap();
+    assert!(out.message.contains("listed in constant/regionProperties"), "{}", out.message);
+    assert_eq!(out.data["described"], json!(false));
+    let rp = s.case().unwrap().dict("constant/regionProperties").unwrap().to_string();
+    assert!(rp.contains("solid   (street windward leeward roofs)"), "{rp}");
+    // Only in memory: the example isn't written.
+}

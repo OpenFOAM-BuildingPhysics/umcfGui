@@ -64,6 +64,8 @@ pub enum Error {
     NotAList(String),
     #[error("empty key path")]
     EmptyPath,
+    #[error("`{0}` is not one word (white space, brackets, `;`, quotes or a comment)")]
+    NotAWord(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -151,6 +153,23 @@ impl Document {
             _ => return Err(Error::Unexpected { found: value.to_string(), expected: "one value", at: (1, 1) }),
         };
         edit::append(&mut self.root, path, node)
+    }
+
+    /// Adds the word `value` at the end of the list that is the entry at `path`
+    /// (`regions/solid` of `regions { solid ( street ); }`), laid out as the list is: after a
+    /// space on one line, on a line of its own like the items before; comments stay where they
+    /// are. Nothing else changes.
+    /// A `value` that isn't one word ([`Error::NotAWord`]) changes nothing.
+    pub fn add_word(&mut self, path: &[&str], value: &str) -> Result<()> {
+        edit::add_word(&mut self.root, path, value)
+    }
+
+    /// In the list that is the top-level entry `key`, made of words each followed by a list
+    /// (`regions ( fluid (air) solid (street) );`), adds the word `value` to the list after
+    /// `word`, or adds `word (value)` at the end when there is none. Nothing else changes.
+    /// A `word` or `value` that isn't one word ([`Error::NotAWord`]) changes nothing.
+    pub fn add_to_sublist(&mut self, key: &str, word: &str, value: &str) -> Result<()> {
+        edit::add_to_sublist(&mut self.root, key, word, value)
     }
 
     /// Gives the entry at `path` the key `to`, keeping its value, comments and layout, as

@@ -113,7 +113,7 @@ impl Up {
     }
 
     /// The value of a fluid's `g`.
-    fn gravity(self) -> &'static str {
+    pub fn gravity(self) -> &'static str {
         match self {
             Up::X => "( -9.81 0 0 )",
             Up::Y => "( 0 -9.81 0 )",
@@ -198,62 +198,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
         files.push(("constant/regionProperties".to_string(), doc.to_string()));
     }
     for r in ordered(spec) {
-        let n = &r.name;
-        let mut put = |path: String, t: Template| -> Result<()> {
-            files.push((path, template(v, t)?.to_string()));
-            Ok(())
-        };
-        match r.kind {
-            RegionKind::Fluid | RegionKind::Single => {
-                put(format!("constant/{n}/thermophysicalProperties"), Template::FluidThermo)?;
-                put(format!("constant/{n}/momentumTransport"), Template::FluidMomentum)?;
-                put(format!("system/{n}/fvSchemes"), Template::FluidSchemes)?;
-                put(format!("system/{n}/fvSolution"), Template::FluidSolution)?;
-                let mut g = template(v, Template::FluidG)?;
-                set(&mut g, &["value"], spec.up.gravity(), Template::FluidG)?;
-                files.push((format!("constant/{n}/g"), g.to_string()));
-                let (min, max) = defaults::TEMPERATURE_LIMIT;
-                match v {
-                    OfVersion::V12 => {
-                        let mut c = template(v, Template::FluidConstraints)?;
-                        if spec.components.temperature_limit {
-                            let limit = format!("{{ type limitTemperature; select all; min {min}; max {max}; }}");
-                            c.set_inline(&["limitT"], &limit).map_err(|e| dict_error(Template::FluidConstraints, e))?;
-                        }
-                        files.push((format!("system/{n}/fvConstraints"), c.to_string()));
-                    }
-                    OfVersion::V8 => {
-                        if spec.components.temperature_limit {
-                            let mut o = template(v, Template::FluidOptions)?;
-                            set(&mut o, &["limitT", "min"], min, Template::FluidOptions)?;
-                            set(&mut o, &["limitT", "max"], max, Template::FluidOptions)?;
-                            files.push((format!("system/{n}/fvOptions"), o.to_string()));
-                        }
-                    }
-                }
-            }
-            RegionKind::Solid => {
-                put(format!("constant/{n}/g"), Template::SolidG)?;
-                put(format!("system/{n}/fvSchemes"), Template::SolidSchemes)?;
-                put(format!("system/{n}/fvSolution"), Template::SolidSolution)?;
-                let (text, missing) = transport(v, &r.materials)?;
-                files.push((format!("constant/{n}/transportProperties"), text));
-                if r.materials.is_empty() {
-                    notes.push(format!(
-                        "region {n}: no materials: the solver needs one for each of its cell zones (workflow.material)"
-                    ));
-                }
-                for (m, model) in missing {
-                    notes.push(format!(
-                        "region {n}, material {m}: the tutorials have no {model} material to take its coefficients from: add them to constant/{n}/transportProperties"
-                    ));
-                }
-            }
-            RegionKind::Vegetation => {
-                put(format!("system/{n}/fvSchemes"), Template::VegetationSchemes)?;
-                put(format!("system/{n}/fvSolution"), Template::VegetationSolution)?;
-            }
-        }
+        files.extend(region_files(v, r, spec.up.gravity(), spec.components.temperature_limit, &mut notes)?);
     }
     // The grass and the trees' model are `air`'s, which the solver looks them up in (there is one
     // whenever either is asked for: they need the radiation, which needs it).
@@ -291,10 +236,138 @@ pub fn make(spec: &NewCase) -> Result<Made> {
     Ok(Made { files, description, notes })
 }
 
+/// The settings files of region `r` by its kind, from the configuration for version `v`: a fluid's
+/// with gravity `gravity` (the value of `g`) and the temperature limit when `temperature_limit`;
+/// a solid's with its materials (a note for one the tutorials have no coefficients for, and for
+/// none at all).
+pub(crate) fn region_files(
+    v: OfVersion,
+    r: &NewRegion,
+    gravity: &str,
+    temperature_limit: bool,
+    notes: &mut Vec<String>,
+) -> Result<Vec<(String, String)>> {
+    let n = &r.name;
+    let mut files = Vec::new();
+    let mut put = |path: String, t: Template| -> Result<()> {
+        files.push((path, template(v, t)?.to_string()));
+        Ok(())
+    };
+    match r.kind {
+        RegionKind::Fluid | RegionKind::Single => {
+            put(format!("constant/{n}/thermophysicalProperties"), Template::FluidThermo)?;
+            put(format!("constant/{n}/momentumTransport"), Template::FluidMomentum)?;
+            put(format!("system/{n}/fvSchemes"), Template::FluidSchemes)?;
+            put(format!("system/{n}/fvSolution"), Template::FluidSolution)?;
+            let mut g = template(v, Template::FluidG)?;
+            set(&mut g, &["value"], gravity, Template::FluidG)?;
+            files.push((format!("constant/{n}/g"), g.to_string()));
+            let (min, max) = defaults::TEMPERATURE_LIMIT;
+            match v {
+                OfVersion::V12 => {
+                    let mut c = template(v, Template::FluidConstraints)?;
+                    if temperature_limit {
+                        let limit = format!("{{ type limitTemperature; select all; min {min}; max {max}; }}");
+                        c.set_inline(&["limitT"], &limit).map_err(|e| dict_error(Template::FluidConstraints, e))?;
+                    }
+                    files.push((format!("system/{n}/fvConstraints"), c.to_string()));
+                }
+                OfVersion::V8 => {
+                    if temperature_limit {
+                        let mut o = template(v, Template::FluidOptions)?;
+                        set(&mut o, &["limitT", "min"], min, Template::FluidOptions)?;
+                        set(&mut o, &["limitT", "max"], max, Template::FluidOptions)?;
+                        files.push((format!("system/{n}/fvOptions"), o.to_string()));
+                    }
+                }
+            }
+        }
+        RegionKind::Solid => {
+            put(format!("constant/{n}/g"), Template::SolidG)?;
+            put(format!("system/{n}/fvSchemes"), Template::SolidSchemes)?;
+            put(format!("system/{n}/fvSolution"), Template::SolidSolution)?;
+            let (text, missing) = transport(v, &r.materials)?;
+            files.push((format!("constant/{n}/transportProperties"), text));
+            if r.materials.is_empty() {
+                notes.push(format!(
+                    "region {n}: no materials: the solver needs one for each of its cell zones (workflow.material)"
+                ));
+            }
+            for (m, model) in missing {
+                notes.push(format!(
+                    "region {n}, material {m}: the tutorials have no {model} material to take its coefficients from: add them to constant/{n}/transportProperties"
+                ));
+            }
+        }
+        RegionKind::Vegetation => {
+            put(format!("system/{n}/fvSchemes"), Template::VegetationSchemes)?;
+            put(format!("system/{n}/fvSolution"), Template::VegetationSolution)?;
+        }
+    }
+    Ok(files)
+}
+
 /// The regions in the order of the region list: fluids, solids, vegetation, each as given.
 fn ordered(spec: &NewCase) -> Vec<&NewRegion> {
     let of = |k: RegionKind| spec.regions.iter().filter(move |r| r.kind == k);
     of(RegionKind::Fluid).chain(of(RegionKind::Solid)).chain(of(RegionKind::Vegetation)).collect()
+}
+
+/// What makes region `r` one a case of `version` can have, on its own: a plain name that meets
+/// none of the case's own files nor a Windows device, a fluid, a solid or the vegetation (named
+/// `vegetation`, as the solver looks it up), and a solid's materials each with a model the
+/// solver has, once each.
+pub(crate) fn check_region(r: &NewRegion, version: OfVersion) -> Result<()> {
+    let n = r.name.as_str();
+    if !plain_name(n) || n.contains(':') {
+        return refuse(format!(
+            "region `{n}`: a region's name is letters, digits, `_`, `.` and `-`, not starting with a digit or `-`"
+        ));
+    }
+    if n.ends_with('.') {
+        return refuse(format!("region `{n}`: a name can't end with `.` (Windows drops it)"));
+    }
+    if RESERVED.iter().any(|r| r.eq_ignore_ascii_case(n)) {
+        return refuse(format!("region `{n}`: the name of a file or directory of the case's constant/ or system/"));
+    }
+    if windows_device(n) {
+        return refuse(format!("region `{n}`: a name Windows keeps for a device"));
+    }
+    if r.kind == RegionKind::Single {
+        return refuse(format!("region {n}: a region is a fluid, a solid or the vegetation"));
+    }
+    if r.kind == RegionKind::Vegetation && n != "vegetation" {
+        return refuse(format!(
+            "region {n}: the vegetation region is named `vegetation` (the solver's trees, grass and solid conditions look it up by that name)"
+        ));
+    }
+    if r.kind != RegionKind::Solid && !r.materials.is_empty() {
+        return refuse(format!("region {n}: only a solid has materials"));
+    }
+    let cat = umcf_schema::catalog::catalog();
+    let family = cat.families.iter().find(|f| f.selector == Some("buildingMaterialModel")).map(|f| f.base);
+    let mut materials = HashSet::new();
+    for m in &r.materials {
+        if !plain_name(&m.name) {
+            return refuse(format!("region {n}, material `{}`: not a plain name", m.name));
+        }
+        if !materials.insert(m.name.as_str()) {
+            return refuse(format!("region {n}, material {} is given twice", m.name));
+        }
+        let Some(model) = &m.model else {
+            return refuse(format!("region {n}, material {}: its model (buildingMaterialModel) is missing", m.name));
+        };
+        let known = family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(version));
+        if !known {
+            let models = family.map(|f| cat.choices(f, version).join(", ")).unwrap_or_default();
+            return refuse(format!(
+                "region {n}, material {}: {model} is not a material model of the solver for {} ({models})",
+                m.name,
+                version.label()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check(spec: &NewCase) -> Result<()> {
@@ -303,24 +376,9 @@ fn check(spec: &NewCase) -> Result<()> {
     }
     let mut names = HashSet::new();
     let mut folded = HashSet::new();
-    let cat = umcf_schema::catalog::catalog();
-    let family = cat.families.iter().find(|f| f.selector == Some("buildingMaterialModel")).map(|f| f.base);
     for r in &spec.regions {
         let n = r.name.as_str();
-        if !plain_name(n) || n.contains(':') {
-            return refuse(format!(
-                "region `{n}`: a region's name is letters, digits, `_`, `.` and `-`, not starting with a digit or `-`"
-            ));
-        }
-        if n.ends_with('.') {
-            return refuse(format!("region `{n}`: a name can't end with `.` (Windows drops it)"));
-        }
-        if RESERVED.iter().any(|r| r.eq_ignore_ascii_case(n)) {
-            return refuse(format!("region `{n}`: the name of a file or directory of the case's constant/ or system/"));
-        }
-        if windows_device(n) {
-            return refuse(format!("region `{n}`: a name Windows keeps for a device"));
-        }
+        check_region(r, spec.version)?;
         if !names.insert(n) {
             return refuse(format!("region {n} is given twice"));
         }
@@ -329,49 +387,10 @@ fn check(spec: &NewCase) -> Result<()> {
                 "region {n}: another region's name differs from it only by case (they can't live together on Windows or macOS)"
             ));
         }
-        if r.kind == RegionKind::Single {
-            return refuse(format!("region {n}: a region is a fluid, a solid or the vegetation"));
-        }
-        if r.kind != RegionKind::Solid && !r.materials.is_empty() {
-            return refuse(format!("region {n}: only a solid has materials"));
-        }
-        let mut materials = HashSet::new();
-        for m in &r.materials {
-            if !plain_name(&m.name) {
-                return refuse(format!("region {n}, material `{}`: not a plain name", m.name));
-            }
-            if !materials.insert(m.name.as_str()) {
-                return refuse(format!("region {n}, material {} is given twice", m.name));
-            }
-            let Some(model) = &m.model else {
-                return refuse(format!(
-                    "region {n}, material {}: its model (buildingMaterialModel) is missing",
-                    m.name
-                ));
-            };
-            let known = family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(spec.version));
-            if !known {
-                let models = family.map(|f| cat.choices(f, spec.version).join(", ")).unwrap_or_default();
-                return refuse(format!(
-                    "region {n}, material {}: {model} is not a material model of the solver for {} ({models})",
-                    m.name,
-                    spec.version.label()
-                ));
-            }
-        }
     }
     // What the solver looks up by name.
     let vegetation: Vec<&str> =
         spec.regions.iter().filter(|r| r.kind == RegionKind::Vegetation).map(|r| r.name.as_str()).collect();
-    match vegetation.as_slice() {
-        [] | ["vegetation"] => {}
-        [one] => {
-            return refuse(format!(
-                "region {one}: the vegetation region is named `vegetation` (the solver's trees, grass and solid conditions look it up by that name)"
-            ));
-        }
-        _ => return refuse("one vegetation region at most (the solver looks up `vegetation`)".to_string()),
-    }
     if !vegetation.is_empty() && spec.radiation.as_deref() != Some("vegetation") {
         return refuse(
             "the vegetation needs the radiation on it (`radiation`: vegetation): the trees' model reads its qr on air_to_vegetation".to_string(),
@@ -414,7 +433,7 @@ fn check(spec: &NewCase) -> Result<()> {
 }
 
 /// The configuration's file, read; its line ends made `\n`.
-fn template(v: OfVersion, t: Template) -> Result<Document> {
+pub(crate) fn template(v: OfVersion, t: Template) -> Result<Document> {
     let Some(text) = defaults::template(v, t) else {
         return refuse(format!("{} has no {t:?} file", v.label()));
     };

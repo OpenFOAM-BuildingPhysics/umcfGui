@@ -203,7 +203,9 @@ materials of the case it leaves out, and another OpenFOAM version.
 
 ### Editing the description
 
-Three commands change the description entry by entry, so its comments, order and layout stay:
+Three commands change the description entry by entry, so its comments, order and layout stay
+(they change the description only; [`region.add`](new-case.md#adding-a-region) adds a region
+to the case itself, and describes it):
 a patch kept on one line (`west { role inlet; }`) is written on its line again, with what else
 it holds as it was written (a value the reader can't read, a quoted name, another key), and one
 laid out by hand over several lines, or holding a macro or a directive, is edited key by key,
