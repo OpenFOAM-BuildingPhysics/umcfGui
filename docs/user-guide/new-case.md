@@ -32,7 +32,7 @@ an entry of its own, so a case has a component's files only when it uses it:
 | a temperature limit (`temperatureLimit`) | a `limitTemperature` entry | OpenFOAM-8: `system/<air>/fvOptions`; OpenFOAM-12: `limitT` in `fvConstraints` (`select all`) |
 | the blending layer (`blending`) | `blending` in `controlDict` | `blending true` and `blendingCoeffs` |
 
-And for every case: `system/controlDict` (the tutorials' run controls without their function
+And for every case: `system/controlDict` (the examples' run controls without their function
 objects, `application urbanMicroclimateFoam`, and OpenFOAM-12's `regions { fluid (…); solid (…);
 vegetation (…); }`, a kind without regions left out), OpenFOAM-8's `constant/regionProperties`
 (every kind, an empty one too: OpenFOAM-8's solver and `solarRayTracingGen` look each one up and
@@ -60,10 +60,13 @@ and is then changed with the commands that edit a case (`control.set`, `dict.set
 The settings are those of the urbanMicroclimateFoam tutorials, as [the
 examples](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md) have
 them: `streetCanyon_CFDHAM` (the air, the solids, the radiation), `_grass`, `_veg`, byte for byte
-with line ends made LF (`crates/schema/src/defaults.rs`). The tutorials have no temperature
-limit: its bounds (273.15 to 373.15 K) are the 3×3 reference cases', and its OpenFOAM-8
-`fvOptions` is written here (`crates/schema/templates/of8/`); nor a blending layer: its
-coefficients are the Hong Kong benchmark's.
+with line ends made LF (`crates/schema/src/defaults.rs`). The examples change the tutorials'
+run controls (`endTime 7200`, `maxFluidIteration 30`) and lower the air's relaxation (`p_rgh`
+0.3, `U` 0.5, `h` 0.5) so that their coarse meshes' first iterations stay stable, and a new
+case starts from that too. The tutorials have no temperature limit: its bounds (273.15 to
+373.15 K) are the 3×3 reference cases', and its OpenFOAM-8 `fvOptions` is written here
+(`crates/schema/templates/of8/`); nor a blending layer: its coefficients are the Hong Kong
+benchmark's.
 
 A `profile` entry that an earlier `case.new` wrote into `system/umcfWorkflow` is read and left
 out.
