@@ -148,6 +148,7 @@ bad arguments.
 | `case.check` | The [case check](checks.md) |
 | `workflow.show` | The [workflow description](workflow.md#the-workflow-description): `system/umcfWorkflow` as read, with its problems, or as `workflow.import` would write it when the case has none: `scripts` (`true` also returns the scripts `workflow.scripts` would write) |
 | `workflow.import` | Writes `system/umcfWorkflow` from the case's scripts, meshes and solids' materials, with notes on what it couldn't tell: `replace` (`true` writes over the case's own) |
+| `region.add` | [Adds a region](new-case.md#adding-a-region) to the case: `region`, `kind` (`fluid`, `solid`, `vegetation`) required; `materials` (a solid's, `[{"name": "brick", "model": "Hamstad5Brick"}]`). Lists it where the case's version reads its regions and writes the settings of its kind; the files there are kept |
 | `workflow.region` | [Edits the description](workflow.md#editing-the-description): `region`, and `kind` (`fluid`, `solid`, `vegetation`: adds it or gives it that kind) or `remove: true` |
 | `workflow.patch` | Edits a patch of the description: `region`, `patch`, and any of `role` (`null` takes it away), `partner` (`{"region": "street", "patch": "top"}`, or `null`), `name` (renames it; the partners that named it follow) |
 | `workflow.material` | Edits a solid's material in the description: `region`, `material`, and `model` (its `buildingMaterialModel`, or `null`) or `remove: true` |

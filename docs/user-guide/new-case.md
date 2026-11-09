@@ -102,8 +102,48 @@ everything written: a failure leaves things as they were (what couldn't be remov
 held open on Windows say, is named). A case that was made but didn't open (cancelled) is said so:
 `case.open` opens it.
 
+## Adding a region
+
+`region.add` adds a region to a case, made by `case.new` or not:
+
+```sh
+umcf-cli run --case canyon \
+  --cmd 'region.add={"region": "roofs", "kind": "solid", "materials": [{"name": "brick", "model": "Hamstad5Brick"}]}' \
+  --cmd 'case.save={}'
+```
+
+It names the region in the list the case's version reads: OpenFOAM-12's `controlDict`
+(`solid ( street roofs );`) or OpenFOAM-8's `constant/regionProperties` (`solid (street roofs)`).
+The list keeps its layout and comments; a name that would follow a `// …` comment goes on a
+line of its own. It then writes the settings of the region's kind, as
+`case.new` does:
+
+- the settings are the tutorials', or those of the description's `profile` for a case made with
+  one;
+- a fluid gets the gravity of the case's fluids (when it is a vector written out), and the
+  temperature limit when the case has one;
+- a solid given no materials takes those the description gives it, when it is described already
+  (one without a model is left out, with a note; one whose model the version doesn't have is
+  refused, saying it is the description's);
+- for the vegetation, `air` gets `vegetationProperties`. A note says when the radiation isn't on
+  the vegetation yet.
+
+A file that is there already is kept as it is. The region has no mesh yet. The workflow
+description names it, with its materials, when the case has one. The whole addition is one step
+in the history, and `case.save` writes it. What `case.new` refuses of a region is refused here
+too, and so are:
+
+- a name the case has, or one differing from it only by case;
+- a case without a known version or a region list (a meshing step);
+- a link or a directory where a file would go.
+
+In the desktop app it is *Add a region…* in the *More* group of the *Case* tab.
+
 ## Tested
 
-The street canyon's regions made with each profile and version, with the example's meshes,
-fields and tables copied in, run with the solver: OpenFOAM-12 and -8 with `tutorial`, OpenFOAM-8
-with `hk` (without the blending layer, which needs the four sides the canyon doesn't have).
+- `case.new`: the street canyon's regions made with each profile and version, with the example's
+  meshes, fields and tables copied in, run with the solver: OpenFOAM-12 and -8 with `tutorial`,
+  OpenFOAM-8 with `hk` (without the blending layer, which needs the four sides the canyon doesn't
+  have).
+- `region.add`: the same, with the case made with `air` and `street` only, and `leeward` and
+  `windward` added with `region.add`.

@@ -214,7 +214,7 @@ In the order of the [gaps](gaps.md):
 
 | Row | |
 |---|---|
-| 3 | `umcfWorkflow`: adding a region to a case (`region.add`), switching a component on or off in a case, the `hk` profile for OpenFOAM-12. The format with the solids' materials, the profile and the components, its import, its edits entry by entry, the scripts from it and a new case from it ([`case.new`](user-guide/new-case.md)) are there |
+| 3 | `umcfWorkflow`: switching a component on or off in a case, the `hk` profile for OpenFOAM-12. The format with the solids' materials, the profile and the components, its import, its edits entry by entry, the scripts from it, a new case from it ([`case.new`](user-guide/new-case.md)) and a region added to a case (`region.add`) are there |
 | 4 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
 | 5–7 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
 | 8 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
