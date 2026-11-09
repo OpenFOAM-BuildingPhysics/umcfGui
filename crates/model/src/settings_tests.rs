@@ -309,4 +309,11 @@ fn an_incomplete_temperature_limit_agrees_with_no_bounds() {
     let (got, notes) = Settings::from_case(&c);
     assert!(got.temperature_limit.is_none());
     assert_eq!(notes, ["system/air/fvConstraints: its limitTemperature entry has no min or no max"]);
+    // A complete entry whose value is `?` is a value: noted as one, not taken for an incomplete one.
+    let c = edited(&spec(OfVersion::V12, Settings::default(), true, false), "system/air/fvConstraints", |t| {
+        t.replace("min 273.15;", "min ?;")
+    });
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.temperature_limit.is_none());
+    assert!(notes.iter().any(|n| n.contains("( ? 373.15 ): not 0 < min < max")), "{notes:?}");
 }

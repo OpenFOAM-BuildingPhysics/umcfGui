@@ -253,11 +253,11 @@ impl Settings {
                         d.value(&path).map(|v| v.trim().to_string())
                     };
                     match (v("min"), v("max")) {
-                        (Some(a), Some(b)) => limits.push((a, b)),
+                        (Some(a), Some(b)) => limits.push(Some((a, b))),
                         // Incomplete: noted, and no bounds agree with it.
                         _ => {
                             notes.push(format!("{rel}: its limitTemperature entry has no min or no max"));
-                            limits.push(("?".to_string(), "?".to_string()));
+                            limits.push(None);
                         }
                     }
                 }
@@ -272,17 +272,17 @@ impl Settings {
             }
             None => {}
         }
-        let pairs: Vec<String> = limits.iter().map(|(a, b)| format!("{a} {b}")).collect();
+        // An incomplete entry (`None`) agrees with no bounds; it was noted where it was found.
+        let pairs: Vec<String> =
+            limits.iter().map(|l| l.as_ref().map_or_else(|| "\0".to_string(), |(a, b)| format!("{a} {b}"))).collect();
         match agreed(&pairs) {
-            Some(_) => {
-                let (a, b) = limits.swap_remove(0);
-                if limit_bounds(&a, &b) {
-                    s.temperature_limit = Some((a, b));
-                } else if a != "?" {
-                    // (Incomplete entries are noted where they are found.)
-                    notes.push(format!("the temperature limit is ( {a} {b} ): not 0 < min < max, left out"));
+            Some(_) => match limits.swap_remove(0) {
+                Some((a, b)) if limit_bounds(&a, &b) => s.temperature_limit = Some((a, b)),
+                Some((a, b)) => {
+                    notes.push(format!("the temperature limit is ( {a} {b} ): not 0 < min < max, left out"))
                 }
-            }
+                None => {}
+            },
             None if !pairs.is_empty() => notes.push("the fluids' temperature limits differ: left out".to_string()),
             None => {}
         }
