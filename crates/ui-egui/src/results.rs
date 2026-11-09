@@ -143,6 +143,25 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
         settings.push("reconstructed".to_string());
     }
     desc.push(Kind::Text, || settings.join(", "));
+    if let Some(chosen) = d.get("settings").and_then(Value::as_object).filter(|o| !o.is_empty()) {
+        let text: Vec<String> = chosen
+            .iter()
+            .map(|(k, v)| match v {
+                Value::Array(a) => {
+                    format!("{k} {}", a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" to "))
+                }
+                Value::Object(o) => format!(
+                    "{k} {}",
+                    o.iter()
+                        .map(|(ck, cv)| format!("{ck} {}", cv.as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                other => format!("{k} {}", other.as_str().unwrap_or("")),
+            })
+            .collect();
+        desc.push(Kind::Text, || format!("settings: {}", text.join("; ")));
+    }
     for r in list(d, "regions") {
         let patches = list(r, "patches");
         let materials = list(r, "materials");
@@ -197,6 +216,8 @@ mod tests {
             "description": {
                 "version": "OpenFOAM-8", "features": true, "solver": "urbanMicroclimateFoam", "reconstruct": true,
                 "components": ["grass", "temperatureLimit", "blending"],
+                "settings": { "deltaT": "1800", "temperatureLimit": ["283.15", "370.15"],
+                              "blending": { "dampingThickness": "60", "alphaCoeffU": "0.3", "alphaCoeffT": "0.3" } },
                 "radiation": { "region": "street", "lai": "air", "viewFactors": true, "solarRayTracing": false },
                 "regions": [
                     { "name": "air", "kind": "fluid", "mesh": "blocks",
@@ -226,6 +247,11 @@ mod tests {
                 (
                     Kind::Text,
                     "for OpenFOAM-8, surfaceFeatures, radiation on street (view factors, LAI on air), grass, temperature limit, blending layer, solver urbanMicroclimateFoam, reconstructed"
+                        .to_string()
+                ),
+                (
+                    Kind::Text,
+                    "settings: blending alphaCoeffT 0.3, alphaCoeffU 0.3, dampingThickness 60; deltaT 1800; temperatureLimit 283.15 to 370.15"
                         .to_string()
                 ),
                 (

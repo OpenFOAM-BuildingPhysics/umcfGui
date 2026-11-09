@@ -45,13 +45,14 @@ fn kind_word(k: RegionKind) -> &'static str {
 impl Case {
     /// Adds region `r` to the case: its name in the region list (OpenFOAM-12's `controlDict`,
     /// OpenFOAM-8's `constant/regionProperties`), the settings files of its kind (the
-    /// configuration's, as `case.new` writes them), a
-    /// fluid's with the gravity of the case's fluids and its temperature limit when the case has
-    /// one, and the vegetation's model in `air` when it isn't there. A file that is there
-    /// already is kept. The region is in the case without a mesh, and in the workflow
-    /// description when the case has one. [`Case::save`] writes it all. Refused, with nothing changed: a case without a version or
-    /// a region list, a name the case has (or one differing only by case), what `case.new`
-    /// refuses of a region, a link where a file would go.
+    /// configuration's, as `case.new` writes them): a fluid's with the gravity of the case's
+    /// fluids and the RAS model and temperature-limit bounds of the description's settings, else
+    /// of the case's fluids when they agree; the vegetation's model in `air` when it isn't there.
+    /// A file that is there already is kept. The region is in the case without a mesh, and in
+    /// the workflow description when the case has one. [`Case::save`] writes it all. Refused,
+    /// with nothing changed: a case without a version or a region list, a name the case has (or
+    /// one differing only by case), what `case.new` refuses of a region, a link where a file
+    /// would go.
     pub fn add_region(&mut self, fs: &dyn CaseFs, r: &NewRegion) -> Result<AddedRegion> {
         // Made on a copy, which becomes the case once all of it is done: a refusal half-way
         // leaves the case as it was. (A copy is cheap: the files are shared until changed.)
@@ -128,7 +129,34 @@ impl Case {
             // A vector written out, not a macro or a directive the new file wouldn't have.
             .filter(|g| g.starts_with('(') && !g.contains(['$', '#']))
             .unwrap_or_else(|| Up::Z.gravity().to_string());
-        let mut files = region_files(v, r, &gravity, components.temperature_limit, &mut notes)?;
+        // A new fluid is turbulent and limited as the description chose, else as the case's
+        // fluids all are, else as the configuration has it (with a note).
+        let (mut case_settings, case_notes) = crate::settings::Settings::from_case(self);
+        let mut chosen = description.as_ref().map(|d| d.settings.clone()).unwrap_or_default();
+        // A model written into the description by hand that the version doesn't have.
+        // (One the case's fluids all have already, of its own library say, is kept.)
+        if chosen.turbulence != case_settings.turbulence
+            && let Err(Error::NewCase(m)) = crate::settings::check_turbulence(&chosen, v)
+        {
+            notes.push(format!("{}: {m}: left out", crate::description::PATH));
+            chosen.turbulence = None;
+        }
+        if chosen.turbulence.is_some() {
+            case_settings.turbulence = chosen.turbulence.clone();
+        }
+        if chosen.temperature_limit.is_some() {
+            case_settings.temperature_limit = chosen.temperature_limit.clone();
+        }
+        if r.kind == RegionKind::Fluid {
+            let open = |n: &&String| {
+                (n.contains("RAS model") && chosen.turbulence.is_none())
+                    || (n.contains("temperature limit") && chosen.temperature_limit.is_none())
+            };
+            for n in case_notes.iter().filter(open) {
+                notes.push(format!("{n}: region {} gets the configuration's", r.name));
+            }
+        }
+        let mut files = region_files(v, r, &gravity, components.temperature_limit, &case_settings, &mut notes)?;
         if r.kind == RegionKind::Vegetation {
             if self.region("air").is_some_and(|a| a.kind == RegionKind::Fluid) {
                 files.push((

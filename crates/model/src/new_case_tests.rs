@@ -33,6 +33,7 @@ pub(crate) fn canyon(version: OfVersion) -> NewCase {
         components: Components { grass: true, temperature_limit: true, blending: true },
         grass_patches: vec!["air_to_street".into(), "air_to_lawn".into()],
         up: Up::Z,
+        settings: Default::default(),
     }
 }
 
@@ -45,6 +46,7 @@ fn bare(version: OfVersion) -> NewCase {
         components: Components::default(),
         grass_patches: vec![],
         up: Up::Z,
+        settings: Default::default(),
     }
 }
 

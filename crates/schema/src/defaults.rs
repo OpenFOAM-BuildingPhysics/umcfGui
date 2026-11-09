@@ -63,6 +63,45 @@ pub const TEMPERATURE_LIMIT: (&str, &str) = ("273.15", "373.15");
 /// are the Hong Kong benchmark's.
 pub const BLENDING_COEFFS: &str = "{ dampingThickness 60; alphaCoeffU 0.3; alphaCoeffT 0.3; }";
 
+/// OpenFOAM's own RAS models of `version` (`src/MomentumTransportModels/momentumTransportModels/RAS`
+/// and `compressible/RAS` of OpenFOAM-8 and -12), which the solver catalog doesn't list: it has
+/// only the solver's own (`porousrealizableKE`).
+pub fn openfoam_ras_models(version: OfVersion) -> &'static [&'static str] {
+    match version {
+        OfVersion::V8 => &[
+            "kEpsilon",
+            "kOmega",
+            "kOmegaSST",
+            "kOmegaSSTLM",
+            "kOmegaSSTSAS",
+            "LaunderSharmaKE",
+            "LRR",
+            "realizableKE",
+            "RNGkEpsilon",
+            "SpalartAllmaras",
+            "SSG",
+            "v2f",
+            "buoyantKEpsilon",
+        ],
+        OfVersion::V12 => &[
+            "kEpsilon",
+            "kOmega",
+            "kOmega2006",
+            "kOmegaSST",
+            "kOmegaSSTLM",
+            "kOmegaSSTSAS",
+            "LaunderSharmaKE",
+            "LRR",
+            "realizableKE",
+            "RNGkEpsilon",
+            "SpalartAllmaras",
+            "SSG",
+            "v2f",
+            "buoyantKEpsilon",
+        ],
+    }
+}
+
 /// The text of `t` for `version`; `None` for a file that version keeps elsewhere
 /// (OpenFOAM-8's `fvConstraints`, OpenFOAM-12's `regionProperties` and `fvOptions`).
 pub fn template(version: OfVersion, t: Template) -> Option<&'static str> {

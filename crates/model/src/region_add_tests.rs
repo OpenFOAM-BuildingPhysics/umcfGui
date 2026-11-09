@@ -16,6 +16,7 @@ fn made(version: OfVersion, up: Up, temperature_limit: bool) -> MemFs {
         components: Components { temperature_limit, ..Default::default() },
         grass_patches: vec![],
         up,
+        settings: Default::default(),
     };
     let mut fs = MemFs::new();
     for (p, t) in make(&spec).unwrap().files {
@@ -271,5 +272,73 @@ fn a_new_region_s_files_are_the_configuration_s() {
             let want = umcf_schema::defaults::template(v, t).unwrap().replace("\r\n", "\n");
             assert_eq!(c.dict(rel).unwrap().to_string(), want, "{v:?} {rel}");
         }
+    }
+}
+
+#[test]
+fn a_new_fluid_is_turbulent_and_limited_as_the_case_s_fluids() {
+    let mut fs = made(OfVersion::V12, Up::Z, true);
+    let mut c = Case::open(&fs).unwrap();
+    c.choose_settings(&crate::settings::Settings {
+        turbulence: Some("realizableKE".into()),
+        temperature_limit: Some(("283.15".into(), "370.15".into())),
+        ..Default::default()
+    })
+    .unwrap();
+    c.save(&mut fs, None).unwrap();
+    let mut c = Case::open(&fs).unwrap();
+    c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("realizableKE"));
+    let l = c.dict("system/wind/fvConstraints").unwrap();
+    assert_eq!(l.value(&["limitT", "min"]).as_deref(), Some("283.15"));
+}
+
+#[test]
+fn the_description_s_settings_come_first_and_differing_fluids_are_noted() {
+    let mut fs = made(OfVersion::V12, Up::Z, false);
+    let mut c = Case::open(&fs).unwrap();
+    c.add_region(&fs, &NewRegion { name: "air2".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    c.save(&mut fs, None).unwrap();
+    let mt = String::from_utf8(fs.read("constant/air2/momentumTransport", 1 << 20).unwrap().unwrap()).unwrap();
+    fs.insert("constant/air2/momentumTransport", mt.replace("kEpsilon", "realizableKE"));
+    // The fluids differ: the configuration's, with a note.
+    let mut c = Case::open(&fs).unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    assert!(
+        added.notes.iter().any(|n| n.contains("RAS models differ") && n.contains("wind gets the configuration's")),
+        "{:?}",
+        added.notes
+    );
+    // The description chose one: that one, with no note.
+    let mut c = Case::open(&fs).unwrap();
+    c.set(crate::description::PATH, &["settings", "turbulence"], "kOmegaSST").unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("kOmegaSST"));
+    assert!(!added.notes.iter().any(|n| n.contains("RAS models differ")), "{:?}", added.notes);
+    // One the version doesn't have: left out, with a note.
+    let mut c = Case::open(&fs).unwrap();
+    c.set(crate::description::PATH, &["settings", "turbulence"], "kOmegaSSTx").unwrap();
+    let added =
+        c.add_region(&fs, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    assert!(added.notes.iter().any(|n| n.contains("kOmegaSSTx is not a RAS model")), "{:?}", added.notes);
+    let m = c.dict("constant/wind/momentumTransport").unwrap();
+    assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("kEpsilon"));
+    // One the case's fluids all have (of its own library): kept, with no note, on both versions.
+    for version in [OfVersion::V8, OfVersion::V12] {
+        let s2 = made(version, Up::Z, false);
+        let mt = String::from_utf8(s2.read("constant/air/momentumTransport", 1 << 20).unwrap().unwrap()).unwrap();
+        let mut own = s2.clone();
+        own.insert("constant/air/momentumTransport", mt.replace("kEpsilon", "myKE"));
+        let mut c = Case::open(&own).unwrap();
+        c.set(crate::description::PATH, &["settings", "turbulence"], "myKE").unwrap();
+        let added =
+            c.add_region(&own, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+        assert!(!added.notes.iter().any(|n| n.contains("myKE")), "{version:?}: {:?}", added.notes);
+        let m = c.dict("constant/wind/momentumTransport").unwrap();
+        assert_eq!(m.value(&["RAS", "RASModel"]).as_deref(), Some("myKE"), "{version:?}");
     }
 }

@@ -140,7 +140,7 @@ bad arguments.
 
 | Command | Does |
 |---|---|
-| `case.new` | [Makes a case](new-case.md) in a new or empty directory and opens it: `path`, `version` (`8` or `12`) and `regions` (`[{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]`) required; the components `radiation` (a region), `grass` (`true` or the patches), `temperatureLimit`, `blending`; `up` (`x`, `y`, `z`); `discard` |
+| `case.new` | [Makes a case](new-case.md) in a new or empty directory and opens it: `path`, `version` (`8` or `12`) and `regions` (`[{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]`) required; the components `radiation` (a region), `grass` (`true` or the patches), `temperatureLimit`, `blending`; `up` (`x`, `y`, `z`); `discard`; `settings` (as `workflow.settings` takes them) |
 | `case.open` | Opens a case: `path` (required), `fields` (`false` skips reading field files, `"later"` lists them for `case.fields` to read), `discard` (`true` opens even if the open case has unsaved changes) |
 | `case.fields` | Reads the start-time field files of a case opened with `fields: "later"` |
 | `case.save` | Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each; a file a command wrote whole is refused when it is a symbolic link, checked once before anything is written ([Cases](cases.md#editing-and-saving)) |
@@ -152,6 +152,7 @@ bad arguments.
 | `workflow.region` | [Edits the description](workflow.md#editing-the-description): `region`, and `kind` (`fluid`, `solid`, `vegetation`: adds it or gives it that kind) or `remove: true` |
 | `workflow.patch` | Edits a patch of the description: `region`, `patch`, and any of `role` (`null` takes it away), `partner` (`{"region": "street", "patch": "top"}`, or `null`), `name` (renames it; the partners that named it follow) |
 | `workflow.material` | Edits a solid's material in the description: `region`, `material`, and `model` (its `buildingMaterialModel`, or `null`) or `remove: true` |
+| `workflow.settings` | [Chooses settings](workflow.md#settings): any of `deltaT`, `endTime`, `writeInterval`, `turbulence`, `temperatureLimit` (`[min, max]`), `blending` (`{"dampingThickness": 60, "alphaCoeffU": 0.3, "alphaCoeffT": 0.3}`), into the case's files and its description |
 | `workflow.scripts` | Writes `Allprepare`, `Allrun` and `Allclean` from the description, for its OpenFOAM version ([Writing the scripts](workflow.md#writing-the-scripts)): `replace` (`true` writes over scripts that differ) |
 | `geometry.import` | Copies an STL file into `constant/triSurface` ([Surfaces](surfaces.md#importing)): `path` (required), `name`, `replace`, `scale` |
 | `geometry.trees` | Writes [tree crowns](surfaces.md#tree-crowns) as one surface in `constant/triSurface`: the trees from `table` (a file of the case), `path` (a file outside it) or `trees` (`[{"x": 10, "y": 5, "z": 0, "diameter": 6, "height": 8}]`); `name` (default `trees.stl`), `solid` (default `trees`), `replace` |

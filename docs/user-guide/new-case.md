@@ -55,8 +55,11 @@ note says to add them. A model the solver doesn't have for the version is refuse
 
 ## The configuration
 
-There is one: every new case starts from the same settings, for OpenFOAM-8 and -12,
-and is then changed with the commands that edit a case (`control.set`, `dict.set`, `bc.set`, …).
+There is one: every new case starts from the same settings, for OpenFOAM-8 and -12. Some are
+chosen with `settings` (as [`workflow.settings`](workflow.md#settings) takes them: run times,
+turbulence model, temperature-limit bounds, blending coefficients), and kept in the description;
+the case is then changed with the commands that edit it (`workflow.settings`, `control.set`,
+`dict.set`, `bc.set`, …).
 The settings are those of the urbanMicroclimateFoam tutorials, as [the
 examples](https://github.com/OpenFOAM-BuildingPhysics/umcfGui/blob/main/examples/README.md) have
 them: `streetCanyon_CFDHAM` (the air, the solids, the radiation), `_grass`, `_veg`, byte for byte
@@ -124,12 +127,13 @@ umcf-cli run --case canyon \
 It names the region in the list the case's version reads: OpenFOAM-12's `controlDict`
 (`solid ( street roofs );`) or OpenFOAM-8's `constant/regionProperties` (`solid (street roofs)`).
 The list keeps its layout and comments; a name that would follow a `// …` comment goes on a
-line of its own. It then writes the settings of the region's kind, as
-`case.new` does:
+line of its own. It then writes the settings of the region's kind, as `case.new` does, the
+[configuration](#the-configuration)'s but for these:
 
-- the settings are the [configuration](#the-configuration)'s;
-- a fluid gets the gravity of the case's fluids (when it is a vector written out), and the
-  temperature limit when the case has one;
+- a fluid gets the gravity of the case's fluids (when it is a vector written out), the
+  temperature limit when the case has one, and the RAS model and limit bounds the description's
+  [settings](workflow.md#settings) choose, else those of the case's fluids when they agree (a
+  note says when they don't, and the configuration's are taken);
 - a solid given no materials takes those the description gives it, when it is described already
   (one without a model is left out, with a note; one whose model the version doesn't have is
   refused, saying it is the description's);

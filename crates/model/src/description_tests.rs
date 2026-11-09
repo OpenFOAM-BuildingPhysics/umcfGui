@@ -258,6 +258,7 @@ fn odd_names_come_back_as_they_were() {
             solver: Some(odd.into()),
             reconstruct: true,
             components: crate::description::Components { grass: true, temperature_limit: false, blending: true },
+            settings: Default::default(),
         };
         let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
         assert_eq!((back, problems), (d, vec![]), "{odd}");

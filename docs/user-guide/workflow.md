@@ -155,6 +155,13 @@ radiation   { region vegetation; lai air; viewFactors yes; solarRayTracing yes; 
 components  ( grass temperatureLimit );
 solver      urbanMicroclimateFoam;
 reconstruct yes;
+
+settings
+{
+    deltaT           1800;
+    turbulence       realizableKE;
+    temperatureLimit ( 283.15 370.15 );
+}
 ```
 
 | Key | What |
@@ -168,12 +175,13 @@ reconstruct yes;
 | `partner` | the region and patch a coupled patch is mapped to |
 | `materials` | a solid region's materials, in the order of its `buildingMaterials`: each the name of the cell zone built of it, with its `model` (`buildingMaterialModel`); the coefficients stay in the region's `transportProperties` |
 | `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
+| `settings` | the [settings](#settings) the case chose; one that isn't there is the default |
 | `components` | the [components](new-case.md#components) the regions don't tell: `grass`, `temperatureLimit`, `blending` |
 
 `workflow.import` writes it from the case: the scripts read as above, the region kinds, the
 components its files switch on (a fluid's `grassProperties`, a `limitTemperature` entry in a
 fluid's `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`, `blending` on in `controlDict`),
-each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
+the [settings](#settings) its files have, each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
 lists them (a material or its model given by a macro or a directive is noted and left out, and
 a name listed more than once keeps its first entry). Coupled patches and their partners come from the mesh
 (`neighbourRegion`/`neighbourPatch`, or `sampleRegion`/`samplePatch` in OpenFOAM-8); the canopy
@@ -200,6 +208,43 @@ solid's materials the case doesn't list (or lists with another model), a model t
 doesn't have for the case's version (one the case's file has too is the case check's to say),
 materials of the case it leaves out, and another OpenFOAM version.
 
+
+### Settings
+
+The `settings` block holds what a case chooses of its settings; every other one is the [one
+configuration](new-case.md#the-configuration)'s, or what the case's files say:
+
+| Key | Where the case has it |
+|---|---|
+| `deltaT`, `endTime`, `writeInterval` | `system/controlDict` (numbers above 0; `endTime` may be 0; `writeInterval` counts in the unit of the case's `writeControl`: time steps, or seconds with `adjustableRunTime`) |
+| `turbulence` | each `simulationType RAS` fluid's `constant/<r>/momentumTransport`: the RAS model (`RAS/model`, or `RASModel` where the file has that), one of OpenFOAM's for the case's version (`kEpsilon`, `realizableKE`, `kOmegaSST`, …) or the solver's (`porousrealizableKE`); the one the case's fluids have is accepted too (a model of the case's own library), and a case whose version isn't known takes any name |
+| `temperatureLimit` | `( min max )` in kelvin: the bounds of each fluid's `limitTemperature` entries (in `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`; in the entry's `limitTemperatureCoeffs` when it has one, where OpenFOAM reads them) |
+| `blending` | `{ dampingThickness 60; alphaCoeffU 0.3; alphaCoeffT 0.3; }`: `blendingCoeffs` in `system/controlDict` |
+
+`workflow.settings` chooses some of them: each goes into the case's files where the case has
+it, nothing else in them changing, and into the description's `settings` block entry by entry
+when the case has one. A temperature limit or blending coefficients in a case without that
+component are kept in the description only, with a note (switching a component on is its own
+step). `case.new` takes the same as `settings`, with the same note. A key the block gives twice
+is refused until the file is mended. The block holds what was chosen through these commands:
+`control.set` and `dict.set` change the case's files only, so after them the block may say
+something else than the files (`workflow.import` with `replace` reads them again). `workflow.import` reads them from the case's
+files: a value given by a macro or a directive, or differently in two fluids, is left out with a
+note. Tested read-only on 23 cases of both versions (the 3×3 cases, the Hong Kong project's
+steps, the terrain cases, the examples): each case's settings read, and written back change
+nothing. With the solver: a new case with `turbulence realizableKE` and a temperature limit of 283.15
+to 370.15 K runs on OpenFOAM-8 with the examples' meshes; on OpenFOAM-12 the limit does, but
+`realizableKE` diverges in the first step on those coarse meshes (their fields are set up for
+`kEpsilon`), and a 3×3 case switched from `realizableKE` to `kEpsilon` runs.
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'workflow.settings={"endTime": 86400, "turbulence": "realizableKE", "temperatureLimit": [283.15, 370.15]}' \
+  --cmd 'case.save={}'
+```
+
+In the desktop app it is *Choose settings* in the *More* group of the *Case* tab: its card
+starts with the case's settings as its files have them.
 
 ### Editing the description
 

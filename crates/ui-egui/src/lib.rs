@@ -516,10 +516,19 @@ impl App {
                 "scene.snapshot" => self.snapshot_params(),
                 "case.new" => NEW_CASE.to_string(),
                 "region.add" => ADD_REGION.to_string(),
+                "workflow.settings" => self.settings_params(),
                 _ => "{}".to_string(),
             };
             self.dialog = Some(Dialog { id, params, error: None });
         }
+    }
+
+    /// The *Choose settings* card's parameters to start with: the case's settings, as its files
+    /// have them.
+    fn settings_params(&self) -> String {
+        let Some(case) = self.session.case() else { return "{}".to_string() };
+        let (s, _) = umcf_model::settings::Settings::from_case(case);
+        serde_json::to_string_pretty(&umcf_engine::settings_json(&s)).unwrap_or_else(|_| "{}".to_string())
     }
 
     /// The *Snapshot* card's parameters to start with: the grid, the origin and the background

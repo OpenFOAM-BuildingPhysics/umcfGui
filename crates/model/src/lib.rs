@@ -49,6 +49,7 @@ pub mod description_edit;
 pub mod new_case;
 pub mod region_add;
 pub mod script;
+pub mod settings;
 pub mod tables;
 pub mod workflow;
 

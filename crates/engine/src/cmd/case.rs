@@ -63,7 +63,7 @@ pub(super) const NEW: CommandSpec = CommandSpec {
     label: "New case…",
     menu: "Case/New…",
     shortcut: None,
-    params: "path: a directory that isn't there or is empty (required). version: 8 or 12 (required). regions: [{\"name\": \"air\", \"kind\": \"fluid\"}, {\"name\": \"street\", \"kind\": \"solid\", \"materials\": [{\"name\": \"soil\", \"model\": \"Soil\"}]}, {\"name\": \"vegetation\", \"kind\": \"vegetation\"}, …] (required; at least one fluid; plain names that don't differ only by case and aren't those of the files in constant/ or system/; the vegetation region is named vegetation, as the solver looks it up, and needs the radiation on it). The components: radiation: the region it is computed on (a fluid or the vegetation; it needs a fluid named air); grass: true, or the patches the grass grows on (it needs the radiation); temperatureLimit: true; blending: true (the blending layer: it needs z up, and the air's patches west, east, north and south once meshed). up: the axis that points up, x, y or z (default z): gravity points down it. discard: true to replace an open case with unsaved changes. The settings are one configuration, the urbanMicroclimateFoam tutorials'. Writes system/umcfWorkflow (the description, with the components), the region list (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties), controlDict's run controls (the tutorials', without their function objects) and each region's settings by its kind and the components' (docs/user-guide/new-case.md lists them), then opens the case. The files are written into a directory of their own inside path and moved up once all are: a failure leaves things as they were (a directory there stays, with its owner and mode; one made for the case goes again). A path with `..` is refused. A solid's material gets the coefficients of the tutorials' first material of its model (Soil, Hamstad5Brick); one of another model gets none (a note says so). Not written: meshes, the fields of 0/, decomposeParDict, the weather and sun tables, the view factor dictionary.",
+    params: "path: a directory that isn't there or is empty (required). version: 8 or 12 (required). regions: [{\"name\": \"air\", \"kind\": \"fluid\"}, {\"name\": \"street\", \"kind\": \"solid\", \"materials\": [{\"name\": \"soil\", \"model\": \"Soil\"}]}, {\"name\": \"vegetation\", \"kind\": \"vegetation\"}, …] (required; at least one fluid; plain names that don't differ only by case and aren't those of the files in constant/ or system/; the vegetation region is named vegetation, as the solver looks it up, and needs the radiation on it). The components: radiation: the region it is computed on (a fluid or the vegetation; it needs a fluid named air); grass: true, or the patches the grass grows on (it needs the radiation); temperatureLimit: true; blending: true (the blending layer: it needs z up, and the air's patches west, east, north and south once meshed). up: the axis that points up, x, y or z (default z): gravity points down it. discard: true to replace an open case with unsaved changes. settings: the settings chosen, as workflow.settings takes them ({\"deltaT\": 1800, \"turbulence\": \"realizableKE\", \"temperatureLimit\": [283.15, 370.15], …}); the others are the configuration's. The settings are one configuration, the urbanMicroclimateFoam tutorials'. Writes system/umcfWorkflow (the description, with the components), the region list (OpenFOAM-12's controlDict, OpenFOAM-8's constant/regionProperties), controlDict's run controls (the tutorials', without their function objects) and each region's settings by its kind and the components' (docs/user-guide/new-case.md lists them), then opens the case. The files are written into a directory of their own inside path and moved up once all are: a failure leaves things as they were (a directory there stays, with its owner and mode; one made for the case goes again). A path with `..` is refused. A solid's material gets the coefficients of the tutorials' first material of its model (Soil, Hamstad5Brick); one of another model gets none (a note says so). Not written: meshes, the fields of 0/, decomposeParDict, the weather and sun tables, the view factor dictionary.",
     enabled: always,
     run: new_case,
     // Not journaled: a journal runs again on whichever case is open.
@@ -77,7 +77,18 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let p = Params::new(
         NEW.id,
         p,
-        &["path", "version", "regions", "radiation", "grass", "temperatureLimit", "blending", "up", "discard"],
+        &[
+            "path",
+            "version",
+            "regions",
+            "radiation",
+            "grass",
+            "temperatureLimit",
+            "blending",
+            "up",
+            "discard",
+            "settings",
+        ],
     )?;
     let bad = |m: &str| Error::Params(format!("{}: {m}", NEW.id));
     let path = p.required_str("path")?;
@@ -144,6 +155,10 @@ fn new_case(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         },
         grass_patches,
         up,
+        settings: match p.value("settings") {
+            None => Default::default(),
+            Some(v) => super::workflow::settings_params(NEW.id, v)?,
+        },
     };
     let discard = p.bool("discard")?.unwrap_or(false);
     // Everything is checked before anything is written.
