@@ -14,7 +14,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     label: "Workflow description",
     menu: "Case/Workflow description",
     shortcut: None,
-    params: "scripts: true to also return the scripts workflow.scripts would write from it (scripts, version; scriptsError when none can be: a description with problems, no version, a name unsafe in a script), without writing them. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
+    params: "scripts: true to also return the scripts workflow.scripts would write from it (scripts, version; scriptsError when none can be: no system/umcfWorkflow of the case's own, a description with problems, no version, a name unsafe in a script), without writing them. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
     enabled: needs_case,
     run: show,
     journal: false,
@@ -65,6 +65,17 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if with_scripts && let Some(o) = data.as_object_mut() {
         // The scripts workflow.scripts would write from this description; nothing is written.
         match d.version.or(case.layout.version) {
+            // Not a description of the case's own: workflow.scripts writes none until there is.
+            _ if source != "file" => {
+                o.insert(
+                    "scriptsError".into(),
+                    json!(match source {
+                        "unreadable" => format!("{PATH} is there but doesn't load: workflow.scripts writes none until it is mended"),
+                        "disk" => format!("{PATH} is on disk but not in the open case: workflow.scripts writes none until edit.redo or opening the case again brings it in"),
+                        _ => format!("the case has no {PATH}: workflow.scripts writes none until workflow.import writes one"),
+                    }),
+                );
+            }
             _ if !problems.is_empty() => {
                 o.insert(
                     "scriptsError".into(),

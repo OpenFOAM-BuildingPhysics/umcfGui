@@ -1749,6 +1749,12 @@ fn the_scripts_are_written_from_the_description() {
     let mut s = session();
     let e = s.execute("workflow.scripts", &Value::Null).unwrap_err();
     assert!(e.to_string().contains("workflow.import"), "{e}");
+    // Nor previewed from the import a show makes up.
+    let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+    assert!(
+        out.data["scripts"].is_null()
+            && out.data["scriptsError"].as_str().is_some_and(|m| m.contains("workflow.import"))
+    );
     s.execute("workflow.import", &Value::Null).unwrap();
     // Shown with the description, they change nothing and leave no step in the history.
     let undo = s.can_undo();

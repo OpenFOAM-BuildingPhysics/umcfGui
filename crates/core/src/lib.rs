@@ -355,6 +355,10 @@ impl<F: CaseWrite> CaseWrite for Cancellable<F> {
     fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         self.inner.write(rel, bytes)
     }
+
+    fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
+        self.inner.write_executable(rel, bytes)
+    }
 }
 
 /// A case directory on disk.
@@ -944,6 +948,10 @@ mod tests {
         assert_eq!(mode("Allrun"), 0o750);
         d.write("plain", b"x").unwrap();
         assert_eq!(mode("plain") & 0o111, 0);
+        // Through the wrapper a case is opened with, too.
+        let mut c = Cancellable::new(DirFs::new(&root), Cancel::default());
+        c.write_executable("Allprepare", b"#!/bin/sh\n").unwrap();
+        assert_eq!(mode("Allprepare") & 0o100, 0o100, "{:o}", mode("Allprepare"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
