@@ -282,43 +282,121 @@ fn one_word(w: &str) -> Result<()> {
     if is_one_word(w) { Ok(()) } else { Err(Error::NotAWord(w.to_string())) }
 }
 
-/// Removes every entry with the key at the end of `path`. The second flag tells the caller that
-/// the last item of `dict` went, so the trivia after the dictionary (its closing brace's lead or
-/// the document tail) starts with that entry's same-line comment, which should go too.
-pub fn remove(dict: &mut Dict, path: &[&str]) -> Result<(bool, bool)> {
+/// Removes every entry with the key at the end of `path`. `Some(head)` tells the caller that the
+/// last item of `dict` went: the trivia after the dictionary (its closing brace's lead or the
+/// document tail) starts with that entry's same-line comment, which should go
+/// ([`strip_same_line`]), and `head` (the same-line comment of the entry before it, which the
+/// removed entry's lead held) goes in front of it ([`after_removed`]).
+pub fn remove(dict: &mut Dict, path: &[&str]) -> Result<(bool, Option<String>)> {
     let (key, rest) = path.split_first().ok_or(Error::EmptyPath)?;
     if rest.is_empty() {
         let mut removed = false;
-        let mut strip_after = false;
+        let mut after = None;
         while let Some(i) = dict
             .items
             .iter()
             .rposition(|i| matches!(i, Item::Entry(e) if !e.key.text.is_empty() && unquote(&e.key.text) == *key))
         {
-            dict.items.remove(i);
+            let gone = dict.items.remove(i);
+            let gone_lead = gone.key_tok().lead.clone();
+            let head = same_line_head(&gone_lead);
             removed = true;
             match dict.items.get_mut(i) {
-                Some(next) => strip_same_line(&mut next.key_tok_mut().lead),
-                None => strip_after = true,
+                Some(next) => {
+                    let lead = &mut next.key_tok_mut().lead;
+                    strip_same_line(lead);
+                    if lead.contains('\n') {
+                        after_removed(lead, &head);
+                    } else {
+                        // The next entry was on the removed one's line: it goes where that one
+                        // began (its line and indent), after the comments of the one before.
+                        let mut ws = trailing_ws(&gone_lead).to_string();
+                        if ends_in_line_comment(&head) && !ws.contains('\n') {
+                            ws = format!("\n{ws}");
+                        }
+                        // A CRLF's `\r` ends the head: the removed one's line break brings its own.
+                        let head = if ws.contains('\n') { head.trim_end_matches('\r') } else { &head };
+                        *lead = format!("{head}{ws}{}", lead.trim_start());
+                    }
+                }
+                None => after = Some(head),
             }
         }
-        return Ok((removed, strip_after));
+        return Ok((removed, after));
     }
-    let Some(entry) = dict.get_mut(key) else { return Ok((false, false)) };
-    let Some(Node::Dict { body, close, .. }) = entry.value.first_mut() else { return Ok((false, false)) };
-    let (removed, strip) = remove(body, rest)?;
-    if strip {
-        strip_same_line(&mut close.lead);
+    let Some(entry) = dict.get_mut(key) else { return Ok((false, None)) };
+    let Some(Node::Dict { body, close, .. }) = entry.value.first_mut() else { return Ok((false, None)) };
+    let (removed, after) = remove(body, rest)?;
+    if let Some(head) = after {
+        after_removed(&mut close.lead, &head);
     }
-    Ok((removed, false))
+    Ok((removed, None))
+}
+
+/// The comment at the start of a lead, on the line of what came before it (the same-line comment
+/// of the entry before): kept when the entry the lead belongs to is removed.
+fn same_line_head(lead: &str) -> String {
+    match first_free_newline(lead) {
+        Some(n) => lead.get(..n).filter(|h| !h.trim().is_empty()).unwrap_or("").to_string(),
+        // On one line (`a 1; /* ca */ b 2;`): the comments are the entry's before it.
+        None => lead.trim_end().to_string(),
+    }
+}
+
+/// The first line break of trivia `t` that isn't inside a `/* … */` comment.
+fn first_free_newline(t: &str) -> Option<usize> {
+    let b = t.as_bytes();
+    let (mut i, mut block, mut line) = (0, false, false);
+    while let Some(&c) = b.get(i) {
+        let next = b.get(i + 1).copied();
+        if block {
+            if c == b'*' && next == Some(b'/') {
+                block = false;
+                i += 1;
+            }
+        } else if c == b'\n' {
+            return Some(i);
+        } else if !line && c == b'/' && next == Some(b'*') {
+            block = true;
+            i += 1;
+        } else if !line && c == b'/' && next == Some(b'/') {
+            line = true;
+            i += 1;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The trivia after a removed entry (the next entry's lead, a closing brace's, the document
+/// tail): the removed entry's same-line comment taken out, the one before it (`head`) put back;
+/// what follows a `// …` comment of it goes on a line of its own.
+pub fn after_removed(trivia: &mut String, head: &str) {
+    strip_same_line(trivia);
+    let rest = trivia.trim_start_matches([' ', '\t']);
+    *trivia = if ends_in_line_comment(head) && !rest.starts_with('\n') {
+        format!("{head}\n{rest}")
+    } else {
+        format!("{head}{trivia}")
+    };
 }
 
 /// Drops a same-line comment at the start of `lead` (the trivia after a removed entry's `;`),
 /// keeping the line break and what follows.
 pub fn strip_same_line(lead: &mut String) {
-    let first_line = lead.find('\n').unwrap_or(lead.len());
+    // Up to the first line break outside a `/* … */` comment, which goes whole.
+    let first_line = first_free_newline(lead).unwrap_or(lead.len());
     let head = lead.get(..first_line).unwrap_or("");
-    if head.trim_start().starts_with("//") || head.trim().is_empty() {
+    // On one line (`{ a 1; b 2; }`), the space before what follows stays; the removed entry's
+    // comments on it (`/* cb */`) go, a space kept.
+    if first_free_newline(lead).is_none() && !lead.contains("//") {
+        if lead.contains("/*") {
+            *lead = " ".to_string();
+        }
+        return;
+    }
+    let t = head.trim_start();
+    if t.starts_with("//") || t.starts_with("/*") || head.trim().is_empty() {
         *lead = lead.get(first_line..).unwrap_or("").to_string();
     }
 }
@@ -348,7 +426,12 @@ pub fn adopt_same_line(trivia: &mut String, dict: &mut Dict) {
     let Some(last) = dict.items.last_mut() else { return };
     let head = trivia.get(..end).unwrap_or("").to_string();
     let lead = &mut last.key_tok_mut().lead;
-    *lead = format!("{head}{lead}");
+    // After a `// …` comment the entry goes on a line of its own, never into the comment.
+    *lead = if ends_in_line_comment(&head) && !lead.contains('\n') {
+        format!("{head}\n{}", lead.trim_start())
+    } else {
+        format!("{head}{lead}")
+    };
     *trivia = trivia.get(end..).unwrap_or("").to_string();
 }
 
@@ -358,7 +441,17 @@ fn empty_dict() -> Node {
 
 /// A new entry formatted like the last sibling (same blank-line spacing and indentation).
 fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str, inline: bool) -> Entry {
-    let (newlines, indent) = match dict.items.iter().rev().find(|i| !i.key_tok().text.is_empty()) {
+    let last = dict.items.iter().rev().find(|i| !i.key_tok().text.is_empty());
+    // A dictionary written on one line (`{ name soil; rho 1600; }`) gets it on that line.
+    // (A file's first entry has no lead at all: not that.)
+    let on_line = |i: &Item| {
+        let lead = &i.key_tok().lead;
+        !lead.is_empty() && !lead.contains('\n') && !lead.contains("//")
+    };
+    let one_line = last.is_some() && dict.items.iter().filter(|i| !i.key_tok().text.is_empty()).all(on_line);
+    // Indented like the last entry that starts a line (not one after another on its line).
+    let line_start = dict.items.iter().rev().find(|i| !i.key_tok().text.is_empty() && i.key_tok().lead.contains('\n'));
+    let (newlines, indent) = match line_start.or(last) {
         Some(last) => {
             let ws = trailing_ws(&last.key_tok().lead);
             let nl = ws.matches('\n').count().clamp(1, 2);
@@ -374,10 +467,22 @@ fn new_entry(dict: &Dict, key: &str, mut nodes: Vec<Node>, indent: &str, inline:
             layout_dict(n, &indent);
         }
     } else if let Some(n) = nodes.first_mut() {
-        n.first_tok_mut().lead = pad(key_text.len(), VALUE_COLUMN);
+        n.first_tok_mut().lead = if one_line { " ".to_string() } else { sibling_pad(dict, key_text.len()) };
     }
-    let lead = format!("{}{indent}", "\n".repeat(newlines));
+    let lead = if one_line { " ".to_string() } else { format!("{}{indent}", "\n".repeat(newlines)) };
     Entry { key: Tok::new(lead, key_text), value: nodes, end: (!dict_value).then(|| Tok::new("", ";")) }
+}
+
+/// The space before a new value: to the column the values of the entries before it are at
+/// (`rho     1600;`), else OpenFOAM's usual 16.
+fn sibling_pad(dict: &Dict, key_len: usize) -> String {
+    let last = dict.entries().filter(|e| e.dict().is_none()).last();
+    match last.map(|e| (e.key.text.len(), e.value.first().map_or("", first_lead))) {
+        // One space (`rho 1;`) is no column: one space.
+        Some((_, " ")) => " ".to_string(),
+        Some((k, lead)) if !lead.is_empty() && lead.bytes().all(|b| b == b' ') => pad(key_len, k + lead.len()),
+        _ => pad(key_len, VALUE_COLUMN),
+    }
 }
 
 fn push(dict: &mut Dict, entry: Entry) {
@@ -404,9 +509,7 @@ fn first_lead(n: &Node) -> &str {
 }
 
 fn trailing_ws(lead: &str) -> &str {
-    let start =
-        lead.rfind(|c: char| !c.is_whitespace()).map_or(0, |i| i + lead[i..].chars().next().map_or(1, char::len_utf8));
-    lead.get(start..).unwrap_or("")
+    lead.get(lead.trim_end().len()..).unwrap_or("")
 }
 
 fn trailing_indent(lead: &str) -> &str {

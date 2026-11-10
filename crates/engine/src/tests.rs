@@ -2863,3 +2863,57 @@ fn workflow_component_switches_a_component_in_the_files_and_the_description() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn material_set_changes_one_material_s_coefficients() {
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-material", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({
+            "path": dir.to_str().unwrap(), "version": 12,
+            "regions": [{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "brick", "model": "Hamstad5Brick"}]}],
+        }),
+    )
+    .unwrap();
+    let out = s
+        .execute(
+            "material.set",
+            &json!({ "region": "street", "material": "brick", "coefficients": { "rho": 1700, "wcap": 2 } }),
+        )
+        .unwrap();
+    assert!(
+        out.message.starts_with(
+            "material brick of region street: coefficients changed in constant/street/transportProperties; wcap: not a coefficient the solver's catalog lists for Hamstad5Brick"
+        ),
+        "{}",
+        out.message
+    );
+    assert_eq!(out.data["model"], json!("Hamstad5Brick"));
+    let tp = s.case().unwrap().dict("constant/street/transportProperties").unwrap().to_string();
+    assert!(tp.contains("1700") && tp.contains("wcap"), "{tp}");
+    s.execute("edit.undo", &Value::Null).unwrap();
+    let tp = s.case().unwrap().dict("constant/street/transportProperties").unwrap().to_string();
+    assert!(!tp.contains("1700"), "{tp}");
+    for (params, want) in [
+        (json!({ "region": "street", "material": "brick" }), "coefficients is an object"),
+        (
+            json!({ "region": "street", "material": "brick", "coefficients": { "rho": "x" } }),
+            "rho is a number, or null",
+        ),
+        (
+            json!({ "region": "street", "material": "brick", "coefficients": { "V": { "n": 2 } } }),
+            "V is a number, or null",
+        ),
+        (
+            json!({ "region": "street", "material": "brick", "coefficients": { "cap": null } }),
+            "cap: the solver reads it",
+        ),
+        (json!({ "region": "street", "material": "glass", "coefficients": { "rho": 1 } }), "lists no material glass"),
+    ] {
+        let e = s.execute("material.set", &params).unwrap_err().to_string();
+        assert!(e.contains(want), "{params}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

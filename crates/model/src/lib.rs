@@ -47,6 +47,7 @@ pub mod components;
 mod controls;
 pub mod description;
 pub mod description_edit;
+pub mod material_edit;
 pub mod new_case;
 pub mod region_add;
 pub mod script;

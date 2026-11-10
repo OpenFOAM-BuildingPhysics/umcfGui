@@ -57,6 +57,35 @@ a note says to add them. A model the solver doesn't have for the version is refu
 a library entry without a coefficient the solver reads of every material (`rho`, `cap`,
 `lambda1`, `lambda2`).
 
+### A material's coefficients
+
+`material.set` changes one material's coefficients in its solid's
+`constant/<region>/transportProperties`, in the material's dictionary in `buildingMaterials`:
+`coefficients` gives numbers, or `null` to take one out, each a plain name in that dictionary,
+where the solver reads every coefficient (`VanGenuchten`'s `n` and `wcap` too; none in a
+sub-dictionary). A coefficient there changes in place, keeping its comment and alignment; a new
+one goes at the end of the dictionary, aligned like its values (on its line, for a material
+written on one), with a note when the solver's catalog doesn't list it for the material's model
+(a typo?). Nothing else in the file changes. That material only: the case's other materials of
+its model (layers) and the [material library](workflow.md#settings) new materials start from
+stay as they are.
+
+Refused, with nothing changed: a region that isn't a solid, one without `transportProperties` or
+its `buildingMaterials` list, a material it doesn't list or lists twice (the solver stops on a
+cell zone given two materials), one whose dictionary has a macro or a directive (what it gives
+can't be told: edit it by hand), a name that isn't a plain word, `name` or
+`buildingMaterialModel` (the material's name and model, which `workflow.material` describes), a
+value that isn't a number, `rho`, `cap`, `lambda1` or `lambda2` taken out (the solver reads them
+of every material), and a value where the material has a dictionary.
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'material.set={"region": "street", "material": "brick", "coefficients": {"rho": 1700, "lambda1": 0.7}}' \
+  --cmd 'case.save={}'
+```
+
+In the desktop app it is *Set a material's coefficients* in the *More* group of the *Case* tab.
+
 ## The configuration
 
 There is one: every new case starts from the same settings, for OpenFOAM-8 and -12. Some are
