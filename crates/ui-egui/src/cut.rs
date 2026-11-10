@@ -98,6 +98,8 @@ impl App {
         if let Some(r) = self.cut.take().and_then(|f| f.hid) {
             self.unhide(&r);
         }
+        // The view drawn again without the cut, whether or not a hiding was left to take out.
+        self.look += 1;
     }
 
     /// The entry the card adds to hide region `region`'s boundary: last, so that it wins over
@@ -241,9 +243,18 @@ impl App {
             self.fit_cut(&mut form, true);
         }
         if form != before {
-            self.cut = Some(form);
-            self.hide_boundary();
+            self.set_cut(form);
+            ui.ctx().request_repaint();
         }
         close
+    }
+
+    /// Takes the card's new state: the region's boundary hidden, and the view drawn again (its
+    /// image is kept by the case's revision and the look, which a moved plane leaves as they
+    /// were).
+    pub(crate) fn set_cut(&mut self, form: CutForm) {
+        self.cut = Some(form);
+        self.hide_boundary();
+        self.look += 1;
     }
 }

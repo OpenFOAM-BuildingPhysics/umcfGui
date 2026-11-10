@@ -1862,6 +1862,18 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert!(form.range.1 > form.range.0, "{:?}", form.range);
     assert!(form.at > form.range.0 && form.at < form.range.1);
     app.toggle_cut();
+    // A moved plane: the view is drawn again.
+    app.toggle_cut();
+    let look = app.look;
+    let mut form = app.cut.clone().unwrap();
+    form.at += 0.1;
+    app.set_cut(form);
+    assert!(app.look > look);
+    // Closed after the browser showed the region again (no hiding left): drawn again too.
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Mode(Mode::Surface));
+    let look = app.look;
+    app.toggle_cut();
+    assert!(app.look > look);
     // A patch with a mode of its own, then a change in the browser while the card is open: the
     // card's hiding stays last, over the patch.
     app.display = before.clone();
