@@ -179,8 +179,8 @@ settings
 | `components` | the [components](new-case.md#components) the regions don't tell: `grass`, `temperatureLimit`, `blending` |
 
 `workflow.import` writes it from the case: the scripts read as above, the region kinds, the
-components its files switch on (a fluid's `grassProperties`, a `limitTemperature` entry in a
-fluid's `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`, `blending` on in `controlDict`),
+components its files switch on (a fluid's `grassProperties` whose `grassModel` isn't `none` and whose `grass` isn't off, a `limitTemperature` entry in a
+fluid's file the solver reads it from ([below](#components)), `blending` on in `controlDict`),
 the [settings](#settings) its files have, each patch's role, and each solid's materials as its `constant/<region>/transportProperties`
 lists them (a material or its model given by a macro or a directive is noted and left out, and
 a name listed more than once keeps its first entry). Coupled patches and their partners come from the mesh
@@ -218,7 +218,7 @@ configuration](new-case.md#the-configuration)'s, or what the case's files say:
 |---|---|
 | `deltaT`, `endTime`, `writeInterval` | `system/controlDict` (numbers above 0; `endTime` may be 0; `writeInterval` counts in the unit of the case's `writeControl`: time steps, or seconds with `adjustableRunTime`) |
 | `turbulence` | each `simulationType RAS` fluid's `constant/<r>/momentumTransport`: the RAS model (`RAS/model`, or `RASModel` where the file has that), one of OpenFOAM's for the case's version (`kEpsilon`, `realizableKE`, `kOmegaSST`, …) or the solver's (`porousrealizableKE`); the one the case's fluids have is accepted too (a model of the case's own library), and a case whose version isn't known takes any name |
-| `temperatureLimit` | `( min max )` in kelvin: the bounds of each fluid's `limitTemperature` entries (in `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`; in the entry's `limitTemperatureCoeffs` when it has one, where OpenFOAM reads them) |
+| `temperatureLimit` | `( min max )` in kelvin: the bounds of each fluid's `limitTemperature` entries (in the file the solver reads it from: OpenFOAM-12 `system/<r>/fvConstraints`, else `system/<r>/fvOptions`, else `constant/<r>/fvOptions`; OpenFOAM-8 `constant/<r>/fvOptions`, else `system/<r>/fvOptions`; in the entry's `limitTemperatureCoeffs` when it has one, where OpenFOAM reads them) |
 | `blending` | `{ dampingThickness 60; alphaCoeffU 0.3; alphaCoeffT 0.3; }`: `blendingCoeffs` in `system/controlDict` |
 | `numerics` | the solver numerics per region kind: `{ fluid { SIMPLE { nNonOrthogonalCorrectors 1; } relaxationFactors { equations { "(h\|e)" 0.3; } } } solid { … } vegetation { … } }`, entries of the regions' `system/<r>/fvSolution` under `solvers`, `SIMPLE`, `PIMPLE`, `PISO` and `relaxationFactors` (three levels at most; numbers or plain words such as a solver's name; field names or patterns as keys, brackets balanced; an entry given twice refused), written into every region of that kind and into new ones (a new region: the description's entries over those of the case's regions). An entry goes only where it is one: never over a dictionary of the file nor through a value of it, never a field's dictionary the file's `solvers` hasn't (OpenFOAM would take it before the pattern that covers the field, with only the entries given: one is added by hand), nor a dictionary the file hasn't next to a directive or macro in the dictionary it would go into (an `#include` or `$common` may bring it); a value right under `solvers` is refused (a field's entry there is a dictionary); what isn't written is noted. A pattern key is written quoted. The description keeps the entries chosen, written or not (a note says which weren't), and refuses a value where it holds a dictionary or the other way round. A solver's dictionary needs what its solver reads (a `smoothSolver` its `smoother`): a solver changed in a field's dictionary keeps the dictionary's other entries. Read from a case as what its regions have that differs from the [configuration](new-case.md#the-configuration), per kind what all its regions share (regions of a kind that differ noted), so that choosing them back changes none; a file with a directive or macro at its top noted. Taken `from` a case of another OpenFOAM version, they are left out with a note; those given with `from` go over its entry by entry. `workflow.show` and `workflow.settings` return the values as written, as strings |
 | `materials` | the material library: `{ HamstadConcrete { rho 1950; cap 850; lambda1 1.3; lambda2 0; } … }`, each `buildingMaterialModel` the solver has for the version with the coefficients its new materials start from (numbers, or a dictionary of them such as `VanGenuchtenCoeffs`), at least those the solver reads of every material (`rho`, `cap`, `lambda1`, `lambda2`). Not written into the case's materials: they keep theirs, which may differ for one model (layers). `workflow.settings` says so, and whether the library is kept: that needs a `system/umcfWorkflow` that loads and isn't a symbolic link. A model the case's solids have already is taken even when the solver's catalog lacks it (one of the case's own library) |
@@ -228,8 +228,8 @@ relative path is from the open case's directory; refused when that case's materi
 coefficient the solver reads of every material; those given too come first: `{"from": "../other-case", "endTime": 86400}`): each goes into the case's files where the case has
 it, nothing else in them changing, and into the description's `settings` block entry by entry
 when the case has one. A temperature limit or blending coefficients in a case without that
-component are kept in the description only, with a note (switching a component on is its own
-step). `case.new` takes the same as `settings`, with the same note. A key the block gives twice
+component are kept in the description only, with a note, until the component is switched on
+([below](#components)). `case.new` takes the same as `settings`, with the same note. A key the block gives twice
 is refused until the file is mended. The block holds what was chosen through these commands:
 `control.set` and `dict.set` change the case's files only, so after them the block may say
 something else than the files (`workflow.import` with `replace` reads them again). `workflow.import` reads them from the case's
@@ -251,6 +251,30 @@ umcf-cli run --case path/to/case \
 
 In the desktop app it is *Choose settings* in the *More* group of the *Case* tab: its card
 starts with the case's settings as its files have them.
+
+### Components
+
+`workflow.component` switches a [component](new-case.md#components) on or off in a case, in
+its files as `case.new` writes them and in the description's `components` when the case has
+one (its other components as they are):
+
+| Component | On | Off |
+|---|---|---|
+| `grass` | `constant/air/grassProperties` (where `case.new` puts it): its model (the one its coefficients are for, else `simpleGrass`) and the `patches` given, which must be `air`'s; the configuration's file when there is none, without the tutorial's patches, and what a file lacks of it filled in; a `grass off;` switched back on (a note when it names no patch). Needs a fluid region named `air` and the radiation | `grassModel none;` (the solver's `noGrass`) in every fluid's `grassProperties`, its coefficients and patches kept for switching it back on |
+| `temperatureLimit` | a `limitTemperature` entry in each fluid without one in the file the solver reads its limit from: OpenFOAM-12 `system/<r>/fvConstraints`, else `system/<r>/fvOptions`, else `constant/<r>/fvOptions` (it never reads `constant/<r>/fvConstraints`); OpenFOAM-8 `constant/<r>/fvOptions`, else `system/<r>/fvOptions`; else a new one in `system/`. Its bounds the description's settings', else 273.15 to 373.15 K | every fluid's entries taken out of the file the solver reads them from; their bounds kept in the description's settings when it has none, and those not kept noted; one in a file the solver doesn't read is left as it is, with a note |
+| `blending` | `blending true;` in `controlDict`, with `blendingCoeffs` (the description's, else the configuration's) when it has none. Needs the gravity along z and the patches `west`, `east`, `north` and `south` in each fluid's mesh, which the solver's blending layer finds by name (a note when a fluid has no mesh yet) | `blending false;`, the coefficients kept |
+
+A case whose version isn't known, a patch `air` doesn't have, a description that gives
+`components` twice, or a link where a file would go is refused, with nothing changed. A component already as asked changes nothing, with a note.
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'workflow.component={"component": "grass", "on": true, "patches": ["air_to_street"]}' \
+  --cmd 'case.save={}'
+```
+
+In the desktop app it is *Switch a component* in the *More* group of the *Case* tab: its card
+starts with the temperature limit switched on.
 
 ### Editing the description
 

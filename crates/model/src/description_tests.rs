@@ -664,17 +664,24 @@ fn the_import_finds_a_temperature_limit_where_openfoam_reads_it() {
         "{}limitT {{ type limitTemperature; selectionMode all; min 273; max 373; }}\n",
         header("dictionary", "fvOptions")
     );
-    for rel in [
-        "constant/air/fvOptions",
-        "system/air/fvOptions",
-        "system/air/fvConstraints",
-        "constant/air/fvConstraints",
-        "constant/air/fvModels",
-        "system/air/fvModels",
+    // OpenFOAM-12 reads system/fvConstraints, else system/fvOptions, else constant/fvOptions,
+    // and never constant/fvConstraints nor fvModels.
+    for (rel, read) in [
+        ("constant/air/fvOptions", true),
+        ("system/air/fvOptions", true),
+        ("system/air/fvConstraints", true),
+        ("constant/air/fvConstraints", false),
+        ("constant/air/fvModels", false),
+        ("system/air/fvModels", false),
     ] {
         let c = Case::open(&canyon().with(rel, limit.clone())).unwrap();
-        assert!(Description::import(&c).0.components.temperature_limit, "{rel}");
+        assert_eq!(Description::import(&c).0.components.temperature_limit, read, "{rel}");
     }
+    // One the solver doesn't get to: system/fvConstraints comes first.
+    let empty = header("dictionary", "fvConstraints");
+    let c = Case::open(&canyon().with("constant/air/fvOptions", limit.clone()).with("system/air/fvConstraints", empty))
+        .unwrap();
+    assert!(!Description::import(&c).0.components.temperature_limit);
     let c = Case::open(&canyon()).unwrap();
     assert!(!Description::import(&c).0.components.temperature_limit);
 }

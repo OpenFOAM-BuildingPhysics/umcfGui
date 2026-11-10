@@ -151,9 +151,9 @@ pub struct RegionDesc {
 /// own (`umcf_schema::defaults`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Components {
-    /// `grassProperties` in a fluid region.
+    /// `grassProperties` in a fluid region, its `grassModel` not `none` nor `grass` off.
     pub grass: bool,
-    /// A `limitTemperature` entry: OpenFOAM-8's `fvOptions`, OpenFOAM-12's `fvConstraints`.
+    /// A `limitTemperature` entry where the solver reads it ([`crate::settings::limit_file`]).
     pub temperature_limit: bool,
     /// The blending layer: `blending` in `controlDict`.
     pub blending: bool,
@@ -538,28 +538,24 @@ impl Description {
 }
 
 /// The components the case's files switch on (see [`Components`]): a fluid region's
-/// `grassProperties`, a `limitTemperature` entry in a fluid's `fvOptions`, `fvConstraints` or
-/// `fvModels` (in `constant/` or `system/`: OpenFOAM-8 looks for `fvOptions` in `constant/`
-/// first, OpenFOAM-12 for each in its own place, then the other), `blending` on in
+/// `grassProperties` (its model not `none`, `grass` not off), a `limitTemperature` entry in the
+/// file a fluid's limit is read from ([`crate::settings::limit_file`]), `blending` on in
 /// `controlDict`.
 pub(crate) fn case_components(case: &Case) -> Components {
     let mut c = Components::default();
     let fluids = case.regions.iter().filter(|r| r.kind == RegionKind::Fluid);
     for r in fluids {
-        if case.exists(&format!("constant/{}/grassProperties", r.name)) == Some(true) {
+        // `grassModel none` is the solver's noGrass, and `grass off` switches any model off.
+        let rel = format!("constant/{}/grassProperties", r.name);
+        let doc = case.dict(&rel);
+        let off = doc.and_then(|d| d.value(&["grassModel"])).as_deref() == Some("none")
+            || doc.and_then(|d| d.value(&["grass"])).is_some_and(|w| umcf_foam_dict::switch(&w) == Some(false));
+        // A file made in this session counts before it is saved.
+        if (doc.is_some() || case.exists(&rel) == Some(true)) && !off {
             c.grass = true;
         }
-        for rel in ["fvOptions", "fvConstraints", "fvModels"]
-            .into_iter()
-            .flat_map(|f| [format!("constant/{}/{f}", r.name), format!("system/{}/{f}", r.name)])
-        {
-            let limits = case.dict(&rel).is_some_and(|d| {
-                d.root.entries().any(|e| {
-                    e.dict().and_then(|b| b.get("type")).and_then(single).as_deref() == Some("limitTemperature")
-                })
-            });
-            c.temperature_limit |= limits;
-        }
+        // Where the solver reads it from (`settings::limit_file`).
+        c.temperature_limit |= !crate::settings::limit_entries(case, &r.name).is_empty();
     }
     // Read as the solver reads it (`lookupOrDefault<bool>`), not as the description's yes/no.
     c.blending = case

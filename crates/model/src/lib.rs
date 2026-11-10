@@ -43,6 +43,7 @@ use umcf_foam_field::{Field, Value};
 pub use umcf_foam_mesh::Patch;
 use umcf_schema::{CaseKind, Layout, Note, Severity};
 
+pub mod components;
 mod controls;
 pub mod description;
 pub mod description_edit;

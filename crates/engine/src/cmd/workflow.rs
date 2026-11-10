@@ -109,7 +109,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties whose grassModel isn't none and grass isn't off, a limitTemperature entry in the file a fluid's limit is read from (OpenFOAM-12: system/fvConstraints, else system/fvOptions, else constant/fvOptions; OpenFOAM-8: constant/fvOptions, else system/fvOptions), blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -528,6 +528,49 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Ok(Outcome::new(
         message,
         json!({ "settings": settings_json(&chosen), "changed": c.applied.changed, "described": c.described, "notes": notes }),
+    ))
+}
+
+pub(super) const COMPONENT: CommandSpec = CommandSpec {
+    id: "workflow.component",
+    label: "Switch a component",
+    menu: "Case/Workflow/Switch a component",
+    shortcut: None,
+    params: "component: grass, temperatureLimit or blending; on: true or false; patches (grass, on only): the patches of air the grass grows on, [\"ground\", …]. In the case's files as case.new writes them, and in the components of system/umcfWorkflow when the case has one. grass: constant/air/grassProperties (where case.new puts it), its model and patches (the file from the configuration when there is none, without the tutorial's patches, and what a file lacks of it filled in, a grass off switched back on; a note when it names no patch); off: grassModel none in every fluid's, its coefficients and patches kept; needs a fluid region named air and the radiation. temperatureLimit: a limitTemperature entry in the file each fluid's limit is read from (OpenFOAM-12: system/fvConstraints, else system/fvOptions, else constant/fvOptions; OpenFOAM-8: constant/fvOptions, else system/fvOptions; a new one in system/), with the description's bounds, else 273.15 to 373.15, in each fluid without one there; off: every one taken out of those files, the bounds kept in the description's settings when it has none, those not kept noted (one in a file the solver doesn't read left as it is, with a note). blending: blending in controlDict, true with blendingCoeffs (the description's, else the configuration's) when it has none; off: false, the coefficients kept; needs the gravity along z and the patches west, east, north and south in each fluid's mesh (the solver's blending layer finds them by name; a note when a fluid has no mesh yet). Refused, with nothing changed: a case whose version isn't known, a patch air doesn't have, a description that gives components twice, a link where a file would go. case.save writes it all.",
+    enabled: needs_case,
+    run: component,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+/// `workflow.component`: a component switched on or off.
+fn component(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    let p = Params::new(COMPONENT.id, p, &["component", "on", "patches"])?;
+    let bad = |m: &str| Error::Params(format!("{}: {m}", COMPONENT.id));
+    let word = p.required_str("component")?;
+    let on = p.bool("on")?.ok_or_else(|| bad("on is true or false"))?;
+    let patches: Option<Vec<String>> = match p.value("patches") {
+        None => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .map(|x| x.as_str().map(str::to_string).ok_or_else(|| bad("patches is a list of names")))
+                .collect::<Result<_, _>>()?,
+        ),
+        Some(_) => return Err(bad("patches is a list of names")),
+    };
+    let o = s.opened_mut()?;
+    let r = o.case.switch_component(o.fs.as_ref(), word, on, patches.as_deref())?;
+    let mut message = format!("{word} switched {}", if on { "on" } else { "off" });
+    if !r.changed.is_empty() {
+        message.push_str(&format!(": written into {}", r.changed.join(", ")));
+    }
+    for n in &r.notes {
+        message.push_str(&format!("; {n}"));
+    }
+    Ok(Outcome::new(
+        message,
+        json!({ "component": word, "on": on, "changed": r.changed, "described": r.described, "notes": r.notes }),
     ))
 }
 
