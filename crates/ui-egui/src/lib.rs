@@ -161,6 +161,9 @@ const SEARCH_ID: &str = "command-search";
 /// in.
 const ADD_REGION: &str = "{\n  \"region\": \"\",\n  \"kind\": \"solid\",\n  \"materials\": []\n}";
 
+/// The *Switch a component* card's parameters to start with (`patches` are the grass's).
+const SWITCH_COMPONENT: &str = "{\n  \"component\": \"temperatureLimit\",\n  \"on\": true\n}";
+
 /// The *New case* card's parameters to start with: the air alone, for OpenFOAM-12, from the
 /// tutorials' settings.
 const NEW_CASE: &str = "{\n  \"path\": \"\",\n  \"version\": 12,\n  \"regions\": [\n    { \"name\": \"air\", \"kind\": \"fluid\" }\n  ]\n}";
@@ -516,6 +519,7 @@ impl App {
                 "scene.snapshot" => self.snapshot_params(),
                 "case.new" => NEW_CASE.to_string(),
                 "region.add" => ADD_REGION.to_string(),
+                "workflow.component" => SWITCH_COMPONENT.to_string(),
                 "workflow.settings" => self.settings_params(),
                 _ => "{}".to_string(),
             };

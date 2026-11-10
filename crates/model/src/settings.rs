@@ -18,7 +18,7 @@
 //! |---|---|
 //! | `deltaT`, `endTime`, `writeInterval` | `system/controlDict` |
 //! | `turbulence` | each `simulationType RAS` fluid's `constant/<r>/momentumTransport`, `RAS/model` (`RASModel` where the file has that) |
-//! | `temperatureLimit` | the `limitTemperature` entries of each fluid's `fvOptions`, `fvConstraints` or `fvModels` (in `constant/` or `system/`), `min` and `max` (in its `limitTemperatureCoeffs` when it has one) |
+//! | `temperatureLimit` | the `limitTemperature` entries of the file each fluid's limit is read from ([`limit_file`]), `min` and `max` (in its `limitTemperatureCoeffs` when it has one) |
 //! | `blending` | `blendingCoeffs` in `system/controlDict` |
 
 use std::collections::HashSet;
@@ -344,16 +344,39 @@ fn turbulence_at(case: &Case, region: &str) -> Option<(String, String)> {
     })
 }
 
-/// The files of `region`'s `limitTemperature` entries (`fvOptions`, `fvConstraints`,
-/// `fvModels`, in `constant/` or `system/`), each with the path of the dictionary its `min` and
-/// `max` are read from: the entry's `limitTemperatureCoeffs` when it has one (OpenFOAM reads the
-/// coefficients from there, `optionalSubDict`), else the entry.
-fn limit_entries(case: &Case, region: &str) -> Vec<(String, Vec<String>)> {
+/// The file fluid `region`'s temperature limit is read from, the case's own: OpenFOAM-12
+/// `system/fvConstraints`, else `system/fvOptions`, else `constant/fvOptions` (it never reads
+/// `constant/fvConstraints`); OpenFOAM-8 `constant/fvOptions`, else `system/fvOptions`. `None`
+/// when the case has none of them.
+pub fn limit_file(case: &Case, v: umcf_core::OfVersion, region: &str) -> Option<String> {
+    limit_files(v, region).into_iter().find(|x| case.dict(x).is_some() || case.exists(x) == Some(true))
+}
+
+/// The files a fluid's limit may be read from, in the order the solver looks (see [`limit_file`]).
+pub(crate) fn limit_files(v: umcf_core::OfVersion, region: &str) -> Vec<String> {
+    match v {
+        umcf_core::OfVersion::V12 => vec![
+            format!("system/{region}/fvConstraints"),
+            format!("system/{region}/fvOptions"),
+            format!("constant/{region}/fvOptions"),
+        ],
+        umcf_core::OfVersion::V8 => vec![format!("constant/{region}/fvOptions"), format!("system/{region}/fvOptions")],
+    }
+}
+
+/// The `limitTemperature` entries of fluid `region` (file, path of the bounds' dictionary), in
+/// the file the solver reads them from ([`limit_file`]); in any of `fvOptions`, `fvConstraints`
+/// and `fvModels` of `constant/` and `system/` when the case's version isn't known.
+pub(crate) fn limit_entries(case: &Case, region: &str) -> Vec<(String, Vec<String>)> {
     let mut out = Vec::new();
-    for rel in ["fvOptions", "fvConstraints", "fvModels"]
-        .into_iter()
-        .flat_map(|f| [format!("constant/{region}/{f}"), format!("system/{region}/{f}")])
-    {
+    let files: Vec<String> = match case.layout.version {
+        Some(v) => limit_file(case, v, region).into_iter().collect(),
+        None => ["fvOptions", "fvConstraints", "fvModels"]
+            .into_iter()
+            .flat_map(|f| [format!("constant/{region}/{f}"), format!("system/{region}/{f}")])
+            .collect(),
+    };
+    for rel in files {
         let Some(d) = case.dict(&rel) else { continue };
         for e in d.root.entries() {
             let limit = e

@@ -44,6 +44,7 @@ components  ( grass temperatureLimit );
 
 The grass and the vegetation's model are `air`'s, the region the solver looks them up in.
 The patches `grassPatches` names are kept in `grassProperties` only, not in the description.
+A component is switched on or off later with [`workflow.component`](workflow.md#components).
 Gravity points down the axis `up` names (`x`, `y` or `z`, the default: every case at hand but
 the OpenFOAM-8 tutorials has z up); a solid's `g` is none, and the vegetation region has none
 (the solver doesn't read it).

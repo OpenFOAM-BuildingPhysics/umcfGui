@@ -2824,3 +2824,42 @@ fn workflow_settings_choose_the_solver_numerics_of_a_region_kind() {
         let _ = std::fs::remove_dir_all(other(v));
     }
 }
+
+#[test]
+fn workflow_component_switches_a_component_in_the_files_and_the_description() {
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-component", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({ "path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}], "radiation": "air" }),
+    )
+    .unwrap();
+    let out = s.execute("workflow.component", &json!({ "component": "temperatureLimit", "on": true })).unwrap();
+    assert!(
+        out.message.starts_with("temperatureLimit switched on: written into system/air/fvConstraints"),
+        "{}",
+        out.message
+    );
+    assert_eq!(out.data["described"], json!(true));
+    let show = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(show.data["description"]["components"], json!(["temperatureLimit"]), "{}", show.data);
+    s.execute("edit.undo", &Value::Null).unwrap();
+    let fvc = s.case().unwrap().dict("system/air/fvConstraints").unwrap().to_string();
+    assert!(!fvc.contains("limitTemperature"), "{fvc}");
+    let out =
+        s.execute("workflow.component", &json!({ "component": "grass", "on": true, "patches": ["ground"] })).unwrap();
+    assert!(out.message.contains("constant/air/grassProperties"), "{}", out.message);
+    let out = s.execute("workflow.component", &json!({ "component": "grass", "on": false })).unwrap();
+    assert!(out.message.contains("grassModel none"), "{}", out.message);
+    for (params, want) in [
+        (json!({ "component": "grass" }), "on is true or false"),
+        (json!({ "component": "grass", "on": true, "patches": "ground" }), "patches is a list of names"),
+        (json!({ "component": "trees", "on": true }), "trees is not a component"),
+        (json!({ "component": "blending", "on": false, "patches": ["a"] }), "patches are the grass's"),
+    ] {
+        let e = s.execute("workflow.component", &params).unwrap_err().to_string();
+        assert!(e.contains(want), "{params}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
