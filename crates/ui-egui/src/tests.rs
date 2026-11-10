@@ -1886,6 +1886,36 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert_eq!((&last.layer, last.mode), (&Layer::Region(String::new()), Some(Mode::Hidden)));
     app.toggle_cut();
     assert!(app.display.iter().all(|e| e.mode != Some(Mode::Hidden)));
+    // The region given a mode in the browser while the card is open, with or without an entry
+    // of its own from before: that mode shows, the plane moved after too, and stays on close.
+    for start in [Vec::new(), before.clone()] {
+        app.display = start;
+        app.toggle_cut();
+        let region = Layer::Region(String::new());
+        app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
+        let mut form = app.cut.clone().unwrap();
+        form.at += 0.1;
+        app.set_cut(form);
+        let modes = |app: &App| -> Vec<Option<Mode>> {
+            app.display.iter().filter(|e| e.layer == region).map(|e| e.mode).collect()
+        };
+        assert_eq!(modes(&app), [Some(Mode::Wireframe)], "{:?}", app.display);
+        app.toggle_cut();
+        assert_eq!(modes(&app), [Some(Mode::Wireframe)], "{:?}", app.display);
+    }
+    // An opacity doesn't end the hiding (closing still takes it out); a reset does.
+    let hidden = |app: &App| app.display.iter().any(|e| e.mode == Some(Mode::Hidden));
+    app.display.clear();
+    app.toggle_cut();
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.4));
+    assert!(hidden(&app));
+    app.toggle_cut();
+    assert!(!hidden(&app));
+    app.toggle_cut();
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Reset);
+    assert!(!hidden(&app) && app.cut.as_ref().unwrap().released);
+    app.toggle_cut();
+    assert!(app.display.is_empty(), "{:?}", app.display);
 }
 
 #[test]

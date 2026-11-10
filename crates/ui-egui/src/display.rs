@@ -115,6 +115,7 @@ impl App {
     /// same again. Two groups of one patch hold neither the other: the one changed last wins,
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
+        self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
             // Only a group needs its patches' groups.
             let groups = if matches!(layer, Layer::Group { .. }) { self.patch_groups() } else { Default::default() };

@@ -135,10 +135,13 @@ mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider o
 extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
 layer on the plane's other side where it lies on faces between cells. While the card is open the
 region's boundary is hidden (its layer in the browser says so), as it would hide the cut; closing
-the card takes the cut away and shows the boundary again. *Edges* draws the cells' edges. The first
-cut of a region reads its whole mesh; moving the plane after reads nothing. Where no region has a
-mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on its own.
-`umcf-gui <case> --open cut` opens the card at the start.
+the card takes the cut away and shows the boundary again. A mode set for the region in the browser
+while the card is open (*Wireframe*, say), or a reset of it, ends the card's hiding: the region is
+drawn so, and stays so once the card closes. A mode set for one of its patches shows once the card
+closes or the region is shown. *Edges* draws the cells' edges. The first cut of a region reads its
+whole mesh; moving the plane after reads nothing. Where no region has a mesh, *Cut* is greyed out.
+With nothing turned on in the browser, the cut shows on its own. `umcf-gui <case> --open cut` opens
+the card at the start.
 
 ## The GPU view
 

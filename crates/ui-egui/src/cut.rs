@@ -26,6 +26,9 @@ pub struct CutForm {
     pub range: (f64, f64),
     /// The region whose boundary the card hid, to show again.
     pub(crate) hid: Option<String>,
+    /// The browser set how that region is drawn since: its choice stands, the card's hiding is
+    /// gone (and not put back while the card stays on the region).
+    pub(crate) released: bool,
     /// The position was set by hand: kept when the region's extent comes to be known.
     pub(crate) placed: bool,
 }
@@ -39,6 +42,7 @@ impl CutForm {
             flip: false,
             range: (0.0, 0.0),
             hid: None,
+            released: false,
             placed: false,
         }
     }
@@ -71,11 +75,29 @@ impl App {
     /// Keeps the card's hiding entry last, after the display's entries are sorted (patches
     /// after regions), so that it still wins over the region's patches.
     pub(crate) fn keep_hiding_last(&mut self) {
-        let Some(r) = self.cut.as_ref().and_then(|f| f.hid.clone()) else { return };
+        let Some(r) = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone()) else { return };
         let layer = Layer::Region(r);
         if let Some(k) = self.display.iter().rposition(|e| e.layer == layer && e.mode == Some(Mode::Hidden)) {
             let e = self.display.remove(k);
             self.display.push(e);
+        }
+    }
+
+    /// The browser sets the mode of `layer` (or resets it): where that is the region the card
+    /// hides, the card's hiding goes first, so that what the browser set is what shows, with or
+    /// without an entry of the region's own from before; closing the card then leaves it.
+    pub(crate) fn release_hiding(&mut self, layer: &Layer, change: &crate::display::Change) {
+        use crate::display::Change;
+        if !matches!(change, Change::Mode(_) | Change::Reset) {
+            return;
+        }
+        let Some(r) = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone()) else { return };
+        if *layer != Layer::Region(r.clone()) {
+            return;
+        }
+        self.unhide(&r);
+        if let Some(f) = &mut self.cut {
+            f.released = true;
         }
     }
 
@@ -95,7 +117,7 @@ impl App {
 
     /// Closes the card: the cut goes, the region's boundary shows as before.
     pub(crate) fn close_cut(&mut self) {
-        if let Some(r) = self.cut.take().and_then(|f| f.hid) {
+        if let Some(r) = self.cut.take().filter(|f| !f.released).and_then(|f| f.hid) {
             self.unhide(&r);
         }
         // The view drawn again without the cut, whether or not a hiding was left to take out.
@@ -127,16 +149,17 @@ impl App {
     /// Hides the boundary of the cut region (and shows again one hidden before for another).
     fn hide_boundary(&mut self) {
         let Some(form) = &self.cut else { return };
-        let (region, before) = (form.region.clone(), form.hid.clone());
+        let (region, before, released) = (form.region.clone(), form.hid.clone(), form.released);
         if before.as_deref() == Some(region.as_str()) {
             return;
         }
-        if let Some(r) = before {
+        if let Some(r) = before.filter(|_| !released) {
             self.unhide(&r);
         }
         self.display.push(Self::hiding(&region));
         if let Some(f) = &mut self.cut {
             f.hid = Some(region);
+            f.released = false;
         }
         self.look += 1;
     }
