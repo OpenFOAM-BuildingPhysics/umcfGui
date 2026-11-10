@@ -84,7 +84,8 @@ impl ResultsSaved {
 
 /// Where a region's files are under `base` (`""`, `processor3`, a time directory in them).
 fn region_dir(base: &str, region: &str) -> String {
-    join(base, region)
+    // A case of one region has its files right there (`3600/T`), not under a name.
+    if region.is_empty() { base.to_string() } else { join(base, region) }
 }
 
 impl Case {
@@ -193,13 +194,15 @@ impl Case {
         if regions.is_empty() {
             regions.push(String::new());
         }
-        let mut jobs: Vec<(String, String)> = Vec::new();
+        // A directory linked to another of the case lists a file twice: once, by what it is.
+        let mut jobs: Vec<(String, String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for region in &regions {
             let renamed = ops.iter().any(|o| &o.region == region);
             for f in self.result_files(&*fs, region, "")?.files {
-                // Each region's files are under its own directories: no file comes twice.
-                if renamed || f.contains("/polyMesh/") {
-                    jobs.push((f, region.clone()));
+                let key = fs.identity(&f).map_or_else(|| f.clone(), |p| p.to_string_lossy().into_owned());
+                if (renamed || f.contains("/polyMesh/")) && seen.insert(key.clone()) {
+                    jobs.push((f, region.clone(), key));
                 }
             }
         }
@@ -218,14 +221,14 @@ impl Case {
             );
             skipped.push((f, why));
         };
-        for (f, region) in jobs {
-            let todo = ops.get(progress.get(&f).copied().unwrap_or(0)..).unwrap_or_default();
+        for (f, region, key) in jobs {
+            let todo = ops.get(progress.get(&key).copied().unwrap_or(0)..).unwrap_or_default();
             if todo.is_empty() {
                 continue;
             }
             if fs.is_link(&f) {
                 skip(f.clone(), &region, "it is a link (the file it points to may be another case's)".to_string());
-                progress.insert(f, ops.len());
+                progress.insert(key, ops.len());
                 continue;
             }
             let bytes = match fs.read(&f, cap) {
@@ -237,7 +240,7 @@ impl Case {
                         &region,
                         format!("it is {}, more than the memory to edit it allows ({})", shown(size), shown(cap)),
                     );
-                    progress.insert(f, ops.len());
+                    progress.insert(key, ops.len());
                     continue;
                 }
                 Err(FsError::Cancelled { .. }) => {
@@ -246,7 +249,7 @@ impl Case {
                 }
                 Err(e) => {
                     skip(f.clone(), &region, format!("it can't be read ({e})"));
-                    progress.insert(f, ops.len());
+                    progress.insert(key, ops.len());
                     continue;
                 }
             };
@@ -255,7 +258,7 @@ impl Case {
             let plain = !bytes.starts_with(&[0x1f, 0x8b]);
             let head = bytes.get(..4096).unwrap_or(&bytes);
             if plain && (!mentions(head, "FoamFile") || !todo.iter().any(|o| mentions(&bytes, &o.from))) {
-                progress.insert(f, ops.len());
+                progress.insert(key, ops.len());
                 continue;
             }
             let mesh = f.contains("/polyMesh/");
@@ -284,7 +287,7 @@ impl Case {
                 Ok(_) => {}
                 Err(e) => skip(f.clone(), &region, e.to_string()),
             }
-            progress.insert(f, ops.len());
+            progress.insert(key, ops.len());
         }
         saved.skipped = skipped;
         // The data found by the patch's name, in order (a rename back moves it back).

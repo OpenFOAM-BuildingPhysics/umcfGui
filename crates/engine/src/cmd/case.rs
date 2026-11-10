@@ -397,11 +397,22 @@ fn save(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             if n == 1 { "" } else { "s" },
             results.dirs.iter().map(|d| format!(", {d}")).collect::<String>()
         );
+        // The first few: a decomposed case can skip thousands (all in results.skipped).
+        const SHOWN: usize = 10;
         if !results.skipped.is_empty() {
             message += &format!(
                 "; not changed: {}",
-                results.skipped.iter().map(|(f, why)| format!("{f} ({why})")).collect::<Vec<_>>().join(", ")
+                results
+                    .skipped
+                    .iter()
+                    .take(SHOWN)
+                    .map(|(f, why)| format!("{f} ({why})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
+            if results.skipped.len() > SHOWN {
+                message += &format!(" and {} more (results.skipped)", results.skipped.len() - SHOWN);
+            }
         }
     }
     let renames: Vec<Value> =

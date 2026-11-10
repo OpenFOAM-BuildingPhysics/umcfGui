@@ -303,7 +303,8 @@ struct DiskState {
     /// The patch renames done in the results ([`Case::save_results`]), in order.
     results: Vec<results::ResultRename>,
     /// The renames a cancelled [`Case::save_results`] was doing, in order, how many of them
-    /// each result file has had (none when not listed), and how many have had their
+    /// each result file has had (by what the file is, [`CaseFs::identity`]: a file reached
+    /// through a linked directory too; none when not listed), and how many have had their
     /// `boundaryData` directories renamed: the next one gives each only the rest.
     results_unfinished: Vec<results::ResultRename>,
     results_progress: BTreeMap<String, usize>,

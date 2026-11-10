@@ -258,13 +258,15 @@ umcf-cli run --case my-case \
 - **How**: after the case's own files, one file at a time: read, the patch's `boundaryField`
   entry (a mesh's patch) renamed, every other byte kept (lists, comments, ASCII or binary; a
   gzipped file compressed again), and written back atomically. Files that don't name the patch
-  are left as they are, as is anything that isn't an OpenFOAM file.
+  are left as they are, as is anything that isn't an OpenFOAM file. A file reached twice (a
+  time directory linked to another) is done once.
 - **Not backed up**: results can be gigabytes. A rename back undoes it (a gzipped file's text
   comes back byte for byte, its compressed bytes generally not), and so does undoing the
   command after the save: the next `case.save` takes the name back out of the results (out of
   the files it went into). Several renames are done in order (a swap through a third name
   too).
-- **Skipped and said so**, the rest going on (`case.save`'s message, its `results.skipped`): a
+- **Skipped and said so**, the rest going on (`case.save`'s message names the first 10, its
+  `results.skipped` all): a
   file bigger than an eighth of the free memory (it is held compressed, decompressed and
   written at once: a quarter of what umcfGui may read at once, [the memory
   budget](scene.md#memory)), a link, a file that can't be read or written (one in a directory

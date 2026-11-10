@@ -442,3 +442,51 @@ fn a_decomposed_cyclic_s_processor_patches_follow() {
     // The processor patch keeps its name: its fields' entries are under it.
     assert!(t.contains("procBoundary0to1throughleft"), "{t}");
 }
+
+#[test]
+fn a_case_of_one_region_has_its_results_right_there() {
+    let control = CONTROL.replace("regions { fluid (air); }\n", "");
+    let mut fs = MemFs::new()
+        .with("system/controlDict", format!("{}{control}", header("dictionary", "controlDict")))
+        .with("constant/polyMesh/boundary", boundary(&["inlet", "top"]))
+        .with("0/T", field("T", &["inlet", "top"]))
+        .with("3600/T", field("T", &["inlet", "top"]))
+        .with("constant/boundaryData/inlet/points", "()\n")
+        .with("processor0/constant/polyMesh/boundary", boundary(&["inlet", "top"]))
+        .with("processor0/3600/T", field("T", &["inlet", "top"]));
+    let mut c = Case::open(&fs).unwrap();
+    c.set_patch(&fs, "", "inlet", &PatchChange { name: Some("west"), results: true, ..Default::default() }).unwrap();
+    c.save(&mut fs, None).unwrap();
+    let saved = c.save_results(&mut fs, 1 << 30).unwrap();
+    for f in ["3600/T", "processor0/3600/T", "processor0/constant/polyMesh/boundary"] {
+        assert!(text(&fs, f).contains("    west\n"), "{f}: {saved:?}");
+    }
+    assert!(fs.is_dir("constant/boundaryData/west"), "{saved:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_reached_through_a_linked_directory_is_renamed_once() {
+    let root = std::env::temp_dir().join(format!("umcf-results-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mem = case();
+    for f in ["system/controlDict", "system/air/fvSchemes", "constant/air/polyMesh/boundary", "0/air/T", "3600/air/T"] {
+        let p = root.join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, mem.read(f, 1 << 20).unwrap().unwrap()).unwrap();
+    }
+    // 7200 is 3600 under another name.
+    std::os::unix::fs::symlink(root.join("3600"), root.join("7200")).unwrap();
+    let mut fs = umcf_core::DirFs::new(&root);
+    let mut c = Case::open(&fs).unwrap();
+    // A swap: done twice to the one file, it would come back as it was.
+    for (from, to) in [("inlet", "tmp"), ("top", "inlet"), ("tmp", "top")] {
+        c.set_patch(&fs, "air", from, &PatchChange { name: Some(to), results: true, ..Default::default() }).unwrap();
+    }
+    c.save(&mut fs, None).unwrap();
+    let saved = c.save_results(&mut fs, 1 << 30).unwrap();
+    assert_eq!(saved.files.len(), 1, "{saved:?}");
+    let t = std::fs::read_to_string(root.join("3600/air/T")).unwrap();
+    assert!(t.find("    top\n").unwrap() < t.find("    inlet\n").unwrap(), "{t}");
+    std::fs::remove_dir_all(&root).unwrap();
+}
