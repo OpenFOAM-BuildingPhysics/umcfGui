@@ -317,7 +317,7 @@ pub(super) const SETTINGS: CommandSpec = CommandSpec {
     label: "Choose settings",
     menu: "Case/Workflow/Choose settings",
     shortcut: None,
-    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}; materials: the material library, {\"HamstadConcrete\": {\"rho\": 1950, \"cap\": 850, \"lambda1\": 1.3, \"lambda2\": 0}, …} (each a material model of the solver for the version, its coefficients numbers or objects of numbers), what new materials of each model start from (case.new, region.add; the case's materials keep theirs). from: another case's directory (relative to the open case's), its settings read from its files, read only, those given here put over them; the models its solids have must be the solver's for the open case's version. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
+    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}; materials: the material library, {\"HamstadConcrete\": {\"rho\": 1950, \"cap\": 850, \"lambda1\": 1.3, \"lambda2\": 0}, …} (each a material model of the solver for the version, its coefficients numbers or objects of numbers, at least those the solver reads of every material: rho, cap, lambda1, lambda2), what new materials of each model start from (case.new, region.add; the case's materials keep theirs). from: another case's directory (relative to the open case's), its settings read from its files, read only, those given here put over them; the models its solids have must be the solver's for the open case's version. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
     enabled: needs_case,
     run: settings,
     journal: true,
@@ -344,7 +344,7 @@ pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
     let mut body = String::new();
     for (k, v) in map {
         if k == "from" {
-            continue;
+            return Err(bad("from is workflow.settings' own: another case's settings aren't taken here".into()));
         }
         let value = match (k.as_str(), v) {
             ("materials", Value::Object(models)) => {
@@ -419,7 +419,12 @@ pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
 
 /// `workflow.settings`: settings chosen, into the files and the description.
 fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let mut chosen = settings_params(SETTINGS.id, p)?;
+    // `from` is read here, the rest as any settings are.
+    let mut given = p.clone();
+    if let Some(o) = given.as_object_mut() {
+        o.remove("from");
+    }
+    let mut chosen = settings_params(SETTINGS.id, &given)?;
     // Another case's settings, read only: those given here come first.
     let mut from_notes = Vec::new();
     if let Some(from) = p.get("from") {

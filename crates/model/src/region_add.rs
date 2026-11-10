@@ -154,7 +154,7 @@ impl Case {
             .iter()
             .filter(|(m, _)| !own.contains(m))
             .filter(|(m, _)| {
-                crate::settings::check_materials(
+                crate::settings::check_material_models(
                     &crate::settings::Settings { materials: vec![(m.clone(), Vec::new())], ..Default::default() },
                     v,
                 )
@@ -169,6 +169,27 @@ impl Case {
                 v.label()
             ));
         }
+        // An entry written by hand without what the solver reads of every material.
+        let partial: Vec<String> = chosen
+            .materials
+            .iter()
+            .filter(|(m, c)| {
+                crate::settings::check_coefficients(
+                    &crate::settings::Settings { materials: vec![(m.clone(), c.clone())], ..Default::default() },
+                    v,
+                )
+                .is_err()
+            })
+            .map(|(m, _)| m.clone())
+            .collect();
+        for m in &partial {
+            notes.push(format!(
+                "{}: materials/{m} lacks coefficients the solver reads ({}): left out",
+                crate::description::PATH,
+                crate::settings::required_coefficients(v).join(", ")
+            ));
+        }
+        let bad: Vec<String> = bad.into_iter().chain(partial).collect();
         chosen.materials.retain(|(m, _)| !bad.contains(m));
         // The library the description chose first, then what the case's solids have.
         for (model, coeffs) in chosen.materials.iter().rev() {

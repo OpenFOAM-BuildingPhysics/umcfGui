@@ -2666,6 +2666,12 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     let _ = std::fs::remove_dir_all(&b);
     let mut s = Session::with_backup(".umcfgui/backup/test");
     let concrete = json!({ "HamstadConcrete": { "rho": 1950, "cap": 850, "lambda1": 1.3, "lambda2": 0 } });
+    // case.new takes no `from`: refused, not left out.
+    let e = s
+        .execute("case.new", &json!({ "path": b.to_str().unwrap(), "version": 8, "regions": [{"name": "air", "kind": "fluid"}], "settings": { "from": "x" } }))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("from is workflow.settings' own"), "{e}");
     s.execute(
         "case.new",
         &json!({
@@ -2698,6 +2704,9 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     let relative = format!("../{}", a.file_name().unwrap().to_str().unwrap());
     let out = s.execute("workflow.settings", &json!({ "from": relative, "endTime": 600 })).unwrap();
     assert_eq!(snapshot(&a), before);
+    // `from` alone: the other case's settings, nothing else given.
+    let only = s.execute("workflow.settings", &json!({ "from": relative })).unwrap();
+    assert_eq!(only.data["settings"]["turbulence"], json!("realizableKE"), "{}", only.data);
     assert!(out.message.contains("materials"), "{}", out.message);
     assert!(out.message.contains("the material library is kept in system/umcfWorkflow"), "{}", out.message);
     let chosen = &out.data["settings"];
@@ -2715,6 +2724,7 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     assert!(tp.contains("rho     1950;"), "{tp}");
     for (params, want) in [
         (json!({ "from": "" }), "from is the path of a case"),
+        (json!({ "materials": { "HamstadConcrete": { "rho": 1950 } } }), "materials/HamstadConcrete has no cap"),
         (json!({ "materials": { "Soil": 3 } }), "materials/Soil is an object of coefficients"),
         (json!({ "materials": { "Soil": { "rho": "$r" } } }), "materials/Soil/rho is a number"),
         (json!({ "materials": { "Marble": { "rho": 1 } } }), "materials/Marble is not a material model"),

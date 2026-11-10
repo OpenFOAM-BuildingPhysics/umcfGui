@@ -319,6 +319,14 @@ fn an_incomplete_temperature_limit_agrees_with_no_bounds() {
     assert!(notes.iter().any(|n| n.contains("( ? 373.15 ): not 0 < min < max")), "{notes:?}");
 }
 
+/// What the solver reads of every material, `rho` as given.
+fn full(rho: &str) -> Vec<(String, String)> {
+    [("rho", rho), ("cap", "850"), ("lambda1", "1.3"), ("lambda2", "0")]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 fn concrete() -> Library {
     vec![(
         "HamstadConcrete".into(),
@@ -419,7 +427,7 @@ fn a_new_solid_takes_the_library_s_coefficients_and_a_model_the_solver_lacks_is_
         text.contains("buildingMaterialModel HamstadConcrete;\n        rho     1950;\n        cap     850;"),
         "{text}"
     );
-    let bad = Settings { materials: vec![("Marble".into(), vec![("rho".into(), "1".into())])], ..Default::default() };
+    let bad = Settings { materials: vec![("Marble".into(), full("1"))], ..Default::default() };
     assert!(
         matches!(make(&spec(OfVersion::V12, bad.clone(), false, false)), Err(Error::NewCase(m)) if m.contains("materials/Marble is not a material model"))
     );
@@ -466,7 +474,7 @@ fn the_case_s_own_models_are_kept_and_a_materials_block_given_twice_is_refused()
     c.choose_settings(&mine).unwrap();
     // region.add takes the description's MyBrick, without a note.
     let mut chosen = mine.clone();
-    chosen.materials[0].1 = vec![("rho".to_string(), "777".to_string())];
+    chosen.materials[0].1 = full("777");
     c.choose_settings(&chosen).unwrap();
     let fs2 = MemFs::new();
     let r = NewRegion {
@@ -506,6 +514,9 @@ fn a_coefficients_dictionary_goes_into_a_new_material_whole() {
         "VanGenuchten".to_string(),
         vec![
             ("rho".to_string(), "1000".to_string()),
+            ("cap".to_string(), "800".to_string()),
+            ("lambda1".to_string(), "1".to_string()),
+            ("lambda2".to_string(), "0".to_string()),
             ("VanGenuchtenCoeffs".to_string(), "{ n 2; alpha 0.1; }".to_string()),
         ],
     )];
@@ -526,7 +537,7 @@ fn a_coefficients_dictionary_goes_into_a_new_material_whole() {
 fn a_new_solid_takes_the_description_s_library_before_the_case_s_materials() {
     let s = with_solid(OfVersion::V12, Settings::default(), &[("soil", "Soil")]);
     let (fs, mut c) = opened(&s);
-    let mine = vec![("Soil".to_string(), vec![("rho".to_string(), "999".to_string())])];
+    let mine = vec![("Soil".to_string(), full("999"))];
     c.choose_settings(&Settings { materials: mine, ..Default::default() }).unwrap();
     let r = NewRegion {
         name: "ground".into(),
@@ -557,4 +568,41 @@ fn a_library_chosen_without_a_description_is_said_not_to_be_kept() {
         chosen.applied.notes
     );
     assert!(!chosen.applied.notes.iter().any(|n| n.contains("is kept in")), "{:?}", chosen.applied.notes);
+}
+
+#[test]
+fn a_library_entry_without_what_the_solver_reads_of_a_material_is_refused() {
+    let partial = Settings {
+        materials: vec![("HamstadConcrete".into(), vec![("rho".into(), "1950".into())])],
+        ..Default::default()
+    };
+    assert_eq!(required_coefficients(OfVersion::V12), ["cap", "lambda1", "lambda2", "rho"]);
+    let e = make(&with_solid(OfVersion::V12, partial.clone(), &[("pavement", "HamstadConcrete")])).unwrap_err();
+    assert!(e.to_string().contains("materials/HamstadConcrete has no cap, lambda1, lambda2"), "{e}");
+    let (_, mut c) = opened(&spec(OfVersion::V12, Settings::default(), false, false));
+    let e = c.choose_settings(&partial).unwrap_err();
+    assert!(e.to_string().contains("materials/HamstadConcrete has no cap"), "{e}");
+    // A model of the case's own too: exempt from the model check, not from this one.
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("brick", "Hamstad5Brick")]);
+    let mut own = edited(&s, "constant/street/transportProperties", |t| t.replace("Hamstad5Brick", "MyBrick"));
+    let mine = Settings { materials: vec![("MyBrick".into(), vec![("rho".into(), "1".into())])], ..Default::default() };
+    let e = own.choose_settings(&mine).unwrap_err();
+    assert!(e.to_string().contains("materials/MyBrick has no cap"), "{e}");
+    // One written into the description by hand: left out of a new region, with a note.
+    let (fs, mut c) = opened(&spec(OfVersion::V12, Settings::default(), false, false));
+    c.set(crate::description::PATH, &["settings", "materials", "HamstadConcrete", "rho"], "1950").unwrap();
+    let r = NewRegion {
+        name: "ground".into(),
+        kind: RegionKind::Solid,
+        materials: vec![crate::description::MaterialDesc {
+            name: "pavement".into(),
+            model: Some("HamstadConcrete".into()),
+        }],
+    };
+    let added = c.add_region(&fs, &r).unwrap();
+    assert!(
+        added.notes.iter().any(|n| n.contains("materials/HamstadConcrete lacks coefficients the solver reads")),
+        "{:?}",
+        added.notes
+    );
 }

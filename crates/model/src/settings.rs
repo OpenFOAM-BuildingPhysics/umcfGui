@@ -566,8 +566,48 @@ pub(crate) fn case_models(case: &Case) -> Vec<String> {
     out
 }
 
+/// The coefficients the solver reads of every material, whatever its model (`lookup` in
+/// `solid/updatebuildingMaterials.H`, from the catalog): `rho`, `cap`, `lambda1`, `lambda2`.
+pub fn required_coefficients(version: umcf_core::OfVersion) -> Vec<&'static str> {
+    let cat = umcf_schema::catalog::catalog();
+    let mut out: Vec<&str> = cat
+        .app_keywords
+        .iter()
+        .filter(|a| a.app == "urbanMicroclimateFoam" && a.file == "solid/updatebuildingMaterials.H")
+        .flat_map(|a| a.keywords.iter())
+        .filter(|k| matches!(k.access, umcf_schema::catalog::Access::Required) && k.versions.contains(&version))
+        .map(|k| k.name)
+        .filter(|n| !matches!(*n, "name" | "buildingMaterialModel"))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Refuses a library model that isn't a material model of the solver for `version`.
 pub(crate) fn check_materials(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
+    check_coefficients(s, version)?;
+    check_material_models(s, version)
+}
+
+/// Refuses a library entry without a coefficient the solver reads of every material
+/// ([`required_coefficients`]): a new material of it couldn't be read.
+pub(crate) fn check_coefficients(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
+    let need = required_coefficients(version);
+    for (model, coeffs) in &s.materials {
+        let missing: Vec<&str> = need.iter().copied().filter(|k| !coeffs.iter().any(|(c, _)| c == k)).collect();
+        if !missing.is_empty() {
+            return Err(Error::NewCase(format!(
+                "materials/{model} has no {}: the solver reads them of every material",
+                missing.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a library model that isn't a material model of the solver for `version`.
+pub(crate) fn check_material_models(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
     let cat = umcf_schema::catalog::catalog();
     for (model, _) in &s.materials {
         if !cat.find("buildingMaterialModel", model).is_some_and(|t| t.in_version(version)) {
@@ -705,7 +745,9 @@ impl Case {
                 materials: s.materials.iter().filter(|(m, _)| !own.contains(m)).cloned().collect(),
                 ..Default::default()
             };
-            check_materials(&new, v)?;
+            check_material_models(&new, v)?;
+            // Every entry, the case's own models too, needs what the solver reads of a material.
+            check_coefficients(s, v)?;
         }
         let path = crate::description::PATH;
         // A key given twice: the reader takes the first, an edit would change the last.
