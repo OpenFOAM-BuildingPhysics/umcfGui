@@ -251,7 +251,7 @@ fn a_solid_s_materials_take_the_coefficients_of_the_tutorials_material_of_their_
     assert_eq!(
         m.notes,
         [
-            "region street, material concrete: the tutorials have no HamstadConcrete material to take its coefficients from: add them to constant/street/transportProperties"
+            "region street, material concrete: neither the material library nor the tutorials have HamstadConcrete coefficients: add them to constant/street/transportProperties (or workflow.settings materials)"
         ]
     );
     // None at all: an empty list, and a note.

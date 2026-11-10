@@ -2657,3 +2657,96 @@ fn workflow_settings_go_into_the_files_and_the_description_and_are_undone_whole(
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[test]
+fn workflow_settings_take_another_case_s_settings_and_material_library() {
+    let a = std::env::temp_dir().join(format!("umcf-engine-{}-settings-from-a", std::process::id()));
+    let b = std::env::temp_dir().join(format!("umcf-engine-{}-settings-from-b", std::process::id()));
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let concrete = json!({ "HamstadConcrete": { "rho": 1950, "cap": 850, "lambda1": 1.3, "lambda2": 0 } });
+    // case.new takes no `from`: refused, not left out.
+    let e = s
+        .execute("case.new", &json!({ "path": b.to_str().unwrap(), "version": 8, "regions": [{"name": "air", "kind": "fluid"}], "settings": { "from": "x" } }))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("from is workflow.settings' own"), "{e}");
+    s.execute(
+        "case.new",
+        &json!({
+            "path": a.to_str().unwrap(), "version": 8,
+            "regions": [{"name": "air", "kind": "fluid"}, {"name": "ground", "kind": "solid", "materials": [{"name": "pavement", "model": "HamstadConcrete"}]}],
+            "settings": { "turbulence": "realizableKE", "materials": concrete },
+        }),
+    )
+    .unwrap();
+    s.execute(
+        "case.new",
+        &json!({ "path": b.to_str().unwrap(), "version": 8, "regions": [{"name": "air", "kind": "fluid"}] }),
+    )
+    .unwrap();
+    // Read only: the other case is as it was, byte for byte.
+    let snapshot = |dir: &std::path::Path| {
+        let mut all = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() { stack.push(p) } else { all.push((p.clone(), std::fs::read(&p).unwrap())) }
+            }
+        }
+        all.sort();
+        all
+    };
+    let before = snapshot(&a);
+    // Relative to the open case's directory.
+    let relative = format!("../{}", a.file_name().unwrap().to_str().unwrap());
+    let out = s.execute("workflow.settings", &json!({ "from": relative, "endTime": 600 })).unwrap();
+    assert_eq!(snapshot(&a), before);
+    // `from` alone: the other case's settings, nothing else given.
+    let only = s.execute("workflow.settings", &json!({ "from": relative })).unwrap();
+    assert_eq!(only.data["settings"]["turbulence"], json!("realizableKE"), "{}", only.data);
+    assert!(out.message.contains("materials"), "{}", out.message);
+    assert!(out.message.contains("the material library is kept in system/umcfWorkflow"), "{}", out.message);
+    let chosen = &out.data["settings"];
+    assert_eq!(chosen["turbulence"], json!("realizableKE"), "{chosen}");
+    assert_eq!(chosen["endTime"], json!("600"));
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["rho"], json!("1950"), "{chosen}");
+    let added = s
+        .execute(
+            "region.add",
+            &json!({ "region": "roofs", "kind": "solid", "materials": [{"name": "slab", "model": "HamstadConcrete"}] }),
+        )
+        .unwrap();
+    assert!(!added.message.contains("coefficients"), "{}", added.message);
+    let tp = s.case().unwrap().dict("constant/roofs/transportProperties").unwrap().to_string();
+    assert!(tp.contains("rho     1950;"), "{tp}");
+    // What the call gives itself goes over the other case's: the whole entry of that model.
+    let own = json!({ "HamstadConcrete": { "rho": 2100, "cap": 900, "lambda1": 1.6, "lambda2": 0 } });
+    let out = s.execute("workflow.settings", &json!({ "from": relative, "materials": own })).unwrap();
+    let chosen = &out.data["settings"];
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["rho"], json!("2100"), "{chosen}");
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["lambda1"], json!("1.6"), "{chosen}");
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["cap"], json!("900"), "{chosen}");
+    let d = s.case().unwrap().description().unwrap().0;
+    let rho = d
+        .settings
+        .materials
+        .iter()
+        .find(|(m, _)| m == "HamstadConcrete")
+        .and_then(|(_, c)| c.iter().find(|(k, _)| k == "rho"));
+    assert_eq!(rho.map(|(_, v)| v.as_str()), Some("2100"), "{:?}", d.settings.materials);
+    for (params, want) in [
+        (json!({ "from": "" }), "from is the path of a case"),
+        (json!({ "materials": { "HamstadConcrete": { "rho": 1950 } } }), "materials/HamstadConcrete has no cap"),
+        (json!({ "materials": { "Soil": 3 } }), "materials/Soil is an object of coefficients"),
+        (json!({ "materials": { "Soil": { "rho": "$r" } } }), "materials/Soil/rho is a number"),
+        (json!({ "materials": { "Marble": { "rho": 1 } } }), "materials/Marble is not a material model"),
+    ] {
+        let e = s.execute("workflow.settings", &params).unwrap_err().to_string();
+        assert!(e.contains(want), "{params}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}

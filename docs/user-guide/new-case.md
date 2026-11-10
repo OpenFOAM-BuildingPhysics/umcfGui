@@ -49,15 +49,19 @@ the OpenFOAM-8 tutorials has z up); a solid's `g` is none, and the vegetation re
 (the solver doesn't read it).
 
 A solid's materials (`[{"name": "soil", "model": "Soil"}]`, each the cell zone built of it) go
-into its `buildingMaterials`, each with the coefficients (`rho`, `cap`, `lambda1`, …) of the
-tutorials' first material of that model (`Soil`, `Hamstad5Brick`); another model gets none, and a
-note says to add them. A model the solver doesn't have for the version is refused.
+into its `buildingMaterials`, each with the coefficients (`rho`, `cap`, `lambda1`, …) of its model
+in the [material library](workflow.md#settings) chosen (`settings`' `materials`), else of the
+tutorials' first material of that model (`Soil`, `Hamstad5Brick`); another model gets none, and
+a note says to add them. A model the solver doesn't have for the version is refused, and so is
+a library entry without a coefficient the solver reads of every material (`rho`, `cap`,
+`lambda1`, `lambda2`).
 
 ## The configuration
 
 There is one: every new case starts from the same settings, for OpenFOAM-8 and -12. Some are
 chosen with `settings` (as [`workflow.settings`](workflow.md#settings) takes them: run times,
-turbulence model, temperature-limit bounds, blending coefficients), and kept in the description;
+turbulence model, temperature-limit bounds, blending coefficients, material library, solver
+numerics; not `from`, which is `workflow.settings`' own), and kept in the description;
 the case is then changed with the commands that edit it (`workflow.settings`, `control.set`,
 `dict.set`, `bc.set`, …).
 The settings are those of the urbanMicroclimateFoam tutorials, as [the
@@ -134,6 +138,10 @@ line of its own. It then writes the settings of the region's kind, as `case.new`
   temperature limit when the case has one, and the RAS model and limit bounds the description's
   [settings](workflow.md#settings) choose, else those of the case's fluids when they agree (a
   note says when they don't, and the configuration's are taken);
+- a solid's materials take the coefficients of their model in the description's material
+  library, else of the case's own first material of it, else of the tutorials'; a library entry
+  written by hand that the solver can't read (a model it doesn't have, a coefficient it reads of
+  every material missing) is left out with a note;
 - a solid given no materials takes those the description gives it, when it is described already
   (one without a model is left out, with a note; one whose model the version doesn't have is
   refused, saying it is the description's);
@@ -142,8 +150,9 @@ line of its own. It then writes the settings of the region's kind, as `case.new`
 
 A file that is there already is kept as it is. The region has no mesh yet. The workflow
 description names it, with its materials, when the case has one. The whole addition is one step
-in the history, and `case.save` writes it. What `case.new` refuses of a region is refused here
-too, and so are:
+in the history, and `case.save` writes it. A material model the case's solids have already
+is taken even when the solver's catalog lacks it (one of the case's own library). Otherwise
+what `case.new` refuses of a region is refused here too, and so are:
 
 - a name the case has, or one differing from it only by case;
 - a case without a known version or a region list (a meshing step);

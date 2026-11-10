@@ -99,7 +99,7 @@ impl Case {
         }
         let from_description = r.materials.is_empty() && !region.materials.is_empty();
         let r = &region;
-        check_region(r, v).map_err(|e| match e {
+        check_region(r, v, &crate::settings::case_models(self)).map_err(|e| match e {
             Error::NewCase(m) if from_description => Error::NewCase(format!(
                 "{m}: the material is the description's (fix it there, or give the region its materials)"
             )),
@@ -146,6 +146,55 @@ impl Case {
         }
         if chosen.temperature_limit.is_some() {
             case_settings.temperature_limit = chosen.temperature_limit.clone();
+        }
+        // A model written into the description's library by hand that the solver doesn't have.
+        let own = crate::settings::case_models(self);
+        let bad: Vec<String> = chosen
+            .materials
+            .iter()
+            .filter(|(m, _)| !own.contains(m))
+            .filter(|(m, _)| {
+                crate::settings::check_material_models(
+                    &crate::settings::Settings { materials: vec![(m.clone(), Vec::new())], ..Default::default() },
+                    v,
+                )
+                .is_err()
+            })
+            .map(|(m, _)| m.clone())
+            .collect();
+        for m in &bad {
+            notes.push(format!(
+                "{}: materials/{m} is not a material model of the solver for {}: left out",
+                crate::description::PATH,
+                v.label()
+            ));
+        }
+        // An entry written by hand without what the solver reads of every material.
+        let partial: Vec<String> = chosen
+            .materials
+            .iter()
+            .filter(|(m, c)| {
+                crate::settings::check_coefficients(
+                    &crate::settings::Settings { materials: vec![(m.clone(), c.clone())], ..Default::default() },
+                    v,
+                )
+                .is_err()
+            })
+            .map(|(m, _)| m.clone())
+            .collect();
+        for m in &partial {
+            notes.push(format!(
+                "{}: materials/{m} lacks coefficients the solver reads ({}): left out",
+                crate::description::PATH,
+                crate::settings::required_coefficients(v).join(", ")
+            ));
+        }
+        let bad: Vec<String> = bad.into_iter().chain(partial).collect();
+        chosen.materials.retain(|(m, _)| !bad.contains(m));
+        // The library the description chose first, then what the case's solids have.
+        for (model, coeffs) in chosen.materials.iter().rev() {
+            case_settings.materials.retain(|(m, _)| m != model);
+            case_settings.materials.insert(0, (model.clone(), coeffs.clone()));
         }
         if r.kind == RegionKind::Fluid {
             let open = |n: &&String| {

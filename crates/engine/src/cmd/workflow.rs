@@ -109,7 +109,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -317,7 +317,7 @@ pub(super) const SETTINGS: CommandSpec = CommandSpec {
     label: "Choose settings",
     menu: "Case/Workflow/Choose settings",
     shortcut: None,
-    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
+    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}; materials: the material library, {\"HamstadConcrete\": {\"rho\": 1950, \"cap\": 850, \"lambda1\": 1.3, \"lambda2\": 0}, …} (each a material model of the solver for the version, its coefficients numbers or objects of numbers, at least those the solver reads of every material: rho, cap, lambda1, lambda2), what new materials of each model start from (case.new, region.add; the case's materials keep theirs). from: another case's directory (relative to the open case's), its settings read from its files, read only, those given here put over them; the models its solids have must be the solver's for the open case's version. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
     enabled: needs_case,
     run: settings,
     journal: true,
@@ -343,7 +343,47 @@ pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
     };
     let mut body = String::new();
     for (k, v) in map {
+        if k == "from" {
+            return Err(bad("from is workflow.settings' own: another case's settings aren't taken here".into()));
+        }
         let value = match (k.as_str(), v) {
+            ("materials", Value::Object(models)) => {
+                // { "Soil": { "rho": 1150, "VanGenuchtenCoeffs": { "n": 2 } } }
+                let word = |w: &str| !w.is_empty() && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+                let mut b = String::from("{");
+                for (model, coeffs) in models {
+                    let Value::Object(coeffs) = coeffs else {
+                        return Err(bad(format!("materials/{model} is an object of coefficients")));
+                    };
+                    if !word(model) {
+                        return Err(bad(format!("materials/{model} is not a material model's name")));
+                    }
+                    b.push_str(&format!(" {model} {{"));
+                    for (ck, cv) in coeffs {
+                        if !word(ck) {
+                            return Err(bad(format!("materials/{model}/{ck} is not a coefficient's name")));
+                        }
+                        match cv {
+                            Value::Object(inner) => {
+                                b.push_str(&format!(" {ck} {{"));
+                                for (ik, iv) in inner {
+                                    let t = text_of(iv).filter(|_| word(ik));
+                                    let t = t.ok_or_else(|| bad(format!("materials/{model}/{ck}/{ik} is a number")))?;
+                                    b.push_str(&format!(" {ik} {t};"));
+                                }
+                                b.push_str(" }");
+                            }
+                            v => {
+                                let t = text_of(v).ok_or_else(|| bad(format!("materials/{model}/{ck} is a number")))?;
+                                b.push_str(&format!(" {ck} {t};"));
+                            }
+                        }
+                    }
+                    b.push_str(" }");
+                }
+                b.push_str(" }");
+                b
+            }
             ("temperatureLimit", Value::Array(a)) => {
                 let t: Option<Vec<String>> = a.iter().map(text_of).collect();
                 format!("( {} )", t.ok_or_else(|| bad("temperatureLimit is [min, max]".into()))?.join(" "))
@@ -379,16 +419,52 @@ pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
 
 /// `workflow.settings`: settings chosen, into the files and the description.
 fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let chosen = settings_params(SETTINGS.id, p)?;
+    // `from` is read here, the rest as any settings are.
+    let mut given = p.clone();
+    if let Some(o) = given.as_object_mut() {
+        o.remove("from");
+    }
+    let mut chosen = settings_params(SETTINGS.id, &given)?;
+    // Another case's settings, read only: those given here come first.
+    let mut from_notes = Vec::new();
+    if let Some(from) = p.get("from") {
+        let Some(dir) = from.as_str().filter(|d| !d.trim().is_empty()) else {
+            return Err(Error::Params(format!("{}: from is the path of a case", SETTINGS.id)));
+        };
+        // A relative path is the open case's neighbour: `../other` from the case's directory.
+        let dir = match s.location() {
+            Some(here) if std::path::Path::new(dir).is_relative() => {
+                std::path::Path::new(here).join(dir).to_string_lossy().into_owned()
+            }
+            _ => dir.to_string(),
+        };
+        let dir = dir.as_str();
+        let fs = umcf_core::DirFs::new(dir);
+        let options = umcf_model::OpenOptions { field_bytes: 0, ..umcf_model::OpenOptions::default() };
+        let other = umcf_model::Case::open_with(&fs, options)
+            .map_err(|e| Error::Failed(format!("{}: from {dir}: {e}", SETTINGS.id)))?;
+        let (theirs, notes) = Settings::from_case(&other);
+        if theirs.is_empty() {
+            return Err(Error::Failed(format!(
+                "{}: from {dir}: the case has none of the settings to take",
+                SETTINGS.id
+            )));
+        }
+        from_notes = notes.into_iter().map(|n| format!("{dir}: {n}")).collect();
+        chosen = merged(theirs, chosen);
+    }
     if chosen.is_empty() {
         return Err(Error::Params(format!(
-            "{}: give a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending)",
+            "{}: give a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials) or from (another case)",
             SETTINGS.id
         )));
     }
     let o = s.opened_mut()?;
     let c = o.case.choose_settings(&chosen)?;
-    let names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
+    let mut names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
+    if !chosen.materials.is_empty() {
+        names.push("materials");
+    }
     let mut message = format!("settings chosen: {}", names.join(", "));
     if !c.applied.changed.is_empty() {
         message.push_str(&format!("; written into {}", c.applied.changed.join(", ")));
@@ -396,13 +472,29 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if c.described {
         message.push_str(&format!("; in {PATH}"));
     }
-    for n in &c.applied.notes {
+    let notes: Vec<String> = from_notes.into_iter().chain(c.applied.notes.iter().cloned()).collect();
+    for n in &notes {
         message.push_str(&format!("; {n}"));
     }
     Ok(Outcome::new(
         message,
-        json!({ "settings": settings_json(&chosen), "changed": c.applied.changed, "described": c.described, "notes": c.applied.notes }),
+        json!({ "settings": settings_json(&chosen), "changed": c.applied.changed, "described": c.described, "notes": notes }),
     ))
+}
+
+/// `base` with what `over` chooses put over it (a material model of `over` replaces `base`'s).
+fn merged(mut base: Settings, over: Settings) -> Settings {
+    macro_rules! take {
+        ($($f:ident),*) => { $( if over.$f.is_some() { base.$f = over.$f; } )* };
+    }
+    take!(delta_t, end_time, write_interval, turbulence, temperature_limit, blending);
+    for (model, coeffs) in over.materials {
+        match base.materials.iter_mut().find(|(m, _)| *m == model) {
+            Some(slot) => slot.1 = coeffs,
+            None => base.materials.push((model, coeffs)),
+        }
+    }
+    base
 }
 
 /// The settings as JSON, as `workflow.settings` takes them.
@@ -425,6 +517,33 @@ pub fn settings_json(s: &Settings) -> Value {
         let o: serde_json::Map<String, Value> =
             umcf_model::settings::BLENDING_KEYS.iter().zip(c).map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         m.insert("blending".into(), Value::Object(o));
+    }
+    if !s.materials.is_empty() {
+        let mut models = serde_json::Map::new();
+        for (model, coeffs) in &s.materials {
+            let mut c = serde_json::Map::new();
+            for (k, v) in coeffs {
+                let value = match umcf_foam_dict::Document::parse(&format!(
+                    "x {v}{}",
+                    if v.starts_with('{') { "" } else { ";" }
+                )) {
+                    Ok(d) if v.starts_with('{') => Value::Object(
+                        d.get(&["x"])
+                            .and_then(|e| e.dict())
+                            .map(|b| {
+                                b.entries()
+                                    .filter_map(|e| Some((e.key().to_string(), json!(e.value_text()?))))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    ),
+                    _ => json!(v),
+                };
+                c.insert(k.clone(), value);
+            }
+            models.insert(model.clone(), Value::Object(c));
+        }
+        m.insert("materials".into(), Value::Object(models));
     }
     Value::Object(m)
 }

@@ -261,7 +261,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
 /// The settings files of region `r` by its kind, from the configuration for version `v`: a fluid's
 /// with gravity `gravity` (the value of `g`), the temperature limit when `temperature_limit` and
 /// the RAS model and limit bounds `settings` chooses (the configuration's otherwise);
-/// a solid's with its materials (a note for one the tutorials have no coefficients for, and for
+/// a solid's with its materials (a note for one neither the library nor the tutorials have coefficients for, and for
 /// none at all).
 pub(crate) fn region_files(
     v: OfVersion,
@@ -319,7 +319,7 @@ pub(crate) fn region_files(
             put(format!("constant/{n}/g"), Template::SolidG)?;
             put(format!("system/{n}/fvSchemes"), Template::SolidSchemes)?;
             put(format!("system/{n}/fvSolution"), Template::SolidSolution)?;
-            let (text, missing) = transport(v, &r.materials)?;
+            let (text, missing) = transport(v, &r.materials, &settings.materials)?;
             files.push((format!("constant/{n}/transportProperties"), text));
             if r.materials.is_empty() {
                 notes.push(format!(
@@ -328,7 +328,7 @@ pub(crate) fn region_files(
             }
             for (m, model) in missing {
                 notes.push(format!(
-                    "region {n}, material {m}: the tutorials have no {model} material to take its coefficients from: add them to constant/{n}/transportProperties"
+                    "region {n}, material {m}: neither the material library nor the tutorials have {model} coefficients: add them to constant/{n}/transportProperties (or workflow.settings materials)"
                 ));
             }
         }
@@ -350,7 +350,7 @@ fn ordered(spec: &NewCase) -> Vec<&NewRegion> {
 /// none of the case's own files nor a Windows device, a fluid, a solid or the vegetation (named
 /// `vegetation`, as the solver looks it up), and a solid's materials each with a model the
 /// solver has, once each.
-pub(crate) fn check_region(r: &NewRegion, version: OfVersion) -> Result<()> {
+pub(crate) fn check_region(r: &NewRegion, version: OfVersion, own: &[String]) -> Result<()> {
     let n = r.name.as_str();
     if !plain_name(n) || n.contains(':') {
         return refuse(format!(
@@ -390,7 +390,9 @@ pub(crate) fn check_region(r: &NewRegion, version: OfVersion) -> Result<()> {
         let Some(model) = &m.model else {
             return refuse(format!("region {n}, material {}: its model (buildingMaterialModel) is missing", m.name));
         };
-        let known = family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(version));
+        // A model the case's solids have already (of its own library) is taken too.
+        let known =
+            own.contains(model) || family.and_then(|f| cat.find(f, model)).is_some_and(|t| t.in_version(version));
         if !known {
             let models = family.map(|f| cat.choices(f, version).join(", ")).unwrap_or_default();
             return refuse(format!(
@@ -408,11 +410,12 @@ fn check(spec: &NewCase) -> Result<()> {
         return refuse("a case needs a fluid region (the air)".to_string());
     }
     crate::settings::check_turbulence(&spec.settings, spec.version)?;
+    crate::settings::check_materials(&spec.settings, spec.version)?;
     let mut names = HashSet::new();
     let mut folded = HashSet::new();
     for r in &spec.regions {
         let n = r.name.as_str();
-        check_region(r, spec.version)?;
+        check_region(r, spec.version, &[])?;
         if !names.insert(n) {
             return refuse(format!("region {n} is given twice"));
         }
@@ -553,13 +556,19 @@ fn control_dict(spec: &NewCase) -> Result<String> {
 }
 
 /// A solid's `transportProperties`: the tutorials', with `buildingMaterials` the given ones, each
-/// with the coefficients of the tutorials' first material of its model. Also the materials
+/// with the coefficients of its model in the library `chosen`, else of the tutorials' first
+/// material of its model. Also the materials
 /// whose model the tutorials have none of (name, model): they get no coefficients.
-fn transport(v: OfVersion, materials: &[MaterialDesc]) -> Result<(String, Vec<(String, String)>)> {
+fn transport(
+    v: OfVersion,
+    materials: &[MaterialDesc],
+    chosen: &[(String, Vec<(String, String)>)],
+) -> Result<(String, Vec<(String, String)>)> {
     let t = Template::SolidTransport;
     let mut doc = template(v, t)?;
     // The tutorials' materials: model → its coefficients (every entry but the name and model).
-    let mut library: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    // The library chosen first, then the tutorials' materials.
+    let mut library: Vec<(String, Vec<(String, String)>)> = chosen.to_vec();
     if let Some(items) = doc.get(&["buildingMaterials"]).and_then(|e| match e.value.as_slice() {
         [Node::List { items, .. }] => Some(items),
         _ => None,
@@ -586,7 +595,8 @@ fn transport(v: OfVersion, materials: &[MaterialDesc]) -> Result<(String, Vec<(S
         match library.iter().find(|(lm, _)| lm == model) {
             Some((_, coeffs)) => {
                 for (k, val) in coeffs {
-                    let _ = writeln!(list, "        {k:<7} {val};");
+                    let end = if val.starts_with('{') { "" } else { ";" };
+                    let _ = writeln!(list, "        {k:<7} {val}{end}");
                 }
             }
             None => missing.push((m.name.clone(), model.to_string())),

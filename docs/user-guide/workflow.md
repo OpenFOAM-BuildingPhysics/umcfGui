@@ -220,8 +220,11 @@ configuration](new-case.md#the-configuration)'s, or what the case's files say:
 | `turbulence` | each `simulationType RAS` fluid's `constant/<r>/momentumTransport`: the RAS model (`RAS/model`, or `RASModel` where the file has that), one of OpenFOAM's for the case's version (`kEpsilon`, `realizableKE`, `kOmegaSST`, …) or the solver's (`porousrealizableKE`); the one the case's fluids have is accepted too (a model of the case's own library), and a case whose version isn't known takes any name |
 | `temperatureLimit` | `( min max )` in kelvin: the bounds of each fluid's `limitTemperature` entries (in `fvOptions`, `fvConstraints` or `fvModels`, in `constant/` or `system/`; in the entry's `limitTemperatureCoeffs` when it has one, where OpenFOAM reads them) |
 | `blending` | `{ dampingThickness 60; alphaCoeffU 0.3; alphaCoeffT 0.3; }`: `blendingCoeffs` in `system/controlDict` |
+| `materials` | the material library: `{ HamstadConcrete { rho 1950; cap 850; lambda1 1.3; lambda2 0; } … }`, each `buildingMaterialModel` the solver has for the version with the coefficients its new materials start from (numbers, or a dictionary of them such as `VanGenuchtenCoeffs`), at least those the solver reads of every material (`rho`, `cap`, `lambda1`, `lambda2`). Not written into the case's materials: they keep theirs, which may differ for one model (layers). `workflow.settings` says so, and whether the library is kept: that needs a `system/umcfWorkflow` that loads and isn't a symbolic link. A model the case's solids have already is taken even when the solver's catalog lacks it (one of the case's own library) |
 
-`workflow.settings` chooses some of them: each goes into the case's files where the case has
+`workflow.settings` chooses some of them, and `from` takes another case's, read only (a
+relative path is from the open case's directory; refused when that case's materials lack a
+coefficient the solver reads of every material; those given too come first: `{"from": "../other-case", "endTime": 86400}`): each goes into the case's files where the case has
 it, nothing else in them changing, and into the description's `settings` block entry by entry
 when the case has one. A temperature limit or blending coefficients in a case without that
 component are kept in the description only, with a note (switching a component on is its own
@@ -229,7 +232,9 @@ step). `case.new` takes the same as `settings`, with the same note. A key the bl
 is refused until the file is mended. The block holds what was chosen through these commands:
 `control.set` and `dict.set` change the case's files only, so after them the block may say
 something else than the files (`workflow.import` with `replace` reads them again). `workflow.import` reads them from the case's
-files: a value given by a macro or a directive, or differently in two fluids, is left out with a
+files (the library from the solids' materials, each model's first; a model whose materials
+differ is noted once, and a material with a macro or a directive among its coefficients is left
+out with a note): a value given by a macro or a directive, or differently in two fluids, is left out with a
 note. Tested read-only on 23 cases of both versions (the 3×3 cases, the Hong Kong project's
 steps, the terrain cases, the examples): each case's settings read, and written back change
 nothing. With the solver: a new case with `turbulence realizableKE` and a temperature limit of 283.15

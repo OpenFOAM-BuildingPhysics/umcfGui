@@ -28,6 +28,10 @@ use umcf_foam_dict::{Dict, Entry};
 
 use crate::{CONTROL_DICT, Case, Error, RegionKind, Result};
 
+/// A material library: each `buildingMaterialModel` with its coefficients (key, value as
+/// written), in order.
+pub type Library = Vec<(String, Vec<(String, String)>)>;
+
 /// The keys of the blending layer's coefficients, in the order they are written.
 pub const BLENDING_KEYS: [&str; 3] = ["dampingThickness", "alphaCoeffU", "alphaCoeffT"];
 
@@ -44,6 +48,10 @@ pub struct Settings {
     pub temperature_limit: Option<(String, String)>,
     /// The blending layer's coefficients, in the order of [`BLENDING_KEYS`].
     pub blending: Option<[String; 3]>,
+    /// The material library: each `buildingMaterialModel` with the coefficients its new materials
+    /// start from in `case.new` and `region.add` (every entry but `name` and the model, as
+    /// written: a number, or a dictionary of them). The case's own materials keep theirs.
+    pub materials: Library,
 }
 
 /// A number as the settings take it: finite, written as OpenFOAM reads it.
@@ -156,9 +164,13 @@ impl Settings {
                     }
                     None => problem(&at, "is a dictionary".into()),
                 },
+                "materials" => match e.dict() {
+                    Some(b) => s.materials = read_library(b, &at, problem),
+                    None => problem(&at, "is a dictionary of material models".into()),
+                },
                 _ => problem(
                     &at,
-                    "is not a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending)".into(),
+                    "is not a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials)".into(),
                 ),
             }
         }
@@ -197,6 +209,13 @@ impl Settings {
         for (k, v) in self.entries() {
             let end = if v.starts_with('{') { "" } else { ";" };
             let _ = writeln!(s, "    {k:<16} {v}{end}");
+        }
+        if !self.materials.is_empty() {
+            s.push_str("    materials\n    {\n");
+            for (model, coeffs) in &self.materials {
+                let _ = writeln!(s, "        {model:<16} {}", coefficients(coeffs));
+            }
+            s.push_str("    }\n");
         }
         s.push_str("}\n\n");
         s
@@ -286,6 +305,9 @@ impl Settings {
             None if !pairs.is_empty() => notes.push("the fluids' temperature limits differ: left out".to_string()),
             None => {}
         }
+        let (materials, more) = case_library(case);
+        s.materials = materials;
+        notes.extend(more);
         (s, notes)
     }
 }
@@ -350,6 +372,253 @@ pub(crate) fn check_turbulence(s: &Settings, version: umcf_core::OfVersion) -> R
         ))),
         _ => Ok(()),
     }
+}
+
+/// A material's coefficients as a dictionary on one line: `{ rho 1150; cap 650; }`.
+pub fn coefficients(coeffs: &[(String, String)]) -> String {
+    let body: Vec<String> =
+        coeffs.iter().map(|(k, v)| if v.starts_with('{') { format!("{k} {v}") } else { format!("{k} {v};") }).collect();
+    format!("{{ {} }}", body.join(" "))
+}
+
+/// A coefficient's value as the library takes it: a number, or a dictionary of numbers (a
+/// model's `…Coeffs`), as one line; `None` for anything else (a macro, a directive, a list).
+fn coefficient(e: &Entry) -> Option<String> {
+    if let Some(d) = e.dict() {
+        let mut inner = Vec::new();
+        for c in d.entries() {
+            match c.words().as_deref() {
+                Some([w]) if number(w).is_some() && model_word(c.key()) => {
+                    inner.push((c.key().to_string(), w.to_string()))
+                }
+                _ => return None,
+            }
+        }
+        if d.items.len() != inner.len() {
+            return None;
+        }
+        return Some(coefficients(&inner));
+    }
+    match e.words().as_deref() {
+        Some([w]) if number(w).is_some() => Some(w.to_string()),
+        _ => None,
+    }
+}
+
+/// The `materials` block's body: each model with its coefficients.
+fn read_library(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> Library {
+    let mut out: Library = Vec::new();
+    let mut seen = HashSet::new();
+    for m in body.entries() {
+        let model = m.key();
+        let mat = format!("{at}/{model}");
+        if !model_word(model) {
+            problem(&mat, "is not a material model's name".into());
+            continue;
+        }
+        if !seen.insert(model.to_string()) {
+            problem(&mat, "is given twice: the later ones are left out".into());
+            continue;
+        }
+        let Some(d) = m.dict() else {
+            problem(&mat, "is a dictionary of coefficients ({ rho 1150; cap 650; … })".into());
+            continue;
+        };
+        let mut coeffs = Vec::new();
+        let mut ok = true;
+        // A macro or a directive among them: what it gives can't be told here.
+        if d.items.len() != d.entries().count() {
+            problem(&mat, "has a macro or a directive: give its coefficients one by one".into());
+            continue;
+        }
+        for c in d.entries() {
+            match coefficient(c).filter(|_| model_word(c.key()) && !matches!(c.key(), "name" | "buildingMaterialModel"))
+            {
+                Some(v) if !coeffs.iter().any(|(k, _): &(String, String)| k == c.key()) => {
+                    coeffs.push((c.key().to_string(), v))
+                }
+                _ => {
+                    problem(
+                        &format!("{mat}/{}", c.key()),
+                        "is a number, or a dictionary of numbers, given once".into(),
+                    );
+                    ok = false;
+                }
+            }
+        }
+        if ok && !coeffs.is_empty() {
+            out.push((model.to_string(), coeffs));
+        } else if ok {
+            problem(&mat, "has no coefficients".into());
+        }
+    }
+    out
+}
+
+/// The solids' `transportProperties` and their `buildingMaterials` items.
+fn solid_materials(case: &Case) -> Vec<(String, &umcf_foam_dict::Document)> {
+    case.regions
+        .iter()
+        .filter(|r| r.kind == RegionKind::Solid)
+        .filter_map(|r| {
+            let rel = crate::description::materials_file(&r.name);
+            let d = case.dict(&rel)?;
+            Some((rel, d))
+        })
+        .collect()
+}
+
+fn items(doc: &umcf_foam_dict::Document) -> &[umcf_foam_dict::Node] {
+    match doc.get(&["buildingMaterials"]).map(|e| e.value.as_slice()) {
+        Some([umcf_foam_dict::Node::List { items, .. }]) => items,
+        _ => &[],
+    }
+}
+
+fn model_of(body: &Dict) -> Option<String> {
+    match body.get("buildingMaterialModel")?.words().as_deref() {
+        Some([w]) if model_word(w) => Some(w.to_string()),
+        _ => None,
+    }
+}
+
+/// The material library the case's solids have: each model with the coefficients of its first
+/// material (in the order of the regions); a model whose materials differ (layers of one model,
+/// say) is noted once, and a coefficient given otherwise (a macro) leaves its material out,
+/// with a note.
+fn case_library(case: &Case) -> (Library, Vec<String>) {
+    let mut lib: Library = Vec::new();
+    let mut notes = Vec::new();
+    // Each model's first material, and the materials whose coefficients differ from it.
+    let mut first: Vec<(String, String)> = Vec::new();
+    let mut differ: Vec<(String, Vec<String>)> = Vec::new();
+    for (rel, doc) in solid_materials(case) {
+        for item in items(doc) {
+            let umcf_foam_dict::Node::Dict { body, .. } = item else { continue };
+            let Some(model) = model_of(body) else { continue };
+            let name = body.get("name").and_then(|e| e.value_text()).unwrap_or_default();
+            // `region/material`, for the notes.
+            let region = rel.trim_start_matches("constant/").trim_end_matches("/transportProperties");
+            let at = format!("{region}/{name}");
+            let mut coeffs = Vec::new();
+            // A macro or a directive among them (`$common;`, `#include`) gives what can't be told.
+            let mut plain = body.items.len() == body.entries().count();
+            for e in body.entries().filter(|e| !matches!(e.key(), "name" | "buildingMaterialModel")) {
+                match coefficient(e).filter(|_| model_word(e.key())) {
+                    Some(v) => coeffs.push((e.key().to_string(), v)),
+                    None => plain = false,
+                }
+            }
+            if !plain {
+                notes.push(format!(
+                    "{rel}, material {name} ({model}): a coefficient isn't a number the library takes, left out"
+                ));
+                continue;
+            }
+            if coeffs.is_empty() {
+                continue;
+            }
+            match lib.iter().find(|(m, _)| *m == model) {
+                None => {
+                    first.push((model.clone(), at.clone()));
+                    lib.push((model, coeffs));
+                }
+                // The same coefficients in another order are the same.
+                Some((_, f)) if sorted(f) != sorted(&coeffs) => match differ.iter_mut().find(|(m, _)| *m == model) {
+                    Some((_, names)) => names.push(at.clone()),
+                    None => differ.push((model, vec![at.clone()])),
+                },
+                Some(_) => {}
+            }
+        }
+    }
+    for (model, names) in differ {
+        let from = first.iter().find(|(m, _)| *m == model).map(|(_, f)| f.as_str()).unwrap_or_default();
+        notes.push(format!(
+            "{model} materials differ ({} besides {from}): the library has the first's, for new {model} materials",
+            names.join(", ")
+        ));
+    }
+    (lib, notes)
+}
+
+fn sorted(c: &[(String, String)]) -> Vec<(String, String)> {
+    let mut c = c.to_vec();
+    c.sort();
+    c
+}
+
+/// The material models the case's solids have (every material's, a macro among its
+/// coefficients or not): a library entry for one of them is taken even when the solver's catalog
+/// lacks it (a model of the case's own library).
+pub(crate) fn case_models(case: &Case) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, doc) in solid_materials(case) {
+        for item in items(doc) {
+            if let umcf_foam_dict::Node::Dict { body, .. } = item
+                && let Some(m) = model_of(body)
+                && !out.contains(&m)
+            {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// The coefficients the solver reads of every material, whatever its model (`lookup` in
+/// `solid/updatebuildingMaterials.H`, from the catalog): `rho`, `cap`, `lambda1`, `lambda2`.
+pub fn required_coefficients(version: umcf_core::OfVersion) -> Vec<&'static str> {
+    let cat = umcf_schema::catalog::catalog();
+    let mut out: Vec<&str> = cat
+        .app_keywords
+        .iter()
+        .filter(|a| a.app == "urbanMicroclimateFoam" && a.file == "solid/updatebuildingMaterials.H")
+        .flat_map(|a| a.keywords.iter())
+        .filter(|k| matches!(k.access, umcf_schema::catalog::Access::Required) && k.versions.contains(&version))
+        .map(|k| k.name)
+        .filter(|n| !matches!(*n, "name" | "buildingMaterialModel"))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Refuses a library model that isn't a material model of the solver for `version`.
+pub(crate) fn check_materials(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
+    check_coefficients(s, version)?;
+    check_material_models(s, version)
+}
+
+/// Refuses a library entry without a coefficient the solver reads of every material
+/// ([`required_coefficients`]): a new material of it couldn't be read.
+pub(crate) fn check_coefficients(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
+    let need = required_coefficients(version);
+    for (model, coeffs) in &s.materials {
+        let missing: Vec<&str> = need.iter().copied().filter(|k| !coeffs.iter().any(|(c, _)| c == k)).collect();
+        if !missing.is_empty() {
+            return Err(Error::NewCase(format!(
+                "materials/{model} has no {}: the solver reads them of every material",
+                missing.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a library model that isn't a material model of the solver for `version`.
+pub(crate) fn check_material_models(s: &Settings, version: umcf_core::OfVersion) -> Result<()> {
+    let cat = umcf_schema::catalog::catalog();
+    for (model, _) in &s.materials {
+        if !cat.find("buildingMaterialModel", model).is_some_and(|t| t.in_version(version)) {
+            return Err(Error::NewCase(format!(
+                "materials/{model} is not a material model of the solver for {} ({})",
+                version.label(),
+                cat.choices("buildingMaterialModel", version).join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// What [`Case::apply_settings`] did.
@@ -439,6 +708,11 @@ impl Case {
                 );
             }
         }
+        if !s.materials.is_empty() {
+            a.notes.push(
+                "the case's materials keep their coefficients: a material library is for new materials".to_string(),
+            );
+        }
         Ok(a)
     }
 }
@@ -464,24 +738,60 @@ impl Case {
         {
             check_turbulence(s, v)?;
         }
+        if let Some(v) = self.layout.version {
+            // The models the case's solids have already (of its own library, say) are kept.
+            let own = case_models(self);
+            let new = Settings {
+                materials: s.materials.iter().filter(|(m, _)| !own.contains(m)).cloned().collect(),
+                ..Default::default()
+            };
+            check_material_models(&new, v)?;
+            // Every entry, the case's own models too, needs what the solver reads of a material.
+            check_coefficients(s, v)?;
+        }
         let path = crate::description::PATH;
         // A key given twice: the reader takes the first, an edit would change the last.
         if let Some(block) = self.dict(path).and_then(|d| d.get(&["settings"])).and_then(|e| e.dict()) {
+            let given_twice =
+                |at: String| Err(Error::NewCase(format!("{path}: {at} is given twice: mend the file by hand first")));
             for (k, _) in s.entries() {
                 if block.entries().filter(|e| e.key() == k).count() > 1 {
-                    return Err(Error::NewCase(format!(
-                        "{path}: settings/{k} is given twice: mend the file by hand first"
-                    )));
+                    return given_twice(format!("settings/{k}"));
+                }
+            }
+            if !s.materials.is_empty() {
+                let blocks: Vec<&Dict> =
+                    block.entries().filter(|e| e.key() == "materials").filter_map(|e| e.dict()).collect();
+                if block.entries().filter(|e| e.key() == "materials").count() > 1 {
+                    return given_twice("settings/materials".to_string());
+                }
+                for (m, _) in &s.materials {
+                    if blocks.iter().flat_map(|b| b.entries()).filter(|e| e.key() == m).count() > 1 {
+                        return given_twice(format!("settings/materials/{m}"));
+                    }
                 }
             }
         }
         let mut next = self.clone();
-        let applied = next.apply_settings_to(s)?;
+        let mut applied = next.apply_settings_to(s)?;
         let described =
             next.description().is_some() && next.resolve(path) == path && !next.aliases().any(|(_, p)| p == path);
+        // The library lives in the description only: say whether it is kept.
+        if !s.materials.is_empty() {
+            applied.notes.push(if described {
+                format!("the material library is kept in {path}: new materials of its models start from it (case.new, region.add)")
+            } else if next.description().is_some() {
+                format!("the material library is not kept: {path} is a symbolic link or shares its file with another, and isn't written through")
+            } else {
+                format!("the material library is not kept: the case has no {path} that loads (workflow.import writes one)")
+            });
+        }
         if described {
             for (k, v) in s.entries() {
                 next.set_inline(path, &["settings", k], &v)?;
+            }
+            for (model, coeffs) in &s.materials {
+                next.set_inline(path, &["settings", "materials", model], &coefficients(coeffs))?;
             }
         }
         *self = next;
