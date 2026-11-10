@@ -24,6 +24,8 @@ pub struct PatchForm {
     pub groups: String,
     /// Other entries, one `key value` per line.
     pub more: String,
+    /// A new name followed into the results too, when saved (`results`).
+    pub results: bool,
     pub error: Option<String>,
     /// The patches the form was filled for, and what it was filled with.
     pub(crate) filled_for: Option<Vec<(String, String)>>,
@@ -40,6 +42,9 @@ impl PatchForm {
                 return Err("A patch needs a name.".to_string());
             }
             p.insert("name".into(), json!(self.name.trim()));
+            if self.results {
+                p.insert("results".into(), json!(true));
+            }
         }
         if self.kind.trim() != kind {
             if self.kind.trim().is_empty() {
@@ -89,6 +94,7 @@ impl App {
             (form.name, form.kind, form.groups) = filled.clone();
             form.filled = filled;
             form.more.clear();
+            form.results = false;
             form.error = None;
             form.filled_for = Some(patches.clone());
         }
@@ -129,6 +135,11 @@ impl App {
                         let label = ui.label("Name");
                         ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(width - 90.0))
                             .labelled_by(label.id);
+                        ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut form.results, "In the results too, when saved").on_hover_text(
+                            "The other time directories, the processor directories and boundaryData follow the new name on Save (not backed up: a rename back undoes it)",
+                        );
                         ui.end_row();
                     }
                     let label = ui.label("Type");

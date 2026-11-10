@@ -18,7 +18,7 @@ pub(super) const SET: CommandSpec = CommandSpec {
     label: "Set patch",
     menu: "Mesh/Patch…",
     shortcut: None,
-    params: "type: the patch type (patch, wall, mappedWall, symmetry, symmetryPlane, empty, …). groups: [\"wall\", …], replacing inGroups. entries: other entries of the patch, {\"neighbourRegion\": \"air\", \"neighbourPatch\": \"buildings\"}. name: a new name (one patch only): the region's field files at the start time and in 0.orig, its viewFactorsDict and the mapped patches of other regions that name it follow; the result time directories and each file and line that still has the old name are listed. patches: [{\"region\": \"air\", \"patch\": \"top\"}, …]; default the selected patches. Only those entries change in the mesh's boundary file.",
+    params: "type: the patch type (patch, wall, mappedWall, symmetry, symmetryPlane, empty, …). groups: [\"wall\", …], replacing inGroups. entries: other entries of the patch, {\"neighbourRegion\": \"air\", \"neighbourPatch\": \"buildings\"}. name: a new name (one patch only): the region's field files at the start time and in 0.orig, its viewFactorsDict and the mapped patches of other regions that name it follow; the result time directories and each file and line that still has the old name are listed. results: true (with name) to follow it into the results too when case.save runs: the fields and meshes of the other time directories, the processor directories (their mesh and every time) and constant/<region>/boundaryData/<patch>, renamed; listed here first; not backed up (a rename back undoes it). patches: [{\"region\": \"air\", \"patch\": \"top\"}, …]; default the selected patches. Only those entries change in the mesh's boundary file.",
     enabled: needs_case,
     run: set,
     journal: true,
@@ -106,6 +106,16 @@ fn entries(id: &str, p: &Params) -> Result<Vec<(String, String)>, Error> {
     Ok(entries)
 }
 
+/// A size in bytes as people read it.
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 10 << 30 => format!("{} GB", b >> 30),
+        b if b >= 10 << 20 => format!("{} MB", b >> 20),
+        b if b >= 10 << 10 => format!("{} kB", b >> 10),
+        b => format!("{b} bytes"),
+    }
+}
+
 /// A patch name or type: one OpenFOAM word.
 fn word<'a>(id: &str, what: &str, w: &'a str) -> Result<&'a str, Error> {
     // A number reads as a label, not a word.
@@ -118,7 +128,8 @@ fn word<'a>(id: &str, what: &str, w: &'a str) -> Result<&'a str, Error> {
 /// `patch.set`.
 fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let id = SET.id;
-    let p = Params::new(id, p, &["patches", "name", "type", "groups", "entries"])?;
+    let p = Params::new(id, p, &["patches", "name", "type", "groups", "entries", "results"])?;
+    let results = p.bool("results")?.unwrap_or(false);
     let name = p.str("name")?.map(|n| word(id, "patch name", n)).transpose()?;
     let kind = p.str("type")?.map(|k| word(id, "patch type", k)).transpose()?;
     let groups = groups(id, &p)?;
@@ -126,12 +137,15 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if name.is_none() && kind.is_none() && groups.is_none() && entries.is_empty() {
         return Err(Error::Params(format!("{id}: give a type, groups, entries or a name")));
     }
+    if results && name.is_none() {
+        return Err(Error::Params(format!("{id}: results is for a new name: give name")));
+    }
     let patches = patches(s, &p)?;
     if name.is_some() && patches.len() != 1 {
         return Err(Error::Params(format!("{id}: a name is for one patch, not {}", patches.len())));
     }
     let pairs: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let change = PatchChange { name, kind, groups: groups.as_deref(), entries: &pairs };
+    let change = PatchChange { name, kind, groups: groups.as_deref(), entries: &pairs, results };
     let o = s.opened_mut()?;
     let mut found: Vec<Value> = Vec::new();
     let mut renamed = Vec::new();
@@ -153,8 +167,50 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
         }
         renamed.extend(report.fields.iter().chain(&report.orig).chain(&report.others).chain(&report.partners).cloned());
+        // Followed into the results when saved: what that will touch, instead of what isn't.
+        let mut collated: Vec<String> = Vec::new();
+        let followed = match name {
+            Some(to) if results && to != patch.as_str() => {
+                let found = o.case.result_files(o.fs.as_ref(), region, patch)?;
+                collated.clone_from(&found.collated);
+                let mut what = vec![format!(
+                    "the {} file{} ({}) of {} time director{} are looked through for it",
+                    found.files.len(),
+                    if found.files.len() == 1 { "" } else { "s" },
+                    size(found.bytes),
+                    found.times.len(),
+                    if found.times.len() == 1 { "y" } else { "ies" },
+                )];
+                if !found.processors.is_empty() {
+                    what.push(format!("with the meshes and times of {} processor directories", found.processors.len()));
+                }
+                what.extend(found.dirs.iter().map(|d| format!("{d}, renamed {to}")));
+                Some(what.join("; "))
+            }
+            _ => None,
+        };
+        if !collated.is_empty() {
+            found.push(warn(
+                "patch.decomposed",
+                "",
+                region,
+                patch,
+                &format!("the collated processor directories {} aren't followed: decompose the case again before running it in parallel", collated.join(", ")),
+            ));
+        }
+        if let Some(what) = &followed {
+            found.push(json!({
+                "level": "info",
+                "code": "patch.results",
+                "path": "",
+                "region": region,
+                "patch": patch,
+                "field": null,
+                "message": format!("case.save renames it in the results too: {what}; they aren't backed up (a rename back undoes it)"),
+            }));
+        }
         if name.is_some() {
-            if let Some(last) = report.times.last() {
+            if let (None, Some(last)) = (&followed, report.times.last()) {
                 let n = report.times.len();
                 let shown: Vec<&str> = report.times.iter().take(5).map(String::as_str).collect();
                 let more = if n > 5 { format!(" … {last} ({n} time directories)") } else { String::new() };
@@ -194,6 +250,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
             for (f, lines) in by_file {
                 if lines == [0] {
+                    if followed.is_some() {
+                        continue;
+                    }
                     found.push(warn("patch.mention", &f, region, patch, &format!("this directory is named `{patch}`: data found by the patch's name (boundaryData) needs the new name")));
                     continue;
                 }
@@ -231,7 +290,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "message": format!("`{k}` is not a patch type umcfGui knows: check its spelling"),
         }));
     }
-    if o.case.processors > 0 {
+    // The processor directories follow a name, not the rest.
+    let only_named = kind.is_none() && groups.is_none() && entries.is_empty();
+    if o.case.processors > 0 && !(results && only_named) {
         found.push(json!({
             "level": "warning",
             "code": "patch.decomposed",

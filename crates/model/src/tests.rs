@@ -1512,13 +1512,13 @@ fn big_fields_are_read_for_their_conditions_without_their_numbers() {
     assert!(matches!(&e, Err(Error::Bc(m)) if m.contains("too large to be edited")), "{e:?}");
     // A rename: a big file with an entry of its own keeps the old name, and says so; one
     // without has nothing to change.
-    let change = PatchChange { name: Some("sky"), kind: None, groups: None, entries: &[] };
+    let change = PatchChange { name: Some("sky"), kind: None, groups: None, entries: &[], results: false };
     let report = c.clone().set_patch(&fs, "air", "top", &change).unwrap();
     assert!(
         report.unread.contains(&"0/air/U".to_string()) && report.unread.contains(&"0/air/V.gz".to_string()),
         "{report:?}"
     );
-    let change = PatchChange { name: Some("terrain"), kind: None, groups: None, entries: &[] };
+    let change = PatchChange { name: Some("terrain"), kind: None, groups: None, entries: &[], results: false };
     let report = c.clone().set_patch(&fs, "air", "ground", &change).unwrap();
     assert!(report.unread.is_empty(), "{report:?}");
     // A new patch from faces of `top`, where the big file's list has a value per face: it must

@@ -728,6 +728,11 @@ fn the_patch_card_sends_only_what_changed() {
     let renamed = crate::patch::PatchForm { name: "roof".into(), ..form.clone() };
     assert_eq!(renamed.params(true).unwrap(), json!({ "name": "roof" }));
     assert!(renamed.params(false).is_err());
+    // In the results too: with the name only.
+    let results = crate::patch::PatchForm { results: true, ..renamed };
+    assert_eq!(results.params(true).unwrap(), json!({ "name": "roof", "results": true }));
+    let typed = crate::patch::PatchForm { results: true, ..typed };
+    assert!(typed.params(true).unwrap().get("results").is_none());
     assert!(crate::patch::PatchForm { kind: " ".into(), ..form }.params(true).is_err());
 }
 

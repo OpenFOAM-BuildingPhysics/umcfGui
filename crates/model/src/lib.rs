@@ -50,6 +50,7 @@ pub mod description_edit;
 pub mod material_edit;
 pub mod new_case;
 pub mod region_add;
+pub mod results;
 pub mod script;
 pub mod settings;
 pub mod tables;
@@ -93,6 +94,10 @@ pub enum Error {
     NewCase(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
+    #[error(
+        "cancelled while the patch names in the results were being changed ({done} files changed so far): save again to finish it, or undo and save to take it back"
+    )]
+    ResultsCancelled { done: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -295,6 +300,17 @@ struct DiskState {
     /// Files saved as put whole ([`Case::put_file`]): an undo past that save puts the original
     /// back whole, so it is never written through a link either.
     whole: std::collections::BTreeSet<String>,
+    /// The patch renames done in the results ([`Case::save_results`]), in order.
+    results: Vec<results::ResultRename>,
+    /// The renames a cancelled [`Case::save_results`] was doing, in order, how many of them
+    /// each result file has had (by what the file is, [`CaseFs::identity`]: a file reached
+    /// through a linked directory too; none when not listed), and how many have had their
+    /// `boundaryData` directories renamed: the next one gives each only the rest.
+    results_unfinished: Vec<results::ResultRename>,
+    results_progress: BTreeMap<String, usize>,
+    results_dirs_done: usize,
+    /// What the cancelled calls renamed and skipped: reported by the one that finishes.
+    results_saved: results::ResultsSaved,
 }
 
 type Disk = Arc<std::sync::Mutex<DiskState>>;
@@ -354,6 +370,8 @@ pub struct PatchChange<'a> {
     pub groups: Option<&'a [&'a str]>,
     /// Other entries set in the patch (`neighbourRegion air`, …).
     pub entries: &'a [(&'a str, &'a str)],
+    /// A new name followed into the results too, when saved ([`Case::save_results`]).
+    pub results: bool,
 }
 
 /// What [`Case::set_patch`] changed besides the mesh, and what it couldn't.
@@ -593,6 +611,8 @@ pub struct Case {
     /// put's, the save checks it isn't a link. Kept with the shared disk state, so an undo
     /// snapshot from before or after the save agrees.
     description_put: u64,
+    /// The patch renames to follow into the results ([`Case::follow_results`]), in order.
+    results: Vec<results::ResultRename>,
     disk: Disk,
     options: OpenOptions,
 }
@@ -868,6 +888,11 @@ impl Case {
             description_puts: 0,
             description_saved: 0,
             whole: Default::default(),
+            results: Vec::new(),
+            results_unfinished: Vec::new(),
+            results_progress: BTreeMap::new(),
+            results_dirs_done: 0,
+            results_saved: Default::default(),
         }));
         let fields_pending = options.defer_fields && start.is_some();
         Ok(Case {
@@ -887,6 +912,7 @@ impl Case {
             raw: BTreeMap::new(),
             aliases,
             description_put: 0,
+            results: Vec::new(),
             disk,
             options,
         })
@@ -1152,7 +1178,11 @@ impl Case {
             },
         ));
         out.sort_unstable();
-        out.into_iter().map(str::to_string).collect()
+        let mut out: Vec<String> = out.into_iter().map(str::to_string).collect();
+        drop(disk);
+        // Renames still to be followed into the results (or undone there).
+        out.extend(self.results_pending().iter().map(results::ResultRename::label));
+        out
     }
 
     /// A file that is not a dictionary (a surface in `constant/triSurface`): its bytes as the
@@ -1519,6 +1549,9 @@ impl Case {
             reg.patches = Some(parsed);
         }
         let Some(to) = change.name.filter(|to| *to != patch) else { return Ok(report) };
+        if change.results {
+            self.follow_results(region, patch, to);
+        }
         // The region's fields: the patch's own entry gets the new name.
         let fields: Vec<(String, String, bool)> = self.regions.get(r).map_or(Vec::new(), |reg| {
             reg.fields
