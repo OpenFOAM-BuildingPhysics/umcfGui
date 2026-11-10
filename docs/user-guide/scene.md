@@ -265,7 +265,9 @@ above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is i
   shown least recently are dropped, and read again when they are shown. A region's whole mesh,
   read for [a cut](#a-cut-through-the-mesh), is kept while the region is cut, and in what the
   hidden objects leave of the quarter once it isn't (the least recently cut dropped first). Its
-  read is estimated as about 24 bytes a point and 28 a face (twice that for a binary mesh).
+  read is estimated as about 24 bytes a point and 28 a face, twice that for a binary mesh (its
+  files held besides), and 24 more a point for an ASCII one (its points are parsed into a list
+  that grows). Building the cut adds about 21 bytes a cell and 12 a point.
 
 The estimates are plans, not limits: what is shown is always kept, however big. The Hong Kong
 project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.3 s with at most

@@ -211,8 +211,9 @@ impl Object {
     /// touch the plane (a plane on the faces between them), the one behind it. The layer is drawn
     /// by its skin: each face between a cut cell and one not cut, or of the boundary, once, split
     /// into a fan from its first point, in the class of the cell zone of its cut cell; `cells`
-    /// for one in no zone. The faces between two cut cells are inside it, not drawn. Faces with a point that is not finite are left out. `None` when the normal is
-    /// zero or not finite.
+    /// for one in no zone. The faces between two cut cells are inside it, not drawn. A point that
+    /// is not finite tells nothing of where its cells are, and the faces with one are left out.
+    /// `None` when the normal is zero or not finite.
     pub fn from_cut(region: &str, mesh: &umcf_foam_mesh::PolyMesh, plane: Plane, origin: Vec3) -> Option<Object> {
         let n = plane.normal;
         let length = n.length();
@@ -220,7 +221,19 @@ impl Object {
             return None;
         }
         let n = n * (1.0 / length);
-        let distance = |p: &[f64; 3]| n.dot(Vec3::new(p[0], p[1], p[2]) - plane.point);
+        // Each point's signed distance, once (a point is on several faces).
+        // A point not finite tells nothing: NaN, which min and max skip.
+        let distance: Vec<f64> = mesh
+            .points
+            .iter()
+            .map(|p| {
+                if p.iter().all(|c| c.is_finite()) {
+                    n.dot(Vec3::new(p[0], p[1], p[2]) - plane.point)
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
         // Each cell's nearest and farthest point, from its faces' points.
         let cells = mesh.n_cells();
         let mut low = vec![f64::INFINITY; cells];
@@ -235,11 +248,14 @@ impl Object {
             let Some(face) = mesh.face(f) else { continue };
             let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
             for p in face {
-                if let Some(x) = mesh.points.get(*p as usize) {
-                    let d = distance(x);
-                    lo = lo.min(d);
-                    hi = hi.max(d);
+                if let Some(d) = distance.get(*p as usize) {
+                    lo = lo.min(*d);
+                    hi = hi.max(*d);
                 }
+            }
+            if lo > hi {
+                // No finite point: the face says nothing about its cells.
+                continue;
             }
             for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
                 reach(*c, lo);

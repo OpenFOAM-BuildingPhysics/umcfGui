@@ -1064,7 +1064,9 @@ impl App {
             }
             Item::Cut => {
                 let on = self.cut.is_some();
-                if self.ribbon_button(ui, Icon::Cut, "Cut", true, on).on_hover_text(CUT_TIP).clicked() {
+                let can = on || self.can_cut();
+                let tip = if can { CUT_TIP } else { "Cut: no region of the case has a mesh" };
+                if self.ribbon_button(ui, Icon::Cut, "Cut", can, on).on_hover_text(tip).clicked() {
                     self.toggle_cut();
                 }
             }
@@ -1310,7 +1312,7 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut.is_none() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
@@ -2576,6 +2578,13 @@ impl App {
                 self.tab = tab;
             }
             self.toggle_cut();
+            if self.cut.is_none() {
+                return Err(if self.session.case().is_none() {
+                    "--open cut: no case is open".to_string()
+                } else {
+                    "--open cut: no region of the case has a mesh".to_string()
+                });
+            }
         } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
             if let Some(tab) = ribbon::tab_of(self.workspace, spec.id) {

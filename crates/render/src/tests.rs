@@ -737,4 +737,31 @@ fn a_cut_shows_the_cells_a_plane_crosses_whole() {
     assert!(cut(9.0, Vec3::new(1.0, 0.0, 0.0)).unwrap().triangles.is_empty());
     assert!(cut(1.5, Vec3::ZERO).is_none());
     assert!(cut(1.5, Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
+    // A face with no finite point (the far end of the last cell) tells nothing of its cell: the
+    // last cell is not cut for it.
+    let mut broken = row(3, &[1]);
+    for p in broken.points.iter_mut().filter(|p| p[0] == 3.0) {
+        *p = [f64::NAN; 3];
+    }
+    let o = Object::from_cut(
+        "air",
+        &broken,
+        Plane { point: Vec3::new(1.5, 0.5, 0.5), normal: Vec3::new(1.0, 0.0, 0.0) },
+        Vec3::ZERO,
+    )
+    .unwrap();
+    assert_eq!(o.classes, ["brick"]);
+    assert_eq!(o.triangles.len(), 12);
+    // Nor does one at infinity (behind the plane, where it would make the last cell cut).
+    for p in broken.points.iter_mut().filter(|p| p[0].is_nan()) {
+        *p = [f64::NEG_INFINITY, 0.5, 0.5];
+    }
+    let o = Object::from_cut(
+        "air",
+        &broken,
+        Plane { point: Vec3::new(1.5, 0.5, 0.5), normal: Vec3::new(1.0, 0.0, 0.0) },
+        Vec3::ZERO,
+    )
+    .unwrap();
+    assert_eq!(o.triangles.len(), 12);
 }

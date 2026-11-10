@@ -1845,4 +1845,43 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.5));
     app.toggle_cut();
     assert_eq!(app.display, [DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) }]);
+    // A region turned off in the browser: the slider's extent from its whole mesh, read for
+    // the cut, the plane then in its middle.
+    app.display.clear();
+    app.shown_regions.clear();
+    app.toggle_cut();
+    // Not read yet: no range (not one kept from another region or axis).
+    let mut form = app.cut.clone().unwrap();
+    form.range = (5.0, 10.0);
+    app.fit_cut(&mut form, true);
+    assert_eq!(form.range, (0.0, 0.0));
+    let params = app.shown();
+    app.session.scene(&params).unwrap();
+    let mut form = app.cut.clone().unwrap();
+    app.fit_cut(&mut form, true);
+    assert!(form.range.1 > form.range.0, "{:?}", form.range);
+    assert!(form.at > form.range.0 && form.at < form.range.1);
+    app.toggle_cut();
+    // A patch with a mode of its own, then a change in the browser while the card is open: the
+    // card's hiding stays last, over the patch.
+    app.display = before.clone();
+    app.toggle_cut();
+    app.set_display(
+        Layer::Patch { region: String::new(), patch: "ground".into() },
+        crate::display::Change::Opacity(0.3),
+    );
+    let last = app.display.last().unwrap();
+    assert_eq!((&last.layer, last.mode), (&Layer::Region(String::new()), Some(Mode::Hidden)));
+    app.toggle_cut();
+    assert!(app.display.iter().all(|e| e.mode != Some(Mode::Hidden)));
+}
+
+#[test]
+fn no_cut_opens_where_no_case_is_open() {
+    let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
+    assert!(!app.can_cut());
+    let e = app.start_up(Some("cut")).unwrap_err();
+    assert!(e.contains("--open cut: no case is open"), "{e}");
+    assert!(app.cut.is_none());
+    assert!(self::app().can_cut());
 }

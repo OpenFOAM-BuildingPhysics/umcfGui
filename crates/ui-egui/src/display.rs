@@ -160,6 +160,7 @@ impl App {
         // What holds before what it holds, the newest last among equals: what an entry still
         // has was set after what holds it last set the same (that set took it off), so it wins.
         self.display.sort_by_key(|e| depth(&e.layer));
+        self.keep_hiding_last();
         self.look += 1;
     }
 

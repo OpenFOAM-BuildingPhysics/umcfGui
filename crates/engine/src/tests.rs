@@ -742,6 +742,10 @@ fn a_cut_shows_the_cells_a_plane_crosses() {
     let out = s.execute("scene.snapshot", &json!({ "regions": [], "cuts": cut(0.25), "width": 8, "height": 8 }));
     let out = out.unwrap();
     assert_eq!(out.data["objects"], json!([{ "cut": "air", "triangles": 12, "classes": ["cells"] }]));
+    // The region's whole mesh, kept: its box.
+    let b = s.whole_bounds("air").unwrap();
+    assert_eq!((b.min.x, b.max.x), (0.0, 1.0));
+    assert!(s.whole_bounds("nowhere").is_none());
     let out =
         s.execute("scene.snapshot", &json!({ "regions": [], "cuts": cut(5.0), "width": 8, "height": 8 })).unwrap();
     assert_eq!(out.data["objects"][0]["triangles"], 0);

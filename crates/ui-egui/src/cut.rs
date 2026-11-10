@@ -63,6 +63,22 @@ impl App {
             .map_or(Vec::new(), |c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect())
     }
 
+    /// Whether a cut can be made: a region of the case has a mesh.
+    pub(crate) fn can_cut(&self) -> bool {
+        !self.meshed().is_empty()
+    }
+
+    /// Keeps the card's hiding entry last, after the display's entries are sorted (patches
+    /// after regions), so that it still wins over the region's patches.
+    pub(crate) fn keep_hiding_last(&mut self) {
+        let Some(r) = self.cut.as_ref().and_then(|f| f.hid.clone()) else { return };
+        let layer = Layer::Region(r);
+        if let Some(k) = self.display.iter().rposition(|e| e.layer == layer && e.mode == Some(Mode::Hidden)) {
+            let e = self.display.remove(k);
+            self.display.push(e);
+        }
+    }
+
     /// Opens the cut card (on the first region with a mesh, `air` if it has one), or closes it.
     pub(crate) fn toggle_cut(&mut self) {
         if self.cut.is_some() {
@@ -123,14 +139,17 @@ impl App {
         self.look += 1;
     }
 
-    /// The slider's range: the region's extent along the axis in the scene built last; the
-    /// position into it (to its middle with `middle`).
-    fn fit_cut(&self, form: &mut CutForm, middle: bool) {
-        let Some(scene) = self.session.last_scene() else { return };
-        let extent = scene.objects.iter().find_map(|o| match &o.source {
-            Source::Mesh { region } if *region == form.region => o.bbox(scene.origin),
-            _ => None,
+    /// The slider's range: the region's extent along the axis, from its boundary in the scene
+    /// built last, else from its whole mesh once read for the cut (a region turned off in the
+    /// browser); the position into it (to its middle with `middle`).
+    pub(crate) fn fit_cut(&self, form: &mut CutForm, middle: bool) {
+        let boundary = self.session.last_scene().and_then(|scene| {
+            scene.objects.iter().find_map(|o| match &o.source {
+                Source::Mesh { region } if *region == form.region => o.bbox(scene.origin),
+                _ => None,
+            })
         });
+        let extent = boundary.or_else(|| self.session.whole_bounds(&form.region));
         if let Some(b) = extent {
             let (lo, hi) = match form.axis {
                 0 => (b.min.x, b.max.x),
@@ -141,6 +160,10 @@ impl App {
             if (middle && !form.placed) || !(lo..=hi).contains(&form.at) {
                 form.at = 0.5 * (lo + hi);
             }
+        } else {
+            // Not known yet (a region turned off, its whole mesh not read): none, so that the
+            // card fits it once the mesh is read, not keeping another region's or axis's.
+            form.range = (0.0, 0.0);
         }
     }
 

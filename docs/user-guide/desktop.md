@@ -19,7 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
-| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh) |
+| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh) (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window always on OpenGL, no switch (for a machine where a GPU window opens but can't show, as over `ssh -X`). A GPU window that doesn't open is opened again on OpenGL ([the GPU view](#the-gpu-view)) |
@@ -130,13 +130,15 @@ settings of the window, not commands.
 ## A cut through the mesh
 
 *Cut* (the *View* tab's *Inside* group) opens a card that cuts a region's mesh with a plane and
-shows the cells it crosses, whole ([a cut](scene.md#a-cut-through-the-mesh)): the *Region* (with
-a mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider over the region's
-extent; it starts in the middle), and *Flip* for the layer on the plane's other side where it lies
-on faces between cells. While the card is open the region's boundary is hidden (its layer in the
-browser says so), as it would hide the cut; closing the card takes the cut away and shows the
-boundary again. *Edges* draws the cells' edges. The first cut of a region reads its whole mesh;
-moving the plane after reads nothing. `umcf-gui <case> --open cut` opens the card at the start.
+shows the cells it crosses, whole ([a cut](scene.md#a-cut-through-the-mesh)): the *Region* (with a
+mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider over the region's
+extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
+layer on the plane's other side where it lies on faces between cells. While the card is open the
+region's boundary is hidden (its layer in the browser says so), as it would hide the cut; closing
+the card takes the cut away and shows the boundary again. *Edges* draws the cells' edges. The first
+cut of a region reads its whole mesh; moving the plane after reads nothing. Where no region has a
+mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on its own.
+`umcf-gui <case> --open cut` opens the card at the start.
 
 ## The GPU view
 

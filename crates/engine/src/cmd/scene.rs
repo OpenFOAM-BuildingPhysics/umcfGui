@@ -290,7 +290,8 @@ fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Sour
 
 /// About how much memory reading region `region`'s whole mesh holds while it runs (and after:
 /// it is kept for its cut), from the counts the `owner` header notes: each point in double
-/// precision (and, binary, its file too), each face's points (about four) with its offset,
+/// precision (and, binary, its file too; ASCII, as much again: the list grows as it is parsed,
+/// its old and new buffer both held at its last growth), each face's points (about four) with its offset,
 /// owner and neighbour. Without the counts, three times the size of the files;
 /// [`UNKNOWN`] when that can't be told either.
 fn whole_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
@@ -647,11 +648,12 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         // Three points (12 bytes each), 21 bytes a triangle, and its region
                         // while the object is built.
                         Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
-                        // Each cell's reach and zone (16 bytes), each point's map (4); the cut
-                        // object itself is a slice of it.
+                        // Each cell's reach (16 bytes), zone (4) and whether it is cut (1),
+                        // each point's distance (8) and map (4); the cut object itself is a
+                        // slice of it.
                         Read::Whole(m) => (m.n_cells() as u64)
-                            .saturating_mul(16)
-                            .saturating_add((m.n_points() as u64).saturating_mul(4)),
+                            .saturating_mul(21)
+                            .saturating_add((m.n_points() as u64).saturating_mul(12)),
                     },
                     Box::new(move || {
                         Ok(match (source, x) {
@@ -704,13 +706,13 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         // An object of files a command has put since (another version) can't be shown again.
         pool.retain(|(k, _)| k.files.iter().all(|(f, v)| case_put(s, f, v)));
+        // A cut is built again from its region's whole mesh as the plane moves: one aside would
+        // only take the room of what is read from disk (and, counted here, push out others).
+        pool.retain(|(k, _)| !matches!(k.source, Source::Cut { .. }));
         trim_spare(&mut pool, budget.spare);
         // The whole meshes: those read now, those kept from before (of the same files), each
         // region's once; the ones not cut now kept aside in what the budget for hidden objects
         // leaves, the least recently used dropped first.
-        // A cut is built again from its region's whole mesh as the plane moves: one aside would
-        // only take the room of what is read from disk.
-        pool.retain(|(k, _)| !matches!(k.source, Source::Cut { .. }));
         let mut all = before;
         all.retain(|w| w.files.iter().all(|(f, v)| case_put(s, f, v)) && !wholes.iter().any(|n| n.region == w.region));
         all.extend(wholes);
@@ -719,12 +721,14 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             all.into_iter().partition(|w| !cuts.iter().any(|(r, _)| *r == w.region));
         let mut left = budget.spare.saturating_sub(pool.iter().map(|(_, o)| o.bytes()).sum());
         let mut keep: Vec<Whole> = Vec::new();
+        // Most recently used first, up to the first that doesn't fit: those before it go too.
         while let Some(w) = aside.pop() {
             let b = w.mesh.bytes();
-            if b <= left {
-                left -= b;
-                keep.insert(0, w);
+            if b > left {
+                break;
             }
+            left -= b;
+            keep.insert(0, w);
         }
         keep.extend(used);
         // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
@@ -1449,6 +1453,14 @@ impl Session {
     /// The scene built last, as it is (nothing is read or built); `None` before one is.
     pub fn last_scene(&self) -> Option<&Scene> {
         self.scene.as_ref().map(|c| &c.scene)
+    }
+
+    /// The box around region `region`'s whole mesh, in world coordinates, when it is kept (read
+    /// for a cut); `None` else. Reads nothing.
+    pub fn whole_bounds(&self, region: &str) -> Option<BBox> {
+        let w = self.scene.as_ref()?.wholes.iter().find(|w| w.region == region)?;
+        let (lo, hi) = w.mesh.bounds()?;
+        Some(BBox { min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]), max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]) })
     }
 
     /// The scene `regions`, `surfaces`, `cuts` and `reload` in `params` ask for (as `scene.snapshot`
