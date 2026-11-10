@@ -271,9 +271,10 @@ umcf-cli run --case my-case \
   taken or that can't be renamed. Each says which time it is in (any time of `processor0` for its mesh): a run from that time needs the
   name changed there by hand, as the other files of it have the new one.
 - **Cancelled** (the desktop app's save, while the results are being renamed): the files done
-  keep the new name and the rest the old one, and the rename stays unsaved; umcfGui keeps how
-  far each file got. The next save finishes it, each file getting only what it hasn't had; an
-  undo and a save take it back out of the files that have it. That record lives in the open
+  keep the new name and the rest the old one, and the rename stays unsaved; `case.save` says
+  what it wrote (the case's files and those results), and umcfGui keeps how far each file got. The next save finishes it, each file getting only what it hasn't had; an
+  undo and a save take it back out of the files that have it. The save that finishes names
+  what was skipped before the cancel too. That record lives in the open
   case only: save again before closing it (the case counts as unsaved until then, so opening
   another or quitting asks first).
 - **Until saved**, `case.info` and the unsaved list name it (`results: air/inlet renamed west`).

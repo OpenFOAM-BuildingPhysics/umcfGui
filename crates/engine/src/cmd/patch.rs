@@ -168,9 +168,11 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }
         renamed.extend(report.fields.iter().chain(&report.orig).chain(&report.others).chain(&report.partners).cloned());
         // Followed into the results when saved: what that will touch, instead of what isn't.
+        let mut collated: Vec<String> = Vec::new();
         let followed = match name {
             Some(to) if results && to != patch.as_str() => {
                 let found = o.case.result_files(o.fs.as_ref(), region, patch)?;
+                collated.clone_from(&found.collated);
                 let mut what = vec![format!(
                     "the {} file{} ({}) of {} time director{} are looked through for it",
                     found.files.len(),
@@ -187,17 +189,14 @@ fn set(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
             _ => None,
         };
-        if let Some(to) = name.filter(|_| results) {
-            let collated = o.case.result_files(o.fs.as_ref(), region, to).map(|f| f.collated).unwrap_or_default();
-            if !collated.is_empty() {
-                found.push(warn(
-                    "patch.decomposed",
-                    "",
-                    region,
-                    patch,
-                    &format!("the collated processor directories {} aren't followed: decompose the case again before running it in parallel", collated.join(", ")),
-                ));
-            }
+        if !collated.is_empty() {
+            found.push(warn(
+                "patch.decomposed",
+                "",
+                region,
+                patch,
+                &format!("the collated processor directories {} aren't followed: decompose the case again before running it in parallel", collated.join(", ")),
+            ));
         }
         if let Some(what) = &followed {
             found.push(json!({

@@ -370,7 +370,20 @@ fn save(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let o = s.opened_mut()?;
     let saved = o.case.save(o.fs.as_mut(), Some(&backup))?;
     // The patch renames followed into the results, after the case's own files.
-    let results = o.case.save_results(o.fs.as_mut(), cap)?;
+    // Stopped there (cancelled): the case's own files are saved, and some results: listed.
+    let results = match o.case.save_results(o.fs.as_mut(), cap) {
+        Ok(r) => r,
+        Err(umcf_model::Error::Partial { saved: done, source }) => {
+            return Err(Error::Model(umcf_model::Error::Partial {
+                saved: saved.into_iter().chain(done).collect(),
+                source,
+            }));
+        }
+        Err(e) if !saved.is_empty() => {
+            return Err(Error::Model(umcf_model::Error::Partial { saved, source: Box::new(e) }));
+        }
+        Err(e) => return Err(e.into()),
+    };
     let mut message = match saved.len() {
         0 if results.renames.is_empty() => "nothing to save".to_string(),
         0 => "saved no file".to_string(),

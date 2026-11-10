@@ -117,10 +117,6 @@ impl Case {
             if !base.is_empty() {
                 out.files.extend(boundary_file(fs, &join(&constant, "polyMesh")));
             }
-            let data = join(&join(&constant, "boundaryData"), patch);
-            if !patch.is_empty() && fs.is_dir(&data) {
-                out.dirs.push(data);
-            }
             for t in times::time_dirs(fs, base)? {
                 if base.is_empty() && Some(&t.name) == start.as_ref() {
                     continue;
@@ -140,6 +136,7 @@ impl Case {
                 out.files.extend(boundary_file(fs, &join(&dir, "polyMesh")));
             }
         }
+        out.dirs = data_dirs(fs, region, patch)?;
         out.bytes = out.files.iter().filter_map(|f| fs.size(f)).sum();
         Ok(out)
     }
@@ -225,7 +222,10 @@ impl Case {
                     progress.insert(f, ops.len());
                     continue;
                 }
-                Err(e @ FsError::Cancelled { .. }) => return Err(self.results_cancelled(ops, progress, dirs_from, e)),
+                Err(FsError::Cancelled { .. }) => {
+                    saved.skipped = skipped;
+                    return Err(self.results_cancelled(ops, progress, dirs_from, saved));
+                }
                 Err(e) => {
                     skip(f.clone(), &region, format!("it can't be read ({e})"));
                     progress.insert(f, ops.len());
@@ -271,10 +271,10 @@ impl Case {
         saved.skipped = skipped;
         // The data found by the patch's name, in order (a rename back moves it back).
         for (k, op) in ops.iter().enumerate().skip(dirs_from) {
-            let dirs = match self.result_files(&*fs, &op.region, &op.from) {
-                Ok(found) => found.dirs,
-                Err(crate::Error::Fs(e @ FsError::Cancelled { .. })) => {
-                    return Err(self.results_cancelled(ops.clone(), progress, k, e));
+            let dirs = match data_dirs(&*fs, &op.region, &op.from) {
+                Ok(dirs) => dirs,
+                Err(crate::Error::Fs(FsError::Cancelled { .. })) => {
+                    return Err(self.results_cancelled(ops.clone(), progress, k, saved));
                 }
                 Err(e) => {
                     saved.skipped.push((format!("boundaryData/{}", op.from), format!("can't be looked for ({e})")));
@@ -307,26 +307,42 @@ impl Case {
         disk.results_unfinished.clear();
         disk.results_progress.clear();
         disk.results_dirs_done = 0;
+        // With what cancelled calls did before.
+        let mut before = std::mem::take(&mut disk.results_saved);
         drop(disk);
+        before.files.append(&mut saved.files);
+        before.dirs.append(&mut saved.dirs);
+        before.skipped.append(&mut saved.skipped);
+        saved.files = before.files;
+        saved.dirs = before.dirs;
+        saved.skipped = before.skipped;
         Ok(saved)
     }
 
     /// A cancelled [`Case::save_results`]: the renames it was doing are kept to be finished
     /// (by the next save, or taken back by an undo and a save), with how far each file and the
-    /// directories got; never counted as done.
+    /// directories got, and what it did (reported by the call that finishes); never counted as
+    /// done. The error lists the files it wrote ([`crate::Error::Partial`]): the case isn't as
+    /// it was.
     fn results_cancelled(
         &self,
         doing: Vec<ResultRename>,
         progress: std::collections::BTreeMap<String, usize>,
         dirs_done: usize,
-        e: FsError,
+        did: ResultsSaved,
     ) -> crate::Error {
         let mut disk = lock(&self.disk);
         disk.results = self.results.clone();
         disk.results_unfinished = doing;
         disk.results_progress = progress;
         disk.results_dirs_done = dirs_done;
-        e.into()
+        let all = &mut disk.results_saved;
+        all.files.extend(did.files.iter().cloned());
+        all.dirs.extend(did.dirs.iter().cloned());
+        all.skipped.extend(did.skipped);
+        let done = all.files.len();
+        let written: Vec<String> = did.files.into_iter().chain(did.dirs).collect();
+        crate::Error::Partial { saved: written, source: Box::new(crate::Error::ResultsCancelled { done }) }
     }
 }
 
@@ -377,6 +393,18 @@ fn follow_partners(
         }
     }
     Ok(changed)
+}
+
+/// The `boundaryData/<patch>` directories of region `region` (its `constant`, the case's and
+/// each processor directory's), without listing anything else.
+fn data_dirs(fs: &dyn CaseFs, region: &str, patch: &str) -> Result<Vec<String>> {
+    let mut bases = vec![String::new()];
+    bases.extend(times::processor_dirs(fs)?.into_iter().map(|(_, p)| p));
+    Ok(bases
+        .iter()
+        .map(|base| join(&join(&region_dir(&join(base, "constant"), region), "boundaryData"), patch))
+        .filter(|d| !patch.is_empty() && fs.is_dir(d))
+        .collect())
 }
 
 /// The mesh's `boundary` file in `dir`, plain or compressed, when there is one.

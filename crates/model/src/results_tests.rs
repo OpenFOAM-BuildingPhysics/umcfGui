@@ -288,7 +288,14 @@ fn a_cancelled_save_is_finished_by_the_next_or_taken_back_by_an_undo() {
         let before = c.clone();
         rename(&mut c, &fs.fs, "inlet", "west");
         c.save(&mut fs, None).unwrap();
-        assert!(matches!(c.save_results(&mut fs, 1 << 30), Err(crate::Error::Fs(FsError::Cancelled { .. }))));
+        // Stopped part way: what it wrote is listed, and what to do.
+        match c.save_results(&mut fs, 1 << 30) {
+            Err(crate::Error::Partial { saved, source }) => {
+                assert!(saved.contains(&"3600/air/T".to_string()), "{saved:?}");
+                assert!(source.to_string().contains("save again to finish it"), "{source}");
+            }
+            r => panic!("{r:?}"),
+        }
         // Half done, and still to do.
         assert!(text(&fs.fs, "3600/air/T").contains("    west\n"));
         assert!(text(&fs.fs, "processor1/0/air/T").contains("    inlet\n"));
@@ -385,4 +392,27 @@ fn cancels_further_on_and_a_rename_asked_in_between() {
         assert!(a < b && !t.contains("top") && !t.contains("tmp"), "{f}: {t}");
     }
     assert!(fs.fs.is_dir("constant/air/boundaryData/west"));
+}
+
+#[test]
+fn what_was_skipped_before_a_cancel_is_reported_when_finished() {
+    let big = field("U", &["inlet"]).replace("3(300 301 302)", &format!("3000({})", "1 ".repeat(3000)));
+    let mut fs = Failing { fs: case().with("3600/air/U", big), fails: "", cancel: Some("processor0/0/air/T") };
+    let mut c = Case::open(&fs).unwrap();
+    rename(&mut c, &fs.fs, "inlet", "west");
+    c.save(&mut fs, None).unwrap();
+    assert!(c.save_results(&mut fs, 2000).is_err());
+    fs.cancel = None;
+    let saved = c.save_results(&mut fs, 2000).unwrap();
+    assert!(saved.skipped.iter().any(|(f, _)| f == "3600/air/U"), "{saved:?}");
+    // The files of both calls.
+    assert!(
+        saved.files.contains(&"3600/air/T".to_string()) && saved.files.contains(&"processor0/0/air/T".to_string()),
+        "{saved:?}"
+    );
+    // Reported once.
+    rename(&mut c, &fs.fs, "west", "east");
+    c.save(&mut fs, None).unwrap();
+    let next = c.save_results(&mut fs, 2000).unwrap();
+    assert_eq!(next.skipped.iter().filter(|(f, _)| f == "3600/air/U").count(), 1, "{next:?}");
 }

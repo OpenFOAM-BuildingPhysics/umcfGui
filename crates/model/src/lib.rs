@@ -94,6 +94,10 @@ pub enum Error {
     NewCase(String),
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
+    #[error(
+        "cancelled while the patch names went into the results ({done} files have them so far): save again to finish it, or undo and save to take them back out"
+    )]
+    ResultsCancelled { done: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -304,6 +308,8 @@ struct DiskState {
     results_unfinished: Vec<results::ResultRename>,
     results_progress: BTreeMap<String, usize>,
     results_dirs_done: usize,
+    /// What the cancelled calls renamed and skipped: reported by the one that finishes.
+    results_saved: results::ResultsSaved,
 }
 
 type Disk = Arc<std::sync::Mutex<DiskState>>;
@@ -885,6 +891,7 @@ impl Case {
             results_unfinished: Vec::new(),
             results_progress: BTreeMap::new(),
             results_dirs_done: 0,
+            results_saved: Default::default(),
         }));
         let fields_pending = options.defer_fields && start.is_some();
         Ok(Case {
