@@ -65,6 +65,23 @@ pub struct ResultsSaved {
     pub renames: Vec<ResultRename>,
 }
 
+impl ResultsSaved {
+    /// Adds what another call did, each file and directory once (a file written for one rename
+    /// and again for the next is one), in order; a file skipped again keeps its latest reason.
+    fn add(&mut self, files: Vec<String>, dirs: Vec<String>, skipped: Vec<(String, String)>) {
+        fn new<T: Clone + Eq + std::hash::Hash>(have: &mut Vec<T>, more: Vec<T>) {
+            let mut seen: std::collections::HashSet<T> = have.iter().cloned().collect();
+            have.extend(more.into_iter().filter(|x| seen.insert(x.clone())));
+        }
+        new(&mut self.files, files);
+        new(&mut self.dirs, dirs);
+        for (f, why) in skipped {
+            self.skipped.retain(|(g, _)| *g != f);
+            self.skipped.push((f, why));
+        }
+    }
+}
+
 /// Where a region's files are under `base` (`""`, `processor3`, a time directory in them).
 fn region_dir(base: &str, region: &str) -> String {
     join(base, region)
@@ -162,6 +179,7 @@ impl Case {
         let ops = self.results_pending();
         let mut saved = ResultsSaved { renames: ops.clone(), ..ResultsSaved::default() };
         if ops.is_empty() {
+            lock(&self.disk).results_saved = ResultsSaved::default();
             return Ok(saved);
         }
         // How far a cancelled call got with the first of them.
@@ -310,9 +328,7 @@ impl Case {
         // With what cancelled calls did before.
         let mut before = std::mem::take(&mut disk.results_saved);
         drop(disk);
-        before.files.append(&mut saved.files);
-        before.dirs.append(&mut saved.dirs);
-        before.skipped.append(&mut saved.skipped);
+        before.add(saved.files, saved.dirs, saved.skipped);
         saved.files = before.files;
         saved.dirs = before.dirs;
         saved.skipped = before.skipped;
@@ -336,11 +352,8 @@ impl Case {
         disk.results_unfinished = doing;
         disk.results_progress = progress;
         disk.results_dirs_done = dirs_done;
-        let all = &mut disk.results_saved;
-        all.files.extend(did.files.iter().cloned());
-        all.dirs.extend(did.dirs.iter().cloned());
-        all.skipped.extend(did.skipped);
-        let done = all.files.len();
+        disk.results_saved.add(did.files.clone(), did.dirs.clone(), did.skipped);
+        let done = disk.results_saved.files.len();
         let written: Vec<String> = did.files.into_iter().chain(did.dirs).collect();
         crate::Error::Partial { saved: written, source: Box::new(crate::Error::ResultsCancelled { done }) }
     }

@@ -377,7 +377,13 @@ fn cancels_further_on_and_a_rename_asked_in_between() {
     rename(&mut c, &fs.fs, "top", "west");
     fs.cancel = None;
     c.save(&mut fs, None).unwrap();
-    c.save_results(&mut fs, 1 << 30).unwrap();
+    let saved = c.save_results(&mut fs, 1 << 30).unwrap();
+    // Each file once, though written by more than one call.
+    let mut once = saved.files.clone();
+    once.sort();
+    once.dedup();
+    assert_eq!(once.len(), saved.files.len(), "{saved:?}");
+    assert!(saved.files.contains(&"3600/air/T".to_string()), "{saved:?}");
     assert!(c.changed().is_empty(), "{:?}", c.changed());
     for f in [
         "3600/air/T",

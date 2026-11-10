@@ -95,7 +95,7 @@ pub enum Error {
     #[error("saving stopped after {saved:?}: {source}")]
     Partial { saved: Vec<String>, source: Box<Error> },
     #[error(
-        "cancelled while the patch names went into the results ({done} files have them so far): save again to finish it, or undo and save to take them back out"
+        "cancelled while the patch names in the results were being changed ({done} files changed so far): save again to finish it, or undo and save to take it back"
     )]
     ResultsCancelled { done: usize },
 }
