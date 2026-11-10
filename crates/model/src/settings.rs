@@ -667,19 +667,51 @@ fn opaque(d: &Dict) -> bool {
 
 /// A key the numerics take: a field's name or a pattern (`"(h|e)"`), no white space nor
 /// OpenFOAM syntax.
-fn numerics_key(k: &str) -> bool {
-    !k.is_empty()
+pub fn numerics_key(k: &str) -> bool {
+    // Brackets balanced: a key such as `a)` would be written unquoted and break the file.
+    let mut depth = 0i32;
+    let balanced = k.bytes().all(|b| {
+        depth += match b {
+            b'(' => 1,
+            b')' => -1,
+            _ => 0,
+        };
+        depth >= 0
+    }) && depth == 0;
+    balanced
+        && !k.is_empty()
         && !k.starts_with(['$', '#'])
         && k.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')' | b'|' | b'.' | b'*' | b'-' | b':'))
+}
+
+/// The first key given twice in `d` or below it (`SIMPLE/nCorrectors`), the quotes left out.
+fn given_twice(d: &Dict) -> Option<String> {
+    let mut seen = HashSet::new();
+    for e in d.entries() {
+        let key = umcf_foam_dict::unquote(e.key());
+        if !seen.insert(key) {
+            return Some(key.to_string());
+        }
+        if let Some(inner) = e.dict().and_then(given_twice) {
+            return Some(format!("{key}/{inner}"));
+        }
+    }
+    None
 }
 
 /// The entries of `dict` (under `prefix`) the numerics take: a number or a plain word (a
 /// solver's name, `yes`); `false` when something else is there (a macro, a directive, a list).
 fn numerics_leaves(dict: &Dict, prefix: &[String], out: &mut Vec<Leaf>) -> bool {
     let mut plain = !opaque(dict);
+    let mut seen = HashSet::new();
     for e in dict.entries() {
         let key = umcf_foam_dict::unquote(e.key()).to_string();
+        // Given twice: which one counts can't be told (OpenFOAM takes the last, the settings the first).
+        if !seen.insert(key.clone()) {
+            plain = false;
+            continue;
+        }
         let mut at = prefix.to_vec();
         at.push(key.clone());
         if !numerics_key(&key) {
@@ -746,10 +778,10 @@ pub(crate) fn put_leaf(
                 return Ok(Put::Skipped(format!("{} is a value in the file, not a dictionary", path[..i].join("/"))));
             }
             Some(_) => {}
-            None if i == 2 && path[0] == "solvers" => {
+            None if i <= 2 && path[0] == "solvers" => {
                 return Ok(Put::Skipped(format!(
-                    "the file has no solvers/{} (a pattern may cover it): a field's solver dictionary is added by hand",
-                    path[1]
+                    "the file has no {} (a pattern may cover the field): a field's solver dictionary is added by hand",
+                    path[..i].join("/")
                 )));
             }
             None => {
@@ -846,6 +878,10 @@ fn read_numerics(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) 
         };
         let mut leaves = Vec::new();
         let mut ok = true;
+        if let Some(twice) = given_twice(d) {
+            problem(&format!("{kat}/{twice}"), "is given twice: which one counts can't be told".into());
+            ok = false;
+        }
         for r in d.entries() {
             let rat = format!("{kat}/{}", r.key());
             if !NUMERICS_ROOTS.contains(&r.key()) {
@@ -901,7 +937,7 @@ fn case_numerics(case: &Case) -> (Numerics, Vec<String>) {
             let (leaves, plain) = solution_leaves(doc);
             if !plain {
                 notes.push(format!(
-                    "{rel}: holds what the numerics don't take (a macro, a list): its other entries are read"
+                    "{rel}: holds what the numerics don't take (a macro, a list, an entry given twice): its other entries are read"
                 ));
             }
             match &first {
@@ -912,8 +948,15 @@ fn case_numerics(case: &Case) -> (Numerics, Vec<String>) {
         let word = kind_word(kind);
         if let Some((name, all)) = first {
             let own_of = |l: &[Leaf]| -> Vec<Leaf> { l.iter().filter(|x| !base.contains(x)).cloned().collect() };
+            // Compared sorted: the same entries in another order in the file are the same numerics.
+            let sorted = |mut l: Vec<Leaf>| {
+                l.sort();
+                l
+            };
             let mine = own_of(&all);
-            let differ: Vec<&str> = others.iter().filter(|(_, l)| own_of(l) != mine).map(|(n, _)| n.as_str()).collect();
+            let key = sorted(mine.clone());
+            let differ: Vec<&str> =
+                others.iter().filter(|(_, l)| sorted(own_of(l)) != key).map(|(n, _)| n.as_str()).collect();
             // Those every region of the kind has: written back, they change none.
             let own: Vec<Leaf> = mine.into_iter().filter(|x| others.iter().all(|(_, l)| l.contains(x))).collect();
             if !differ.is_empty() {

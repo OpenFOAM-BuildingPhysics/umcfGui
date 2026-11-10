@@ -183,6 +183,6 @@ Values are given as JSON:
 A value can only change its own entry. Text that would end the entry early is refused, such as
 a `;` or anything after a dictionary's closing `}`. A comment in a value is dropped. Keys are
 plain OpenFOAM words (`endTime`, `div(phi,U)`) or patterns, given without their quotes
-(`(U|k)` reaches `"(U|k)"`, and a new one starting with `(` is written quoted; a new
-pattern such as `"U.*"` can't be added yet, as it would be written unquoted, as a plain word): directives (`#include`), macros (`$x`) and keys
+(`(U|k)` reaches `"(U|k)"`, and a new one starting with `(` or holding `|` or `*`, such as
+`U.*`, is written quoted): directives (`#include`), macros (`$x`) and keys
 with unbalanced brackets are refused. So are unknown parameter names, which catches typos.

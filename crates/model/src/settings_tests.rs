@@ -642,6 +642,18 @@ fn the_numerics_read_back_as_written_and_refuse_what_they_aren_t() {
     ] {
         assert!(problems.iter().any(|p| p.starts_with(&format!("settings/{want}"))), "{want}: {problems:?}");
     }
+    // An entry or a root given twice: which counts can't be told. A key with unbalanced
+    // brackets would be written unquoted and break the file.
+    for (text, want) in [
+        ("numerics { fluid { SIMPLE { n 1; n 2; } } }", "numerics/fluid/SIMPLE/n: is given twice"),
+        ("numerics { fluid { SIMPLE { n 1; } SIMPLE { m 2; } } }", "numerics/fluid/SIMPLE: is given twice"),
+    ] {
+        let (s, problems) = read(text);
+        assert!(s.numerics.is_empty(), "{text}: {:?}", s.numerics);
+        assert!(problems.iter().any(|p| p.starts_with(&format!("settings/{want}"))), "{want}: {problems:?}");
+    }
+    assert!(numerics_key("(h|e)") && numerics_key("U.*"));
+    assert!(!numerics_key("a)") && !numerics_key(")(") && !numerics_key("(a"));
 }
 
 #[test]
@@ -685,6 +697,15 @@ fn a_case_s_numerics_are_what_differ_from_the_configuration_and_go_where_they_be
     let (got, notes) = Settings::from_case(&c);
     assert!(got.numerics.is_empty());
     assert!(notes.iter().any(|n| n.contains("fluid regions' numerics differ (air2 besides air)")), "{notes:?}");
+    // The same entries in another order: no difference.
+    let c = edited(&s, "system/air2/fvSolution", |t| {
+        let a = t.find("SIMPLE").unwrap();
+        let b = t.find("relaxationFactors").unwrap();
+        let end = b + t[b..].find("\n}").unwrap() + 2;
+        format!("{}{}\n{}{}", &t[..a], &t[b..end], &t[a..b], &t[end..])
+    });
+    let (_, notes) = Settings::from_case(&c);
+    assert!(!notes.iter().any(|n| n.contains("differ")), "{notes:?}");
     // What they share is taken, what differs isn't: chosen back, no file changes.
     let mut c = edited(&s, "system/air2/fvSolution", |t| {
         t.replacen("nNonOrthogonalCorrectors 0;", "nNonOrthogonalCorrectors 2;", 1).replacen(
@@ -722,7 +743,7 @@ fn numerics_never_replace_a_dictionary_nor_add_a_field_s_solver_dictionary() {
     assert_eq!(c.dict(rel).unwrap().to_string(), before);
     assert_eq!(a.notes.len(), 3, "{:?}", a.notes);
     assert!(a.notes[0].contains("solvers/p_rgh: is a dictionary in the file"), "{:?}", a.notes);
-    assert!(a.notes[2].contains("the file has no solvers/U (a pattern may cover it)"), "{:?}", a.notes);
+    assert!(a.notes[2].contains("the file has no solvers/U (a pattern may cover the field)"), "{:?}", a.notes);
     // Not even with its solver: it would hold only the entries given. A field the file has
     // changes; a pattern key is quoted.
     let good = vec![(
@@ -741,6 +762,11 @@ fn numerics_never_replace_a_dictionary_nor_add_a_field_s_solver_dictionary() {
     assert_eq!(doc.get(&["solvers", "T"]).map(|_| ()), None);
     assert_eq!(doc.value(&["solvers", "p_rgh", "tolerance"]).as_deref(), Some("1e-8"));
     assert_eq!(doc.value(&["solvers", "p_rgh", "smoother"]).as_deref(), Some("DICGaussSeidel"));
+    // A file without solvers: none is added with a field's partial dictionary.
+    let mut bare = Document::parse("FoamFile { class dictionary; object fvSolution; }\nSIMPLE { n 1; }\n").unwrap();
+    let put = put_leaf(&mut bare, &["solvers".into(), "p_rgh".into(), "tolerance".into()], "1e-8").unwrap();
+    assert!(matches!(&put, Put::Skipped(w) if w.contains("the file has no solvers (a pattern")), "{}", bare);
+    assert!(bare.get(&["solvers"]).is_none());
     // A file with a directive at its top: a dictionary it lacks isn't added next to it, and
     // reading it notes the directive.
     let mut c = edited(&s, rel, |t| {

@@ -2810,6 +2810,11 @@ fn workflow_settings_choose_the_solver_numerics_of_a_region_kind() {
         (json!({ "numerics": { "gas": { "SIMPLE": { "x": 1 } } } }), "numerics/gas is not a region kind"),
         (json!({ "numerics": { "fluid": { "fvSchemes": { "x": 1 } } } }), "numerics/fluid/fvSchemes is not one of"),
         (json!({ "numerics": { "fluid": { "SIMPLE": { "x": "$y" } } } }), "is a number or a plain word"),
+        // Unbalanced brackets: written unquoted, the file wouldn't read.
+        (
+            json!({ "numerics": { "fluid": { "relaxationFactors": { "equations": { "a)": 0.3 } } } } }),
+            "equations/a) is not a field's name or pattern",
+        ),
     ] {
         let e = s.execute("workflow.settings", &params).unwrap_err().to_string();
         assert!(e.contains(want), "{params}: {e}");
