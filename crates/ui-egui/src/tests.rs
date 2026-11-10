@@ -1811,3 +1811,38 @@ fn a_job_names_the_folder_it_makes_or_opens() {
         assert_eq!(folder_name(none), None, "{none:?}");
     }
 }
+
+#[test]
+fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
+    use umcf_engine::{DisplayEntry, Layer};
+    use umcf_render::raster::Mode;
+    let mut app = app();
+    let before = vec![
+        DisplayEntry {
+            layer: Layer::Patch { region: String::new(), patch: "sky".into() },
+            mode: Some(Mode::Wireframe),
+            opacity: None,
+        },
+        DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) },
+    ];
+    app.display = before.clone();
+    app.toggle_cut();
+    let cut = app.cut.clone().unwrap();
+    assert_eq!(cut.region, "");
+    assert_eq!(app.shown()["cuts"][0]["region"], "");
+    // Hidden by an entry of its own, last; the others as they were.
+    assert_eq!(app.display.len(), 3);
+    assert_eq!(app.display[..2], before[..]);
+    assert_eq!(app.display[2].mode, Some(Mode::Hidden));
+    app.toggle_cut();
+    assert!(app.cut.is_none());
+    assert_eq!(app.display, before);
+    assert!(app.shown().get("cuts").is_none());
+    // The region given an opacity while the card is open, with no entry of its own before:
+    // the opacity stays, the hiding goes.
+    app.display.clear();
+    app.toggle_cut();
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.5));
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) }]);
+}

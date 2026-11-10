@@ -79,7 +79,7 @@ fn holds(outer: &Layer, inner: &Layer, inner_groups: &[String]) -> bool {
 /// group holds patches.
 fn depth(layer: &Layer) -> u8 {
     match layer {
-        Layer::Region(_) | Layer::Surface(_) => 0,
+        Layer::Region(_) | Layer::Surface(_) | Layer::Cut(_) => 0,
         Layer::Group { .. } => 1,
         Layer::Patch { .. } | Layer::Solid { .. } => 2,
     }
@@ -207,7 +207,7 @@ impl App {
         let surfaces = &self.surfaces;
         let before = self.display.len();
         self.display.retain(|e| match &e.layer {
-            Layer::Region(r) => patches(r).is_some(),
+            Layer::Region(r) | Layer::Cut(r) => patches(r).is_some(),
             Layer::Patch { region, patch } => patches(region).is_some_and(|p| p.iter().any(|x| x.name == *patch)),
             Layer::Group { region, group } => {
                 patches(region).is_some_and(|p| p.iter().any(|x| x.groups.contains(group)))

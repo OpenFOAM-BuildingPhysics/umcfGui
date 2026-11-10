@@ -40,6 +40,8 @@ pub enum Icon {
     Origin,
     /// The 3D view dark: a square, half of it filled.
     DarkView,
+    /// A cut through the mesh: its box with a plane across it.
+    Cut,
     Theme,
     Search,
     Home,
@@ -79,7 +81,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon, for the contact sheet.
-    pub const ALL: [Icon; 53] = [
+    pub const ALL: [Icon; 54] = [
         Icon::Open,
         Icon::Save,
         Icon::Undo,
@@ -103,6 +105,7 @@ impl Icon {
         Icon::Grid,
         Icon::Origin,
         Icon::DarkView,
+        Icon::Cut,
         Icon::Theme,
         Icon::Search,
         Icon::Home,
@@ -394,6 +397,10 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, ink: Ink) {
             box_(passive);
             d.block_face(32.0, 33.0, 12.0, 24.0, 2, d.a2);
             d.dot(41.0, 40.0, 3.4, d.a3);
+        }
+        Icon::Cut => {
+            box_(passive);
+            d.shape(&[(22.0, 18.0), (42.0, 28.0), (42.0, 52.0), (22.0, 42.0)], d.a2, act * 0.8);
         }
         Icon::Edges => {
             box_(passive);

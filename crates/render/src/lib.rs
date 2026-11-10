@@ -48,6 +48,17 @@ pub enum Source {
     /// An STL surface (case-relative path); its classes are the regions OpenFOAM makes of it, a
     /// triangle's source index is its index in the file.
     Surface { file: String },
+    /// The cells of a region's mesh a plane cuts ([`Object::from_cut`]); its classes are the
+    /// cell zones (`cells` for those in none), a triangle's source index is its mesh face.
+    Cut { region: String },
+}
+
+/// A plane: the points `x` with `normal · (x - point) = 0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Plane {
+    pub point: Vec3,
+    /// Not zero; its length doesn't matter.
+    pub normal: Vec3,
 }
 
 /// One thing in the scene: triangles with a class (a patch, a surface region) each.
@@ -194,6 +205,119 @@ impl Object {
         o
     }
 
+    /// The cells of `mesh` that `plane` cuts, as a "crinkle" cut: each such cell whole, so the
+    /// mesh's cells are seen as they are (no face is cut). A cell is cut when it has points on
+    /// the plane's negative side and points on it or past it: of two layers of cells that only
+    /// touch the plane (a plane on the faces between them), the one behind it. The layer is drawn
+    /// by its skin: each face between a cut cell and one not cut, or of the boundary, once, split
+    /// into a fan from its first point, in the class of the cell zone of its cut cell; `cells`
+    /// for one in no zone. The faces between two cut cells are inside it, not drawn. Faces with a point that is not finite are left out. `None` when the normal is
+    /// zero or not finite.
+    pub fn from_cut(region: &str, mesh: &umcf_foam_mesh::PolyMesh, plane: Plane, origin: Vec3) -> Option<Object> {
+        let n = plane.normal;
+        let length = n.length();
+        if !(length.is_finite() && length > 0.0) {
+            return None;
+        }
+        let n = n * (1.0 / length);
+        let distance = |p: &[f64; 3]| n.dot(Vec3::new(p[0], p[1], p[2]) - plane.point);
+        // Each cell's nearest and farthest point, from its faces' points.
+        let cells = mesh.n_cells();
+        let mut low = vec![f64::INFINITY; cells];
+        let mut high = vec![f64::NEG_INFINITY; cells];
+        let mut reach = |cell: u32, d: f64| {
+            if let (Some(lo), Some(hi)) = (low.get_mut(cell as usize), high.get_mut(cell as usize)) {
+                *lo = lo.min(d);
+                *hi = hi.max(d);
+            }
+        };
+        for f in 0..mesh.n_faces() {
+            let Some(face) = mesh.face(f) else { continue };
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for p in face {
+                if let Some(x) = mesh.points.get(*p as usize) {
+                    let d = distance(x);
+                    lo = lo.min(d);
+                    hi = hi.max(d);
+                }
+            }
+            for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
+                reach(*c, lo);
+                reach(*c, hi);
+            }
+        }
+        let cut: Vec<bool> = low.iter().zip(&high).map(|(lo, hi)| *lo < 0.0 && *hi >= 0.0).collect();
+        // Each cell's zone: the first that lists it.
+        let mut zone: Vec<u32> = vec![u32::MAX; cells];
+        for (z, cz) in mesh.cell_zones.iter().enumerate() {
+            let Ok(z) = u32::try_from(z) else { break };
+            for c in &cz.cells {
+                if let Some(slot) = zone.get_mut(*c as usize)
+                    && *slot == u32::MAX
+                {
+                    *slot = z;
+                }
+            }
+        }
+        let mut o = Object::new(Source::Cut { region: region.to_string() });
+        // Zone (or u32::MAX, no zone) → class, as they are met.
+        let mut class_of: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut map: Vec<u32> = vec![u32::MAX; mesh.points.len()];
+        for f in 0..mesh.n_faces() {
+            // The layer's skin: a face between a cut cell and one not cut, or the boundary. A face
+            // between two cut cells is inside the layer: not seen, and drawn it would show
+            // through where it meets the skin.
+            let is_cut = |c: Option<&u32>| c.is_some_and(|c| cut.get(*c as usize).copied().unwrap_or(false));
+            let (own, nb) = (mesh.owner.get(f), mesh.neighbour.get(f));
+            let cell = match (is_cut(own), is_cut(nb)) {
+                (true, false) => own,
+                (false, true) => nb,
+                _ => None,
+            };
+            let (Some(cell), Some(face), Ok(index)) = (cell, mesh.face(f), u32::try_from(f)) else { continue };
+            let z = zone.get(*cell as usize).copied().unwrap_or(u32::MAX);
+            let next = u32::try_from(o.classes.len()).unwrap_or(u32::MAX);
+            let class = *class_of.entry(z).or_insert_with(|| {
+                // The cells in no zone: `cells`, unless a zone is called so.
+                let unzoned =
+                    if mesh.cell_zones.iter().any(|cz| cz.name == "cells") { "cells (no zone)" } else { "cells" };
+                let name = mesh.cell_zones.get(z as usize).map_or_else(|| unzoned.to_string(), |cz| cz.name.clone());
+                o.classes.push(name);
+                o.kinds.push(if z == u32::MAX { "cells" } else { "cellZone" }.to_string());
+                o.groups.push(Vec::new());
+                next
+            });
+            let mut ids: Vec<u32> = Vec::with_capacity(face.len());
+            for p in face {
+                let Some(slot) = map.get_mut(*p as usize) else { break };
+                if *slot == u32::MAX {
+                    let Some(w) = mesh.points.get(*p as usize) else { break };
+                    let r = relative(Vec3::new(w[0], w[1], w[2]), origin);
+                    if !r.iter().all(|c| c.is_finite()) {
+                        break;
+                    }
+                    let Ok(id) = u32::try_from(o.points.len()) else { break };
+                    o.points.push(r);
+                    *slot = id;
+                }
+                ids.push(*slot);
+            }
+            if ids.len() != face.len() || ids.len() < 3 {
+                o.dropped += 1;
+                continue;
+            }
+            let k = ids.len();
+            for i in 1..k - 1 {
+                let (Some(a), Some(b), Some(c)) = (ids.first(), ids.get(i), ids.get(i + 1)) else { continue };
+                o.triangles.push([*a, *b, *c]);
+                o.class.push(class);
+                o.origin_index.push(index);
+                o.edges.push(0b010 | u8::from(i == 1) | (u8::from(i == k - 2) << 2));
+            }
+        }
+        Some(o)
+    }
+
     /// The triangles of `stl`, by region (see [`Stl::regions`]). Triangles with a coordinate
     /// that is not finite are left out.
     pub fn from_stl(file: &str, stl: &Stl, origin: Vec3) -> Object {
@@ -235,12 +359,15 @@ impl Object {
         BBox::of(points.iter().zip(&used).filter(|(_, u)| **u).map(|(p, _)| Vec3::new(p[0], p[1], p[2])))
     }
 
-    /// A name for people: `mesh air`, `mesh` (single region), `surface constant/triSurface/x.stl`.
+    /// A name for people: `mesh air`, `mesh` (single region), `surface constant/triSurface/x.stl`,
+    /// `cut air`.
     pub fn label(&self) -> String {
         match &self.source {
             Source::Mesh { region } if region.is_empty() => "mesh".to_string(),
             Source::Mesh { region } => format!("mesh {region}"),
             Source::Surface { file } => format!("surface {file}"),
+            Source::Cut { region } if region.is_empty() => "cut".to_string(),
+            Source::Cut { region } => format!("cut {region}"),
         }
     }
 

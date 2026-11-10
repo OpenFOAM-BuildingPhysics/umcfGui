@@ -726,6 +726,111 @@ fn scene_snapshots_draw_the_mesh_or_the_surfaces() {
 }
 
 #[test]
+fn a_cut_shows_the_cells_a_plane_crosses() {
+    let mut s = scene_session();
+    let cut = |x: f64| json!([{ "region": "air", "point": [x, 0.5, 0.5], "normal": [1, 0, 0] }]);
+    let out = s.execute("scene.snapshot", &json!({ "width": 32, "height": 32, "cuts": cut(0.5) })).unwrap();
+    // The region's boundary and its cut: the one cell, its six faces.
+    assert_eq!(
+        out.data["objects"],
+        json!([
+            { "region": "air", "triangles": 12, "classes": ["ground", "sky", "walls"] },
+            { "cut": "air", "triangles": 12, "classes": ["cells"] },
+        ])
+    );
+    // Only the cut; moved; past the mesh: none of the cell.
+    let out = s.execute("scene.snapshot", &json!({ "regions": [], "cuts": cut(0.25), "width": 8, "height": 8 }));
+    let out = out.unwrap();
+    assert_eq!(out.data["objects"], json!([{ "cut": "air", "triangles": 12, "classes": ["cells"] }]));
+    let out =
+        s.execute("scene.snapshot", &json!({ "regions": [], "cuts": cut(5.0), "width": 8, "height": 8 })).unwrap();
+    assert_eq!(out.data["objects"][0]["triangles"], 0);
+    // Its own display entry; a region's entry doesn't reach it.
+    let display = json!([{ "region": "air", "mode": "hidden" }, { "cut": "air", "mode": "wireframe", "opacity": 0.5 }]);
+    s.execute("scene.snapshot", &json!({ "cuts": cut(0.5), "display": display, "width": 8, "height": 8 })).unwrap();
+    // A pick goes through the cut to the patch behind it.
+    let pick = json!({ "cuts": cut(0.5), "ray": { "origin": [0.5, 0.5, -3], "direction": [0, 0, 1] } });
+    let out = s.execute("select.pick", &pick).unwrap();
+    assert_eq!(out.data["picked"]["patch"], "ground");
+    // Refused.
+    for (cuts, says) in [
+        (json!({ "region": "air" }), "is a list"),
+        (json!([{ "region": "air", "point": [0, 0, 0] }]), "`normal` is [x, y, z]"),
+        (json!([{ "region": "air", "point": [0, 0], "normal": [1, 0, 0] }]), "`point` is three numbers"),
+        (json!([{ "region": "air", "point": [0, 0, 0], "normal": [0, 0, 0] }]), "zero length"),
+        (json!([{ "region": "air", "point": [0, 0, 0], "normal": [1, 0, 0], "at": 1 }]), "unknown `at`"),
+        (json!([{ "region": "water", "point": [0, 0, 0], "normal": [1, 0, 0] }]), "no mesh to cut"),
+        (
+            json!([{ "region": "air", "point": [0, 0, 0], "normal": [1, 0, 0] }, { "region": "air", "point": [0, 0, 0], "normal": [0, 1, 0] }]),
+            "cut twice",
+        ),
+    ] {
+        let e = s.execute("scene.snapshot", &json!({ "cuts": cuts })).unwrap_err().to_string();
+        assert!(e.contains(says), "{cuts}: {e}");
+    }
+    let e = s.execute("scene.snapshot", &json!({ "display": [{ "cut": "air", "patch": "sky", "mode": "hidden" }] }));
+    assert!(e.is_err());
+}
+
+/// A case on `MemFs` that counts the reads of one file.
+struct Counting {
+    fs: MemFs,
+    file: &'static str,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl umcf_core::CaseFs for Counting {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
+        if rel == self.file {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.fs.read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.fs.is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.fs.is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, umcf_core::FsError> {
+        self.fs.list(rel)
+    }
+}
+
+impl umcf_core::CaseWrite for Counting {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), umcf_core::FsError> {
+        self.fs.write(rel, bytes)
+    }
+}
+
+#[test]
+fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = Counting { fs, file: "constant/air/polyMesh/neighbour", reads: std::sync::Arc::clone(&reads) };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(counting), "mem", OpenOptions::default(), false).unwrap();
+    let at = |x: f64| json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "point": [x, 0.5, 0.5], "normal": [1, 0, 0] }] });
+    let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+    // There and back, the region alone, then on: one read.
+    for x in [0.5, 0.25, 0.5, 0.75] {
+        s.execute("scene.snapshot", &at(x)).unwrap();
+    }
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
+    s.execute("scene.snapshot", &at(0.6)).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
+    // A patch renamed: the cut and its mesh as they were.
+    s.execute("patch.set", &json!({ "name": "west", "patches": [{ "region": "air", "patch": "inlet" }] })).unwrap();
+    s.execute("scene.snapshot", &at(0.4)).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
+    // A rectangle selects through the cut.
+    let rect = json!({ "view": "top", "width": 50, "height": 50, "rect": [0, 0, 50, 50], "cuts": at(0.5)["cuts"] });
+    let out = s.execute("select.rect", &rect).unwrap();
+    assert_eq!(out.data["in"], 1, "{}", out.data);
+}
+
+#[test]
 fn picking_selects_patches_and_lists_what_is_behind() {
     let mut s = scene_session();
     let top = json!({ "view": "top", "width": 100, "height": 100, "pixel": [50, 50] });

@@ -18,7 +18,8 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
   <case>        a case directory to open
   --cmd         a command to run once the case is open (as umcf-cli run --cmd); repeat for more
   --show        a mesh region or surface (walls.stl) the 3D view shows first; repeat for more
-  --open        a command whose card opens at the start, as its ribbon button opens it (bc.set)
+  --open        a command whose card opens at the start, as its ribbon button opens it (bc.set),
+                or cut: the cut card
   --dark        the dark theme
   --size        the window's size in points (default 1440x900)
   --renderer    what draws the 3D view at the start: without it, the CPU, with the window on a

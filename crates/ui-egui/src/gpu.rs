@@ -2471,6 +2471,102 @@ mod tests {
         Some((on_cpu.iter().filter(|x| **x).count(), on_gpu.iter().filter(|x| **x).count(), shared))
     }
 
+    /// A block of 3 × 2 × 2 unit hexahedra, cut across x through its middle cells: a cut object
+    /// of their skin (with faces inside the block's boundary).
+    fn cut_scene() -> Scene {
+        let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+        let (nx, ny, nz) = (3usize, 2usize, 2usize);
+        let p = |i: usize, j: usize, k: usize| (k * (ny + 1) + j) * (nx + 1) + i;
+        let c = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
+        let mut points = String::new();
+        for k in 0..=nz {
+            for j in 0..=ny {
+                for i in 0..=nx {
+                    points += &format!("({i} {j} {k})\n");
+                }
+            }
+        }
+        // Faces: internal ones (owner < neighbour), then the boundary, one patch.
+        let (mut internal, mut boundary) = (Vec::new(), Vec::new());
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let x = [p(i + 1, j, k), p(i + 1, j + 1, k), p(i + 1, j + 1, k + 1), p(i + 1, j, k + 1)];
+                    let y = [p(i, j + 1, k), p(i, j + 1, k + 1), p(i + 1, j + 1, k + 1), p(i + 1, j + 1, k)];
+                    let z = [p(i, j, k + 1), p(i + 1, j, k + 1), p(i + 1, j + 1, k + 1), p(i, j + 1, k + 1)];
+                    for (face, next) in [
+                        (x, (i + 1 < nx).then(|| c(i + 1, j, k))),
+                        (y, (j + 1 < ny).then(|| c(i, j + 1, k))),
+                        (z, (k + 1 < nz).then(|| c(i, j, k + 1))),
+                    ] {
+                        match next {
+                            Some(n) => internal.push((face, c(i, j, k), Some(n))),
+                            None => boundary.push((face, c(i, j, k), None)),
+                        }
+                    }
+                    if i == 0 {
+                        boundary.push((
+                            [p(0, j, k), p(0, j, k + 1), p(0, j + 1, k + 1), p(0, j + 1, k)],
+                            c(i, j, k),
+                            None,
+                        ));
+                    }
+                    if j == 0 {
+                        boundary.push((
+                            [p(i, 0, k), p(i + 1, 0, k), p(i + 1, 0, k + 1), p(i, 0, k + 1)],
+                            c(i, j, k),
+                            None,
+                        ));
+                    }
+                    if k == 0 {
+                        boundary.push((
+                            [p(i, j, 0), p(i, j + 1, 0), p(i + 1, j + 1, 0), p(i + 1, j, 0)],
+                            c(i, j, k),
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+        internal.sort_by_key(|(_, o, n)| (*o, *n));
+        let all: Vec<_> = internal.iter().chain(&boundary).collect();
+        let faces: String = all.iter().map(|(f, _, _)| format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3])).collect();
+        let owner: Vec<String> = all.iter().map(|(_, o, _)| o.to_string()).collect();
+        let neighbour: Vec<String> = internal.iter().filter_map(|(_, _, n)| n.map(|n| n.to_string())).collect();
+        let fs = umcf_core::MemFs::new()
+            .with("m/points", format!("{}{}\n(\n{points})\n", h("vectorField"), (nx + 1) * (ny + 1) * (nz + 1)))
+            .with("m/faces", format!("{}{}\n(\n{faces})\n", h("faceList"), all.len()))
+            .with("m/owner", format!("{}{}\n(\n{}\n)\n", h("labelList"), owner.len(), owner.join(" ")))
+            .with("m/neighbour", format!("{}{}\n(\n{}\n)\n", h("labelList"), neighbour.len(), neighbour.join(" ")))
+            .with(
+                "m/boundary",
+                format!(
+                    "{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces {};\n        startFace {};\n    }}\n)\n",
+                    h("polyBoundaryMesh"),
+                    boundary.len(),
+                    internal.len()
+                ),
+            );
+        let mesh = umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap();
+        let plane = umcf_render::Plane { point: Vec3::new(1.5, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0) };
+        let cut = Object::from_cut("air", &mesh, plane, Vec3::ZERO).unwrap();
+        assert_eq!(cut.triangles.len(), 2 * 16, "the middle column's skin: 4 cells, 16 faces");
+        let mut scene = Scene::new(Vec3::ZERO);
+        scene.objects.push(cut);
+        scene
+    }
+
+    #[test]
+    fn a_cut_is_drawn_as_the_cpu_view_draws_it() {
+        let scene = cut_scene();
+        for edges in [false, true] {
+            let mut style = Style { edges, ..Style::default() };
+            let Some((cpu, image)) = both(&scene, &mut style) else { return };
+            let off = differing(&cpu, &image, 6);
+            assert!(off < 0.01, "edges {edges}: {:.1}% of the pixels differ", off * 100.0);
+        }
+    }
+
     #[test]
     fn the_faces_edges_are_drawn_as_the_cpu_view_draws_them() {
         let scene = mesh_scene();

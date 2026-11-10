@@ -304,6 +304,13 @@ impl PolyMesh {
         Ok(mesh)
     }
 
+    /// About how many bytes the mesh holds (its lists, not their spare capacity).
+    pub fn bytes(&self) -> u64 {
+        let zones: usize = self.cell_zones.iter().map(|z| z.cells.len()).sum();
+        let words = self.face_offsets.len() + self.face_points.len() + self.owner.len() + self.neighbour.len() + zones;
+        (self.points.len() as u64).saturating_mul(24).saturating_add((words as u64).saturating_mul(4))
+    }
+
     /// How many points the mesh has.
     pub fn n_points(&self) -> usize {
         self.points.len()

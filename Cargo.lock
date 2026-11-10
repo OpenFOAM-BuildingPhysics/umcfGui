@@ -3351,6 +3351,7 @@ dependencies = [
  "serde_json",
  "umcf-core",
  "umcf-engine",
+ "umcf-foam-mesh",
  "umcf-geom",
  "umcf-model",
  "umcf-render",
