@@ -1130,6 +1130,71 @@ fn a_rename_follows_into_0_orig_and_view_factors_and_says_where_else_the_name_is
 }
 
 #[test]
+fn a_rename_follows_into_the_results_when_asked_and_saved() {
+    let field = |entries: &str| {
+        format!(
+            "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n}}\ninternalField uniform 0;\nboundaryField\n{{\n{entries}}}\n"
+        )
+    };
+    let mut fs = fs();
+    fs.insert("3600/air/T", field("    inlet { type fixedValue; value uniform 291; }\n"));
+    fs.insert("constant/air/boundaryData/inlet/points", "((0 0 0))\n");
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let p = json!([{"region": "air", "patch": "inlet"}]);
+    // Only with a new name.
+    assert!(s.execute("patch.set", &json!({"type": "wall", "results": true, "patches": p})).is_err());
+    let o = s.execute("patch.set", &json!({"name": "west", "results": true, "patches": p})).unwrap();
+    let codes: Vec<(&str, &str)> = o.data["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["code"].as_str().unwrap(), d["message"].as_str().unwrap()))
+        .collect();
+    // What the save will rename, not what is left with the old name.
+    let what = codes.iter().find(|(c, _)| *c == "patch.results").map(|(_, m)| *m).unwrap();
+    assert!(what.contains("1 file") && what.contains("constant/air/boundaryData/inlet, renamed west"), "{what}");
+    assert!(!codes.iter().any(|(c, m)| *c == "patch.times" || m.contains("this directory is named")), "{codes:?}");
+    let read = |s: &Session, f: &str| s.fs().unwrap().read(f, 1 << 20).unwrap().map(|b| String::from_utf8(b).unwrap());
+    assert!(read(&s, "3600/air/T").unwrap().contains("inlet {"));
+    let o = s.execute("case.save", &json!({})).unwrap();
+    assert!(
+        o.message
+            .contains("the patch names followed into the results: 1 file rewritten, constant/air/boundaryData/west"),
+        "{}",
+        o.message
+    );
+    assert!(read(&s, "3600/air/T").unwrap().contains("    west { type fixedValue; value uniform 291; }"));
+    assert!(s.fs().unwrap().is_dir("constant/air/boundaryData/west"));
+    // Undone and saved: back in the results too.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.case().unwrap().changed().iter().any(|c| c == "results: air/west renamed inlet"));
+    s.execute("case.save", &json!({})).unwrap();
+    assert!(read(&s, "3600/air/T").unwrap().contains("    inlet { type"));
+    assert!(s.fs().unwrap().is_dir("constant/air/boundaryData/inlet"));
+}
+
+#[test]
+fn a_rename_follows_into_the_results_of_a_case_on_disk() {
+    let dir = scratch("results");
+    let t = std::fs::read_to_string(dir.join("0/air/T")).unwrap();
+    for (rel, text) in [("3600/air/T", t.as_str()), ("constant/air/boundaryData/inlet/points", "((0 0 0))\n")] {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute("case.open", &json!({"path": dir.to_str().unwrap()})).unwrap();
+    s.execute("patch.set", &json!({"name": "west", "results": true, "patches": [{"region": "air", "patch": "inlet"}]}))
+        .unwrap();
+    let o = s.execute("case.save", &json!({})).unwrap();
+    assert!(o.message.contains("1 file rewritten, constant/air/boundaryData/west"), "{}", o.message);
+    assert!(std::fs::read_to_string(dir.join("3600/air/T")).unwrap().contains("    west { type zeroGradient; }"));
+    assert!(dir.join("constant/air/boundaryData/west/points").is_file());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn patch_entries_are_written_as_given() {
     let mut s = session();
     s.execute(

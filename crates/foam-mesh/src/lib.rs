@@ -737,6 +737,11 @@ pub fn boundary_patch_mut<'a>(
     None
 }
 
+/// The names of the patches in a `boundary` file's document, in order.
+pub fn boundary_names(doc: &Document) -> Vec<String> {
+    named_dicts(doc).into_iter().map(|(n, _)| n.to_string()).collect()
+}
+
 /// The patches of a `boundary` file's bytes, as [`read_boundary`] reads them; a `.gz` may
 /// decompress to `limits.max_bytes`.
 pub fn parse_boundary_bytes(bytes: &[u8], limits: &Limits) -> Result<Vec<Patch>> {

@@ -496,6 +496,9 @@ impl CaseWrite for Away {
     fn write(&mut self, rel: &str, _bytes: &[u8]) -> Result<(), FsError> {
         Err(Away::away(rel))
     }
+    fn rename_dir(&mut self, from: &str, _to: &str) -> Result<(), FsError> {
+        Err(Away::away(from))
+    }
 }
 
 /// `enabled` for commands that need an open case.

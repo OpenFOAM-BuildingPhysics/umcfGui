@@ -353,7 +353,7 @@ pub(super) const SAVE: CommandSpec = CommandSpec {
     label: "Save",
     menu: "Case/Save",
     shortcut: Some("Ctrl+S"),
-    params: "none. Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each under the session's backup directory. A file a command wrote whole is refused when it is a symbolic link: checked once, before any file is written, so a link made while the save runs is not caught.",
+    params: "none. Writes the changed files (dictionaries, fields, surfaces, face sets, the workflow description), after a backup of each under the session's backup directory. A file a command wrote whole is refused when it is a symbolic link: checked once, before any file is written, so a link made while the save runs is not caught. Then the patch renames patch.set was asked to follow into the results (results: true; undone ones back): the other time directories' and processor directories' fields and meshes, one file at a time, and boundaryData directories; not backed up; what was skipped is named (results).",
     enabled: needs_case,
     run: save,
     journal: true,
@@ -364,14 +364,48 @@ pub(super) const SAVE: CommandSpec = CommandSpec {
 fn save(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Params::new(SAVE.id, p, &[])?;
     let backup = s.backup.clone();
+    // A result file is edited whole in memory: read (compressed), decompressed, written and
+    // compressed again, about four times its size at once: a quarter of what may be read.
+    let cap = s.budget().read / 4;
     let o = s.opened_mut()?;
     let saved = o.case.save(o.fs.as_mut(), Some(&backup))?;
-    let message = match saved.len() {
-        0 => "nothing to save".to_string(),
+    // The patch renames followed into the results, after the case's own files.
+    let results = o.case.save_results(o.fs.as_mut(), cap)?;
+    let mut message = match saved.len() {
+        0 if results.renames.is_empty() => "nothing to save".to_string(),
+        0 => "saved no file".to_string(),
         1 => "saved 1 file".to_string(),
         n => format!("saved {n} files"),
     };
-    Ok(Outcome::new(message, json!({ "saved": saved, "backup": backup })))
+    if !results.renames.is_empty() {
+        let n = results.files.len();
+        message += &format!(
+            "; the patch names followed into the results: {n} file{} rewritten{}",
+            if n == 1 { "" } else { "s" },
+            results.dirs.iter().map(|d| format!(", {d}")).collect::<String>()
+        );
+        if !results.skipped.is_empty() {
+            message += &format!(
+                "; not changed: {}",
+                results.skipped.iter().map(|(f, why)| format!("{f} ({why})")).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+    let renames: Vec<Value> =
+        results.renames.iter().map(|r| json!({ "region": r.region, "from": r.from, "to": r.to })).collect();
+    Ok(Outcome::new(
+        message,
+        json!({
+            "saved": saved,
+            "backup": backup,
+            "results": {
+                "renames": renames,
+                "files": results.files,
+                "dirs": results.dirs,
+                "skipped": results.skipped.iter().map(|(f, why)| json!({ "path": f, "why": why })).collect::<Vec<_>>(),
+            },
+        }),
+    ))
 }
 
 pub(super) const INFO: CommandSpec = CommandSpec {

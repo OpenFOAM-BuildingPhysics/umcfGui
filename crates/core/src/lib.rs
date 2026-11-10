@@ -119,6 +119,12 @@ pub trait CaseWrite: CaseFs {
     fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         self.write(rel, bytes)
     }
+
+    /// Renames the directory `from` to `to`, which mustn't be there yet; its parent must be.
+    /// One step on disk (a rename, not a copy). A file system that can't: an error.
+    fn rename_dir(&mut self, from: &str, _to: &str) -> Result<(), FsError> {
+        Err(FsError::Io { path: from.to_string(), source: std::io::Error::from(std::io::ErrorKind::Unsupported) })
+    }
 }
 
 /// Rejects absolute paths and `..`, so a path taken from a dictionary can't leave the case.
@@ -359,6 +365,10 @@ impl<F: CaseWrite> CaseWrite for Cancellable<F> {
     fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         self.inner.write_executable(rel, bytes)
     }
+
+    fn rename_dir(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+        self.inner.rename_dir(from, to)
+    }
 }
 
 /// A case directory on disk.
@@ -491,6 +501,36 @@ impl CaseWrite for DirFs {
 
     fn write_executable(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         self.write_mode(rel, bytes, true)
+    }
+
+    fn rename_dir(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+        let src = self.path(from).ok_or_else(|| FsError::BadPath(from.to_string()))?;
+        let dst = self.path(to).ok_or_else(|| FsError::BadPath(to.to_string()))?;
+        fn io(rel: &str) -> impl Fn(std::io::Error) -> FsError + '_ {
+            move |source| FsError::Io { path: rel.to_string(), source }
+        }
+        let not = |rel: &str, kind: std::io::ErrorKind| FsError::Io { path: rel.to_string(), source: kind.into() };
+        // A directory itself, not a link to one (the link would be renamed, not what it shows).
+        match std::fs::symlink_metadata(&src) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Err(not(from, std::io::ErrorKind::NotADirectory)),
+            Err(e) => return Err(io(from)(e)),
+        }
+        match std::fs::symlink_metadata(&dst) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(not(to, std::io::ErrorKind::AlreadyExists)),
+            Err(e) => return Err(io(to)(e)),
+        }
+        // Both inside the case, through linked directories on the way too.
+        let root = std::fs::canonicalize(&self.root).map_err(io(""))?;
+        for (rel, p) in [(from, &src), (to, &dst)] {
+            let parent = p.parent().ok_or_else(|| FsError::BadPath(rel.to_string()))?;
+            let real = std::fs::canonicalize(parent).map_err(io(rel))?;
+            if !real.starts_with(&root) {
+                return Err(FsError::BadPath(format!("{rel} (leads to {}, outside the case)", real.display())));
+            }
+        }
+        std::fs::rename(&src, &dst).map_err(io(from))
     }
 }
 
@@ -658,6 +698,27 @@ impl CaseWrite for MemFs {
     fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), FsError> {
         check_rel(rel)?;
         self.insert(rel, bytes.to_vec());
+        Ok(())
+    }
+
+    fn rename_dir(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+        check_rel(from)?;
+        check_rel(to)?;
+        let (from, to) = (from.trim_matches('/'), to.trim_matches('/'));
+        let not = |rel: &str, kind: std::io::ErrorKind| FsError::Io { path: rel.to_string(), source: kind.into() };
+        if !self.is_dir(from) {
+            return Err(not(from, std::io::ErrorKind::NotFound));
+        }
+        if self.is_dir(to) || self.is_file(to) {
+            return Err(not(to, std::io::ErrorKind::AlreadyExists));
+        }
+        let inside = format!("{from}/");
+        let moved: Vec<String> = self.files.keys().filter(|k| k.starts_with(&inside)).cloned().collect();
+        for k in moved {
+            if let (Some(rest), Some(v)) = (k.strip_prefix(&inside), self.files.remove(&k)) {
+                self.files.insert(format!("{to}/{rest}"), v);
+            }
+        }
         Ok(())
     }
 }
@@ -952,6 +1013,43 @@ mod tests {
         let mut c = Cancellable::new(DirFs::new(&root), Cancel::default());
         c.write_executable("Allprepare", b"#!/bin/sh\n").unwrap();
         assert_eq!(mode("Allprepare") & 0o100, 0o100, "{:o}", mode("Allprepare"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_directory_is_renamed_in_one_step_never_over_another_nor_through_a_link() {
+        let root = std::env::temp_dir().join(format!("umcf-core-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut d = DirFs::new(&root);
+        d.write("constant/air/boundaryData/inlet/points", b"()").unwrap();
+        d.write("constant/air/boundaryData/inlet/0/U", b"()").unwrap();
+        d.rename_dir("constant/air/boundaryData/inlet", "constant/air/boundaryData/west").unwrap();
+        assert_eq!(d.list("constant/air/boundaryData").unwrap(), ["west"]);
+        assert!(d.is_file("constant/air/boundaryData/west/0/U"));
+        // Not over one that is there, not one that isn't, not out of the case.
+        d.write("constant/air/boundaryData/east/points", b"()").unwrap();
+        assert!(d.rename_dir("constant/air/boundaryData/west", "constant/air/boundaryData/east").is_err());
+        assert!(d.rename_dir("constant/air/boundaryData/north", "constant/air/boundaryData/south").is_err());
+        assert!(matches!(d.rename_dir("constant/air/boundaryData/west", "../west"), Err(FsError::BadPath(_))));
+        assert!(d.rename_dir("constant/air/boundaryData/east/points", "constant/air/boundaryData/p").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("constant/air/boundaryData/east"), root.join("linked")).unwrap();
+            assert!(d.rename_dir("linked", "renamed").is_err());
+        }
+        // Through the wrapper a case is opened with.
+        let mut c = Cancellable::new(DirFs::new(&root), Cancel::default());
+        c.rename_dir("constant/air/boundaryData/east", "constant/air/boundaryData/north").unwrap();
+        assert!(d.is_dir("constant/air/boundaryData/north"));
+        // In memory the same.
+        let mut m = MemFs::new();
+        m.insert("constant/air/boundaryData/inlet/points", "()");
+        m.insert("constant/air/boundaryData/inletX/points", "()");
+        m.rename_dir("constant/air/boundaryData/inlet", "constant/air/boundaryData/west").unwrap();
+        assert_eq!(m.list("constant/air/boundaryData").unwrap(), ["inletX", "west"]);
+        assert!(m.rename_dir("constant/air/boundaryData/west", "constant/air/boundaryData/inletX").is_err());
+        assert!(m.rename_dir("constant/air/boundaryData/nothing", "constant/air/boundaryData/x").is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

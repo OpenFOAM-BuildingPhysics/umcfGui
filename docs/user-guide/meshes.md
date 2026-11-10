@@ -209,10 +209,10 @@ umcf-cli run --case my-case \
     new name already, the old one twice, or can't be read or written back here; or a `0.orig`
     directory that can't be listed;
   - the other time directories (`patch.times`), which aren't read: a run started from one of
-    them needs the name changed there;
+    them needs the name changed there ([`results`](#a-new-name-in-the-results) does it);
   - a directory with the old name (`patch.mention`), such as the data a
     `timeVaryingMappedFixedValue` condition finds by the patch's name in
-    `constant/<region>/boundaryData/<patch>`;
+    `constant/<region>/boundaryData/<patch>` (renamed with `results`);
   - each file and line under `system`, `constant` and `0.orig` that still has the old name as a
     word (`patch.mention`): function objects in `controlDict`, the meshing dictionaries
     (`createPatchDict`, `changeDictionaryDict`, `topoSetDict`, `snappyHexMeshDict`, …), a pattern
@@ -228,9 +228,61 @@ umcf-cli run --case my-case \
 - The type is set as given: the [case check](checks.md) then says what the fields' conditions
   need (a constraint type such as `empty` or `symmetry` wants the same condition type).
 - A decomposed case keeps the old patches in its `processor*` directories until it is
-  decomposed again; the command warns (`patch.decomposed`).
+  decomposed again; the command warns (`patch.decomposed`), unless `results` renames them there
+  and the name is all that changes.
 - The meshing dictionaries are not changed: meshing again makes the patches as they say.
 - One step in the undo history, written by `case.save` after a backup.
+
+### A new name in the results
+
+With `"results": true` (and a `name`; *In the results too, when saved* on the card) the new
+name also goes into the results when the case is saved:
+
+```sh
+umcf-cli run --case my-case \
+  --cmd 'patch.set={"name": "west", "results": true, "patches": [{"region": "air", "patch": "inlet"}]}' \
+  --cmd 'case.save={}'
+```
+
+- **What**: the region's fields and mesh (`polyMesh/boundary`) in every time directory but the
+  start (whose fields the case renames itself; one too big to be read there is named,
+  `patch.unread`), each `processor*` directory's mesh and its fields and meshes at every time,
+  and the directories `constant/<region>/boundaryData/<patch>` (also in `processor*`),
+  renamed. The patches of every region's meshes there that name it as their partner follow, as
+  in the case's mesh (`neighbourPatch`, `samplePatch`, `originalPatch`). `patch.set` says how
+  many files will be looked through for it (all the files of those directories: `U` and a
+  `U.gz` beside it both), their size and the time directories; they aren't read until the
+  save. Collated processor directories (`processors4`) aren't followed: the command says so
+  (`patch.decomposed`).
+- **How**: after the case's own files, one file at a time: read, the patch's `boundaryField`
+  entry (a mesh's patch) renamed, every other byte kept (lists, comments, ASCII or binary; a
+  gzipped file compressed again), and written back atomically. Files that don't name the patch
+  are left as they are, as is anything that isn't an OpenFOAM file.
+- **Not backed up**: results can be gigabytes. A rename back undoes it, and so does undoing the
+  command after the save: the next `case.save` takes the name back out of the results (out of
+  the files it went into). Several renames are done in order (a swap through a third name
+  too).
+- **Skipped and said so**, the rest going on (`case.save`'s message, its `results.skipped`): a
+  file bigger than an eighth of the free memory (it is held compressed, decompressed and
+  written at once: a quarter of what umcfGui may read at once, [the memory
+  budget](scene.md#memory)), a link, a file that can't be read or written (one in a directory
+  linked from outside the case), one with an entry of the new name too (or the old one twice),
+  one that can't be written back byte for byte, and a `boundaryData` directory whose new name is
+  taken or that can't be renamed. Each says which time it is in (any time of `processor0` for its mesh): a run from that time needs the
+  name changed there by hand, as the other files of it have the new one.
+- **Cancelled** (the desktop app's save, while the results are being renamed): the files done
+  keep the new name and the rest the old one, and the rename stays unsaved; umcfGui keeps how
+  far each file got. The next save finishes it, each file getting only what it hasn't had; an
+  undo and a save take it back out of the files that have it. That record lives in the open
+  case only: save again before closing it (the case counts as unsaved until then, so opening
+  another or quitting asks first).
+- **Until saved**, `case.info` and the unsaved list name it (`results: air/inlet renamed west`).
+- Don't rename while a run writes results into the case: a file written at that moment can be
+  replaced by the one renamed.
+- Tested with the solver on the street canyon example of each version run to 7200 s: `top`
+  renamed in the results and the run started again from 7200; decomposed in two, the coupled
+  `air_to_street` renamed (its partners in the solids' processor meshes following) and run in
+  parallel from 7200, as a copy not renamed runs.
 
 ## New patches
 

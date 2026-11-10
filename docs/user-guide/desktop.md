@@ -238,10 +238,11 @@ commands to act on.
 ## Patches
 
 *Edit patch* (on the *Mesh* and *Boundary conditions* tabs) opens a card for the selected
-patches, filled from the first: the name (one patch at a time), the type, typed or picked from the
-suggestions under it, the groups, other entries (`neighbourRegion air`), and what each patch is
-now. *Set* sends only what was changed, as [`patch.set`](meshes.md#editing-patches): a renamed
-patch stays selected, and its field files follow.
+patches, filled from the first: the name (one patch at a time, with *In the results too, when
+saved*), the type, typed or picked from the suggestions under it, the groups, other entries
+(`neighbourRegion air`), and what each patch is now. *Set* sends only what was changed, as
+[`patch.set`](meshes.md#editing-patches): a renamed patch stays selected, and its field files
+follow (and, ticked, [its results](meshes.md#a-new-name-in-the-results) on *Save*).
 
 *New patch* (on the *Mesh* tab) opens a card that prepares a patch, as
 [`patch.create`](meshes.md#new-patches): the name, the type, the groups, and the faces: those
