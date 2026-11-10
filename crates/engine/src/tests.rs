@@ -2750,3 +2750,77 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);
 }
+
+#[test]
+fn workflow_settings_choose_the_solver_numerics_of_a_region_kind() {
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-numerics", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    // Two cases to take numerics from: one of the same version, one of OpenFOAM-8.
+    let other = |v: u8| std::env::temp_dir().join(format!("umcf-engine-{}-numerics-of{v}", std::process::id()));
+    for v in [8, 12] {
+        let _ = std::fs::remove_dir_all(other(v));
+        let numerics = json!({ "fluid": { "SIMPLE": { "nNonOrthogonalCorrectors": 3 }, "relaxationFactors": { "fields": { "p_rgh": 0.2 } } } });
+        s.execute(
+            "case.new",
+            &json!({ "path": other(v).to_str().unwrap(), "version": v, "regions": [{"name": "air", "kind": "fluid"}], "settings": { "numerics": numerics } }),
+        )
+        .unwrap();
+    }
+    s.execute(
+        "case.new",
+        &json!({ "path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}] }),
+    )
+    .unwrap();
+    // Those given go over the other case's, entry by entry.
+    let from = other(12).to_str().unwrap().to_string();
+    let out = s
+        .execute(
+            "workflow.settings",
+            &json!({ "from": from, "numerics": { "fluid": { "SIMPLE": { "nNonOrthogonalCorrectors": 5 } } } }),
+        )
+        .unwrap();
+    assert!(out.message.contains("numerics"), "{}", out.message);
+    let fluid = &out.data["settings"]["numerics"]["fluid"];
+    assert_eq!(fluid["SIMPLE"]["nNonOrthogonalCorrectors"], json!("5"), "{fluid}");
+    assert_eq!(fluid["relaxationFactors"]["fields"]["p_rgh"], json!("0.2"), "{fluid}");
+    // Another version's: left out, with a note.
+    let out = s.execute("workflow.settings", &json!({ "from": other(8).to_str().unwrap(), "endTime": 100 })).unwrap();
+    assert!(out.message.contains("its numerics are left out"), "{}", out.message);
+    assert!(out.data["settings"].get("numerics").is_none(), "{}", out.data);
+    let numerics = json!({ "fluid": { "SIMPLE": { "nNonOrthogonalCorrectors": 2 }, "relaxationFactors": { "equations": { "(h|e)": 0.4 } } } });
+    let out = s.execute("workflow.settings", &json!({ "numerics": numerics })).unwrap();
+    assert!(out.message.starts_with("settings chosen: numerics"), "{}", out.message);
+    assert_eq!(
+        out.data["settings"]["numerics"]["fluid"]["relaxationFactors"]["equations"]["(h|e)"],
+        json!("0.4"),
+        "{}",
+        out.data
+    );
+    let sol = s.case().unwrap().dict("system/air/fvSolution").unwrap();
+    assert_eq!(sol.value(&["SIMPLE", "nNonOrthogonalCorrectors"]).as_deref(), Some("2"));
+    assert_eq!(sol.value(&["relaxationFactors", "equations", "(h|e)"]).as_deref(), Some("0.4"));
+    let show = s.execute("workflow.show", &Value::Null).unwrap();
+    assert_eq!(
+        show.data["description"]["settings"]["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"],
+        json!("2")
+    );
+    for (params, want) in [
+        (json!({ "numerics": { "fluid": { "SIMPLE": { "a b": 1 } } } }), "is not a field's name or pattern"),
+        (json!({ "numerics": { "gas": { "SIMPLE": { "x": 1 } } } }), "numerics/gas is not a region kind"),
+        (json!({ "numerics": { "fluid": { "fvSchemes": { "x": 1 } } } }), "numerics/fluid/fvSchemes is not one of"),
+        (json!({ "numerics": { "fluid": { "SIMPLE": { "x": "$y" } } } }), "is a number or a plain word"),
+        // Unbalanced brackets: written unquoted, the file wouldn't read.
+        (
+            json!({ "numerics": { "fluid": { "relaxationFactors": { "equations": { "a)": 0.3 } } } } }),
+            "equations/a) is not a field's name or pattern",
+        ),
+    ] {
+        let e = s.execute("workflow.settings", &params).unwrap_err().to_string();
+        assert!(e.contains(want), "{params}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    for v in [8, 12] {
+        let _ = std::fs::remove_dir_all(other(v));
+    }
+}

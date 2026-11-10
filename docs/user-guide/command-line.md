@@ -152,7 +152,7 @@ bad arguments.
 | `workflow.region` | [Edits the description](workflow.md#editing-the-description): `region`, and `kind` (`fluid`, `solid`, `vegetation`: adds it or gives it that kind) or `remove: true` |
 | `workflow.patch` | Edits a patch of the description: `region`, `patch`, and any of `role` (`null` takes it away), `partner` (`{"region": "street", "patch": "top"}`, or `null`), `name` (renames it; the partners that named it follow) |
 | `workflow.material` | Edits a solid's material in the description: `region`, `material`, and `model` (its `buildingMaterialModel`, or `null`) or `remove: true` |
-| `workflow.settings` | [Chooses settings](workflow.md#settings): any of `deltaT`, `endTime`, `writeInterval`, `turbulence`, `temperatureLimit` (`[min, max]`), `blending` (`{"dampingThickness": 60, "alphaCoeffU": 0.3, "alphaCoeffT": 0.3}`), `materials` (the library: `{"HamstadConcrete": {"rho": 1950, …}}`), `from` (another case, read only), into the case's files and its description |
+| `workflow.settings` | [Chooses settings](workflow.md#settings): any of `deltaT`, `endTime`, `writeInterval`, `turbulence`, `temperatureLimit` (`[min, max]`), `blending` (`{"dampingThickness": 60, "alphaCoeffU": 0.3, "alphaCoeffT": 0.3}`), `materials` (the library: `{"HamstadConcrete": {"rho": 1950, …}}`), `numerics` (per region kind: `{"fluid": {"SIMPLE": {"nNonOrthogonalCorrectors": 1}}}`), `from` (another case, read only), into the case's files and its description |
 | `workflow.scripts` | Writes `Allprepare`, `Allrun` and `Allclean` from the description, for its OpenFOAM version ([Writing the scripts](workflow.md#writing-the-scripts)): `replace` (`true` writes over scripts that differ) |
 | `geometry.import` | Copies an STL file into `constant/triSurface` ([Surfaces](surfaces.md#importing)): `path` (required), `name`, `replace`, `scale` |
 | `geometry.trees` | Writes [tree crowns](surfaces.md#tree-crowns) as one surface in `constant/triSurface`: the trees from `table` (a file of the case), `path` (a file outside it) or `trees` (`[{"x": 10, "y": 5, "z": 0, "diameter": 6, "height": 8}]`); `name` (default `trees.stl`), `solid` (default `trees`), `replace` |
@@ -183,6 +183,6 @@ Values are given as JSON:
 A value can only change its own entry. Text that would end the entry early is refused, such as
 a `;` or anything after a dictionary's closing `}`. A comment in a value is dropped. Keys are
 plain OpenFOAM words (`endTime`, `div(phi,U)`) or patterns, given without their quotes
-(`(U|k)` reaches `"(U|k)"`, and a new one starting with `(` is written quoted; a new
-pattern such as `"U.*"` can't be added yet, as it would be written unquoted, as a plain word): directives (`#include`), macros (`$x`) and keys
+(`(U|k)` reaches `"(U|k)"`, and a new one starting with `(` or holding `|` or `*`, such as
+`U.*`, is written quoted): directives (`#include`), macros (`$x`) and keys
 with unbalanced brackets are refused. So are unknown parameter names, which catches typos.

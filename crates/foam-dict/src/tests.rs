@@ -190,6 +190,10 @@ fn quoted_keys() {
     doc.set(&["x", "(U|k)"], "2").unwrap();
     assert!(doc.to_string().contains("\n    \"(U|k)\"         2;"), "{}", doc);
     assert_eq!(Document::parse(&doc.to_string()).unwrap().value(&["x", "(U|k)"]).as_deref(), Some("2"));
+    // A pattern that doesn't start with `(` is quoted too: unquoted, it isn't one.
+    doc.set(&["x", "k.*"], "4").unwrap();
+    doc.set(&["x", "h|e"], "5").unwrap();
+    assert!(doc.to_string().contains("\n    \"k.*\"           4;\n    \"h|e\"           5;"), "{}", doc);
     // `div(phi,U)` stays unquoted.
     doc.set(&["x", "div(phi,U)"], "3").unwrap();
     assert!(doc.to_string().contains("\n    div(phi,U)      3;"), "{}", doc);

@@ -273,8 +273,27 @@ pub(crate) fn region_files(
 ) -> Result<Vec<(String, String)>> {
     let n = &r.name;
     let mut files = Vec::new();
+    // The numerics' entries that couldn't be put where they belong.
+    let mut skipped = Vec::new();
     let mut put = |path: String, t: Template| -> Result<()> {
-        files.push((path, template(v, t)?.to_string()));
+        let mut doc = template(v, t)?;
+        // A solution file gets the numerics chosen for its region kind.
+        let kind = match t {
+            Template::FluidSolution => Some("fluid"),
+            Template::SolidSolution => Some("solid"),
+            Template::VegetationSolution => Some("vegetation"),
+            _ => None,
+        };
+        if let Some((_, leaves)) = kind.and_then(|k| settings.numerics.iter().find(|(x, _)| x == k)) {
+            for (at, value) in leaves {
+                if let crate::settings::Put::Skipped(why) =
+                    crate::settings::put_leaf(&mut doc, at, value).map_err(|e| dict_error(t, e))?
+                {
+                    skipped.push(format!("{path}: {}: {why}: not written", at.join("/")));
+                }
+            }
+        }
+        files.push((path, doc.to_string()));
         Ok(())
     };
     match r.kind {
@@ -337,6 +356,7 @@ pub(crate) fn region_files(
             put(format!("system/{n}/fvSolution"), Template::VegetationSolution)?;
         }
     }
+    notes.extend(skipped);
     Ok(files)
 }
 

@@ -196,6 +196,8 @@ impl Case {
             case_settings.materials.retain(|(m, _)| m != model);
             case_settings.materials.insert(0, (model.clone(), coeffs.clone()));
         }
+        // The numerics the description chose, entry by entry over those of the case's regions.
+        crate::settings::merge_numerics(&mut case_settings.numerics, &chosen.numerics);
         if r.kind == RegionKind::Fluid {
             let open = |n: &&String| {
                 (n.contains("RAS model") && chosen.turbulence.is_none())

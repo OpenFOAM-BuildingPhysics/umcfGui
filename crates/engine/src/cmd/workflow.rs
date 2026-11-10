@@ -317,7 +317,7 @@ pub(super) const SETTINGS: CommandSpec = CommandSpec {
     label: "Choose settings",
     menu: "Case/Workflow/Choose settings",
     shortcut: None,
-    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}; materials: the material library, {\"HamstadConcrete\": {\"rho\": 1950, \"cap\": 850, \"lambda1\": 1.3, \"lambda2\": 0}, …} (each a material model of the solver for the version, its coefficients numbers or objects of numbers, at least those the solver reads of every material: rho, cap, lambda1, lambda2), what new materials of each model start from (case.new, region.add; the case's materials keep theirs). from: another case's directory (relative to the open case's), its settings read from its files, read only, those given here put over them; the models its solids have must be the solver's for the open case's version. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
+    params: "Any of: deltaT, endTime, writeInterval (numbers above 0; endTime may be 0); turbulence: the RAS model of the simulationType RAS fluids, one of OpenFOAM's for the case's version (kEpsilon, realizableKE, kOmegaSST, …) or the solver's (porousrealizableKE), or the one the case's fluids have already (a model of its own library); any name when the case's version isn't known; temperatureLimit: [min, max] in kelvin; blending: {\"dampingThickness\": 60, \"alphaCoeffU\": 0.3, \"alphaCoeffT\": 0.3}; materials: the material library, {\"HamstadConcrete\": {\"rho\": 1950, \"cap\": 850, \"lambda1\": 1.3, \"lambda2\": 0}, …} (each a material model of the solver for the version, its coefficients numbers or objects of numbers, at least those the solver reads of every material: rho, cap, lambda1, lambda2), what new materials of each model start from (case.new, region.add; the case's materials keep theirs). numerics: the solver numerics per region kind, {\"fluid\": {\"SIMPLE\": {\"nNonOrthogonalCorrectors\": 1}, \"relaxationFactors\": {\"equations\": {\"(h|e)\": 0.3}}}, \"solid\": …, \"vegetation\": …}: entries of system/<region>/fvSolution under solvers, SIMPLE, PIMPLE, PISO and relaxationFactors (three levels at most; numbers or plain words; field names or patterns as keys, brackets balanced; an entry given twice in the description's block refused), written into every region of that kind and new ones, only where each is an entry of the file (never over a dictionary nor through a value; never a field's dictionary the file's solvers hasn't, which is added by hand, nor a dictionary the file hasn't next to a directive or macro where it would go; a field's entry right under solvers is a dictionary; what isn't written is noted; values come back as strings, as written); read from a case as what all regions of a kind share, left out from a case of another OpenFOAM version; with from, those given go over its entry by entry. from: another case's directory (relative to the open case's), its settings read from its files, read only, those given here put over them; the models its solids have must be the solver's for the open case's version. The others stay as they are. Each goes into the case's files where the case has it (controlDict; each fluid's momentumTransport RAS model; the min and max of each fluid's limitTemperature entries, in their limitTemperatureCoeffs when they have one; controlDict's blendingCoeffs), nothing else in them changing, and into the settings block of system/umcfWorkflow when the case has one. A temperature limit or blending coefficients in a case without that component are kept in the description only, with a note. A setting given twice in the description's block is refused. writeInterval counts in the case's writeControl unit. case.save writes it all.",
     enabled: needs_case,
     run: settings,
     journal: true,
@@ -347,6 +347,41 @@ pub(super) fn settings_params(id: &str, p: &Value) -> Result<Settings, Error> {
             return Err(bad("from is workflow.settings' own: another case's settings aren't taken here".into()));
         }
         let value = match (k.as_str(), v) {
+            ("numerics", Value::Object(kinds)) => {
+                // { "fluid": { "relaxationFactors": { "fields": { "p_rgh": 0.3 } } } }: nested
+                // objects down to numbers or plain words; keys may be patterns ("(h|e)").
+                fn nest(
+                    o: &serde_json::Map<String, Value>,
+                    at: &str,
+                    depth: usize,
+                    text_of: &dyn Fn(&Value) -> Option<String>,
+                ) -> Result<String, String> {
+                    if depth > 5 {
+                        return Err(format!("{at} is nested too deep"));
+                    }
+                    let mut b = String::from("{");
+                    for (k, v) in o {
+                        let plain = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.');
+                        if !umcf_model::settings::numerics_key(k) {
+                            return Err(format!("{at}/{k} is not a field's name or pattern"));
+                        }
+                        let key = if k.bytes().all(plain) { k.clone() } else { format!("\"{k}\"") };
+                        match v {
+                            Value::Object(inner) => b.push_str(&format!(
+                                " {key} {}",
+                                nest(inner, &format!("{at}/{k}"), depth + 1, text_of)?
+                            )),
+                            v => {
+                                let t = text_of(v).ok_or_else(|| format!("{at}/{k} is a number or a plain word"))?;
+                                b.push_str(&format!(" {key} {t};"));
+                            }
+                        }
+                    }
+                    b.push_str(" }");
+                    Ok(b)
+                }
+                nest(kinds, "numerics", 0, &text_of).map_err(bad)?
+            }
             ("materials", Value::Object(models)) => {
                 // { "Soil": { "rho": 1150, "VanGenuchtenCoeffs": { "n": 2 } } }
                 let word = |w: &str| !w.is_empty() && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
@@ -443,11 +478,22 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         let options = umcf_model::OpenOptions { field_bytes: 0, ..umcf_model::OpenOptions::default() };
         let other = umcf_model::Case::open_with(&fs, options)
             .map_err(|e| Error::Failed(format!("{}: from {dir}: {e}", SETTINGS.id)))?;
-        let (theirs, notes) = Settings::from_case(&other);
+        let (mut theirs, mut notes) = Settings::from_case(&other);
+        // Numerics are what differs from the configuration of the other case's version: the
+        // paths of one version's fvSolution needn't be the other's.
+        let here = s.opened_mut()?.case.layout.version;
+        if !theirs.numerics.is_empty() && other.layout.version != here {
+            notes.push(format!(
+                "its numerics are left out: its OpenFOAM version isn't the open case's ({})",
+                here.map_or("not known", |v| v.label())
+            ));
+            theirs.numerics.clear();
+        }
         if theirs.is_empty() {
             return Err(Error::Failed(format!(
-                "{}: from {dir}: the case has none of the settings to take",
-                SETTINGS.id
+                "{}: from {dir}: the case has none of the settings to take{}",
+                SETTINGS.id,
+                notes.iter().map(|n| format!("; {n}")).collect::<String>()
             )));
         }
         from_notes = notes.into_iter().map(|n| format!("{dir}: {n}")).collect();
@@ -455,7 +501,7 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     }
     if chosen.is_empty() {
         return Err(Error::Params(format!(
-            "{}: give a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials) or from (another case)",
+            "{}: give a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials, numerics) or from (another case)",
             SETTINGS.id
         )));
     }
@@ -464,6 +510,9 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let mut names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
     if !chosen.materials.is_empty() {
         names.push("materials");
+    }
+    if !chosen.numerics.is_empty() {
+        names.push("numerics");
     }
     let mut message = format!("settings chosen: {}", names.join(", "));
     if !c.applied.changed.is_empty() {
@@ -482,7 +531,8 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     ))
 }
 
-/// `base` with what `over` chooses put over it (a material model of `over` replaces `base`'s).
+/// `base` with what `over` chooses put over it (a material model of `over` replaces `base`'s;
+/// numerics entry by entry).
 fn merged(mut base: Settings, over: Settings) -> Settings {
     macro_rules! take {
         ($($f:ident),*) => { $( if over.$f.is_some() { base.$f = over.$f; } )* };
@@ -494,6 +544,7 @@ fn merged(mut base: Settings, over: Settings) -> Settings {
             None => base.materials.push((model, coeffs)),
         }
     }
+    umcf_model::settings::merge_numerics(&mut base.numerics, &over.numerics);
     base
 }
 
@@ -544,6 +595,31 @@ pub fn settings_json(s: &Settings) -> Value {
             models.insert(model.clone(), Value::Object(c));
         }
         m.insert("materials".into(), Value::Object(models));
+    }
+    if !s.numerics.is_empty() {
+        let mut kinds = serde_json::Map::new();
+        for (kind, leaves) in &s.numerics {
+            fn put(node: &mut serde_json::Map<String, Value>, at: &[String], v: &str) {
+                match at {
+                    [] => {}
+                    [last] => {
+                        node.insert(last.clone(), json!(v));
+                    }
+                    [first, rest @ ..] => {
+                        let next = node.entry(first.clone()).or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if let Value::Object(o) = next {
+                            put(o, rest, v);
+                        }
+                    }
+                }
+            }
+            let mut root = serde_json::Map::new();
+            for (at, v) in leaves {
+                put(&mut root, at, v);
+            }
+            kinds.insert(kind.clone(), Value::Object(root));
+        }
+        m.insert("numerics".into(), Value::Object(kinds));
     }
     Value::Object(m)
 }

@@ -71,6 +71,20 @@ fn real_cases_settings_read_write_and_change_nothing_when_written_back() {
             temperature_limit: s.temperature_limit.as_ref().map(|_| ("271.5".to_string(), "371.5".to_string())),
             // The library goes to new materials only: the case's keep theirs (checked below).
             materials: s.materials.clone(),
+            // Every number of the numerics the case has made 0.4242 (words kept).
+            numerics: s
+                .numerics
+                .iter()
+                .map(|(k, leaves)| {
+                    let l = leaves
+                        .iter()
+                        .map(|(at, v)| {
+                            (at.clone(), if v.parse::<f64>().is_ok() { "0.4242".to_string() } else { v.clone() })
+                        })
+                        .collect();
+                    (k.clone(), l)
+                })
+                .collect(),
             ..Default::default()
         };
         let mut written = case.clone();
@@ -85,7 +99,7 @@ fn real_cases_settings_read_write_and_change_nothing_when_written_back() {
                         continue;
                     }
                     for (x, y) in b.iter().zip(&w).filter(|(x, y)| x != y) {
-                        let new = ["123", "4567", "realizableKE", "kEpsilon", "271.5", "371.5", "1234"];
+                        let new = ["123", "4567", "realizableKE", "kEpsilon", "271.5", "371.5", "1234", "0.4242"];
                         if !new.iter().any(|n| y.contains(n))
                             || x.split_whitespace().next() != y.split_whitespace().next()
                         {
