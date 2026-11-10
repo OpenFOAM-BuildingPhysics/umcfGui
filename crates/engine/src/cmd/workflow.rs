@@ -484,7 +484,7 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         let here = s.opened_mut()?.case.layout.version;
         if !theirs.numerics.is_empty() && other.layout.version != here {
             notes.push(format!(
-                "its numerics are left out: its OpenFOAM version isn't the open case's ({}): give those wanted with numerics (a turbulence model taken from it may need its fluids' relaxation: the Hong Kong project's realizableKE runs on OpenFOAM-12 with its 0.3, not the 0.5 of the examples and a new case)",
+                "its numerics are left out: its OpenFOAM version isn't the open case's ({}): give those wanted with numerics (a turbulence model taken from it may need its fluids' relaxation: in the user guide's five-step street canyon runs, the Hong Kong project's realizableKE runs on OpenFOAM-12 with its relaxation, 0.3 for U, (h|e), k and epsilon; 0.5 for w; not with the 0.5 of the examples and a new case)",
                 here.map_or("not known", |v| v.label())
             ));
             theirs.numerics.clear();
