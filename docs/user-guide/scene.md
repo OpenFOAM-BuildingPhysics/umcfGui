@@ -106,6 +106,40 @@ wireframe or points layer is picked where its faces are, between the edges or po
 rectangle (below) sees through what isn't an opaque surface. It takes a transparent surface, a
 wireframe or points where they are seen, and also what is seen through them.
 
+## A cut through the mesh
+
+`cuts` shows the inside of a region's mesh: the cells a plane crosses, each whole (a "crinkle"
+cut: no cell is cut in two, so the cells are seen as the mesh has them), one plane a region:
+
+```json
+{"cuts": [{"region": "air", "point": [115, 0, 0], "normal": [1, 0, 0]}],
+ "display": [{"region": "air", "mode": "hidden"}], "edges": true}
+```
+
+- **Which cells**: those with points on the plane's negative side (against `normal`) and points
+  on it or past it. A plane lying on the faces between two layers of cells (an axis-aligned
+  plane on a block mesh's lines, say) takes one layer, the one behind it; turning `normal`
+  round takes the other.
+- **What is drawn**: the layer's skin, each face between a cut cell and one not cut, or of the
+  boundary, once; with `edges` the cells' edges. The faces between two cut cells lie inside the
+  layer and are left out. Its classes are the cell zones (`cells` for the cells in none), so a
+  solid's materials show each in its colour.
+- **It is an object of its own** (`{"cut": "air"}` in the snapshot's `objects`), drawn as a patch
+  is, by the GPU and the CPU. The region's boundary, which hides it, is hidden with
+  `{"region": "air", "mode": "hidden"}` (a region's entry doesn't reach its cut); a cut has
+  entries of its own, `{"cut": "air", "mode": "wireframe", "opacity": 0.5}`. Picks and selections
+  pass through it (its faces are inside the mesh: no patch to set).
+- **Reading**: the region's whole mesh (`points`, `faces`, `owner`, `neighbour`, `cellZones`) is
+  read the first time it is cut and kept while it is: moving the plane builds the cut again,
+  reading nothing. Uncut, the mesh is kept aside with the hidden objects ([memory](#memory)).
+  The 26 000-cell air region of the small 3×3 case is cut in 0.14 s; the Hong Kong project's
+  16-million-cell one is read in about 24 s and holds 4.1 GB, and each move of the plane takes
+  about 4 s more (every face is looked at again, on one core).
+
+On the command line, `umcf-cli render --cut air:x=115` (repeatable, one a region; `:z=2` in a
+single-region case) cuts across an axis and hides the region's boundary. In the desktop app it is
+[the cut card](desktop.md#a-cut-through-the-mesh).
+
 ## Picking
 
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same
@@ -228,7 +262,12 @@ above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is i
   so a region bigger than the budget is read, alone. Building the drawn objects from what was
   read is planned the same way, from the size of each object.
 - **A quarter for what the scene keeps while it is hidden.** Past it, the regions and surfaces
-  shown least recently are dropped, and read again when they are shown.
+  shown least recently are dropped, and read again when they are shown. A region's whole mesh,
+  read for [a cut](#a-cut-through-the-mesh), is kept while the region is cut, and in what the
+  hidden objects leave of the quarter once it isn't (the least recently cut dropped first). Its
+  read is estimated as about 24 bytes a point and 28 a face, twice that for a binary mesh (its
+  files held besides), and 24 more a point for an ASCII one (its points are parsed into a list
+  that grows). Building the cut adds about 21 bytes a cell and 12 a point.
 
 The estimates are plans, not limits: what is shown is always kept, however big. The Hong Kong
 project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.3 s with at most
@@ -237,7 +276,8 @@ project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.
 
 ## Limits
 
-- Drawing a mesh reads its boundary only, and keeps only the points its boundary faces use.
+- Drawing a mesh reads its boundary only, and keeps only the points its boundary faces use
+  (a [cut](#a-cut-through-the-mesh) reads the whole mesh).
   ASCII files are read as a stream, compressed or not (the file isn't held, nor the text of its
   points or internal faces); a binary file is held whole while it is read, and every point of
   the mesh is held until its boundary's are picked out. The 16-million-cell air region of the HK

@@ -45,7 +45,7 @@ usage:
 
   umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
                  [--surface <file>]... [--edges] [--no-grid] [--no-origin] [--light]
-                 [--select <what>]... [--pick <x>,<y>] [--json]
+                 [--select <what>]... [--pick <x>,<y>] [--cut <region>:<axis>=<at>]... [--json]
       Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
       region with a mesh, or the STL surfaces when there is none, each in its own colour.
       --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
@@ -60,6 +60,9 @@ usage:
       --select     draw a patch (<region>/<patch>, or <patch> in a single-region case) or a
                    surface region (<file.stl>/<region>) as selected (orange); can be repeated
       --pick       select what is under pixel x,y of the image, and list everything under it
+      --cut        cut a region's mesh across x, y or z at a position (air:x=115; :z=2 in a
+                   single-region case): the cells the plane crosses, whole, the region's
+                   boundary hidden (its whole mesh is read); can be repeated, once a region
       --json       one JSON object: the image's camera and objects, and the pick
       Exit status: 0 drawn, 2 the case could not be opened or drawn.
 
@@ -255,6 +258,7 @@ fn render(args: &[String]) -> Result<u8, String> {
     let mut case = None;
     let (mut out_file, mut pick, mut as_json) = (None, None, false);
     let (mut regions, mut surfaces, mut select) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut cuts, mut hidden) = (Vec::new(), Vec::new());
     let mut params = serde_json::Map::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -297,6 +301,20 @@ fn render(args: &[String]) -> Result<u8, String> {
             "--region" => regions.push(value("--region")?),
             "--surface" => surfaces.push(value("--surface")?),
             "--select" => select.push(selection_item(&value("--select")?)),
+            "--cut" => {
+                let v = value("--cut")?;
+                let bad = || format!("render: --cut is <region>:<axis>=<at> (air:x=115), not `{v}`");
+                let (region, plane) = v.rsplit_once(':').ok_or_else(bad)?;
+                let (axis, at) = plane.split_once('=').ok_or_else(bad)?;
+                let k = ["x", "y", "z"].iter().position(|a| *a == axis).ok_or_else(bad)?;
+                let at: f64 = at.parse().ok().filter(|x: &f64| x.is_finite()).ok_or_else(bad)?;
+                let (mut point, mut normal) = ([0.0; 3], [0.0; 3]);
+                if let (Some(p), Some(n)) = (point.get_mut(k), normal.get_mut(k)) {
+                    (*p, *n) = (at, 1.0);
+                }
+                cuts.push(json!({ "region": region, "point": point, "normal": normal }));
+                hidden.push(json!({ "region": region, "mode": "hidden" }));
+            }
             "--pick" => {
                 let v = value("--pick")?;
                 let bad = || format!("render: --pick is <x>,<y> in pixels, not `{v}`");
@@ -316,6 +334,10 @@ fn render(args: &[String]) -> Result<u8, String> {
     }
     if !surfaces.is_empty() {
         params.insert("surfaces".into(), json!(surfaces));
+    }
+    if !cuts.is_empty() {
+        params.insert("cuts".into(), json!(cuts));
+        params.insert("display".into(), json!(hidden));
     }
     let mut s = Session::new();
     s.execute("case.open", &json!({ "path": case, "fields": false })).map_err(|e| e.to_string())?;

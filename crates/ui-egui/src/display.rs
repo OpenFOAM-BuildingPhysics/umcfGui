@@ -79,7 +79,7 @@ fn holds(outer: &Layer, inner: &Layer, inner_groups: &[String]) -> bool {
 /// group holds patches.
 fn depth(layer: &Layer) -> u8 {
     match layer {
-        Layer::Region(_) | Layer::Surface(_) => 0,
+        Layer::Region(_) | Layer::Surface(_) | Layer::Cut(_) => 0,
         Layer::Group { .. } => 1,
         Layer::Patch { .. } | Layer::Solid { .. } => 2,
     }
@@ -115,6 +115,7 @@ impl App {
     /// same again. Two groups of one patch hold neither the other: the one changed last wins,
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
+        self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
             // Only a group needs its patches' groups.
             let groups = if matches!(layer, Layer::Group { .. }) { self.patch_groups() } else { Default::default() };
@@ -160,6 +161,7 @@ impl App {
         // What holds before what it holds, the newest last among equals: what an entry still
         // has was set after what holds it last set the same (that set took it off), so it wins.
         self.display.sort_by_key(|e| depth(&e.layer));
+        self.keep_hiding_last();
         self.look += 1;
     }
 
@@ -207,7 +209,7 @@ impl App {
         let surfaces = &self.surfaces;
         let before = self.display.len();
         self.display.retain(|e| match &e.layer {
-            Layer::Region(r) => patches(r).is_some(),
+            Layer::Region(r) | Layer::Cut(r) => patches(r).is_some(),
             Layer::Patch { region, patch } => patches(region).is_some_and(|p| p.iter().any(|x| x.name == *patch)),
             Layer::Group { region, group } => {
                 patches(region).is_some_and(|p| p.iter().any(|x| x.groups.contains(group)))

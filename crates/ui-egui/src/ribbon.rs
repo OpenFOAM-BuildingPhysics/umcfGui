@@ -75,6 +75,8 @@ pub enum Item {
     DarkView,
     /// Light or dark theme.
     Theme,
+    /// The cut card on or off.
+    Cut,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +186,7 @@ const SETUP: &[Tab] = &[
                 name: "Display",
                 items: &[Item::Edges, Item::Grid, Item::Origin, Item::DarkView, Item::Renderer, Item::Theme],
             },
+            Group { name: "Inside", items: &[Item::Cut] },
             Group { name: "Export", items: &[Item::Command("scene.snapshot", "Snapshot", Icon::Snapshot)] },
         ],
         note: None,

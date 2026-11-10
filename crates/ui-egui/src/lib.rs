@@ -37,6 +37,7 @@ use umcf_render::Source;
 use umcf_render::camera::{Camera, View};
 
 pub mod bc;
+pub mod cut;
 pub mod display;
 mod gpu;
 pub mod icons;
@@ -107,6 +108,8 @@ pub struct App {
     pub bc: Option<bc::BcForm>,
     /// The patch card, while it is open.
     pub patch_form: Option<patch::PatchForm>,
+    /// The cut card, while a cut is shown.
+    pub cut: Option<cut::CutForm>,
     pub new_patch: Option<newpatch::NewPatchForm>,
     /// Commands that ran, newest last (at most [`LOG`]).
     pub log: Vec<Entry>,
@@ -263,6 +266,7 @@ impl App {
             folder_requested: false,
             bc: None,
             patch_form: None,
+            cut: None,
             new_patch: None,
             log: Vec::new(),
             results_open: false,
@@ -312,6 +316,8 @@ impl App {
         self.viewport.camera = None;
         self.expanded.clear();
         self.display.clear();
+        // A cut is of the case that was open (its entry went with the display's).
+        self.cut = None;
         let Some(case) = self.session.case() else {
             self.shown_regions.clear();
             self.shown_surfaces.clear();
@@ -652,7 +658,11 @@ impl App {
 
     /// The parameters of the scene the 3D view shows.
     fn shown(&self) -> Value {
-        json!({ "regions": self.shown_regions, "surfaces": self.shown_surfaces })
+        let mut p = json!({ "regions": self.shown_regions, "surfaces": self.shown_surfaces });
+        if let Some(c) = &self.cut {
+            p["cuts"] = json!([c.cut()]);
+        }
+        p
     }
 
     /// Undo or redo until `done` edits are done, as a job.
@@ -1052,6 +1062,14 @@ impl App {
                     self.viewport.edges = !on;
                 }
             }
+            Item::Cut => {
+                let on = self.cut.is_some();
+                let can = on || self.can_cut();
+                let tip = if can { CUT_TIP } else { "Cut: no region of the case has a mesh" };
+                if self.ribbon_button(ui, Icon::Cut, "Cut", can, on).on_hover_text(tip).clicked() {
+                    self.toggle_cut();
+                }
+            }
             Item::Grid => {
                 let on = self.viewport.guides.grid;
                 if self.ribbon_button(ui, Icon::Grid, "Grid", true, on).on_hover_text(GRID_TIP).clicked() {
@@ -1294,7 +1312,7 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() {
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut.is_none() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
@@ -1480,7 +1498,7 @@ impl App {
                     .iter()
                     .filter_map(|o| match &o.source {
                         Source::Surface { file } => Some((file.clone(), o.classes.clone())),
-                        Source::Mesh { .. } => None,
+                        Source::Mesh { .. } | Source::Cut { .. } => None,
                     })
                     .collect()
             });
@@ -1749,8 +1767,13 @@ impl App {
         let mut close_bc = false;
         let (mut set_patch, mut close_patch) = (false, false);
         let (mut make_patch, mut close_new) = (false, false);
+        let mut close_cut = false;
         area.show(ctx, |ui| {
             ui.set_width(width + 16.0);
+            if self.cut.is_some() {
+                close_cut = self.cut_card(ui, width);
+                ui.add_space(t.gap);
+            }
             if self.bc.is_some() {
                 (set_bc, close_bc) = self.bc_card(ui, width, room);
                 ui.add_space(t.gap);
@@ -1912,6 +1935,9 @@ impl App {
             self.new_patch = None;
         } else if make_patch {
             self.create_patch();
+        }
+        if close_cut {
+            self.close_cut();
         }
         if close_results {
             self.results_open = false;
@@ -2318,7 +2344,8 @@ pub struct Options {
     /// What the 3D view shows first: mesh regions and surface files (`walls.stl`) by name;
     /// empty for the default.
     pub show: Vec<String>,
-    /// A command whose card opens at the start, as its ribbon button opens it (`bc.set`).
+    /// A command whose card opens at the start, as its ribbon button opens it (`bc.set`), or
+    /// `cut`: the cut card.
     pub open: Option<String>,
     /// What draws the 3D view at the start.
     pub renderer: Start,
@@ -2452,6 +2479,7 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
 
 /// The view's guides' and background's tooltips.
 const BRUSH_TIP: &str = "Paint over what to select: what is seen under the stroke (Shift adds, Ctrl takes away; [ and ] change its size); a right or middle drag moves the view";
+const CUT_TIP: &str = "Cut a region's mesh with a plane: the cells it crosses, whole (its whole mesh is read once)";
 const GRID_TIP: &str = "The grid on the ground (z = 0): its spacing follows the zoom; the scene hides it";
 const ORIGIN_TIP: &str = "The origin: its xy, xz and yz planes and its x, y and z axes, sized with the view";
 const DARK_TIP: &str = "A dark 3D view (else a light one), whatever the window's theme";
@@ -2539,7 +2567,25 @@ impl App {
     /// for) and the field files when they were listed only. The command is asked for first, as
     /// other work would drop a scene already waiting.
     pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
-        if let Some(id) = open {
+        // The cut card, which is no command's.
+        if open == Some("cut") {
+            if let Some(tab) = self
+                .workspace
+                .tabs()
+                .iter()
+                .position(|t| t.groups.iter().flat_map(|g| g.items).any(|i| matches!(i, ribbon::Item::Cut)))
+            {
+                self.tab = tab;
+            }
+            self.toggle_cut();
+            if self.cut.is_none() {
+                return Err(if self.session.case().is_none() {
+                    "--open cut: no case is open".to_string()
+                } else {
+                    "--open cut: no region of the case has a mesh".to_string()
+                });
+            }
+        } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;
             if let Some(tab) = ribbon::tab_of(self.workspace, spec.id) {
                 self.tab = tab;

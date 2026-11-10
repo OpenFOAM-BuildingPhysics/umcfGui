@@ -18,6 +18,7 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "wgpu
 
 [dev-dependencies]
 umcf-core.workspace = true
+umcf-foam-mesh.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 [lints]

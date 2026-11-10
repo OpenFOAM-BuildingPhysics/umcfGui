@@ -221,6 +221,8 @@ pub fn class_label(object: &Object, class: u32) -> String {
         Source::Surface { file } => {
             format!("{name} ({})", file.rsplit('/').next().unwrap_or(file))
         }
+        Source::Cut { region } if region.is_empty() => format!("cut, {name}"),
+        Source::Cut { region } => format!("cut of {region}, {name}"),
     }
 }
 
@@ -392,6 +394,8 @@ impl Viewport {
                     let sel = match &o.source {
                         Source::Mesh { region } => Sel::Patch { region: region.clone(), patch: name.clone() },
                         Source::Surface { file } => Sel::Solid { file: file.clone(), solid: name.clone() },
+                        // Nothing of a cut is selected.
+                        Source::Cut { .. } => continue,
                     };
                     if let (true, Ok(c)) = (selection.contains(&sel), u32::try_from(c)) {
                         selected.push((k, c));
@@ -466,6 +470,8 @@ impl Viewport {
                         return None;
                     }
                     match (self.faces, &o.source) {
+                        // A pick passes through a cut: the hover names what it would pick.
+                        (_, Source::Cut { .. }) => None,
                         (true, Source::Mesh { .. }) => Some(format!("face {} of {}", h.index, class_label(o, h.class))),
                         (true, Source::Surface { .. }) => None,
                         (false, _) => Some(class_label(o, h.class)),

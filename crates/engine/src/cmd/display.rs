@@ -34,6 +34,8 @@ pub enum Layer {
         file: String,
         solid: String,
     },
+    /// A region's cut (`cuts` of the scene).
+    Cut(String),
 }
 
 /// One entry: a layer and what it sets (`None`: as before).
@@ -53,6 +55,9 @@ impl DisplayEntry {
         match &self.layer {
             Layer::Region(r) => {
                 o.insert("region".into(), json!(r));
+            }
+            Layer::Cut(r) => {
+                o.insert("cut".into(), json!(r));
             }
             Layer::Patch { region, patch } => {
                 o.insert("region".into(), json!(region));
@@ -90,6 +95,7 @@ impl DisplayEntry {
             }
             (Layer::Surface(f), Source::Surface { file }) => f == file,
             (Layer::Solid { file, solid }, Source::Surface { file: f }) => file == f && name == Some(solid),
+            (Layer::Cut(r), Source::Cut { region }) => r == region,
             _ => false,
         }
     }
@@ -106,11 +112,11 @@ pub fn parse(id: &str, v: &Value) -> Result<Vec<DisplayEntry>, Error> {
     for e in list {
         let bad = || {
             Error::Params(format!(
-                "{id}: a `display` entry is {{\"region\"[, \"patch\" or \"group\"]}} or {{\"surface\"[, \"solid\"]}} with \"mode\" (surface, wireframe, points, hidden) and/or \"opacity\" (0 to 1), not {e}"
+                "{id}: a `display` entry is {{\"region\"[, \"patch\" or \"group\"]}}, {{\"surface\"[, \"solid\"]}} or {{\"cut\"}} with \"mode\" (surface, wireframe, points, hidden) and/or \"opacity\" (0 to 1), not {e}"
             ))
         };
         let o = e.as_object().ok_or_else(bad)?;
-        const KEYS: [&str; 7] = ["region", "patch", "group", "surface", "solid", "mode", "opacity"];
+        const KEYS: [&str; 8] = ["region", "patch", "group", "surface", "solid", "cut", "mode", "opacity"];
         if o.keys().any(|k| !KEYS.contains(&k.as_str())) {
             return Err(bad());
         }
@@ -119,6 +125,8 @@ pub fn parse(id: &str, v: &Value) -> Result<Vec<DisplayEntry>, Error> {
             Some(v) => v.as_str().map(|s| Some(s.to_string())).ok_or_else(bad),
         };
         let layer = match (text("region")?, text("patch")?, text("group")?, text("surface")?, text("solid")?) {
+            (None, None, None, None, None) if o.contains_key("cut") => Layer::Cut(text("cut")?.ok_or_else(bad)?),
+            _ if o.contains_key("cut") => return Err(bad()),
             (Some(r), None, None, None, None) => Layer::Region(r),
             (Some(region), Some(patch), None, None, None) => Layer::Patch { region, patch },
             (Some(region), None, Some(group), None, None) => Layer::Group { region, group },
@@ -157,7 +165,7 @@ pub(super) fn check(s: &Session, id: &str, entries: &[DisplayEntry], scene: &Sce
     let mut solids: HashMap<String, Vec<String>> = HashMap::new();
     for e in entries {
         match &e.layer {
-            Layer::Region(r) => {
+            Layer::Region(r) | Layer::Cut(r) => {
                 patches(r)?;
             }
             Layer::Patch { region, patch } => {

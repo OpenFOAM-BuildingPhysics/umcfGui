@@ -15,13 +15,13 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use umcf_foam_mesh::{BoundaryMesh, Limits, mesh_dir};
+use umcf_foam_mesh::{BoundaryMesh, Limits, PolyMesh, mesh_dir};
 use umcf_geom::BBox;
 use umcf_geom::bvh::Ray;
 use umcf_geom::stl;
 use umcf_render::camera::{Camera, View};
 use umcf_render::raster::{self, ColourBy, MAX_PIXELS, MAX_SIDE, Style, draw};
-use umcf_render::{Object, Pick, Scene, Source, png};
+use umcf_render::{Object, Pick, Plane, Scene, Source, png};
 
 use super::case::count;
 use super::display;
@@ -54,7 +54,8 @@ impl Sel {
     fn face_of(object: &Object, index: u32) -> Option<Sel> {
         match &object.source {
             Source::Mesh { region } => Some(Sel::Face { region: region.clone(), face: index }),
-            Source::Surface { .. } => None,
+            // A cut's faces are inside the mesh: not a boundary face to select (yet).
+            Source::Surface { .. } | Source::Cut { .. } => None,
         }
     }
 
@@ -64,6 +65,8 @@ impl Sel {
         Some(match &object.source {
             Source::Mesh { region } => Sel::Patch { region: region.clone(), patch: name },
             Source::Surface { file } => Sel::Solid { file: file.clone(), solid: name },
+            // A cut's classes are cell zones, not something to select.
+            Source::Cut { .. } => return None,
         })
     }
 }
@@ -82,6 +85,19 @@ pub(crate) struct Cached {
     keys: Vec<Key>,
     /// Objects built for this case and not shown now: shown again without reading them again.
     spare: Vec<(Key, Object)>,
+    /// The planes the regions are cut by ([`Object::from_cut`]), in the order given.
+    cuts: Vec<(String, Plane)>,
+    /// Regions' whole meshes, read for their cuts: those cut now, and others kept aside (within
+    /// the budget for hidden objects, with `spare`), least recently used first.
+    wholes: Vec<Whole>,
+}
+
+/// A region's whole mesh, with the versions of the files commands may have put (as [`Key`]).
+#[derive(Clone)]
+pub(crate) struct Whole {
+    region: String,
+    files: Vec<(String, Option<Arc<Vec<u8>>>)>,
+    mesh: Arc<PolyMesh>,
 }
 
 /// What an object was built from: a region's mesh or a surface, with the versions of the files
@@ -90,12 +106,14 @@ pub(crate) struct Cached {
 pub(crate) struct Key {
     source: Source,
     files: Vec<(String, Option<Arc<Vec<u8>>>)>,
+    /// A cut's plane.
+    plane: Option<Plane>,
 }
 
 impl Key {
-    /// Whether `other` is the same source with the same file versions.
+    /// Whether `other` is the same source with the same file versions (and plane).
     fn same(&self, other: &Key) -> bool {
-        self.source == other.source && same_files(&self.files, &other.files)
+        self.source == other.source && same_files(&self.files, &other.files) && self.plane == other.plane
     }
 }
 
@@ -260,6 +278,38 @@ fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Sour
         }
         Source::Surface { file } if case.put_bytes(file).is_none() => fs.size(file).unwrap_or(0),
         Source::Surface { .. } => 0,
+        Source::Cut { region } => {
+            let dir = mesh_dir(region);
+            ["boundary", "points", "faces", "owner", "neighbour"]
+                .iter()
+                .map(|n| size(&format!("{dir}/{n}")))
+                .fold(0, u64::saturating_add)
+        }
+    }
+}
+
+/// About how much memory reading region `region`'s whole mesh holds while it runs (and after:
+/// it is kept for its cut), from the counts the `owner` header notes: each point in double
+/// precision (and, binary, its file too; ASCII, as much again: the list grows as it is parsed,
+/// its old and new buffer both held at its last growth), each face's points (about four) with its offset,
+/// owner and neighbour. Without the counts, three times the size of the files;
+/// [`UNKNOWN`] when that can't be told either.
+fn whole_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
+    let dir = mesh_dir(region);
+    let counts = umcf_foam_mesh::counts(fs, &dir, &Limits::default()).unwrap_or_default();
+    match (counts.points, counts.faces) {
+        (Some(points), Some(faces)) => {
+            let read = points.saturating_mul(24).saturating_add(faces.saturating_mul(28));
+            if counts.binary { read.saturating_mul(2) } else { read.saturating_add(points.saturating_mul(24)) }
+        }
+        _ => {
+            let size = |name: &str| {
+                let plain = fs.size(&format!("{dir}/{name}"));
+                plain.or_else(|| fs.size(&format!("{dir}/{name}.gz")).map(|n| n.saturating_mul(4)))
+            };
+            let sizes: Option<Vec<u64>> = ["points", "faces", "owner"].iter().map(|n| size(n)).collect();
+            sizes.map_or(UNKNOWN, |v| v.into_iter().fold(0u64, u64::saturating_add).saturating_mul(3))
+        }
     }
 }
 
@@ -268,6 +318,14 @@ fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Sour
 fn surface_need(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
     let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file));
     size.map_or(UNKNOWN, |n| n.saturating_mul(3))
+}
+
+/// The region an object of `source` is of; `""` for a surface.
+fn region_of(source: &Source) -> String {
+    match source {
+        Source::Mesh { region } | Source::Cut { region } => region.clone(),
+        Source::Surface { .. } => String::new(),
+    }
 }
 
 /// Drops the first of `spare` (the ones shown least recently) while they hold more than `budget`.
@@ -282,7 +340,7 @@ fn trim_spare(spare: &mut Vec<(Key, Object)>, budget: u64) {
 }
 
 /// The parameters that say what the scene shows.
-const WHICH: [&str; 3] = ["regions", "surfaces", "reload"];
+const WHICH: [&str; 4] = ["regions", "surfaces", "reload", "cuts"];
 /// The parameters that place the camera.
 const CAMERA: [&str; 7] = ["view", "azimuth", "elevation", "zoom", "camera", "width", "height"];
 const DEFAULT_SIZE: (u32, u32) = (1280, 800);
@@ -308,6 +366,46 @@ fn optional<'a>(p: &Params<'a>, key: &str) -> Result<Option<&'a Value>, Error> {
 /// The scene last built.
 fn cached<'s>(s: &'s Session, id: &str) -> Result<&'s Scene, Error> {
     s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
+}
+
+/// The planes `cuts` asks the regions to be cut by: `[{"region", "point": [x, y, z], "normal":
+/// [x, y, z]}, …]`, one a region, each a region with a mesh, the normal not zero.
+fn cuts(id: &str, p: &Params, with_mesh: &[&str]) -> Result<Vec<(String, Plane)>, Error> {
+    let Some(v) = optional(p, "cuts")? else { return Ok(Vec::new()) };
+    let bad = |why: &str| {
+        Error::Params(format!(
+            "{id}: `cuts` is a list of {{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}}: {why}"
+        ))
+    };
+    let mut out: Vec<(String, Plane)> = Vec::new();
+    for c in v.as_array().ok_or_else(|| bad("not a list"))? {
+        let o = c.as_object().ok_or_else(|| bad("an entry isn't an object"))?;
+        if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "region" | "point" | "normal")) {
+            return Err(bad(&format!("unknown `{k}`")));
+        }
+        let region = o.get("region").and_then(Value::as_str).ok_or_else(|| bad("a cut names its region"))?;
+        if !with_mesh.contains(&region) {
+            return Err(Error::Failed(format!("{id}: region `{region}` has no mesh to cut")));
+        }
+        if out.iter().any(|(r, _)| r == region) {
+            return Err(bad(&format!("region `{region}` is cut twice")));
+        }
+        let point = |k: &str| -> Result<umcf_geom::Vec3, Error> {
+            let a = o.get(k).and_then(Value::as_array).ok_or_else(|| bad(&format!("`{k}` is [x, y, z]")))?;
+            let n: Vec<f64> = a.iter().filter_map(Value::as_f64).filter(|x| x.is_finite()).collect();
+            match n.as_slice() {
+                [x, y, z] if a.len() == 3 => Ok(umcf_geom::Vec3::new(*x, *y, *z)),
+                _ => Err(bad(&format!("`{k}` is three numbers"))),
+            }
+        };
+        let plane = Plane { point: point("point")?, normal: point("normal")? };
+        let length = plane.normal.length();
+        if length == 0.0 || !length.is_finite() {
+            return Err(bad("a normal of zero length, or too long to be told"));
+        }
+        out.push((region.to_string(), plane));
+    }
+    Ok(out)
 }
 
 /// Builds the scene the parameters ask for into the cache, unless it is there already.
@@ -354,7 +452,8 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         None => Vec::new(),
     };
-    if regions.is_empty() && surfaces.is_empty() {
+    let cuts = cuts(id, p, &with_mesh)?;
+    if regions.is_empty() && surfaces.is_empty() && cuts.is_empty() {
         return Err(Error::Failed(format!(
             "{id}: nothing to show: the case has no mesh and no STL surface in {SURFACE_DIR}"
         )));
@@ -371,23 +470,35 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     let versions: Vec<(String, Option<Arc<Vec<u8>>>)> =
         surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
     let reload = p.bool("reload")?.unwrap_or(false);
-    let same = |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions);
+    let same =
+        |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions) && c.cuts == cuts;
     if reload || !s.scene.as_deref().is_some_and(same) {
         // What each object is built from. Objects of this case built before (shown or spare)
         // are taken as they are, unless `reload`; the others are read, in parallel.
-        let mesh_key = |r: &str| {
+        let mesh_files = |r: &str| -> Vec<(String, Option<Arc<Vec<u8>>>)> {
             let b = format!("{}/boundary", mesh_dir(r));
-            Key {
-                source: Source::Mesh { region: r.to_string() },
-                files: [format!("{b}.gz"), b].into_iter().map(|f| (f.clone(), case.put_bytes(&f).cloned())).collect(),
-            }
+            [format!("{b}.gz"), b].into_iter().map(|f| (f.clone(), case.put_bytes(&f).cloned())).collect()
         };
+        let mesh_key =
+            |r: &str| Key { source: Source::Mesh { region: r.to_string() }, files: mesh_files(r), plane: None };
         let surface_key = |f: &str| Key {
             source: Source::Surface { file: f.to_string() },
             files: vec![(f.to_string(), case.put_bytes(f).cloned())],
+            plane: None,
         };
-        let wanted: Vec<Key> =
-            regions.iter().map(|r| mesh_key(r)).chain(surfaces.iter().map(|f| surface_key(f))).collect();
+        // A cut is of the mesh's cells and zones, which no command puts (its patches don't
+        // matter): a patch renamed leaves it, and its whole mesh, as they are.
+        let cut_key = |(r, plane): &(String, Plane)| Key {
+            source: Source::Cut { region: r.clone() },
+            files: Vec::new(),
+            plane: Some(*plane),
+        };
+        let wanted: Vec<Key> = regions
+            .iter()
+            .map(|r| mesh_key(r))
+            .chain(surfaces.iter().map(|f| surface_key(f)))
+            .chain(cuts.iter().map(cut_key))
+            .collect();
         let previous = s.scene.as_ref().filter(|c| c.opens == s.opens && !reload);
         let have =
             |k: &Key| previous.is_some_and(|c| c.keys.iter().chain(c.spare.iter().map(|(k, _)| k)).any(|x| x.same(k)));
@@ -398,7 +509,13 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         enum Read {
             Mesh(BoundaryMesh),
             Surface(stl::Stl),
+            /// A region's whole mesh, for a cut: read, or kept from before.
+            Whole(Arc<PolyMesh>),
         }
+        // The whole meshes kept from before, still of the files the case has.
+        let kept_whole = |r: &str| -> Option<Arc<PolyMesh>> {
+            previous?.wholes.iter().find(|w| w.region == r).map(|w| Arc::clone(&w.mesh))
+        };
         let budget = s.budget;
         let jobs_for = |keys: &[&Key]| -> Vec<(u64, Job<'_, Read>)> {
             let mut jobs: Vec<(u64, Job<'_, Read>)> = Vec::new();
@@ -426,6 +543,23 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                 Ok(Read::Mesh(mesh))
                             }),
                         ));
+                    }
+                    Source::Cut { region } => {
+                        let r = region.clone();
+                        match kept_whole(&r) {
+                            Some(mesh) => jobs.push((0, Box::new(move || Ok(Read::Whole(mesh))))),
+                            None => jobs.push((
+                                whole_need(fs, &r),
+                                Box::new(move || {
+                                    let mesh = PolyMesh::read(fs, &mesh_dir(&r), &Limits::default()).map_err(|e| {
+                                        let which =
+                                            if r.is_empty() { String::new() } else { format!(" of region {r}") };
+                                        Error::Failed(format!("{id}: the whole mesh{which} can't be read: {e}"))
+                                    })?;
+                                    Ok(Read::Whole(Arc::new(mesh)))
+                                }),
+                            )),
+                        }
                     }
                     Source::Surface { file } => {
                         let f = file.clone();
@@ -468,6 +602,10 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             .filter_map(|x| match x {
                 Read::Mesh(m) => Object::boundary_bounds(m),
                 Read::Surface(stl) => stl.bbox(),
+                Read::Whole(m) => m.bounds().map(|(lo, hi)| BBox {
+                    min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]),
+                    max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]),
+                }),
             })
             .chain(wanted.iter().filter(|k| !missing.iter().any(|m| m.same(k))).filter_map(kept_box))
             .collect();
@@ -488,11 +626,16 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         // Building an object reads nothing more; what it adds while it runs is the object, planned
         // like the reads.
+        let mut wholes: Vec<Whole> = Vec::new();
         let built: Vec<(u64, Job<'_, Object>)> = missing
             .iter()
             .zip(read)
             .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
+                let plane = k.plane;
+                if let Read::Whole(m) = &x {
+                    wholes.push(Whole { region: region_of(&k.source), files: k.files.clone(), mesh: Arc::clone(m) });
+                }
                 (
                     match &x {
                         // About two triangles a face (their corners, class, face and edges: 21
@@ -505,11 +648,23 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         // Three points (12 bytes each), 21 bytes a triangle, and its region
                         // while the object is built.
                         Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
+                        // Each cell's reach (16 bytes), zone (4) and whether it is cut (1),
+                        // each point's distance (8) and map (4); the cut object itself is a
+                        // slice of it.
+                        Read::Whole(m) => (m.n_cells() as u64)
+                            .saturating_mul(21)
+                            .saturating_add((m.n_points() as u64).saturating_mul(12)),
                     },
                     Box::new(move || {
                         Ok(match (source, x) {
                             (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
                             (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
+                            (Source::Cut { region }, Read::Whole(m)) => {
+                                let plane =
+                                    plane.ok_or_else(|| Error::Failed(format!("{id}: a cut without its plane")))?;
+                                Object::from_cut(&region, &m, plane, origin)
+                                    .ok_or_else(|| Error::Failed(format!("{id}: a cut's normal of zero length")))?
+                            }
                             _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
                         })
                     }),
@@ -522,6 +677,11 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         // The new scene: each object taken from what was read, else from before; what was
         // there and isn't shown now is kept aside, the ones shown least recently first (those
         // hidden before, then those hidden now), within the budget for them.
+        // The whole meshes kept so far, before the cache is taken apart.
+        let before: Vec<Whole> = match s.scene.as_ref() {
+            Some(c) if c.opens == s.opens && !reload => c.wholes.clone(),
+            _ => Vec::new(),
+        };
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
                 // Copied only while a copy of the session still holds it.
@@ -546,14 +706,46 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         // An object of files a command has put since (another version) can't be shown again.
         pool.retain(|(k, _)| k.files.iter().all(|(f, v)| case_put(s, f, v)));
+        // A cut is built again from its region's whole mesh as the plane moves: one aside would
+        // only take the room of what is read from disk (and, counted here, push out others).
+        pool.retain(|(k, _)| !matches!(k.source, Source::Cut { .. }));
         trim_spare(&mut pool, budget.spare);
+        // The whole meshes: those read now, those kept from before (of the same files), each
+        // region's once; the ones not cut now kept aside in what the budget for hidden objects
+        // leaves, the least recently used dropped first.
+        let mut all = before;
+        all.retain(|w| w.files.iter().all(|(f, v)| case_put(s, f, v)) && !wholes.iter().any(|n| n.region == w.region));
+        all.extend(wholes);
+        // In use last (most recently used).
+        let (mut aside, used): (Vec<Whole>, Vec<Whole>) =
+            all.into_iter().partition(|w| !cuts.iter().any(|(r, _)| *r == w.region));
+        let mut left = budget.spare.saturating_sub(pool.iter().map(|(_, o)| o.bytes()).sum());
+        let mut keep: Vec<Whole> = Vec::new();
+        // Most recently used first, up to the first that doesn't fit: those before it go too.
+        while let Some(w) = aside.pop() {
+            let b = w.mesh.bytes();
+            if b > left {
+                break;
+            }
+            left -= b;
+            keep.insert(0, w);
+        }
+        keep.extend(used);
         // A mesh read again from disk (rewritten by OpenFOAM) may number its faces otherwise:
         // the faces picked on it go.
         if reload {
             s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
         }
-        s.scene =
-            Some(std::sync::Arc::new(Cached { opens: s.opens, regions, surfaces: versions, scene, keys, spare: pool }));
+        s.scene = Some(std::sync::Arc::new(Cached {
+            opens: s.opens,
+            regions,
+            surfaces: versions,
+            scene,
+            keys,
+            spare: pool,
+            cuts,
+            wholes: keep,
+        }));
     }
     Ok(())
 }
@@ -679,6 +871,7 @@ fn objects_json(scene: &Scene) -> Value {
             let (key, value) = match &o.source {
                 Source::Mesh { region } => ("region", region),
                 Source::Surface { file } => ("surface", file),
+                Source::Cut { region } => ("cut", region),
             };
             json!({ key: value, "triangles": o.triangles.len(), "classes": o.classes })
         })
@@ -690,7 +883,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]} or {\"surface\"[, \"solid\"]} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; its whole mesh is read once and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -1049,9 +1242,15 @@ fn select_in(
     // (object, class or face) once each, then what they select.
     let mut keys: Vec<(usize, u32)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    // Picking faces, surfaces are passed over: they don't hide the mesh behind them.
-    let keep =
-        |k: usize, _: u32| !faces || scene.objects.get(k).is_some_and(|o| matches!(o.source, Source::Mesh { .. }));
+    // Picking faces, surfaces are passed over: they don't hide the mesh behind them; a cut is
+    // always (nothing of it is selected).
+    let keep = |k: usize, _: u32| {
+        scene.objects.get(k).is_some_and(|o| match o.source {
+            Source::Mesh { .. } => true,
+            Source::Surface { .. } => !faces,
+            Source::Cut { .. } => false,
+        })
+    };
     for (k, t) in umcf_render::raster::covered(scene, &cam, &style, area, through, &keep) {
         let Some(o) = scene.objects.get(k) else { continue };
         let key = if faces { o.origin_index.get(t as usize) } else { o.class.get(t as usize) };
@@ -1251,7 +1450,20 @@ fn clear(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
 }
 
 impl Session {
-    /// The scene `regions`, `surfaces` and `reload` in `params` ask for (as `scene.snapshot`
+    /// The scene built last, as it is (nothing is read or built); `None` before one is.
+    pub fn last_scene(&self) -> Option<&Scene> {
+        self.scene.as_ref().map(|c| &c.scene)
+    }
+
+    /// The box around region `region`'s whole mesh, in world coordinates, when it is kept (read
+    /// for a cut); `None` else. Reads nothing.
+    pub fn whole_bounds(&self, region: &str) -> Option<BBox> {
+        let w = self.scene.as_ref()?.wholes.iter().find(|w| w.region == region)?;
+        let (lo, hi) = w.mesh.bounds()?;
+        Some(BBox { min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]), max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]) })
+    }
+
+    /// The scene `regions`, `surfaces`, `cuts` and `reload` in `params` ask for (as `scene.snapshot`
     /// takes them), built or as cached: for a viewport that draws it itself. Reading it changes
     /// nothing in the case.
     ///

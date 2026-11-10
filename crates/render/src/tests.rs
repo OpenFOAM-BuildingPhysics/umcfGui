@@ -633,3 +633,135 @@ fn transparent_layers_in_the_same_place_give_the_same_nearest_everywhere() {
     let off = alike.chunks(4).zip(crossed.chunks(4)).filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > 4)).count();
     assert!(off < 10, "{off} pixels differ");
 }
+
+/// A row of `n` unit hexahedra along x (cell `i` from x = i to i + 1), its ends patch `ends`,
+/// the rest `sides`, and the cells `zoned` in a cell zone `brick`.
+pub(crate) fn row(n: usize, zoned: &[u32]) -> PolyMesh {
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let p = |i: usize, j: usize, k: usize| i * 4 + j * 2 + k;
+    let mut points = String::new();
+    for i in 0..=n {
+        for j in 0..2 {
+            for k in 0..2 {
+                points += &format!("({i} {j} {k})\n");
+            }
+        }
+    }
+    let x_face = |i: usize| vec![p(i, 0, 0), p(i, 1, 0), p(i, 1, 1), p(i, 0, 1)];
+    let mut faces: Vec<Vec<usize>> = Vec::new();
+    let mut owner: Vec<usize> = Vec::new();
+    let mut neighbour: Vec<usize> = Vec::new();
+    for i in 1..n {
+        faces.push(x_face(i));
+        owner.push(i - 1);
+        neighbour.push(i);
+    }
+    faces.push(x_face(0));
+    owner.push(0);
+    faces.push(x_face(n));
+    owner.push(n - 1);
+    for i in 0..n {
+        faces.push(vec![p(i, 0, 0), p(i + 1, 0, 0), p(i + 1, 0, 1), p(i, 0, 1)]);
+        faces.push(vec![p(i, 1, 0), p(i, 1, 1), p(i + 1, 1, 1), p(i + 1, 1, 0)]);
+        faces.push(vec![p(i, 0, 0), p(i, 1, 0), p(i + 1, 1, 0), p(i + 1, 0, 0)]);
+        faces.push(vec![p(i, 0, 1), p(i + 1, 0, 1), p(i + 1, 1, 1), p(i, 1, 1)]);
+        owner.extend([i; 4]);
+    }
+    let list =
+        |v: &[usize]| format!("{}\n(\n{}\n)\n", v.len(), v.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
+    let faces_text: String = faces
+        .iter()
+        .map(|f| format!("4({})\n", f.iter().map(usize::to_string).collect::<Vec<_>>().join(" ")))
+        .collect();
+    let internal = n - 1;
+    let zones = format!(
+        "{}1\n(\nbrick\n{{\n    type cellZone;\n    cellLabels List<label> {}({});\n}}\n)\n",
+        h("regIOobject"),
+        zoned.len(),
+        zoned.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+    );
+    let fs = MemFs::new()
+        .with("m/points", format!("{}{}\n(\n{points})\n", h("vectorField"), (n + 1) * 4))
+        .with("m/faces", format!("{}{}\n(\n{faces_text})\n", h("faceList"), faces.len()))
+        .with("m/owner", format!("{}{}", h("labelList"), list(&owner)))
+        .with("m/neighbour", format!("{}{}", h("labelList"), list(&neighbour)))
+        .with("m/cellZones", zones)
+        .with(
+            "m/boundary",
+            format!(
+                "{}2\n(\n    ends\n    {{\n        type patch;\n        nFaces 2;\n        startFace {internal};\n    }}\n    sides\n    {{\n        type wall;\n        nFaces {};\n        startFace {};\n    }}\n)\n",
+                h("polyBoundaryMesh"),
+                4 * n,
+                internal + 2
+            ),
+        );
+    PolyMesh::read(&fs, "m", &Limits::default()).unwrap()
+}
+
+#[test]
+fn a_cut_shows_the_cells_a_plane_crosses_whole() {
+    use crate::Plane;
+    let mesh = row(3, &[1]);
+    assert_eq!(mesh.n_cells(), 3);
+    let cut = |x: f64, normal: Vec3| {
+        Object::from_cut("air", &mesh, Plane { point: Vec3::new(x, 0.5, 0.5), normal }, Vec3::ZERO)
+    };
+    // Through the middle cell: it alone, its six faces (two triangles each), in its zone.
+    let o = cut(1.5, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    assert_eq!(o.source, Source::Cut { region: "air".into() });
+    assert_eq!(o.triangles.len(), 12);
+    assert_eq!(o.classes, ["brick"]);
+    assert_eq!(o.kinds, ["cellZone"]);
+    let mut faces: Vec<u32> = o.origin_index.clone();
+    faces.dedup();
+    assert_eq!(faces.len(), 6);
+    // Every point of the cell, none else: x from 1 to 2.
+    assert_eq!(o.points.len(), 8);
+    assert!(o.points.iter().all(|p| (1.0..=2.0).contains(&p[0])));
+    // The face edges, not the diagonals: four a face.
+    let edges: u32 = o.edges.iter().map(|e| e.count_ones()).sum();
+    assert_eq!(edges, 6 * 4);
+    // On the faces between cells 0 and 1: the layer behind the plane only, not both.
+    let o = cut(1.0, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    assert!(o.points.iter().all(|p| (0.0..=1.0).contains(&p[0])), "{:?}", o.points);
+    assert_eq!(o.classes, ["cells"]);
+    // Turned round, the other layer; the normal's length doesn't matter.
+    let o = cut(1.0, Vec3::new(-7.0, 0.0, 0.0)).unwrap();
+    assert!(o.points.iter().all(|p| (1.0..=2.0).contains(&p[0])), "{:?}", o.points);
+    // Along the row: all three, the zone's and the others: their skin, not the faces between
+    // them.
+    let o = cut(0.0, Vec3::new(0.0, 1.0, 0.0)).unwrap();
+    assert_eq!(o.triangles.len(), 2 * (2 + 12));
+    assert_eq!(o.classes.len(), 2);
+    // Past the mesh: nothing; a zero normal: no cut.
+    assert!(cut(9.0, Vec3::new(1.0, 0.0, 0.0)).unwrap().triangles.is_empty());
+    assert!(cut(1.5, Vec3::ZERO).is_none());
+    assert!(cut(1.5, Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
+    // A face with no finite point (the far end of the last cell) tells nothing of its cell: the
+    // last cell is not cut for it.
+    let mut broken = row(3, &[1]);
+    for p in broken.points.iter_mut().filter(|p| p[0] == 3.0) {
+        *p = [f64::NAN; 3];
+    }
+    let o = Object::from_cut(
+        "air",
+        &broken,
+        Plane { point: Vec3::new(1.5, 0.5, 0.5), normal: Vec3::new(1.0, 0.0, 0.0) },
+        Vec3::ZERO,
+    )
+    .unwrap();
+    assert_eq!(o.classes, ["brick"]);
+    assert_eq!(o.triangles.len(), 12);
+    // Nor does one at infinity (behind the plane, where it would make the last cell cut).
+    for p in broken.points.iter_mut().filter(|p| p[0].is_nan()) {
+        *p = [f64::NEG_INFINITY, 0.5, 0.5];
+    }
+    let o = Object::from_cut(
+        "air",
+        &broken,
+        Plane { point: Vec3::new(1.5, 0.5, 0.5), normal: Vec3::new(1.0, 0.0, 0.0) },
+        Vec3::ZERO,
+    )
+    .unwrap();
+    assert_eq!(o.triangles.len(), 12);
+}
