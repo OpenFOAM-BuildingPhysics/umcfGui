@@ -75,12 +75,15 @@ impl Case {
         };
         for (at, v) in coeffs {
             let shown = at.join("/");
-            if at.len() != 1 || !coefficient_name(&at[0]) {
+            let Some(name) = (match at.as_slice() {
+                [name] if coefficient_name(name) => Some(name),
+                _ => None,
+            }) else {
                 return refuse(format!(
                     "{shown}: a coefficient is a plain name in the material's dictionary (the solver reads them there, as VanGenuchten's n and wcap; none in a sub-dictionary)"
                 ));
-            }
-            if matches!(at[0].as_str(), "name" | "buildingMaterialModel") {
+            };
+            if matches!(name.as_str(), "name" | "buildingMaterialModel") {
                 return refuse(format!(
                     "{shown} isn't a coefficient: the material's name and model are workflow.material's"
                 ));
@@ -89,7 +92,7 @@ impl Case {
                 Some(v) if v.parse::<f64>().map_or(true, |x| !x.is_finite()) => {
                     return refuse(format!("{shown}: {v} is not a number"));
                 }
-                None if at.len() == 1 && required.iter().any(|r| *r == at[0]) => {
+                None if required.iter().any(|r| r == name) => {
                     return refuse(format!(
                         "{shown}: the solver reads it of every material ({}): it can't be taken out",
                         required.join(", ")
@@ -132,8 +135,9 @@ impl Case {
                 named.len()
             ));
         }
-        let Node::Dict { body, .. } = &items[at] else {
-            return refuse(format!("{rel}: material {material} isn't a dictionary"));
+        let not_a_dict = || refuse(format!("{rel}: material {material} isn't a dictionary"));
+        let Some(Node::Dict { body, .. }) = items.get(at) else {
+            return not_a_dict();
         };
         if body.items.iter().any(|i| !matches!(i, umcf_foam_dict::Item::Entry(_))) {
             return refuse(format!(
@@ -154,7 +158,9 @@ impl Case {
         for (path, v) in coeffs {
             let p: Vec<&str> = path.iter().map(String::as_str).collect();
             let shown = path.join("/");
-            let Node::Dict { body, .. } = &items[at] else { break };
+            let Some(Node::Dict { body, .. }) = items.get(at) else {
+                return not_a_dict();
+            };
             let there = body.get_path(&p);
             if there.is_some_and(|e| e.dict().is_some()) {
                 return refuse(format!("{rel}, material {material}: {shown} is a dictionary, not a coefficient"));
@@ -170,12 +176,13 @@ impl Case {
                             model.as_deref().unwrap_or("its model")
                         ));
                     }
-                    items[at].dict_set(&p, v).map_err(|source| Error::Dict { path: rel.clone(), source })?;
+                    let Some(item) = items.get_mut(at) else { return not_a_dict() };
+                    item.dict_set(&p, v).map_err(|source| Error::Dict { path: rel.clone(), source })?;
                     changed = true;
                 }
                 None => {
-                    let removed =
-                        items[at].dict_remove(&p).map_err(|source| Error::Dict { path: rel.clone(), source })?;
+                    let Some(item) = items.get_mut(at) else { return not_a_dict() };
+                    let removed = item.dict_remove(&p).map_err(|source| Error::Dict { path: rel.clone(), source })?;
                     if removed {
                         changed = true;
                     } else {

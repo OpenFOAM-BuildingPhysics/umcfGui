@@ -337,8 +337,7 @@ pub fn remove(dict: &mut Dict, path: &[&str]) -> Result<(bool, Option<String>)> 
 /// of the entry before): kept when the entry the lead belongs to is removed.
 fn same_line_head(lead: &str) -> String {
     match first_free_newline(lead) {
-        Some(n) if !lead[..n].trim().is_empty() => lead[..n].to_string(),
-        Some(_) => String::new(),
+        Some(n) => lead.get(..n).filter(|h| !h.trim().is_empty()).unwrap_or("").to_string(),
         // On one line (`a 1; /* ca */ b 2;`): the comments are the entry's before it.
         None => lead.trim_end().to_string(),
     }
@@ -510,9 +509,7 @@ fn first_lead(n: &Node) -> &str {
 }
 
 fn trailing_ws(lead: &str) -> &str {
-    let start =
-        lead.rfind(|c: char| !c.is_whitespace()).map_or(0, |i| i + lead[i..].chars().next().map_or(1, char::len_utf8));
-    lead.get(start..).unwrap_or("")
+    lead.get(lead.trim_end().len()..).unwrap_or("")
 }
 
 fn trailing_indent(lead: &str) -> &str {
