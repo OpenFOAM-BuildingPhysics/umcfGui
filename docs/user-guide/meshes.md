@@ -249,7 +249,8 @@ umcf-cli run --case my-case \
   `patch.unread`), each `processor*` directory's mesh and its fields and meshes at every time,
   and the directories `constant/<region>/boundaryData/<patch>` (also in `processor*`),
   renamed. The patches of every region's meshes there that name it as their partner follow, as
-  in the case's mesh (`neighbourPatch`, `samplePatch`, `originalPatch`). `patch.set` says how
+  in the case's mesh (`neighbourPatch`, `samplePatch`, `originalPatch`), and so do a decomposed
+  cyclic's `processorCyclic` patches (`referPatch`). `patch.set` says how
   many files will be looked through for it (all the files of those directories: `U` and a
   `U.gz` beside it both), their size and the time directories; they aren't read until the
   save. Collated processor directories (`processors4`) aren't followed: the command says so
@@ -258,7 +259,8 @@ umcf-cli run --case my-case \
   entry (a mesh's patch) renamed, every other byte kept (lists, comments, ASCII or binary; a
   gzipped file compressed again), and written back atomically. Files that don't name the patch
   are left as they are, as is anything that isn't an OpenFOAM file.
-- **Not backed up**: results can be gigabytes. A rename back undoes it, and so does undoing the
+- **Not backed up**: results can be gigabytes. A rename back undoes it (a gzipped file's text
+  comes back byte for byte, its compressed bytes generally not), and so does undoing the
   command after the save: the next `case.save` takes the name back out of the results (out of
   the files it went into). Several renames are done in order (a swap through a third name
   too).

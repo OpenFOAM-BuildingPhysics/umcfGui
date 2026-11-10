@@ -422,3 +422,23 @@ fn what_was_skipped_before_a_cancel_is_reported_when_finished() {
     let next = c.save_results(&mut fs, 2000).unwrap();
     assert_eq!(next.skipped.iter().filter(|(f, _)| f == "3600/air/U").count(), 1, "{next:?}");
 }
+
+#[test]
+fn a_decomposed_cyclic_s_processor_patches_follow() {
+    let pc = "    procBoundary0to1throughleft\n    {\n        type            processorCyclic;\n        nFaces          1;\n        startFace       20;\n        myProcNo        0;\n        neighbProcNo    1;\n        referPatch      left;\n    }\n";
+    let mut fs = case();
+    let b = boundary(&["inlet", "top", "left"])
+        .replace("3\n(\n", "4\n(\n")
+        .replace("    }\n)\n", &format!("    }}\n{pc})\n"));
+    assert!(b.contains("referPatch"), "{b}");
+    fs.insert("processor0/constant/air/polyMesh/boundary", b);
+    fs.insert("constant/air/polyMesh/boundary", boundary(&["inlet", "top", "left"]));
+    let mut c = Case::open(&fs).unwrap();
+    rename(&mut c, &fs, "left", "west");
+    c.save(&mut fs, None).unwrap();
+    c.save_results(&mut fs, 1 << 30).unwrap();
+    let t = text(&fs, "processor0/constant/air/polyMesh/boundary");
+    assert!(t.contains("        referPatch      west;\n") && t.contains("    west\n    {"), "{t}");
+    // The processor patch keeps its name: its fields' entries are under it.
+    assert!(t.contains("procBoundary0to1throughleft"), "{t}");
+}

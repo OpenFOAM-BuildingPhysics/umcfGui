@@ -162,9 +162,9 @@ impl Case {
     /// order: each region's result files ([`Case::result_files`]) read one at a time, the
     /// patch's entry renamed in a field's `boundaryField` and a mesh's `boundary`, and the
     /// patches of every region's result meshes that name it as their partner (`neighbourPatch`,
-    /// `samplePatch`, `originalPatch`) following (every other byte kept), written back
-    /// atomically; then the `boundaryData/<patch>` directories renamed. Run after
-    /// [`Case::save`].
+    /// `samplePatch`, `originalPatch`, a `processorCyclic`'s `referPatch`) following (every
+    /// other byte kept), written back atomically; then the `boundaryData/<patch>` directories
+    /// renamed. Run after [`Case::save`].
     ///
     /// Once the first file is written nothing stops it but a cancel: a file bigger than `cap`
     /// (as read, and decompressed), a link, one that can't be read, written or written back
@@ -399,6 +399,10 @@ fn follow_partners(
         }
         if own && get("originalPatch").as_deref() == Some(&op.from) {
             keys.push("originalPatch");
+        }
+        // A decomposed cyclic's `processorCyclic` patches name it in `referPatch`.
+        if own && get("referPatch").as_deref() == Some(&op.from) {
+            keys.push("referPatch");
         }
         for k in keys {
             dict.set(&[k], &op.to)?;
