@@ -550,7 +550,8 @@ pub(crate) fn case_components(case: &Case) -> Components {
         let doc = case.dict(&rel);
         let off = doc.and_then(|d| d.value(&["grassModel"])).as_deref() == Some("none")
             || doc.and_then(|d| d.value(&["grass"])).is_some_and(|w| umcf_foam_dict::switch(&w) == Some(false));
-        if case.exists(&rel) == Some(true) && !off {
+        // A file made in this session counts before it is saved.
+        if (doc.is_some() || case.exists(&rel) == Some(true)) && !off {
             c.grass = true;
         }
         // Where the solver reads it from (`settings::limit_file`).

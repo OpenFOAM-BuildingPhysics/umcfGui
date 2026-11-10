@@ -264,8 +264,8 @@ one (its other components as they are):
 | `temperatureLimit` | a `limitTemperature` entry in each fluid without one in the file the solver reads its limit from: OpenFOAM-12 `system/<r>/fvConstraints`, else `system/<r>/fvOptions`, else `constant/<r>/fvOptions` (it never reads `constant/<r>/fvConstraints`); OpenFOAM-8 `constant/<r>/fvOptions`, else `system/<r>/fvOptions`; else a new one in `system/`. Its bounds the description's settings', else 273.15 to 373.15 K | every fluid's entries taken out of the file the solver reads them from; their bounds kept in the description's settings when it has none, and those not kept noted; one in a file the solver doesn't read is left as it is, with a note |
 | `blending` | `blending true;` in `controlDict`, with `blendingCoeffs` (the description's, else the configuration's) when it has none. Needs the gravity along z and the patches `west`, `east`, `north` and `south` in each fluid's mesh, which the solver's blending layer finds by name (a note when a fluid has no mesh yet) | `blending false;`, the coefficients kept |
 
-A case whose version isn't known, a patch `air` doesn't have, or a link where a file would go is
-refused, with nothing changed. A component already as asked changes nothing, with a note.
+A case whose version isn't known, a patch `air` doesn't have, a description that gives
+`components` twice, or a link where a file would go is refused, with nothing changed. A component already as asked changes nothing, with a note.
 
 ```sh
 umcf-cli run --case path/to/case \

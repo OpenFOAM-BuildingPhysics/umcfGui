@@ -59,8 +59,8 @@ impl Case {
     /// `air` the grass grows on (on only). Refused, with nothing changed: a case whose version
     /// isn't known, the grass without a fluid named `air` or without the radiation, a patch
     /// `air` doesn't have, the blending layer in a case whose gravity isn't along z or whose
-    /// fluid's mesh lacks a side (`west`, `east`, `north`, `south`), a link where a file would
-    /// go. [`Case::save`] writes it all.
+    /// fluid's mesh lacks a side (`west`, `east`, `north`, `south`), a description giving
+    /// `components` twice, a link where a file would go. [`Case::save`] writes it all.
     pub fn switch_component(
         &mut self,
         fs: &dyn CaseFs,
@@ -98,6 +98,10 @@ impl Case {
         }
         // The description says so, its other components as they are.
         if let Some((mut d, _)) = self.description() {
+            // The reader takes the first, an edit would change the last.
+            if self.dict(PATH).is_some_and(|doc| doc.root.entries().filter(|e| e.key() == "components").count() > 1) {
+                return refuse(format!("{PATH}: components is given twice: mend the file by hand first"));
+            }
             let before = d.components;
             match word {
                 "grass" => d.components.grass = on,

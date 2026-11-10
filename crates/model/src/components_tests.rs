@@ -314,3 +314,18 @@ fn a_bare_grass_file_gets_what_the_configuration_has() {
     let sw = c.switch_component(&fs, "grass", false, None).unwrap();
     assert!(sw.changed.is_empty() && sw.notes.iter().any(|n| n.contains("off already")), "{sw:?}");
 }
+
+#[test]
+fn a_new_grass_file_counts_before_it_is_saved_and_components_twice_is_refused() {
+    let (fs, mut c) = opened(&spec(OfVersion::V12, Components::default()));
+    c.switch_component(&fs, "grass", true, None).unwrap();
+    assert!(case_components(&c).grass);
+    // components given twice in the description: refused, nothing changed.
+    let (mut fs, _) = opened(&spec(OfVersion::V12, one("blending")));
+    let d = text(&fs, crate::description::PATH);
+    fs.insert(crate::description::PATH, d + "components  ( grass );\n");
+    let mut c = Case::open(&fs).unwrap();
+    let e = c.switch_component(&fs, "temperatureLimit", true, None).unwrap_err();
+    assert!(e.to_string().contains("components is given twice"), "{e}");
+    assert!(c.changed().is_empty());
+}
