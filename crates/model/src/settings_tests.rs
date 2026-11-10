@@ -14,6 +14,7 @@ fn chosen() -> Settings {
         temperature_limit: Some(("283.15".into(), "370.15".into())),
         blending: Some(["60".into(), "0.3".into(), "0.25".into()]),
         materials: vec![],
+        numerics: vec![],
     }
 }
 
@@ -605,4 +606,243 @@ fn a_library_entry_without_what_the_solver_reads_of_a_material_is_refused() {
         "{:?}",
         added.notes
     );
+}
+
+fn leaf(path: &[&str], v: &str) -> Leaf {
+    (path.iter().map(|p| p.to_string()).collect(), v.to_string())
+}
+
+#[test]
+fn the_numerics_read_back_as_written_and_refuse_what_they_aren_t() {
+    let numerics = vec![(
+        "fluid".to_string(),
+        vec![
+            leaf(&["relaxationFactors", "fields", "p_rgh"], "0.3"),
+            leaf(&["relaxationFactors", "equations", "(h|e)"], "0.5"),
+            leaf(&["SIMPLE", "nNonOrthogonalCorrectors"], "1"),
+            leaf(&["solvers", "p_rgh", "solver"], "GAMG"),
+        ],
+    )];
+    let s = Settings { numerics: numerics.clone(), ..Default::default() };
+    let text = s.write();
+    assert!(text.contains("fluid            { relaxationFactors { fields { p_rgh 0.3; } equations { \"(h|e)\" 0.5; } } SIMPLE { nNonOrthogonalCorrectors 1; } solvers { p_rgh { solver GAMG; } } }"), "{text}");
+    let (back, problems) =
+        Description::read(&Document::parse(&Description { settings: s, ..Default::default() }.write()).unwrap());
+    assert_eq!(problems, vec![]);
+    assert_eq!(back.settings.numerics, numerics);
+    let (s, problems) = read(
+        "numerics { gas { SIMPLE { x 1; } } fluid { schemes { x 1; } } solid { solvers { Ts { tolerance $t; } } } vegetation { solvers { a { b { c { d 1; } } } } } }",
+    );
+    assert!(s.numerics.is_empty(), "{:?}", s.numerics);
+    for want in [
+        "numerics/gas: is not a region kind",
+        "numerics/fluid/schemes: is not one of",
+        "numerics/solid/solvers: holds numbers",
+        "numerics/vegetation/solvers: holds numbers",
+    ] {
+        assert!(problems.iter().any(|p| p.starts_with(&format!("settings/{want}"))), "{want}: {problems:?}");
+    }
+}
+
+#[test]
+fn a_case_s_numerics_are_what_differ_from_the_configuration_and_go_where_they_belong() {
+    for v in [OfVersion::V8, OfVersion::V12] {
+        let s = with_solid(v, Settings::default(), &[("soil", "Soil")]);
+        let (_, c) = opened(&s);
+        let (got, notes) = Settings::from_case(&c);
+        assert!(got.numerics.is_empty() && notes.is_empty(), "{v:?}: {:?} {notes:?}", got.numerics);
+        let mut c = edited(&s, "system/air/fvSolution", |t| {
+            t.replacen("nNonOrthogonalCorrectors 0;", "nNonOrthogonalCorrectors 2;", 1)
+        });
+        let (got, _) = Settings::from_case(&c);
+        assert_eq!(
+            got.numerics,
+            vec![("fluid".to_string(), vec![leaf(&["SIMPLE", "nNonOrthogonalCorrectors"], "2")])],
+            "{v:?}"
+        );
+        // Written into the solid's: only that line changes.
+        let rel = "system/street/fvSolution";
+        let before = c.dict(rel).unwrap().to_string();
+        let chosen = vec![("solid".to_string(), vec![leaf(&["solvers", "Ts", "tolerance"], "1e-8")])];
+        let a = c.apply_settings(&Settings { numerics: chosen.clone(), ..Default::default() }).unwrap();
+        assert_eq!(a.changed, [rel], "{v:?}");
+        let after = c.dict(rel).unwrap().to_string();
+        let diff: Vec<(&str, &str)> = before.lines().zip(after.lines()).filter(|(x, y)| x != y).collect();
+        assert_eq!(diff.len(), 1, "{v:?} {diff:?}");
+        assert_eq!(before.lines().count(), after.lines().count());
+        // A new case takes them.
+        let m = make(&with_solid(v, Settings { numerics: chosen.clone(), ..Default::default() }, &[("soil", "Soil")]))
+            .unwrap();
+        let (_, text) = m.files.iter().find(|(p, _)| p == rel).unwrap();
+        assert_eq!(Document::parse(text).unwrap().value(&["solvers", "Ts", "tolerance"]).as_deref(), Some("1e-8"));
+    }
+    // Two fluids whose numerics differ: noted, the first's taken.
+    let mut s = spec(OfVersion::V12, Settings::default(), false, false);
+    s.regions.push(NewRegion { name: "air2".into(), kind: RegionKind::Fluid, materials: vec![] });
+    let c = edited(&s, "system/air2/fvSolution", |t| {
+        t.replacen("nNonOrthogonalCorrectors 0;", "nNonOrthogonalCorrectors 2;", 1)
+    });
+    let (got, notes) = Settings::from_case(&c);
+    assert!(got.numerics.is_empty());
+    assert!(notes.iter().any(|n| n.contains("fluid regions' numerics differ (air2 besides air)")), "{notes:?}");
+    // What they share is taken, what differs isn't: chosen back, no file changes.
+    let mut c = edited(&s, "system/air2/fvSolution", |t| {
+        t.replacen("nNonOrthogonalCorrectors 0;", "nNonOrthogonalCorrectors 2;", 1).replacen(
+            "tolerance        1e-9;",
+            "tolerance        1e-7;",
+            1,
+        )
+    });
+    c.set("system/air/fvSolution", &["solvers", "p_rgh", "tolerance"], "1e-7").unwrap();
+    let (got, _) = Settings::from_case(&c);
+    assert_eq!(got.numerics, vec![("fluid".to_string(), vec![leaf(&["solvers", "p_rgh", "tolerance"], "1e-7")])]);
+    let a = c.apply_settings(&Settings { numerics: got.numerics, ..Default::default() }).unwrap();
+    assert!(a.changed.is_empty(), "{a:?}");
+}
+
+#[test]
+fn numerics_never_replace_a_dictionary_nor_add_a_field_s_solver_dictionary() {
+    let s = spec(OfVersion::V12, Settings::default(), false, false);
+    let (_, mut c) = opened(&s);
+    let rel = "system/air/fvSolution";
+    let before = c.dict(rel).unwrap().to_string();
+    let bad = vec![(
+        "fluid".to_string(),
+        vec![
+            // A word where the file has p_rgh's dictionary.
+            leaf(&["solvers", "p_rgh"], "GAMG"),
+            // A value where the file has the equations' dictionary.
+            leaf(&["relaxationFactors", "equations"], "0.5"),
+            // A field the file has no entry of (a pattern covers it).
+            leaf(&["solvers", "U", "tolerance"], "1e-8"),
+        ],
+    )];
+    let a = c.apply_settings(&Settings { numerics: bad, ..Default::default() }).unwrap();
+    assert!(a.changed.is_empty(), "{a:?}");
+    assert_eq!(c.dict(rel).unwrap().to_string(), before);
+    assert_eq!(a.notes.len(), 3, "{:?}", a.notes);
+    assert!(a.notes[0].contains("solvers/p_rgh: is a dictionary in the file"), "{:?}", a.notes);
+    assert!(a.notes[2].contains("the file has no solvers/U (a pattern may cover it)"), "{:?}", a.notes);
+    // Not even with its solver: it would hold only the entries given. A field the file has
+    // changes; a pattern key is quoted.
+    let good = vec![(
+        "fluid".to_string(),
+        vec![
+            leaf(&["solvers", "T", "solver"], "PBiCGStab"),
+            leaf(&["solvers", "p_rgh", "tolerance"], "1e-8"),
+            leaf(&["relaxationFactors", "equations", "k.*"], "0.6"),
+        ],
+    )];
+    let a = c.apply_settings(&Settings { numerics: good, ..Default::default() }).unwrap();
+    assert!(a.notes.iter().any(|n| n.contains("solvers/T/solver")), "{:?}", a.notes);
+    let after = c.dict(rel).unwrap().to_string();
+    assert!(after.contains("\"k.*\""), "{after}");
+    let doc = Document::parse(&after).unwrap();
+    assert_eq!(doc.get(&["solvers", "T"]).map(|_| ()), None);
+    assert_eq!(doc.value(&["solvers", "p_rgh", "tolerance"]).as_deref(), Some("1e-8"));
+    assert_eq!(doc.value(&["solvers", "p_rgh", "smoother"]).as_deref(), Some("DICGaussSeidel"));
+    // A file with a directive at its top: a dictionary it lacks isn't added next to it, and
+    // reading it notes the directive.
+    let mut c = edited(&s, rel, |t| {
+        let at = t.find("relaxationFactors").unwrap();
+        let end = at + t[at..].find("\n}").unwrap() + 2;
+        format!("{}#include \"../fvSolution.common\"\n{}", &t[..at], &t[end..])
+    });
+    let (_, notes) = Settings::from_case(&c);
+    assert!(notes.iter().any(|n| n.contains("system/air/fvSolution: holds what the numerics don't take")), "{notes:?}");
+    let rf = vec![("fluid".to_string(), vec![leaf(&["relaxationFactors", "fields", "p_rgh"], "0.3")])];
+    let a = c.apply_settings(&Settings { numerics: rf, ..Default::default() }).unwrap();
+    assert!(a.changed.is_empty(), "{a:?}");
+    assert!(
+        a.notes.iter().any(|n| n.contains("a directive or a macro at its top, which may bring it")),
+        "{:?}",
+        a.notes
+    );
+    // One level down too: a macro in relaxationFactors may bring its fields.
+    let mut c = edited(&s, rel, |t| t.replacen("relaxationFactors\n{", "relaxationFactors\n{\n    $common;", 1));
+    let rf = vec![("fluid".to_string(), vec![leaf(&["relaxationFactors", "other", "p_rgh"], "0.3")])];
+    let a = c.apply_settings(&Settings { numerics: rf, ..Default::default() }).unwrap();
+    assert!(a.changed.is_empty(), "{a:?}");
+    assert!(a.notes.iter().any(|n| n.contains("a directive or a macro in relaxationFactors")), "{:?}", a.notes);
+    // A value right under solvers: refused (a field's entry there is a dictionary).
+    let (got, problems) = read("numerics { fluid { solvers { T GAMG; } } }");
+    assert!(got.numerics.is_empty());
+    assert!(
+        problems.iter().any(|p| p.starts_with("settings/numerics/fluid/solvers: holds a dictionary per field")),
+        "{problems:?}"
+    );
+    // A stray ; after a dictionary (OpenFOAM takes it) is no directive: read and written as any.
+    let mut c = edited(&s, rel, |t| {
+        let at = t.find("relaxationFactors").unwrap();
+        let end = at + t[at..].find("\n}").unwrap() + 2;
+        format!("{};{}", &t[..end], &t[end..])
+    });
+    let (_, notes) = Settings::from_case(&c);
+    assert!(notes.is_empty(), "{notes:?}");
+    let pimple = vec![("fluid".to_string(), vec![leaf(&["PISO", "nCorrectors"], "2")])];
+    let a = c.apply_settings(&Settings { numerics: pimple, ..Default::default() }).unwrap();
+    assert_eq!(a.changed, [rel], "{a:?}");
+    // Given twice in the description: refused.
+    let mut fs = MemFs::new();
+    fs.insert("system/controlDict", "FoamFile { class dictionary; object controlDict; }\nregions { fluid ( air ); }\n");
+    let one = Settings {
+        numerics: vec![("fluid".into(), vec![leaf(&["SIMPLE", "nNonOrthogonalCorrectors"], "1")])],
+        ..Default::default()
+    };
+    let text = Description { settings: one.clone(), ..Default::default() }.write();
+    fs.insert(
+        crate::description::PATH,
+        text.replace("    numerics\n", "    numerics { solid { SIMPLE { x 1; } } }\n    numerics\n"),
+    );
+    let mut c = Case::open(&fs).unwrap();
+    let e = c.choose_settings(&one).unwrap_err();
+    assert!(e.to_string().contains("settings/numerics is given twice"), "{e}");
+}
+
+#[test]
+fn a_new_region_takes_the_description_s_numerics_entry_by_entry_over_the_case_s() {
+    let s = with_solid(OfVersion::V12, Settings::default(), &[("soil", "Soil")]);
+    let mut c = edited(&s, "system/air/fvSolution", |t| {
+        t.replacen("nNonOrthogonalCorrectors 0;", "nNonOrthogonalCorrectors 2;", 1)
+    });
+    // The description chooses another entry: the new fluid gets both.
+    c.set(crate::description::PATH, &["settings", "numerics", "fluid", "relaxationFactors", "fields", "p_rgh"], "0.2")
+        .unwrap();
+    let mem = MemFs::new();
+    c.add_region(&mem, &NewRegion { name: "wind".into(), kind: RegionKind::Fluid, materials: vec![] }).unwrap();
+    let doc = c.dict("system/wind/fvSolution").unwrap();
+    assert_eq!(doc.value(&["SIMPLE", "nNonOrthogonalCorrectors"]).as_deref(), Some("2"));
+    assert_eq!(doc.value(&["relaxationFactors", "fields", "p_rgh"]).as_deref(), Some("0.2"));
+    // Merged entry by entry: a value over a dictionary, or an entry under a value, replaces it.
+    let mut base = vec![(
+        "fluid".to_string(),
+        vec![leaf(&["SIMPLE", "residualControl", "p_rgh"], "1e-3"), leaf(&["PIMPLE", "nOuterCorrectors"], "1")],
+    )];
+    let over = vec![(
+        "fluid".to_string(),
+        vec![leaf(&["SIMPLE", "residualControl"], "1e-4"), leaf(&["PIMPLE", "nOuterCorrectors", "x"], "2")],
+    )];
+    merge_numerics(&mut base, &over);
+    assert_eq!(base, over);
+}
+
+#[test]
+fn a_value_doesn_t_replace_a_dictionary_of_the_description() {
+    let (_, mut c) = opened(&spec(OfVersion::V12, Settings::default(), false, false));
+    let two = vec![(
+        "fluid".to_string(),
+        vec![
+            leaf(&["relaxationFactors", "equations", "U"], "0.3"),
+            leaf(&["relaxationFactors", "equations", "k"], "0.4"),
+        ],
+    )];
+    c.choose_settings(&Settings { numerics: two.clone(), ..Default::default() }).unwrap();
+    let one = vec![("fluid".to_string(), vec![leaf(&["relaxationFactors", "equations"], "0.5")])];
+    let changed = c.changed();
+    let before = c.dict(crate::description::PATH).unwrap().to_string();
+    let e = c.choose_settings(&Settings { numerics: one, ..Default::default() }).unwrap_err();
+    assert!(e.to_string().contains("relaxationFactors/equations is a dictionary"), "{e}");
+    assert_eq!(c.changed(), changed);
+    assert_eq!(c.dict(crate::description::PATH).unwrap().to_string(), before);
+    assert_eq!(c.description().unwrap().0.settings.numerics, two);
 }

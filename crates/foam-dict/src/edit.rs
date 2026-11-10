@@ -384,12 +384,16 @@ fn push(dict: &mut Dict, entry: Entry) {
     dict.items.push(Item::Entry(entry));
 }
 
-/// Keys that read back as something else unless quoted: white space and punctuation, and a
-/// leading `(`, which would start a list (a pattern key such as `"(U|k)"`).
+/// Keys that read back as something else unless quoted: white space and punctuation, a
+/// leading `(`, which would start a list, and the signs of a pattern (`|`, `*`): only a quoted
+/// key is a pattern to OpenFOAM (`"(U|k)"`, `"k.*"`, `"h|e"`). A scheme's key (`div(phi,U)`)
+/// stays as it is.
 pub(crate) fn needs_quotes(key: &str) -> bool {
     key.is_empty()
         || key.starts_with('(')
-        || key.bytes().any(|b| b.is_ascii_whitespace() || matches!(b, b'{' | b'}' | b';' | b'"' | b'[' | b']'))
+        || key
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || matches!(b, b'{' | b'}' | b';' | b'"' | b'[' | b']' | b'|' | b'*'))
 }
 
 fn first_lead(n: &Node) -> &str {

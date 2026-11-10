@@ -24,7 +24,7 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-use umcf_foam_dict::{Dict, Entry};
+use umcf_foam_dict::{Dict, Entry, Item};
 
 use crate::{CONTROL_DICT, Case, Error, RegionKind, Result};
 
@@ -52,6 +52,10 @@ pub struct Settings {
     /// start from in `case.new` and `region.add` (every entry but `name` and the model, as
     /// written: a number, or a dictionary of them). The case's own materials keep theirs.
     pub materials: Library,
+    /// The solver numerics per region kind (`fluid`, `solid`, `vegetation`): entries of the
+    /// regions' `fvSolution` under `solvers`, `SIMPLE`, `PIMPLE`, `PISO` and
+    /// `relaxationFactors`, each by its path, that differ from the configuration's.
+    pub numerics: Numerics,
 }
 
 /// A number as the settings take it: finite, written as OpenFOAM reads it.
@@ -164,13 +168,17 @@ impl Settings {
                     }
                     None => problem(&at, "is a dictionary".into()),
                 },
+                "numerics" => match e.dict() {
+                    Some(b) => s.numerics = read_numerics(b, &at, problem),
+                    None => problem(&at, "is a dictionary of region kinds (fluid, solid, vegetation)".into()),
+                },
                 "materials" => match e.dict() {
                     Some(b) => s.materials = read_library(b, &at, problem),
                     None => problem(&at, "is a dictionary of material models".into()),
                 },
                 _ => problem(
                     &at,
-                    "is not a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials)".into(),
+                    "is not a setting (deltaT, endTime, writeInterval, turbulence, temperatureLimit, blending, materials, numerics)".into(),
                 ),
             }
         }
@@ -214,6 +222,13 @@ impl Settings {
             s.push_str("    materials\n    {\n");
             for (model, coeffs) in &self.materials {
                 let _ = writeln!(s, "        {model:<16} {}", coefficients(coeffs));
+            }
+            s.push_str("    }\n");
+        }
+        if !self.numerics.is_empty() {
+            s.push_str("    numerics\n    {\n");
+            for (kind, leaves) in &self.numerics {
+                let _ = writeln!(s, "        {kind:<16} {}", nested(leaves));
             }
             s.push_str("    }\n");
         }
@@ -308,6 +323,9 @@ impl Settings {
         let (materials, more) = case_library(case);
         s.materials = materials;
         notes.extend(more);
+        let (numerics, more) = case_numerics(case);
+        s.numerics = numerics;
+        notes.extend(more);
         (s, notes)
     }
 }
@@ -394,7 +412,7 @@ fn coefficient(e: &Entry) -> Option<String> {
                 _ => return None,
             }
         }
-        if d.items.len() != inner.len() {
+        if opaque(d) {
             return None;
         }
         return Some(coefficients(&inner));
@@ -427,7 +445,7 @@ fn read_library(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) -
         let mut coeffs = Vec::new();
         let mut ok = true;
         // A macro or a directive among them: what it gives can't be told here.
-        if d.items.len() != d.entries().count() {
+        if opaque(d) {
             problem(&mat, "has a macro or a directive: give its coefficients one by one".into());
             continue;
         }
@@ -502,7 +520,7 @@ fn case_library(case: &Case) -> (Library, Vec<String>) {
             let at = format!("{region}/{name}");
             let mut coeffs = Vec::new();
             // A macro or a directive among them (`$common;`, `#include`) gives what can't be told.
-            let mut plain = body.items.len() == body.entries().count();
+            let mut plain = !opaque(body);
             for e in body.entries().filter(|e| !matches!(e.key(), "name" | "buildingMaterialModel")) {
                 match coefficient(e).filter(|_| model_word(e.key())) {
                     Some(v) => coeffs.push((e.key().to_string(), v)),
@@ -621,6 +639,297 @@ pub(crate) fn check_material_models(s: &Settings, version: umcf_core::OfVersion)
     Ok(())
 }
 
+/// Solver numerics: each region kind with its entries (the path in `fvSolution`, the value).
+/// One entry of `fvSolution`: its path and its value.
+pub type Leaf = (Vec<String>, String);
+pub type Numerics = Vec<(String, Vec<Leaf>)>;
+
+/// The parts of `fvSolution` the numerics take.
+pub const NUMERICS_ROOTS: [&str; 5] = ["solvers", "SIMPLE", "PIMPLE", "PISO", "relaxationFactors"];
+
+/// How deep an entry may be: `solvers/p_rgh/tolerance`, `relaxationFactors/fields/p_rgh`,
+/// `SIMPLE/residualControl/U`.
+const NUMERICS_DEPTH: usize = 3;
+
+fn kind_word(k: RegionKind) -> &'static str {
+    match k {
+        RegionKind::Solid => "solid",
+        RegionKind::Vegetation => "vegetation",
+        RegionKind::Fluid | RegionKind::Single => "fluid",
+    }
+}
+
+/// Whether `d` holds a directive, a macro or a value without a key: what it gives can't be told.
+/// (A stray `;` after a dictionary, which OpenFOAM accepts, is none of them.)
+fn opaque(d: &Dict) -> bool {
+    d.items.iter().any(|i| !matches!(i, Item::Entry(_)))
+}
+
+/// A key the numerics take: a field's name or a pattern (`"(h|e)"`), no white space nor
+/// OpenFOAM syntax.
+fn numerics_key(k: &str) -> bool {
+    !k.is_empty()
+        && !k.starts_with(['$', '#'])
+        && k.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')' | b'|' | b'.' | b'*' | b'-' | b':'))
+}
+
+/// The entries of `dict` (under `prefix`) the numerics take: a number or a plain word (a
+/// solver's name, `yes`); `false` when something else is there (a macro, a directive, a list).
+fn numerics_leaves(dict: &Dict, prefix: &[String], out: &mut Vec<Leaf>) -> bool {
+    let mut plain = !opaque(dict);
+    for e in dict.entries() {
+        let key = umcf_foam_dict::unquote(e.key()).to_string();
+        let mut at = prefix.to_vec();
+        at.push(key.clone());
+        if !numerics_key(&key) {
+            plain = false;
+            continue;
+        }
+        if let Some(d) = e.dict() {
+            if at.len() < NUMERICS_DEPTH {
+                plain &= numerics_leaves(d, &at, out);
+            } else {
+                plain = false;
+            }
+            continue;
+        }
+        // A field's entry under solvers is a dictionary, never a value.
+        if at.len() == 2 && at[0] == "solvers" {
+            plain = false;
+            continue;
+        }
+        match e.words().as_deref() {
+            Some([w]) if number(w).is_some() || model_word(w) => out.push((at, w.to_string())),
+            _ => plain = false,
+        }
+    }
+    plain
+}
+
+/// The numerics' entries of an `fvSolution`.
+fn solution_leaves(doc: &umcf_foam_dict::Document) -> (Vec<Leaf>, bool) {
+    let mut out = Vec::new();
+    // A directive or a macro at the top (#include "…") may bring entries of its own.
+    let mut plain = !opaque(&doc.root);
+    for root in NUMERICS_ROOTS {
+        if let Some(d) = doc.root.get(root).and_then(|e| e.dict()) {
+            plain &= numerics_leaves(d, &[root.to_string()], &mut out);
+        }
+    }
+    (out, plain)
+}
+
+/// What [`put_leaf`] did.
+pub(crate) enum Put {
+    Set,
+    /// The file has that value already.
+    Same,
+    /// Not written, and why.
+    Skipped(String),
+}
+
+/// Puts the numerics' entry `at` = `v` into an `fvSolution`, only where it is one: never over a
+/// dictionary, nor through a value. A field's dictionary under `solvers` that the file doesn't
+/// have is never added: OpenFOAM would take it before the pattern that covers the field, and it
+/// would hold only the entries given. A dictionary the file doesn't have isn't added next to a
+/// directive or a macro (an `#include`, `$common`), which may bring it.
+pub(crate) fn put_leaf(
+    doc: &mut umcf_foam_dict::Document,
+    at: &[String],
+    v: &str,
+) -> std::result::Result<Put, umcf_foam_dict::Error> {
+    let path: Vec<&str> = at.iter().map(String::as_str).collect();
+    for i in 1..path.len() {
+        match doc.get(&path[..i]) {
+            Some(e) if e.dict().is_none() => {
+                return Ok(Put::Skipped(format!("{} is a value in the file, not a dictionary", path[..i].join("/"))));
+            }
+            Some(_) => {}
+            None if i == 2 && path[0] == "solvers" => {
+                return Ok(Put::Skipped(format!(
+                    "the file has no solvers/{} (a pattern may cover it): a field's solver dictionary is added by hand",
+                    path[1]
+                )));
+            }
+            None => {
+                // Not added next to a directive or a macro (an #include, $common), which may bring it.
+                let parent = if i == 1 { Some(&doc.root) } else { doc.get(&path[..i - 1]).and_then(|e| e.dict()) };
+                if parent.is_some_and(opaque) {
+                    let within =
+                        if i == 1 { "at its top".to_string() } else { format!("in {}", path[..i - 1].join("/")) };
+                    return Ok(Put::Skipped(format!(
+                        "the file has no {} but a directive or a macro {within}, which may bring it",
+                        path[..i].join("/")
+                    )));
+                }
+                break;
+            }
+        }
+    }
+    match doc.get(&path) {
+        Some(e) if e.dict().is_some() => Ok(Put::Skipped("is a dictionary in the file".to_string())),
+        Some(e) if e.value_text().as_deref().map(str::trim) == Some(v) => Ok(Put::Same),
+        _ => {
+            doc.set(&path, v)?;
+            Ok(Put::Set)
+        }
+    }
+}
+
+/// `over`'s numerics put over `base`'s, entry by entry: one over a dictionary of `base`'s, or
+/// under a value of it, replaces that.
+pub fn merge_numerics(base: &mut Numerics, over: &Numerics) {
+    for (kind, leaves) in over {
+        match base.iter_mut().find(|(k, _)| k == kind) {
+            Some((_, have)) => {
+                for (at, v) in leaves {
+                    have.retain(|(a, _)| !(a.starts_with(at) || at.starts_with(a)));
+                    have.push((at.clone(), v.clone()));
+                }
+            }
+            None => base.push((kind.clone(), leaves.clone())),
+        }
+    }
+}
+
+/// The entries as nested dictionaries on one line: `{ solvers { p_rgh { tolerance 1e-9; } } }`.
+pub fn nested(leaves: &[Leaf]) -> String {
+    fn key(k: &str) -> String {
+        if k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
+            k.to_string()
+        } else {
+            format!("\"{k}\"")
+        }
+    }
+    fn level(leaves: &[(&[String], &str)]) -> String {
+        let mut parts = Vec::new();
+        let mut done: Vec<&str> = Vec::new();
+        for (at, v) in leaves {
+            let Some((first, rest)) = at.split_first() else { continue };
+            if rest.is_empty() {
+                parts.push(format!("{} {v};", key(first)));
+            } else if !done.contains(&first.as_str()) {
+                done.push(first);
+                let inner: Vec<(&[String], &str)> = leaves
+                    .iter()
+                    .filter(|(a, _)| a.first() == Some(first) && a.len() > 1)
+                    .map(|(a, v)| (&a[1..], *v))
+                    .collect();
+                parts.push(format!("{} {}", key(first), level(&inner)));
+            }
+        }
+        format!("{{ {} }}", parts.join(" "))
+    }
+    let all: Vec<(&[String], &str)> = leaves.iter().map(|(a, v)| (a.as_slice(), v.as_str())).collect();
+    level(&all)
+}
+
+/// The `numerics` block's body: each region kind with its entries.
+fn read_numerics(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> Numerics {
+    let mut out: Numerics = Vec::new();
+    let mut seen = HashSet::new();
+    for k in body.entries() {
+        let kind = k.key();
+        let kat = format!("{at}/{kind}");
+        if !matches!(kind, "fluid" | "solid" | "vegetation") {
+            problem(&kat, "is not a region kind (fluid, solid, vegetation)".into());
+            continue;
+        }
+        if !seen.insert(kind.to_string()) {
+            problem(&kat, "is given twice: the later ones are left out".into());
+            continue;
+        }
+        let Some(d) = k.dict() else {
+            problem(&kat, "is a dictionary of fvSolution entries".into());
+            continue;
+        };
+        let mut leaves = Vec::new();
+        let mut ok = true;
+        for r in d.entries() {
+            let rat = format!("{kat}/{}", r.key());
+            if !NUMERICS_ROOTS.contains(&r.key()) {
+                problem(&rat, format!("is not one of {}", NUMERICS_ROOTS.join(", ")));
+                ok = false;
+                continue;
+            }
+            match r.dict() {
+                Some(rd) if numerics_leaves(rd, &[r.key().to_string()], &mut leaves) => {}
+                Some(rd) if r.key() == "solvers" && rd.entries().any(|f| f.dict().is_none()) => {
+                    problem(&rat, "holds a dictionary per field (its solver, tolerance, …), not a value".into());
+                    ok = false;
+                }
+                _ => {
+                    problem(
+                        &rat,
+                        format!("holds numbers or plain words, {NUMERICS_DEPTH} levels deep at most, no macros"),
+                    );
+                    ok = false;
+                }
+            }
+        }
+        if opaque(d) {
+            problem(&kat, "has a macro or a directive".into());
+            ok = false;
+        }
+        if ok && !leaves.is_empty() {
+            out.push((kind.to_string(), leaves));
+        }
+    }
+    out
+}
+
+/// The numerics the case's regions have that differ from the configuration's: per kind, those
+/// all its regions share (regions whose differ noted, so that writing them back changes none),
+/// and what the numerics don't take (a macro) left out with a note.
+fn case_numerics(case: &Case) -> (Numerics, Vec<String>) {
+    let mut out: Numerics = Vec::new();
+    let mut notes = Vec::new();
+    let Some(v) = case.layout.version else { return (out, notes) };
+    for (kind, t) in [
+        (RegionKind::Fluid, umcf_schema::Template::FluidSolution),
+        (RegionKind::Solid, umcf_schema::Template::SolidSolution),
+        (RegionKind::Vegetation, umcf_schema::Template::VegetationSolution),
+    ] {
+        let Ok(template) = crate::new_case::template(v, t) else { continue };
+        let (base, _) = solution_leaves(&template);
+        let mut first: Option<(String, Vec<Leaf>)> = None;
+        let mut others: Vec<(String, Vec<Leaf>)> = Vec::new();
+        for r in case.regions.iter().filter(|r| r.kind == kind) {
+            let rel = format!("system/{}/fvSolution", r.name);
+            let Some(doc) = case.dict(&rel) else { continue };
+            let (leaves, plain) = solution_leaves(doc);
+            if !plain {
+                notes.push(format!(
+                    "{rel}: holds what the numerics don't take (a macro, a list): its other entries are read"
+                ));
+            }
+            match &first {
+                None => first = Some((r.name.clone(), leaves)),
+                Some(_) => others.push((r.name.clone(), leaves)),
+            }
+        }
+        let word = kind_word(kind);
+        if let Some((name, all)) = first {
+            let own_of = |l: &[Leaf]| -> Vec<Leaf> { l.iter().filter(|x| !base.contains(x)).cloned().collect() };
+            let mine = own_of(&all);
+            let differ: Vec<&str> = others.iter().filter(|(_, l)| own_of(l) != mine).map(|(n, _)| n.as_str()).collect();
+            // Those every region of the kind has: written back, they change none.
+            let own: Vec<Leaf> = mine.into_iter().filter(|x| others.iter().all(|(_, l)| l.contains(x))).collect();
+            if !differ.is_empty() {
+                notes.push(format!(
+                    "the {word} regions' numerics differ ({} besides {name}): the settings have what they share",
+                    differ.join(", ")
+                ));
+            }
+            if !own.is_empty() {
+                out.push((word.to_string(), own));
+            }
+        }
+    }
+    (out, notes)
+}
+
 /// What [`Case::apply_settings`] did.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Applied {
@@ -713,6 +1022,35 @@ impl Case {
                 "the case's materials keep their coefficients: a material library is for new materials".to_string(),
             );
         }
+        for (kind, leaves) in &s.numerics {
+            // (A single-region case has its fvSolution in system/: not one of the kinds'.)
+            let regions: Vec<String> = self
+                .regions
+                .iter()
+                .filter(|r| r.kind != RegionKind::Single && kind_word(r.kind) == kind)
+                .map(|r| r.name.clone())
+                .collect();
+            for r in regions {
+                let rel = format!("system/{r}/fvSolution");
+                if self.dict(&rel).is_none() {
+                    a.notes.push(format!("{rel}: not there: its {kind} numerics aren't written"));
+                    continue;
+                }
+                let mut touched = false;
+                let doc = self.dict_mut(&rel)?;
+                for (at, v) in leaves {
+                    match put_leaf(doc, at, v).map_err(|source| Error::Dict { path: rel.clone(), source })? {
+                        Put::Set => touched = true,
+                        Put::Same => {}
+                        Put::Skipped(why) => a.notes.push(format!("{rel}: {}: {why}: not written", at.join("/"))),
+                    }
+                }
+                self.edited(&rel);
+                if touched && !a.changed.contains(&rel) {
+                    a.changed.push(rel);
+                }
+            }
+        }
         Ok(a)
     }
 }
@@ -759,6 +1097,18 @@ impl Case {
                     return given_twice(format!("settings/{k}"));
                 }
             }
+            if !s.numerics.is_empty() {
+                if block.entries().filter(|e| e.key() == "numerics").count() > 1 {
+                    return given_twice("settings/numerics".to_string());
+                }
+                let kinds: Vec<&Dict> =
+                    block.entries().filter(|e| e.key() == "numerics").filter_map(|e| e.dict()).collect();
+                for (k, _) in &s.numerics {
+                    if kinds.iter().flat_map(|b| b.entries()).filter(|e| e.key() == k).count() > 1 {
+                        return given_twice(format!("settings/numerics/{k}"));
+                    }
+                }
+            }
             if !s.materials.is_empty() {
                 let blocks: Vec<&Dict> =
                     block.entries().filter(|e| e.key() == "materials").filter_map(|e| e.dict()).collect();
@@ -792,6 +1142,31 @@ impl Case {
             }
             for (model, coeffs) in &s.materials {
                 next.set_inline(path, &["settings", "materials", model], &coefficients(coeffs))?;
+            }
+            for (kind, leaves) in &s.numerics {
+                for (at, v) in leaves {
+                    let mut p: Vec<&str> = vec!["settings", "numerics", kind.as_str()];
+                    p.extend(at.iter().map(String::as_str));
+                    // As in the case's files: never over a dictionary nor through a value.
+                    if let Some(d) = next.dict(path) {
+                        for i in 1..p.len() {
+                            if d.get(&p[..i]).is_some_and(|e| e.dict().is_none()) {
+                                return Err(Error::NewCase(format!(
+                                    "{path}: {} is a value, not a dictionary: {} can't go under it",
+                                    p[..i].join("/"),
+                                    p.join("/")
+                                )));
+                            }
+                        }
+                        if d.get(&p).is_some_and(|e| e.dict().is_some()) {
+                            return Err(Error::NewCase(format!(
+                                "{path}: {} is a dictionary: give its entries, not one value",
+                                p.join("/")
+                            )));
+                        }
+                    }
+                    next.set(path, &p, v)?;
+                }
             }
         }
         *self = next;
