@@ -423,27 +423,24 @@ fn a_new_last_entry_leaves_the_comment_on_the_line_before_where_it_was() {
     // At the root: the comment is in the document's tail.
     let mut doc = Document::parse("a 1; // one\nb 2; // two\n").unwrap();
     doc.set(&["c"], "3").unwrap();
-    assert_eq!(doc.to_string(), "a 1; // one\nb 2; // two\nc               3;\n");
+    assert_eq!(doc.to_string(), "a 1; // one\nb 2; // two\nc 3;\n");
     // In a dictionary: in its closing brace's lead; with a new parent, too.
     let mut doc = Document::parse("d\n{\n    a 1; // one\n}\nx 1; /* x */\n").unwrap();
     doc.set(&["d", "b"], "2").unwrap();
     doc.set(&["e", "f"], "3").unwrap();
-    assert_eq!(
-        doc.to_string(),
-        "d\n{\n    a 1; // one\n    b               2;\n}\nx 1; /* x */\ne\n{\n    f               3;\n}\n"
-    );
+    assert_eq!(doc.to_string(), "d\n{\n    a 1; // one\n    b 2;\n}\nx 1; /* x */\ne\n{\n    f               3;\n}\n");
     // A block comment going on past the line stays whole, the new entry after it.
     let mut doc = Document::parse("a 1;\nb 2; /* two\n  more */\n").unwrap();
     doc.set(&["c"], "3").unwrap();
-    assert_eq!(doc.to_string(), "a 1;\nb 2; /* two\n  more */\nc               3;\n");
+    assert_eq!(doc.to_string(), "a 1;\nb 2; /* two\n  more */\nc 3;\n");
     assert_eq!(doc.value(&["c"]).as_deref(), Some("3"));
     let mut doc = Document::parse("d\n{\n    a 1; /* x\n    y */\n}\n").unwrap();
     doc.set(&["d", "b"], "2").unwrap();
-    assert_eq!(doc.to_string(), "d\n{\n    a 1; /* x\n    y */\n    b               2;\n}\n");
+    assert_eq!(doc.to_string(), "d\n{\n    a 1; /* x\n    y */\n    b 2;\n}\n");
     // Several on the line, and what is on the lines after stays after.
     let mut doc = Document::parse("a 1; /* x */ // y\n// z\n").unwrap();
     doc.set(&["b"], "2").unwrap();
-    assert_eq!(doc.to_string(), "a 1; /* x */ // y\nb               2;\n// z\n");
+    assert_eq!(doc.to_string(), "a 1; /* x */ // y\nb 2;\n// z\n");
     // A block comment that never ends is left where it is.
     let mut doc = Document::parse("a 1;").unwrap();
     doc.tail = " /* open".into();
@@ -452,7 +449,7 @@ fn a_new_last_entry_leaves_the_comment_on_the_line_before_where_it_was() {
     // A comment on a line of its own after the last entry stays where it is.
     let mut doc = Document::parse("a 1;\n// end\n").unwrap();
     doc.set(&["b"], "2").unwrap();
-    assert_eq!(doc.to_string(), "a 1;\nb               2;\n// end\n");
+    assert_eq!(doc.to_string(), "a 1;\nb 2;\n// end\n");
 }
 
 #[test]
@@ -574,4 +571,116 @@ fn what_isn_t_one_word_isn_t_added_to_a_list() {
     let mut doc = Document::parse("regions { solid ( street ); }").unwrap();
     doc.add_word(&["regions", "solid"], "a/b.c").unwrap();
     assert_eq!(doc.to_string(), "regions { solid ( street a/b.c ); }");
+}
+
+#[test]
+fn new_entries_follow_their_siblings_and_removals_keep_the_comments_around_them() {
+    // Aligned like the values before it; on the line of a dictionary written on one.
+    let mut doc = Document::parse("m\n{\n    rho     1600; // kg/m3\n    mu      3.5;  // vapour\n}\n").unwrap();
+    doc.set(&["m", "wcap"], "2").unwrap();
+    assert_eq!(doc.to_string(), "m\n{\n    rho     1600; // kg/m3\n    mu      3.5;  // vapour\n    wcap    2;\n}\n");
+    // The last one taken out: its comment goes, the one before it stays.
+    doc.remove(&["m", "wcap"]).unwrap();
+    doc.remove(&["m", "mu"]).unwrap();
+    assert_eq!(doc.to_string(), "m\n{\n    rho     1600; // kg/m3\n}\n");
+    // One in the middle.
+    let mut doc = Document::parse("a 1; // one\nb 2; // two\nc 3; // three\n").unwrap();
+    doc.remove(&["b"]).unwrap();
+    assert_eq!(doc.to_string(), "a 1; // one\nc 3; // three\n");
+    // In a list's dictionary written on one line.
+    let mut doc = Document::parse("l\n(\n    { name soil; rho 1600; mu 3.5; }\n);\n").unwrap();
+    let Some(Node::List { items, .. }) = doc.root.get_mut("l").and_then(|e| e.value.first_mut()) else { panic!() };
+    items[0].dict_set(&["wcap"], "2").unwrap();
+    items[0].dict_remove(&["mu"]).unwrap();
+    assert_eq!(doc.to_string(), "l\n(\n    { name soil; rho 1600; wcap 2; }\n);\n");
+}
+
+#[test]
+fn edits_next_to_comments_never_hide_an_entry_in_one() {
+    // A new entry after a `//` comment on a one-line dictionary, or at the root.
+    for (src, path, want) in [
+        ("d { a 1; b 2; // note\n}\n", &["d", "c"][..], &["d", "c"][..]),
+        ("a 1; b 2; // note\n", &["c"][..], &["c"][..]),
+    ] {
+        let mut doc = Document::parse(src).unwrap();
+        doc.set(path, "3").unwrap();
+        let out = doc.to_string();
+        let back = Document::parse(&out).unwrap();
+        assert_eq!(back.value(want).as_deref(), Some("3"), "{out}");
+        assert!(out.contains("// note\n"), "{out}");
+    }
+    // In a list's dictionary.
+    let mut doc = Document::parse("l ( { name s; rho 1; // kg\n } );\n").unwrap();
+    let Some(Node::List { items, .. }) = doc.root.get_mut("l").and_then(|e| e.value.first_mut()) else { panic!() };
+    items[0].dict_set(&["wcap"], "2").unwrap();
+    let out = doc.to_string();
+    assert!(out.contains("// kg\n") && Document::parse(&out).is_ok(), "{out}");
+    // A removal after a `//` comment: what follows stays an entry.
+    let mut doc = Document::parse("a 1; // x\nb 2; c 3;\n").unwrap();
+    doc.remove(&["b"]).unwrap();
+    let out = doc.to_string();
+    assert_eq!(Document::parse(&out).unwrap().value(&["c"]).as_deref(), Some("3"), "{out}");
+    assert!(out.contains("a 1; // x\n"), "{out}");
+    // A block comment over lines stays whole; the removed entry's own goes.
+    for (src, gone, keep) in [
+        ("a 1; /* x\n y */\nb 2;\nc 3;\n", "b", Some("c")),
+        ("a 1; /* x\n y */\nb 2;\n", "b", None),
+        ("a 1;\nb 2; /* bee */\nc 3;\n", "b", Some("c")),
+    ] {
+        let mut doc = Document::parse(src).unwrap();
+        doc.remove(&[gone]).unwrap();
+        let out = doc.to_string();
+        let back = Document::parse(&out).unwrap_or_else(|e| panic!("{src:?} → {out:?}: {e}"));
+        if let Some(k) = keep {
+            assert_eq!(back.value(&[k]).as_deref(), Some("3"), "{out}");
+        }
+        assert!(!out.contains("bee"), "{out}");
+        assert_eq!(out.contains("/* x\n y */"), src.contains("/* x\n y */"), "{out}");
+    }
+    // A dictionary whose last line holds two entries isn't one written on one line.
+    let mut doc = Document::parse("d\n{\n    a 1;\n    b 2; e 3;\n}\n").unwrap();
+    doc.set(&["d", "f"], "4").unwrap();
+    assert!(doc.to_string().contains("e 3;\n    f"), "{doc}");
+}
+
+#[test]
+fn on_one_line_a_comment_is_the_entry_s_before_it() {
+    for (src, gone, want) in [
+        ("a 1; /* ca */ b 2;\nc 3;\n", "b", "a 1; /* ca */\nc 3;\n"),
+        ("d { a 1; /* ca */ b 2; /* cb */ c 3; }\n", "d/b", "d { a 1; /* ca */ c 3; }\n"),
+        ("a 1; b 2; /* cb */ c 3;\n", "c", "a 1; b 2; /* cb */\n"),
+        ("a 1;\nb 2; /* cb\n */ c 3;\n", "b", "a 1;\nc 3;\n"),
+    ] {
+        let mut doc = Document::parse(src).unwrap();
+        let path: Vec<&str> = gone.split('/').collect();
+        doc.remove(&path).unwrap();
+        assert_eq!(doc.to_string(), want, "{src:?}");
+    }
+}
+
+#[test]
+fn the_entry_after_a_removed_one_on_its_line_takes_its_place() {
+    for (src, gone, want) in [
+        ("a 1; b 2; c 3;\n", "a", "b 2; c 3;\n"),
+        ("a 1; /* ca */ b 2; c 3;\n", "a", "b 2; c 3;\n"),
+        ("d { a 1; b 2; }\n", "d/a", "d { b 2; }\n"),
+        ("a 1; // x\n    b 2; c 3;\n", "b", "a 1; // x\n    c 3;\n"),
+        ("a 1;\n    b 2; c 3;\n", "b", "a 1;\n    c 3;\n"),
+        ("a 1; /* ca */ b 2; c 3;\n", "b", "a 1; /* ca */ c 3;\n"),
+        // CRLF: no second `\r`.
+        ("a 1; // x\r\n    b 2; c 3;\r\n", "b", "a 1; // x\r\n    c 3;\r\n"),
+        ("a 1; // x\r\n    b 2;\r\n    c 3;\r\n", "b", "a 1; // x\r\n    c 3;\r\n"),
+    ] {
+        let mut doc = Document::parse(src).unwrap();
+        let path: Vec<&str> = gone.split('/').collect();
+        doc.remove(&path).unwrap();
+        assert_eq!(doc.to_string(), want, "{src:?}");
+    }
+}
+
+#[test]
+fn a_single_space_before_the_values_gives_one_space() {
+    let mut doc = Document::parse("d\n{\n    name a;\n    rho 1;\n}\n").unwrap();
+    doc.set(&["d", "mu"], "2").unwrap();
+    assert!(doc.to_string().contains("    rho 1;\n    mu 2;\n}"), "{doc}");
 }

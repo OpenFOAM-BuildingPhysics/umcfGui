@@ -33,9 +33,14 @@ div(phi,U)      bounded Gauss upwind; // momentum
 ```
 
 A new entry is laid out like its neighbours, with the same indentation, the same blank-line
-spacing and values at column 16 where the dictionary uses that. A new sub-dictionary gets the
-usual OpenFOAM layout, braces on their own lines. Removing an entry also removes the comment
-on its line.
+spacing and its value at the column of the value before it (aligned with spaces; one space
+when that one has one; else OpenFOAM's usual 16); in a dictionary written all on one line
+(`{ name soil; rho 1600; }`) it goes on that line, but never after a `//` comment. A new sub-dictionary gets the usual OpenFOAM
+layout, braces on their own lines (inside a dictionary written on one line it is laid out less
+neatly, but reads the same). Removing an entry also removes the comments on its line after it
+(a `/* … */` one whole, over lines too) and keeps those of the entry before it; where two
+entries share a line, a comment between them is the first one's. New lines end in `\n`, also in
+a file whose lines end in `\r\n` (OpenFOAM reads both).
 
 ## Problems are reported, not fatal
 

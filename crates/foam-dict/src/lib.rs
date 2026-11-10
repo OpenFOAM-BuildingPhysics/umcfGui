@@ -187,9 +187,9 @@ impl Document {
     /// Removes the entry at `path`, with the comments and blank lines in front of it.
     /// Returns whether there was one.
     pub fn remove(&mut self, path: &[&str]) -> Result<bool> {
-        let (removed, strip_tail) = edit::remove(&mut self.root, path)?;
-        if strip_tail {
-            edit::strip_same_line(&mut self.tail);
+        let (removed, after) = edit::remove(&mut self.root, path)?;
+        if let Some(head) = after {
+            edit::after_removed(&mut self.tail, &head);
         }
         Ok(removed)
     }
@@ -298,6 +298,35 @@ impl Dict {
                 out.push(format!("{path}: missing `;`"));
             }
         }
+    }
+}
+
+impl Node {
+    /// In a dictionary value (`{ name soil; rho 1600; }`, an item of a list say), sets the
+    /// entry at `path` as [`Document::set`] does: an existing one keeps its key, comments and
+    /// alignment; a new one goes at the end, laid out like its siblings (on the line of a
+    /// dictionary written on one), with the same-line comment of the entry before it kept there.
+    /// [`Error::NotADict`] for another value.
+    pub fn dict_set(&mut self, path: &[&str], value: &str) -> Result<()> {
+        let Node::Dict { body, close, .. } = self else { return Err(Error::NotADict(String::new())) };
+        let nodes = cst::parse_value(value, &Limits::default())?;
+        let before = body.items.len();
+        edit::set(body, path, nodes, "", false)?;
+        if body.items.len() > before {
+            edit::adopt_same_line(&mut close.lead, body);
+        }
+        Ok(())
+    }
+
+    /// In a dictionary value, removes the entry at `path` as [`Document::remove`] does, the
+    /// comments of the entries around it kept where they are. Whether there was one.
+    pub fn dict_remove(&mut self, path: &[&str]) -> Result<bool> {
+        let Node::Dict { body, close, .. } = self else { return Err(Error::NotADict(String::new())) };
+        let (removed, after) = edit::remove(body, path)?;
+        if let Some(head) = after {
+            edit::after_removed(&mut close.lead, &head);
+        }
+        Ok(removed)
     }
 }
 

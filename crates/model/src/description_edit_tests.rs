@@ -215,7 +215,7 @@ fn a_patch_laid_out_by_hand_keeps_its_comments() {
         PatchEdit { role: Some(Some(Role::Side)), partner: Some(Some(("air".into(), "east".into()))), rename: None };
     c.describe_patch("air", "west", &edit).unwrap();
     let after = text_of(&c);
-    assert!(after.contains("                // the wind comes from here\n                role side;\n                partner         ( air east );\n"), "{after}");
+    assert!(after.contains("                // the wind comes from here\n                role side;\n                partner ( air east );\n"), "{after}");
     let p = read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "west").cloned().unwrap();
     assert_eq!((p.role, p.partner), (Some(Role::Side), Some(("air".into(), "east".into()))));
     // The partner taken away; the role, with the comment in front of it, stays.

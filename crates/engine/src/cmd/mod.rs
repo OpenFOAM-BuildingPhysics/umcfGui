@@ -7,6 +7,7 @@ mod case;
 pub(crate) mod display;
 mod edit;
 mod geometry;
+mod material;
 mod mesh;
 mod patch;
 mod region;
@@ -21,6 +22,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     case::SAVE,
     case::INFO,
     region::ADD,
+    material::SET,
     workflow::SHOW,
     workflow::IMPORT,
     workflow::REGION,

@@ -161,6 +161,9 @@ const SEARCH_ID: &str = "command-search";
 /// in.
 const ADD_REGION: &str = "{\n  \"region\": \"\",\n  \"kind\": \"solid\",\n  \"materials\": []\n}";
 
+/// The *Set a material's coefficients* card's parameters to start with.
+const SET_MATERIAL: &str = "{\n  \"region\": \"\",\n  \"material\": \"\",\n  \"coefficients\": { \"rho\": 1600 }\n}";
+
 /// The *Switch a component* card's parameters to start with (`patches` are the grass's).
 const SWITCH_COMPONENT: &str = "{\n  \"component\": \"temperatureLimit\",\n  \"on\": true\n}";
 
@@ -520,6 +523,7 @@ impl App {
                 "case.new" => NEW_CASE.to_string(),
                 "region.add" => ADD_REGION.to_string(),
                 "workflow.component" => SWITCH_COMPONENT.to_string(),
+                "material.set" => SET_MATERIAL.to_string(),
                 "workflow.settings" => self.settings_params(),
                 _ => "{}".to_string(),
             };
