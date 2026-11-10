@@ -2722,6 +2722,21 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     assert!(!added.message.contains("coefficients"), "{}", added.message);
     let tp = s.case().unwrap().dict("constant/roofs/transportProperties").unwrap().to_string();
     assert!(tp.contains("rho     1950;"), "{tp}");
+    // What the call gives itself goes over the other case's: the whole entry of that model.
+    let own = json!({ "HamstadConcrete": { "rho": 2100, "cap": 900, "lambda1": 1.6, "lambda2": 0 } });
+    let out = s.execute("workflow.settings", &json!({ "from": relative, "materials": own })).unwrap();
+    let chosen = &out.data["settings"];
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["rho"], json!("2100"), "{chosen}");
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["lambda1"], json!("1.6"), "{chosen}");
+    assert_eq!(chosen["materials"]["HamstadConcrete"]["cap"], json!("900"), "{chosen}");
+    let d = s.case().unwrap().description().unwrap().0;
+    let rho = d
+        .settings
+        .materials
+        .iter()
+        .find(|(m, _)| m == "HamstadConcrete")
+        .and_then(|(_, c)| c.iter().find(|(k, _)| k == "rho"));
+    assert_eq!(rho.map(|(_, v)| v.as_str()), Some("2100"), "{:?}", d.settings.materials);
     for (params, want) in [
         (json!({ "from": "" }), "from is the path of a case"),
         (json!({ "materials": { "HamstadConcrete": { "rho": 1950 } } }), "materials/HamstadConcrete has no cap"),
