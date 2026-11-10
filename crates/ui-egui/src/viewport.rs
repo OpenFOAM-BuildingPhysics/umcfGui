@@ -11,6 +11,7 @@ use eframe::egui::{
 };
 use eframe::egui_wgpu;
 use umcf_engine::Sel;
+use umcf_geom::Vec3;
 use umcf_geom::bvh::Ray;
 use umcf_render::camera::{Camera, View};
 use umcf_render::raster::{ColourBy, Display, Mode, Style, draw};
@@ -121,7 +122,25 @@ pub struct Viewport {
     pub brush: f32,
     /// The stroke being painted, in points.
     stroke: Vec<Pos2>,
+    /// A cut's plane to draw and drag by its frame or arrow (the cut card's, set by the app
+    /// each frame); `active` is the view's own.
+    pub cut_plane: Option<umcf_render::guides::CutPlane>,
+    /// The cut's plane held by the pointer: where, along its normal, it was taken.
+    holding: Option<Hold>,
 }
+
+/// A cut's plane held: its point and unit normal when taken, and where along the normal the
+/// pointer's ray passed then.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Hold {
+    point: Vec3,
+    normal: Vec3,
+    base: Vec3,
+    taken: f64,
+}
+
+/// How near (points) the pointer has to be to a handle of the cut's plane to take it.
+const GRAB: f32 = 8.0;
 
 /// The brush's smallest, default and largest radius, in points.
 pub const BRUSH: (f32, f32, f32) = (2.0, 12.0, 200.0);
@@ -167,6 +186,8 @@ impl Default for Viewport {
             corner: None,
             brush: BRUSH.1,
             stroke: Vec::new(),
+            cut_plane: None,
+            holding: None,
         }
     }
 }
@@ -178,6 +199,8 @@ struct Drawn {
     size: [u32; 2],
     edges: bool,
     guides: umcf_render::guides::Guides,
+    /// The cut's plane drawn, as it is drawn (where, and whether held or under the pointer).
+    cut: Option<umcf_render::guides::CutPlane>,
     /// Picking faces, for the hover text.
     faces: bool,
     /// The case's revision and the layers' look (how they are drawn).
@@ -206,6 +229,8 @@ pub enum Action {
     },
     /// Frame the scene from this view (the axis triad).
     Fit(View),
+    /// The cut's plane dragged: through `point` now (world), its normal as it was.
+    MoveCut { point: Vec3 },
 }
 
 fn key(c: &Camera) -> [f64; 7] {
@@ -234,6 +259,54 @@ fn pixel_at(rect: Rect, pos: Pos2, size: [u32; 2]) -> [f64; 2] {
         f64::from((pos.x - rect.min.x) / rect.width().max(1.0)) * f64::from(w),
         f64::from((pos.y - rect.min.y) / rect.height().max(1.0)) * f64::from(h),
     ]
+}
+
+/// Where `p` (world) is seen in `rect`, in points; `None` behind the eye.
+pub(crate) fn to_screen(camera: &Camera, rect: Rect, p: Vec3) -> Option<Pos2> {
+    let f = camera.frame();
+    let d = p - f.eye;
+    let z = d.dot(f.forward);
+    if z.is_nan() || z <= 1e-9 {
+        return None;
+    }
+    let (w, h) = (f64::from(rect.width().max(1.0)), f64::from(rect.height().max(1.0)));
+    let sx = d.dot(f.right) / (z * f.tan_half * w / h);
+    let sy = d.dot(f.up) / (z * f.tan_half);
+    let x = rect.min.x + ((sx + 1.0) * 0.5 * w) as f32;
+    let y = rect.min.y + ((1.0 - sy) * 0.5 * h) as f32;
+    (x.is_finite() && y.is_finite()).then(|| pos2(x, y))
+}
+
+/// Whether `pos` is within [`GRAB`] of the frame or the arrow of the cut's plane `h`.
+pub(crate) fn on_handle(camera: &Camera, rect: Rect, h: &umcf_render::guides::Handles, pos: Pos2) -> bool {
+    let near = |a: Vec3, b: Vec3| match (to_screen(camera, rect, a), to_screen(camera, rect, b)) {
+        (Some(a), Some(b)) => {
+            let ab = b - a;
+            let t = if ab.length_sq() > 0.0 { ((pos - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+            (a + ab * t).distance(pos) <= GRAB
+        }
+        _ => false,
+    };
+    let edge = |k: usize| h.corners.get(k).zip(h.corners.get((k + 1) % 4)).is_some_and(|(a, b)| near(*a, *b));
+    (0..4).any(edge) || near(h.base, h.tip)
+}
+
+/// Where along the line through `base` in direction `normal` (unit) `ray` passes nearest;
+/// `None` when the ray runs nearly along it (within about 6°: seen end on, a pixel would move
+/// the plane far) or the nearest point is behind the eye (the pointer past where the line
+/// vanishes).
+pub(crate) fn along(ray: &Ray, base: Vec3, normal: Vec3) -> Option<f64> {
+    let o = Vec3::new(ray.origin[0], ray.origin[1], ray.origin[2]);
+    let d = Vec3::new(ray.direction[0], ray.direction[1], ray.direction[2]);
+    let b = normal.dot(d);
+    let denom = 1.0 - b * b;
+    if denom.is_nan() || denom <= 0.01 {
+        return None;
+    }
+    let w = base - o;
+    let t = (b * d.dot(w) - normal.dot(w)) / denom;
+    let in_front = d.dot(w) + b * t;
+    (t.is_finite() && in_front > 0.0).then_some(t)
 }
 
 /// The ray through `pos` (a point in `rect`, where an image of `size` pixels is shown).
@@ -326,14 +399,66 @@ impl Viewport {
             return None;
         };
 
+        // The cut's plane: taken by its frame or arrow, then moved along its normal where the
+        // pointer's ray passes (by the pointer's position, so that frames the view waits for
+        // the scene in lose nothing); let go, it stays.
+        let view_size = [rect.width().max(1.0).round() as u32, rect.height().max(1.0).round() as u32];
+        let handles = self.cut_plane.and_then(|c| c.handles());
+        let pointer_at = ui.input(|i| i.pointer.latest_pos());
+        let down = ui.input(|i| i.pointer.primary_down());
+        let over = match (&handles, response.hover_pos()) {
+            (Some(h), Some(p)) => on_handle(&cam, rect, h, p),
+            _ => false,
+        };
+        let mut moved = None;
+        // The card closed, or its plane turned (another axis or region), while it was held.
+        let turned = match (self.holding, &handles) {
+            (Some(hold), Some(h)) => hold.normal != h.normal,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if turned {
+            self.holding = None;
+        }
+        if let (true, Some(c), Some(h)) = (response.drag_started_by(PointerButton::Primary), self.cut_plane, &handles) {
+            let start = ui.input(|i| i.pointer.press_origin()).or(pointer_at);
+            if let Some(p) = start.filter(|p| on_handle(&cam, rect, h, *p)) {
+                let ray = ray_at(&cam, rect, p, view_size);
+                if let Some(taken) = along(&ray, h.base, h.normal) {
+                    self.holding = Some(Hold { point: c.point, normal: h.normal, base: h.base, taken });
+                }
+            }
+        }
+        // Where the pointer is now, also when let go (the frames before may have been ones the
+        // view waited for the scene in): the last move counts.
+        let held = self.holding.is_some();
+        if let (Some(hold), Some(p)) = (self.holding, pointer_at) {
+            let ray = ray_at(&cam, rect, p, view_size);
+            if let Some(t) = along(&ray, hold.base, hold.normal) {
+                moved = Some(Action::MoveCut { point: hold.point + hold.normal * (t - hold.taken) });
+            }
+        }
+        if !down {
+            self.holding = None;
+        }
+        // Held this frame (let go in it too): the view does nothing else.
+        let holding = held;
+        if over || self.holding.is_some() {
+            ui.ctx().set_cursor_icon(if self.holding.is_some() {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+
         // Navigation.
-        let primary = response.dragged_by(PointerButton::Primary);
+        let primary = response.dragged_by(PointerButton::Primary) && !holding;
         let selecting = matches!(self.drag, Drag::Select | Drag::Brush) && primary;
         // Drawing a rectangle doesn't move the view, so it is drawn at full resolution.
-        let dragging = response.dragged() && !selecting;
+        let dragging = response.dragged() && !selecting && !holding;
         let other = response.dragged_by(PointerButton::Secondary) || response.dragged_by(PointerButton::Middle);
         if selecting {
-            if response.drag_started_by(PointerButton::Primary) {
+            if response.drag_started_by(PointerButton::Primary) && !holding {
                 let start = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
                 if self.drag == Drag::Brush {
                     self.stroke = start.into_iter().collect();
@@ -380,6 +505,7 @@ impl Viewport {
             faces: self.faces,
             edges: self.edges,
             guides: self.guides,
+            cut: self.cut_plane.map(|c| umcf_render::guides::CutPlane { active: over || self.holding.is_some(), ..c }),
             revision,
             dark: self.dark,
             renderer: self.renderer,
@@ -412,6 +538,7 @@ impl Viewport {
                 display: display.clone(),
                 background: Some(self.background()),
                 guides: self.guides,
+                cut_plane: drawn.cut,
             };
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
             use crate::gpu::NotDrawn;
@@ -540,6 +667,10 @@ impl Viewport {
                 "replace"
             };
             action = Some(Action::Pick { ray: ray_at(&cam, rect, p, shown), mode, faces: self.faces });
+        }
+        // Dragging the cut's plane is all the view does meanwhile.
+        if holding {
+            return moved;
         }
         action
     }
