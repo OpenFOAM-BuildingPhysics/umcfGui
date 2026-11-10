@@ -109,7 +109,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties, a limitTemperature entry in a fluid's fvOptions, fvConstraints or fvModels, in constant/ or system/, blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -456,7 +456,10 @@ fn settings(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     }
     let o = s.opened_mut()?;
     let c = o.case.choose_settings(&chosen)?;
-    let names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
+    let mut names: Vec<&str> = chosen.entries().iter().map(|(k, _)| *k).collect();
+    if !chosen.materials.is_empty() {
+        names.push("materials");
+    }
     let mut message = format!("settings chosen: {}", names.join(", "));
     if !c.applied.changed.is_empty() {
         message.push_str(&format!("; written into {}", c.applied.changed.join(", ")));

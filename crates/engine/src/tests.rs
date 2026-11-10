@@ -2698,6 +2698,8 @@ fn workflow_settings_take_another_case_s_settings_and_material_library() {
     let relative = format!("../{}", a.file_name().unwrap().to_str().unwrap());
     let out = s.execute("workflow.settings", &json!({ "from": relative, "endTime": 600 })).unwrap();
     assert_eq!(snapshot(&a), before);
+    assert!(out.message.contains("materials"), "{}", out.message);
+    assert!(out.message.contains("the material library is kept in system/umcfWorkflow"), "{}", out.message);
     let chosen = &out.data["settings"];
     assert_eq!(chosen["turbulence"], json!("realizableKE"), "{chosen}");
     assert_eq!(chosen["endTime"], json!("600"));

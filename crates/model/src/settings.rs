@@ -670,8 +670,7 @@ impl Case {
         }
         if !s.materials.is_empty() {
             a.notes.push(
-                "the material library is what new materials of its models start from (case.new, region.add): the case's materials keep theirs"
-                    .to_string(),
+                "the case's materials keep their coefficients: a material library is for new materials".to_string(),
             );
         }
         Ok(a)
@@ -732,9 +731,19 @@ impl Case {
             }
         }
         let mut next = self.clone();
-        let applied = next.apply_settings_to(s)?;
+        let mut applied = next.apply_settings_to(s)?;
         let described =
             next.description().is_some() && next.resolve(path) == path && !next.aliases().any(|(_, p)| p == path);
+        // The library lives in the description only: say whether it is kept.
+        if !s.materials.is_empty() {
+            applied.notes.push(if described {
+                format!("the material library is kept in {path}: new materials of its models start from it (case.new, region.add)")
+            } else if next.description().is_some() {
+                format!("the material library is not kept: {path} is a symbolic link or shares its file with another, and isn't written through")
+            } else {
+                format!("the material library is not kept: the case has no {path} that loads (workflow.import writes one)")
+            });
+        }
         if described {
             for (k, v) in s.entries() {
                 next.set_inline(path, &["settings", k], &v)?;

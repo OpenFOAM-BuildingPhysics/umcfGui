@@ -388,7 +388,7 @@ fn the_library_is_read_from_a_case_s_solids_and_leaves_their_materials_as_they_a
         assert_eq!(models, ["Soil", "Hamstad5Brick"], "{v:?}");
         let soil = vec![("rho".to_string(), "1200".to_string())];
         let a = c.apply_settings(&Settings { materials: vec![("Soil".into(), soil)], ..Default::default() }).unwrap();
-        assert!(a.changed.is_empty() && a.notes[0].contains("what new materials"), "{a:?}");
+        assert!(a.changed.is_empty() && a.notes[0].contains("a material library is for new materials"), "{a:?}");
     }
     // Two materials of one model that differ (layers): one note, the first's taken.
     let s = with_solid(OfVersion::V12, Settings::default(), &[("a", "Soil"), ("b", "Soil"), ("c", "Soil")]);
@@ -538,4 +538,23 @@ fn a_new_solid_takes_the_description_s_library_before_the_case_s_materials() {
     assert!(tp.contains("rho 999") && !tp.contains("1150"), "{tp}");
     // The case's own solid keeps its own.
     assert!(c.dict("constant/street/transportProperties").unwrap().to_string().contains("1150"));
+}
+
+#[test]
+fn a_library_chosen_without_a_description_is_said_not_to_be_kept() {
+    let mut fs = MemFs::new();
+    for (p, t) in make(&with_solid(OfVersion::V12, Settings::default(), &[("soil", "Soil")])).unwrap().files {
+        if p != crate::description::PATH {
+            fs.insert(&p, t);
+        }
+    }
+    let mut c = Case::open(&fs).unwrap();
+    let chosen = c.choose_settings(&Settings { materials: concrete(), ..Default::default() }).unwrap();
+    assert!(!chosen.described);
+    assert!(
+        chosen.applied.notes.iter().any(|n| n.contains("the material library is not kept")),
+        "{:?}",
+        chosen.applied.notes
+    );
+    assert!(!chosen.applied.notes.iter().any(|n| n.contains("is kept in")), "{:?}", chosen.applied.notes);
 }
