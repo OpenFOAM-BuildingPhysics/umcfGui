@@ -1816,8 +1816,18 @@ impl App {
                                 let shown = r.patches.as_ref().map(|_| self.shown_regions.contains(&r.name));
                                 let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
                                 let layer = Layer::Region(r.name.clone());
-                                let entry = self.layer_entry(&layer);
-                                let note = Some(self.layer_note(&layer)).filter(|n| !n.is_empty());
+                                // While the cut card shows a cut of it, its menu sets the cut's mode.
+                                let cut = self.cut_takes(&layer);
+                                let entry = self.layer_entry(cut.as_ref().unwrap_or(&layer));
+                                let cut_note = cut
+                                    .as_ref()
+                                    .and_then(|c| self.layer_entry(c))
+                                    .map(display::note)
+                                    .filter(|n| !n.is_empty())
+                                    .map(|n| format!("cut {n}"));
+                                // The cut's mode in place of the card's hiding (the card says that),
+                                // short so that the region's name keeps its room.
+                                let note = cut_note.or_else(|| Some(self.layer_note(&layer))).filter(|n| !n.is_empty());
                                 let detail = match (&r.patches, note) {
                                     (Some(p), None) => format!("{} patches", p.len()),
                                     (Some(p), Some(n)) => format!("{} patches · {n}", p.len()),
@@ -1827,10 +1837,14 @@ impl App {
                                 let (row, c, e, resp) =
                                     self.tree_row(ui, 1, chevron, shown, Icon::Region, label, &detail, false);
                                 if r.patches.is_some() {
-                                    let current = self.layer_display(&layer, &[]);
+                                    let current = self.layer_display(cut.as_ref().unwrap_or(&layer), &[]);
                                     let set = entry.is_some();
                                     resp.context_menu(|ui| {
-                                        let title = format!("Region {label}");
+                                        let title = if cut.is_some() {
+                                            format!("Cut of {label}")
+                                        } else {
+                                            format!("Region {label}")
+                                        };
                                         if let Some(c) = display::menu(ui, &title, current, set) {
                                             change = Some((layer.clone(), c));
                                         }

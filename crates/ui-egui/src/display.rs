@@ -138,6 +138,11 @@ impl App {
     /// same again. Two groups of one patch hold neither the other: the one changed last wins,
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
+        // For the region the cut card hides while it shows a cut: the cut's.
+        if let Some(cut) = self.cut_takes(&layer) {
+            self.set_cut_display(cut, &change);
+            return;
+        }
         self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
             // Only a group needs its patches' groups.

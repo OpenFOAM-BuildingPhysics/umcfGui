@@ -220,8 +220,46 @@ impl App {
         }
     }
 
+    /// The cut's own layer, where what the browser sets for `layer` goes to the cut: `layer` is
+    /// the region the card hides while it shows something (a mode or opacity set there draws the
+    /// cut's cells so, the region's boundary staying hidden). `None` else.
+    pub(crate) fn cut_takes(&self, layer: &Layer) -> Option<Layer> {
+        let form = self.cut.as_ref().filter(|f| !f.released)?;
+        let r = form.hid.as_ref().filter(|r| *layer == Layer::Region((*r).clone()))?;
+        self.cut_shown()?;
+        Some(Layer::Cut(r.clone()))
+    }
+
+    /// Sets the cut's own mode or opacity (`layer`: [`App::cut_takes`]), or takes them out with a
+    /// reset: the card's hiding of the region stays.
+    pub(crate) fn set_cut_display(&mut self, layer: Layer, change: &crate::display::Change) {
+        use crate::display::Change;
+        let at = self.display.iter().position(|e| e.layer == layer);
+        match (change, at) {
+            (Change::Reset, Some(k)) => {
+                self.display.remove(k);
+            }
+            (Change::Reset, None) => return,
+            (c, at) => {
+                let k = at.unwrap_or_else(|| {
+                    self.display.push(DisplayEntry { layer, mode: None, opacity: None });
+                    self.display.len() - 1
+                });
+                if let Some(e) = self.display.get_mut(k) {
+                    match c {
+                        Change::Mode(m) => e.mode = Some(*m),
+                        Change::Opacity(a) => e.opacity = Some(*a),
+                        Change::Reset => {}
+                    }
+                }
+            }
+        }
+        self.look += 1;
+    }
+
     /// The browser sets the mode of `layer` (or resets it): where that is the region the card
-    /// hides, the card's hiding goes first, so that what the browser set is what shows, with or
+    /// hides (while it shows nothing: else the mode goes to the cut, [`App::cut_takes`]), the
+    /// card's hiding goes first, so that what the browser set is what shows, with or
     /// without an entry of the region's own from before; closing the card then leaves it.
     pub(crate) fn release_hiding(&mut self, layer: &Layer, change: &crate::display::Change) {
         use crate::display::Change;
@@ -233,6 +271,9 @@ impl App {
             return;
         }
         self.unhide(&r);
+        // The region drawn as the browser set it: a mode set for the cut before goes too (no
+        // menu would reach it while the card stays on the region).
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         if let Some(f) = &mut self.cut {
             f.released = true;
         }
@@ -280,6 +321,8 @@ impl App {
         if let Some(r) = self.cut.take().filter(|f| !f.released).and_then(|f| f.hid) {
             self.unhide(&r);
         }
+        // The cut's own modes go with it.
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         // The view drawn again without the cut, whether or not a hiding was left to take out.
         self.look += 1;
     }
@@ -316,6 +359,8 @@ impl App {
         if let Some(r) = before.filter(|_| !released) {
             self.unhide(&r);
         }
+        // A mode set for the cut of the region before goes with it.
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         self.display.push(Self::hiding(&region));
         if let Some(f) = &mut self.cut {
             f.hid = Some(region);

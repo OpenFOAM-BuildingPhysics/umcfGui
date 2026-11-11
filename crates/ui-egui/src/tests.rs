@@ -2170,13 +2170,14 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert!(app.cut.is_none());
     assert_eq!(app.display, before);
     assert!(app.shown().get("cuts").is_none());
-    // The region given an opacity while the card is open, with no entry of its own before:
-    // the opacity stays, the hiding goes.
+    // The region given an opacity while the card shows a cut: the cut's, gone with the card;
+    // the region as before.
     app.display.clear();
     app.toggle_cut();
     app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.5));
+    assert_eq!(app.layer_entry(&Layer::Cut(String::new())).and_then(|e| e.opacity), Some(0.5));
     app.toggle_cut();
-    assert_eq!(app.display, [DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) }]);
+    assert!(app.display.is_empty(), "{:?}", app.display);
     // A region turned off in the browser: the slider's extent from its whole mesh, read for
     // the cut, the plane then in its middle.
     app.display.clear();
@@ -2218,36 +2219,92 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert_eq!((&last.layer, last.mode), (&Layer::Region(String::new()), Some(Mode::Hidden)));
     app.toggle_cut();
     assert!(app.display.iter().all(|e| e.mode != Some(Mode::Hidden)));
-    // The region given a mode in the browser while the card is open, with or without an entry
-    // of its own from before: that mode shows, the plane moved after too, and stays on close.
+    // The region given a mode in the browser while the card shows a cut, with or without an
+    // entry of its own from before: the cut's cells take that mode, the region's boundary stays
+    // hidden (the plane moved after too); closing leaves the region as it was.
+    let region = Layer::Region(String::new());
+    let cut_layer = Layer::Cut(String::new());
     for start in [Vec::new(), before.clone()] {
-        app.display = start;
+        app.display = start.clone();
         app.toggle_cut();
-        let region = Layer::Region(String::new());
-        app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
-        let mut form = app.cut.clone().unwrap();
-        form.at += 0.1;
-        app.set_cut(form);
-        let modes = |app: &App| -> Vec<Option<Mode>> {
-            app.display.iter().filter(|e| e.layer == region).map(|e| e.mode).collect()
-        };
-        assert_eq!(modes(&app), [Some(Mode::Wireframe)], "{:?}", app.display);
+        for m in [Mode::Wireframe, Mode::Points] {
+            app.set_display(region.clone(), crate::display::Change::Mode(m));
+            let mut form = app.cut.clone().unwrap();
+            form.at += 0.1;
+            app.set_cut(form);
+            let last = app.display.iter().rfind(|e| e.layer == region).unwrap();
+            assert_eq!(last.mode, Some(Mode::Hidden), "{:?}", app.display);
+            assert_eq!(app.layer_entry(&cut_layer).and_then(|e| e.mode), Some(m), "{:?}", app.display);
+            // As the view draws it: the boundary hidden, the cut in that mode.
+            let entries = app.view_display();
+            let scene = app.session.scene(&app.shown()).unwrap();
+            let style = umcf_engine::display_style(scene, &entries);
+            assert!(scene.objects.iter().any(|o| matches!(o.source, umcf_render::Source::Cut { .. })));
+            for (k, o) in scene.objects.iter().enumerate() {
+                let want = match o.source {
+                    umcf_render::Source::Cut { .. } => m,
+                    _ => Mode::Hidden,
+                };
+                for c in 0..o.classes.len() {
+                    let got = style.get(&(k, c as u32)).map(|d| d.mode);
+                    assert_eq!(got, Some(want), "{:?} class {c}", o.source);
+                }
+            }
+            // The browser's menu for the region shows the cut's mode.
+            assert_eq!(app.cut_takes(&region), Some(cut_layer.clone()));
+            assert_eq!(app.layer_display(&cut_layer, &[]).mode, m);
+        }
         app.toggle_cut();
-        assert_eq!(modes(&app), [Some(Mode::Wireframe)], "{:?}", app.display);
+        assert_eq!(app.display, start, "closed: as before");
     }
-    // An opacity doesn't end the hiding (closing still takes it out); a reset does.
+    // An opacity goes to the cut too; a reset takes the cut's own display out; the hiding stays
+    // until the card closes.
     let hidden = |app: &App| app.display.iter().any(|e| e.mode == Some(Mode::Hidden));
     app.display.clear();
     app.toggle_cut();
-    app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.4));
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
     assert!(hidden(&app));
-    app.toggle_cut();
-    assert!(!hidden(&app));
-    app.toggle_cut();
-    app.set_display(Layer::Region(String::new()), crate::display::Change::Reset);
-    assert!(!hidden(&app) && app.cut.as_ref().unwrap().released);
+    assert_eq!(app.layer_entry(&cut_layer).and_then(|e| e.opacity), Some(0.4));
+    app.set_display(region.clone(), crate::display::Change::Reset);
+    assert!(hidden(&app) && app.layer_entry(&cut_layer).is_none(), "{:?}", app.display);
     app.toggle_cut();
     assert!(app.display.is_empty(), "{:?}", app.display);
+    // While the card shows nothing (no check to show), a mode is the region's own: the hiding
+    // goes, and the region keeps the mode once the card closes.
+    app.toggle_cut();
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    app.set_cut(form);
+    assert!(app.cut_takes(&region).is_none());
+    app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
+    assert!(!hidden(&app) && app.cut.as_ref().unwrap().released);
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: Some(Mode::Wireframe), opacity: None }]);
+    // A cut mode, then *Show* switched: it stays with the cut; then the card showing nothing and
+    // the region set: the hiding and the cut's mode both go (no menu would reach it).
+    app.display.clear();
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Mode(Mode::Points));
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Layers;
+    app.set_cut(form);
+    assert_eq!(app.layer_entry(&cut_layer).and_then(|e| e.mode), Some(Mode::Points));
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    app.set_cut(form);
+    app.set_display(region.clone(), crate::display::Change::Mode(Mode::Surface));
+    assert!(!hidden(&app) && app.layer_entry(&cut_layer).is_none(), "{:?}", app.display);
+    app.toggle_cut();
+    // A cut mode, then the card moved to another region: the mode goes with the cut before.
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
+    assert!(app.layer_entry(&cut_layer).is_some());
+    let mut form = app.cut.clone().unwrap();
+    form.region = "other".into();
+    app.set_cut(form);
+    assert_eq!(app.cut.as_ref().unwrap().hid.as_deref(), Some("other"));
+    assert!(app.display.iter().all(|e| !matches!(e.layer, Layer::Cut(_))), "{:?}", app.display);
+    app.toggle_cut();
 }
 
 #[test]
