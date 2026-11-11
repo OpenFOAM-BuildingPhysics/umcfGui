@@ -138,6 +138,11 @@ The workflow the GUI supports end to end:
    (`render::Found`, the first 1000 of each problem and of `checkMesh`'s sets), with the whole
    mesh the check read handed to the 3D scene within the budget for hidden objects; the scene
    draws them as the region's cut (`render::Cells::Found`, `Object::from_found`).
+
+   The 3D view also shows the layers of cells at a wall, apart from the check: the region's cut
+   (`render::Cells::Layers`, `Object::from_layers`), walked from each patch face through the
+   opposite faces, the patch faces where they stop short marked. It is a view of the mesh, not a
+   finding of `mesh.check`.
 5. **Assign boundary conditions in 3D** (`bc.set`): picking in the view selects patches (or
    groups, or a region's whole boundary). `bc.set` takes that selection as its parameters, so
    the same assignment is a CLI or MCP call too. Picking faces to create a new patch

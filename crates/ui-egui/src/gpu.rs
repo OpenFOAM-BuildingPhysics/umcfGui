@@ -2481,6 +2481,17 @@ mod tests {
     /// A block of 3 × 2 × 2 unit hexahedra, cut across x through its middle cells: a cut object
     /// of their skin (with faces inside the block's boundary).
     fn cut_scene() -> Scene {
+        let mesh = block_mesh();
+        let plane = umcf_render::Plane { point: Vec3::new(1.5, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0) };
+        let cut = Object::from_cut("air", &mesh, plane, Vec3::ZERO).unwrap();
+        assert_eq!(cut.triangles.len(), 2 * 16, "the middle column's skin: 4 cells, 16 faces");
+        let mut scene = Scene::new(Vec3::ZERO);
+        scene.objects.push(cut);
+        scene
+    }
+
+    /// A block of 3 × 2 × 2 unit cells, its boundary the patches `west` (at x = 0) and `walls`.
+    fn block_mesh() -> umcf_foam_mesh::PolyMesh {
         let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
         let (nx, ny, nz) = (3usize, 2usize, 2usize);
         let p = |i: usize, j: usize, k: usize| (k * (ny + 1) + j) * (nx + 1) + i;
@@ -2493,8 +2504,8 @@ mod tests {
                 }
             }
         }
-        // Faces: internal ones (owner < neighbour), then the boundary, one patch.
-        let (mut internal, mut boundary) = (Vec::new(), Vec::new());
+        // Faces: internal ones (owner < neighbour), then the boundary: `west`, then `walls`.
+        let (mut internal, mut west, mut boundary) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..nz {
             for j in 0..ny {
                 for i in 0..nx {
@@ -2512,11 +2523,7 @@ mod tests {
                         }
                     }
                     if i == 0 {
-                        boundary.push((
-                            [p(0, j, k), p(0, j, k + 1), p(0, j + 1, k + 1), p(0, j + 1, k)],
-                            c(i, j, k),
-                            None,
-                        ));
+                        west.push(([p(0, j, k), p(0, j, k + 1), p(0, j + 1, k + 1), p(0, j + 1, k)], c(i, j, k), None));
                     }
                     if j == 0 {
                         boundary.push((
@@ -2536,7 +2543,7 @@ mod tests {
             }
         }
         internal.sort_by_key(|(_, o, n)| (*o, *n));
-        let all: Vec<_> = internal.iter().chain(&boundary).collect();
+        let all: Vec<_> = internal.iter().chain(&west).chain(&boundary).collect();
         let faces: String = all.iter().map(|(f, _, _)| format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3])).collect();
         let owner: Vec<String> = all.iter().map(|(_, o, _)| o.to_string()).collect();
         let neighbour: Vec<String> = internal.iter().filter_map(|(_, _, n)| n.map(|n| n.to_string())).collect();
@@ -2548,19 +2555,30 @@ mod tests {
             .with(
                 "m/boundary",
                 format!(
-                    "{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces {};\n        startFace {};\n    }}\n)\n",
+                    "{}2\n(\n    west\n    {{\n        type wall;\n        nFaces {};\n        startFace {};\n    }}\n    walls\n    {{\n        type wall;\n        nFaces {};\n        startFace {};\n    }}\n)\n",
                     h("polyBoundaryMesh"),
+                    west.len(),
+                    internal.len(),
                     boundary.len(),
-                    internal.len()
+                    internal.len() + west.len()
                 ),
             );
-        let mesh = umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap();
-        let plane = umcf_render::Plane { point: Vec3::new(1.5, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0) };
-        let cut = Object::from_cut("air", &mesh, plane, Vec3::ZERO).unwrap();
-        assert_eq!(cut.triangles.len(), 2 * 16, "the middle column's skin: 4 cells, 16 faces");
+        umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap()
+    }
+
+    #[test]
+    fn the_layers_at_a_wall_are_drawn_as_the_cpu_view_draws_them() {
+        // Three layers from x = 0, each of 4 cells in its colour, with the faces between them.
+        let layers = Object::from_layers("air", &block_mesh(), "west", 3, Vec3::ZERO).unwrap();
+        assert_eq!(layers.classes, ["layer 1: 4 cells", "layer 2: 4 cells", "layer 3: 4 cells"]);
         let mut scene = Scene::new(Vec3::ZERO);
-        scene.objects.push(cut);
-        scene
+        scene.objects.push(layers);
+        for edges in [false, true] {
+            let mut style = Style { edges, ..Style::default() };
+            let Some((cpu, image)) = both(&scene, &mut style) else { return };
+            let off = differing(&cpu, &image, 6);
+            assert!(off < 0.01, "edges {edges}: {:.1}% of the pixels differ", off * 100.0);
+        }
     }
 
     #[test]

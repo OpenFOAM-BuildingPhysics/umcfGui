@@ -829,3 +829,118 @@ fn a_mesh_whose_faces_trade_places_or_points_move_is_another_mesh() {
     moved.points[0][0] = -0.25;
     assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&moved));
 }
+
+#[test]
+fn the_layers_at_a_patch_are_walked_through_the_opposite_faces() {
+    let mesh = row(5, &[]);
+    let classes_of = |o: &Object, k: u32| -> Vec<u32> {
+        let mut f: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == k).map(|(f, _)| *f).collect();
+        f.dedup();
+        f
+    };
+    // From both ends of the row: cells 0 and 4, then 1 and 3, then 2 (reached from x = 0
+    // first; the column from x = 5 stops at it, short of nothing).
+    let o = Object::from_layers("air", &mesh, "ends", 5, Vec3::ZERO).unwrap();
+    assert_eq!(o.source, Source::Cut { region: "air".into() });
+    assert_eq!(o.classes, ["layer 1: 2 cells", "layer 2: 2 cells", "layer 3: 1 cell"]);
+    assert_eq!(o.kinds, ["layer"; 3]);
+    // The skin (the 2 ends and 20 sides) and the 4 faces between layers: 26 faces, 52 triangles.
+    assert_eq!(o.triangles.len(), 52);
+    // The faces between two layers in the lower one's class: face 0 (cells 0|1) in layer 1,
+    // face 1 (1|2) in layer 2.
+    assert!(classes_of(&o, 0).contains(&0) && classes_of(&o, 1).contains(&1));
+    // Two layers asked for: only those.
+    let two = Object::from_layers("air", &mesh, "ends", 2, Vec3::ZERO).unwrap();
+    assert_eq!(two.classes, ["layer 1: 2 cells", "layer 2: 2 cells"]);
+    // A side's column ends at the opposite side, the boundary: one layer, nothing short.
+    let sides = Object::from_layers("air", &mesh, "sides", 3, Vec3::ZERO).unwrap();
+    assert_eq!(sides.classes, ["layer 1: 5 cells"]);
+    // A patch the mesh doesn't have.
+    let e = Object::from_layers("air", &mesh, "roof", 3, Vec3::ZERO).unwrap_err();
+    assert!(e.contains("patch `roof`"), "{e}");
+}
+
+#[test]
+fn a_column_stopped_short_marks_its_patch_face() {
+    // One tetrahedron: every face shares a point with every other, so no face is opposite.
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let fs = MemFs::new()
+        .with("t/points", format!("{}4\n(\n(0 0 0)\n(1 0 0)\n(0 1 0)\n(0 0 1)\n)\n", h("vectorField")))
+        .with("t/faces", format!("{}4\n(\n3(0 2 1)\n3(0 1 3)\n3(1 2 3)\n3(0 3 2)\n)\n", h("faceList")))
+        .with("t/owner", format!("{}4\n(\n0 0 0 0\n)\n", h("labelList")))
+        .with("t/neighbour", format!("{}0\n(\n)\n", h("labelList")))
+        .with(
+            "t/boundary",
+            format!(
+                "{}2\n(\n    walls\n    {{\n        type wall;\n        nFaces 4;\n        startFace 0;\n    }}\n    none\n    {{\n        type wall;\n        nFaces 0;\n        startFace 4;\n    }}\n)\n",
+                h("polyBoundaryMesh")
+            ),
+        );
+    let mesh = PolyMesh::read(&fs, "t", &Limits::default()).unwrap();
+    let o = Object::from_layers("", &mesh, "walls", 2, Vec3::ZERO).unwrap();
+    assert_eq!(o.classes, ["layer 1: 1 cell", "stopped short of 2 layers (a cell split or collapsed): 4 faces"]);
+    assert_eq!(o.kinds, ["layer", "faces"]);
+    // Its four faces, each a column of its own, all marked.
+    assert_eq!(o.triangles.len(), 4);
+    let marked: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == 1).map(|(f, _)| *f).collect();
+    assert_eq!(marked, [0, 1, 2, 3]);
+    // A patch without faces: no layer.
+    let none = Object::from_layers("", &mesh, "none", 3, Vec3::ZERO).unwrap();
+    assert!(none.classes.is_empty() && none.triangles.is_empty());
+    // One layer asked for: none short.
+    assert_eq!(Object::from_layers("", &mesh, "walls", 1, Vec3::ZERO).unwrap().classes, ["layer 1: 1 cell"]);
+}
+
+/// A 2 × 2 × 1 block of unit cells (cell `i + 2 j` at x = i, y = j), its boundary the patch
+/// `corner` (cell 0's faces at x = 0 and y = 0) and `rest`.
+fn corner_block() -> PolyMesh {
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let p = |i: usize, j: usize, k: usize| k * 9 + j * 3 + i;
+    let mut points = String::new();
+    for k in 0..2 {
+        for j in 0..3 {
+            for i in 0..3 {
+                points += &format!("({i} {j} {k})\n");
+            }
+        }
+    }
+    let x_face = |i: usize, j: usize| [p(i, j, 0), p(i, j + 1, 0), p(i, j + 1, 1), p(i, j, 1)];
+    let y_face = |i: usize, j: usize| [p(i, j, 0), p(i, j, 1), p(i + 1, j, 1), p(i + 1, j, 0)];
+    let z_face = |i: usize, j: usize, k: usize| [p(i, j, k), p(i + 1, j, k), p(i + 1, j + 1, k), p(i, j + 1, k)];
+    // Internal (owner < neighbour, by owner), then `corner`, then `rest`.
+    let mut faces: Vec<([usize; 4], usize)> =
+        vec![(x_face(1, 0), 0), (y_face(0, 1), 0), (y_face(1, 1), 1), (x_face(1, 1), 2)];
+    let neighbour = [1usize, 2, 3, 3];
+    // At x = 0, y = 0 and z = 0 the faces turned round, so that each points out of its cell.
+    let out = |f: [usize; 4]| [f[0], f[3], f[2], f[1]];
+    faces.extend([(out(x_face(0, 0)), 0), (out(y_face(0, 0)), 0)]);
+    faces.extend([(out(y_face(1, 0)), 1), (x_face(2, 0), 1), (out(x_face(0, 1)), 2), (y_face(0, 2), 2)]);
+    faces.extend([(x_face(2, 1), 3), (y_face(1, 2), 3)]);
+    for c in 0..4 {
+        faces.extend([(out(z_face(c % 2, c / 2, 0)), c), (z_face(c % 2, c / 2, 1), c)]);
+    }
+    let text: String = faces.iter().map(|(f, _)| format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3])).collect();
+    let owner: Vec<String> = faces.iter().map(|(_, o)| o.to_string()).collect();
+    let nb: Vec<String> = neighbour.iter().map(usize::to_string).collect();
+    let patch = |n: &str, count: usize, start: usize| {
+        format!("    {n}\n    {{\n        type wall;\n        nFaces {count};\n        startFace {start};\n    }}\n")
+    };
+    let fs = MemFs::new()
+        .with("c/points", format!("{}18\n(\n{points})\n", h("vectorField")))
+        .with("c/faces", format!("{}{}\n(\n{text})\n", h("faceList"), faces.len()))
+        .with("c/owner", format!("{}{}\n(\n{}\n)\n", h("labelList"), owner.len(), owner.join(" ")))
+        .with("c/neighbour", format!("{}4\n(\n{}\n)\n", h("labelList"), nb.join(" ")))
+        .with(
+            "c/boundary",
+            format!("{}2\n(\n{}{})\n", h("polyBoundaryMesh"), patch("corner", 2, 4), patch("rest", faces.len() - 6, 6)),
+        );
+    PolyMesh::read(&fs, "c", &Limits::default()).unwrap()
+}
+
+#[test]
+fn a_cell_at_a_corner_starts_a_column_from_each_of_its_patch_faces() {
+    // Cell 0 at the corner: from its face at x = 0 the column goes on to cell 1, from the one at
+    // y = 0 to cell 2; then both reach the boundary.
+    let o = Object::from_layers("air", &corner_block(), "corner", 3, Vec3::ZERO).unwrap();
+    assert_eq!(o.classes, ["layer 1: 1 cell", "layer 2: 2 cells"]);
+}

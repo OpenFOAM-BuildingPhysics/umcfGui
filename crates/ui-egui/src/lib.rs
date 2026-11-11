@@ -663,7 +663,7 @@ impl App {
         };
         // What the check found, when the card asked for it (else, or when it is empty, the scene).
         let found = std::mem::take(&mut self.fit_found)
-            .then(|| self.cut.as_ref().filter(|f| f.found).map(|f| f.region.clone()))
+            .then(|| self.cut.as_ref().filter(|f| f.show == crate::cut::Show::Found).map(|f| f.region.clone()))
             .flatten();
         match self.session.scene(&params) {
             Ok(scene) => {
@@ -2594,8 +2594,9 @@ impl App {
     /// for) and the field files when they were listed only. The command is asked for first, as
     /// other work would drop a scene already waiting.
     pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
-        // The cut card, which is no command's: with `found`, showing what Check mesh found.
-        if let Some(which @ ("cut" | "found")) = open {
+        // The cut card, which is no command's: with `found`, showing what Check mesh found; with
+        // `layers`, the layers at a patch.
+        if let Some(which @ ("cut" | "found" | "layers")) = open {
             if let Some(tab) = self
                 .workspace
                 .tabs()
@@ -2615,6 +2616,9 @@ impl App {
             if which == "found" {
                 self.show_found();
                 self.fit_findings();
+            }
+            if which == "layers" {
+                self.show_layers();
             }
         } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;

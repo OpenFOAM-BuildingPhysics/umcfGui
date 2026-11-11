@@ -776,6 +776,52 @@ fn a_cut_shows_the_cells_a_plane_crosses() {
     assert!(e.is_err());
 }
 
+#[test]
+fn a_cut_shows_the_layers_at_a_patch() {
+    let mut s = scene_session();
+    let layers = |p: Value| json!({ "regions": [], "cuts": [p], "width": 8, "height": 8 });
+    // The one cell at the ground; its column ends at the sky.
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "ground" }))).unwrap();
+    assert_eq!(out.data["objects"], json!([{ "cut": "air", "triangles": 12, "classes": ["layer 1: 1 cell"] }]));
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "walls", "layers": 2 }))).unwrap();
+    assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
+    // A patch renamed and not saved: its layers by the new name, not the old one.
+    s.execute("patch.set", &json!({ "name": "floor", "patches": [{ "region": "air", "patch": "ground" }] })).unwrap();
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "floor" }))).unwrap();
+    assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
+    let e = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "ground" }))).unwrap_err();
+    assert!(
+        e.to_string().contains("patch `ground` isn't in the mesh of region air as the case names its patches"),
+        "{e}"
+    );
+    // What the build is planned to take is of the patch it draws: `floor` is `ground` on disk.
+    let mesh = umcf_foam_mesh::PolyMesh::read(
+        s.fs().unwrap(),
+        &umcf_foam_mesh::mesh_dir("air"),
+        &umcf_foam_mesh::Limits::default(),
+    )
+    .unwrap();
+    let case = s.case().unwrap();
+    let on_disk = crate::cmd::scene::patch_on_disk(case, "air", &mesh, "floor");
+    assert_eq!(on_disk.as_deref(), Some("ground"));
+    assert_eq!(crate::cmd::scene::patch_on_disk(case, "air", &mesh, "ground"), None);
+    let none = crate::cmd::scene::layers_need(&mesh, None, 5);
+    assert!(crate::cmd::scene::layers_need(&mesh, on_disk.as_deref(), 5) > none);
+    // Refused.
+    for (cut, says) in [
+        (json!({ "region": "air", "patch": "roof" }), "patch `roof` isn't in the mesh of region air"),
+        (json!({ "region": "air", "patch": "ground", "layers": 0 }), "from 1 to 50"),
+        (json!({ "region": "air", "patch": "ground", "layers": 51 }), "from 1 to 50"),
+        (json!({ "region": "air", "patch": "ground", "layers": 2.5 }), "from 1 to 50"),
+        (json!({ "region": "air", "layers": 2 }), "`patch` names a patch"),
+        (json!({ "region": "air", "patch": "ground", "found": true }), "without a point, normal or `found`"),
+        (json!({ "region": "air", "patch": "ground", "point": [0, 0, 0] }), "without a point"),
+    ] {
+        let e = s.execute("scene.snapshot", &layers(cut.clone())).unwrap_err().to_string();
+        assert!(e.contains(says), "{cut}: {e}");
+    }
+}
+
 /// A case on `MemFs` that counts the reads of one file.
 struct Counting {
     fs: MemFs,
@@ -3234,4 +3280,40 @@ fn material_set_changes_one_material_s_coefficients() {
         assert!(e.contains(want), "{params}: {e}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_layers_build_is_planned_by_the_triangles_its_cells_have() {
+    // One octagonal prism: 8 quadrilateral sides and two octagons, 28 triangles.
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let mut points = String::new();
+    for z in [0.0, 1.0] {
+        for k in 0..8 {
+            let a = std::f64::consts::FRAC_PI_4 * f64::from(k);
+            points += &format!("({} {} {z})\n", a.cos(), a.sin());
+        }
+    }
+    let mut faces: Vec<String> =
+        (0..8).map(|k| format!("4({} {} {} {})", k, (k + 1) % 8, (k + 1) % 8 + 8, k + 8)).collect();
+    faces.push(format!("8({})", (0..8).rev().map(|k: u32| k.to_string()).collect::<Vec<_>>().join(" ")));
+    faces.push(format!("8({})", (8..16).map(|k: u32| k.to_string()).collect::<Vec<_>>().join(" ")));
+    let fs = MemFs::new()
+        .with("m/points", format!("{}16\n(\n{points})\n", h("vectorField")))
+        .with("m/faces", format!("{}10\n(\n{}\n)\n", h("faceList"), faces.join("\n")))
+        .with("m/owner", format!("{}10\n(\n0 0 0 0 0 0 0 0 0 0\n)\n", h("labelList")))
+        .with("m/neighbour", format!("{}0\n(\n)\n", h("labelList")))
+        .with(
+            "m/boundary",
+            format!(
+                "{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces 10;\n        startFace 0;\n    }}\n)\n",
+                h("polyBoundaryMesh")
+            ),
+        );
+    let mesh = umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap();
+    // The cell (5 bytes), its 10 faces in its list (8 each), its 28 triangles (21 each), its 16
+    // points (16 each): not six faces of two triangles.
+    let need = crate::cmd::scene::layers_need(&mesh, Some("walls"), 3);
+    assert_eq!(need, 5 + 10 * 8 + 28 * 21 + 16 * 16);
+    // No patch: nothing drawn.
+    assert_eq!(crate::cmd::scene::layers_need(&mesh, None, 3), 5 + 10 * 8 + 16 * 16);
 }

@@ -1926,7 +1926,7 @@ fn the_cut_card_shows_what_check_mesh_found() {
     h.get_by_label("Check findings").click();
     h.run();
     // Not checked yet: nothing to cut, no plane to drag; the card says so.
-    assert!(h.state().cut.as_ref().unwrap().found);
+    assert_eq!(h.state().cut.as_ref().unwrap().show, crate::cut::Show::Found);
     assert!(h.state().shown().get("cuts").is_none());
     assert!(h.state().cut.as_ref().unwrap().plane().is_none());
     let _ = h.get_by_label_contains("No check of this region to show");
@@ -1945,6 +1945,41 @@ fn the_cut_card_shows_what_check_mesh_found() {
     h.get_by_label("Plane").click();
     h.run();
     assert!(h.state().shown()["cuts"][0].get("point").is_some());
+}
+
+#[test]
+fn the_cut_card_shows_the_layers_at_a_wall() {
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    // The plane's cut built first: its class (`cells`) is no layer.
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    assert!(h.state().session().last_cut("").is_some());
+    h.get_by_label("Wall layers").click();
+    h.run();
+    assert!(h.query_by_label("cells").is_none());
+    // At the region's first wall, five layers; no plane to drag.
+    let patches = h.state().patches("");
+    let form = h.state().cut.clone().unwrap();
+    assert_eq!((form.show, form.patch.as_str(), form.layers), (crate::cut::Show::Layers, patches[0].as_str(), 5));
+    assert!(form.plane().is_none());
+    assert_eq!(h.state().shown()["cuts"], json!([{ "region": "", "patch": patches[0], "layers": 5 }]));
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    // Each layer listed with its count.
+    let _ = h.get_by_label_contains("layer 1: ");
+    // A patch the region doesn't have shows nothing (the card takes its first again).
+    let mut form = h.state().cut.clone().unwrap();
+    form.patch = "nowhere".into();
+    h.state_mut().cut = Some(form);
+    assert!(h.state().shown().get("cuts").is_none());
+    h.run();
+    assert_eq!(h.state().cut.as_ref().unwrap().patch, patches[0]);
+    // `--open layers`.
+    let mut app = self::app();
+    app.start_up(Some("layers")).unwrap();
+    assert_eq!(app.cut.as_ref().unwrap().show, crate::cut::Show::Layers);
 }
 
 #[test]
@@ -2003,12 +2038,14 @@ fn no_cut_opens_where_no_case_is_open() {
     assert!(app.cut.is_none());
     let e = app.start_up(Some("found")).unwrap_err();
     assert!(e.contains("--open found: no case is open"), "{e}");
+    let e = app.start_up(Some("layers")).unwrap_err();
+    assert!(e.contains("--open layers: no case is open"), "{e}");
     assert!(self::app().can_cut());
     // `found`: the card showing what Check mesh found.
     let mut app = self::app();
     app.run("mesh.check", json!({})).unwrap();
     app.start_up(Some("found")).unwrap();
-    assert!(app.cut.as_ref().unwrap().found);
+    assert_eq!(app.cut.as_ref().unwrap().show, crate::cut::Show::Found);
     assert_eq!(app.shown()["cuts"], json!([{ "region": "", "found": true }]));
 }
 

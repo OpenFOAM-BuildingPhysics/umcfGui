@@ -535,3 +535,38 @@ fn render_refuses_a_region_cut_and_checked_before_checking() {
     assert_eq!(o.status.code(), Some(2), "{o:?}");
     assert!(String::from_utf8_lossy(&o.stderr).contains("cut or checked twice"), "{o:?}");
 }
+
+#[test]
+fn render_draws_the_layers_at_a_patch() {
+    let dir = cube("render-layers", false);
+    let out = dir.join("shot.png");
+    let args = |layers: &str| -> std::process::Output {
+        cli(&[
+            "render",
+            "--layers",
+            layers,
+            "--size",
+            "32x24",
+            "--json",
+            "--out",
+            out.to_str().unwrap(),
+            dir.to_str().unwrap(),
+        ])
+    };
+    let o = args("air/inlet=2");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let cut =
+        v["objects"].as_array().unwrap().iter().find(|x| x.get("cut") == Some(&serde_json::json!("air"))).cloned();
+    let cut = cut.unwrap_or_else(|| panic!("no cut: {v}"));
+    // The one cell, its six faces.
+    assert_eq!(cut["classes"], serde_json::json!(["layer 1: 1 cell"]), "{v}");
+    assert_eq!(cut["triangles"], 12, "{v}");
+    // Refused: a patch it doesn't have, a count that isn't one.
+    let o = args("air/roof");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("patch `roof`"), "{o:?}");
+    let o = args("air/inlet=two");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--layers is <region>/<patch>"), "{o:?}");
+}

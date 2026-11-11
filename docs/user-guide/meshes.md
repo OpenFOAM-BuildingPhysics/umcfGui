@@ -66,6 +66,11 @@ the view kept of the region: the view reads it again when it shows its cut. Unti
 next built (in the desktop app, when the view next shows the scene), the mesh the view kept and
 the one handed over are both held.
 
+The layers snappyHexMesh added at a wall are seen as a region's cut too: the first layers of
+cells at a patch, each in its colour, and the patch faces where they stop short marked ([the
+layers at a wall](scene.md#the-layers-at-a-wall); the cut card's *Wall layers*,
+`umcf-cli render --layers air/buildings=3`).
+
 ### With `-allGeometry`
 
 `umcf-cli mesh --all-geometry` (`mesh.check` with `all_geometry: true`) adds the checks of

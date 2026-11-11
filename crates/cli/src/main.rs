@@ -46,7 +46,7 @@ usage:
   umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
                  [--surface <file>]... [--edges] [--no-grid] [--no-origin] [--light]
                  [--select <what>]... [--pick <x>,<y>] [--cut <region>:<axis>=<at>]...
-                 [--found <region>]... [--json]
+                 [--found <region>]... [--layers <region>/<patch>[=<n>]]... [--json]
       Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
       region with a mesh, or the STL surfaces when there is none, each in its own colour.
       --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
@@ -67,6 +67,10 @@ usage:
       --found      check a region's mesh (mesh.check) and draw the faces and cells it found
                    (the first 1000 of each problem), the region's boundary hidden; can be
                    repeated, once a region, and not with --cut on the same region
+      --layers     draw the first n layers of cells at a patch (air/buildings=3; <patch> in a
+                   single-region case; 5 without =n, at most 50), each layer in its colour, the
+                   patch faces where they stop short marked, the region's boundary hidden (its
+                   whole mesh is read); can be repeated, once a region
       --json       one JSON object: the image's camera and objects, and the pick
       Exit status: 0 drawn, 2 the case could not be opened or drawn.
 
@@ -331,6 +335,27 @@ fn render(args: &[String]) -> Result<u8, String> {
                 cuts.push(json!({ "region": region, "found": true }));
                 hidden.push(json!({ "region": region, "mode": "hidden" }));
                 checks.push(region);
+            }
+            "--layers" => {
+                let v = value("--layers")?;
+                let bad = || format!("render: --layers is <region>/<patch>[=<n>] (air/buildings=3), not `{v}`");
+                let (at, n) = match v.split_once('=') {
+                    Some((at, n)) => (at, Some(n.parse::<u32>().map_err(|_| bad())?)),
+                    None => (v.as_str(), None),
+                };
+                let (region, patch) = at.rsplit_once('/').unwrap_or(("", at));
+                if patch.is_empty() {
+                    return Err(bad());
+                }
+                if cuts.iter().any(|c: &Value| c["region"] == region) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
+                let mut cut = json!({ "region": region, "patch": patch });
+                if let Some(n) = n {
+                    cut["layers"] = json!(n);
+                }
+                cuts.push(cut);
+                hidden.push(json!({ "region": region, "mode": "hidden" }));
             }
             "--pick" => {
                 let v = value("--pick")?;
