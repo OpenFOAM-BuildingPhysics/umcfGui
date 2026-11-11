@@ -238,6 +238,9 @@ impl App {
             return;
         }
         let Some(work) = self.queue.pop_front() else { return };
+        // What the session holds as it goes to the job, for the status bar meanwhile (a command
+        // run here since the bar was last drawn, `mesh.check` handing over a mesh, included).
+        self.held = self.session.whole_meshes();
         let cancel = self.session.canceller();
         cancel.reset();
         let (give, take) = std::sync::mpsc::channel::<(Session, Work)>();

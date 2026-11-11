@@ -1469,6 +1469,29 @@ fn the_regions_read_whole_are_still_said_while_a_job_runs() {
     h.run_steps(2);
     assert!(!h.state().busy());
     assert_eq!(said(&h), 1);
+    // The cut closed and the meshes read again: nothing held. Then a check run here (no job)
+    // hands over the mesh it read, and a job starts before the bar is drawn: still said.
+    h.state_mut().toggle_cut();
+    h.run_steps(2);
+    h.state_mut().wait_for_job();
+    let mut params = h.state().shown();
+    params["reload"] = serde_json::json!(true);
+    h.state_mut().session.scene(&params).unwrap();
+    h.run_steps(2);
+    assert_eq!(said(&h), 0);
+    h.state_mut().session.execute("mesh.check", &serde_json::json!({ "region": "" })).unwrap();
+    hold.store(true, Ordering::SeqCst);
+    waiting.store(false, Ordering::SeqCst);
+    let mut params = h.state().shown();
+    params["reload"] = serde_json::json!(true);
+    h.state_mut().start(crate::jobs::Work::Scene { params });
+    h.run_steps(1);
+    wait_until(&waiting);
+    h.run_steps(1);
+    assert!(h.state().busy());
+    assert_eq!(said(&h), 1);
+    hold.store(false, Ordering::SeqCst);
+    h.state_mut().wait_for_job();
 }
 
 /// Another case opened: the bar no longer says what the case before held, even while the new

@@ -155,8 +155,9 @@ pub struct App {
     /// How long a job is waited for before the window shows it running (a quick one looks as
     /// if it ran in place).
     pub job_wait: std::time::Duration,
-    /// The whole meshes the session held when it was last here, for the status bar: while a job
-    /// runs the window draws from a copy of the session without the scene, which holds them.
+    /// The whole meshes the session held when it was last here (refreshed as a job takes it, as
+    /// it comes back, and on each frame without a job), for the status bar: while a job runs the
+    /// window draws from a copy of the session without the scene, which holds them.
     pub(crate) held: Vec<umcf_engine::WholeMesh>,
     styled: bool,
 }
@@ -2417,7 +2418,8 @@ impl App {
         if !self.busy() {
             self.held = self.session.whole_meshes();
         }
-        let reserved = if progress.is_some() { 1000.0 } else { 640.0 } + if self.held.is_empty() { 0.0 } else { 250.0 };
+        let reserved =
+            (if progress.is_some() { 1000.0 } else { 640.0 }) + if self.held.is_empty() { 0.0 } else { WHOLE_MESHES_W };
         let room = ((ui.available_width() - reserved) / 30.0).floor().max(4.0) as usize;
         let show_undone = nu.min(room / 3);
         let show_done = nd.min(room.saturating_sub(show_undone));
@@ -2515,7 +2517,7 @@ impl App {
                 };
                 switch = can && r.clicked();
             }
-            self.whole_meshes(ui, &t);
+            self.show_whole_meshes(ui, &t);
             if let Some(case) = self.session.case() {
                 let n = case.changed().len();
                 if n > 0 {
@@ -2536,13 +2538,17 @@ impl App {
     }
 }
 
+/// The room the status bar keeps for the regions read whole: the longest label (a name of 16
+/// characters, `read whole · 1023 MB`) and its separator.
+const WHOLE_MESHES_W: f32 = 250.0;
+
 impl App {
     /// The regions read whole, for the status bar (none: nothing shown): what they take, and in
     /// the tooltip each one, cut now or kept aside within the budget for hidden objects. As the
     /// session held them when it was last here ([`App::held`]), so that a job doesn't hide them.
-    fn whole_meshes(&self, ui: &mut Ui, t: &Tokens) {
+    fn show_whole_meshes(&self, ui: &mut Ui, t: &Tokens) {
         let held = &self.held;
-        let total: u64 = held.iter().map(|w| w.bytes).sum();
+        let total = held.iter().map(|w| w.bytes).fold(0, u64::saturating_add);
         // A case of one region names it "mesh", as the cut card does.
         let name = |r: &str| if r.is_empty() { "mesh".to_string() } else { r.to_string() };
         let text = match held.as_slice() {
