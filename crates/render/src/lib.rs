@@ -85,13 +85,20 @@ pub struct Found {
 
 impl Found {
     /// What tells a mesh from another for the labels of its faces and cells: its cells, faces
-    /// and points, and a fingerprint (FNV-1a) of its `owner` and `neighbour` lists, which a mesh
-    /// renumbered (`renumberMesh`) or rewritten with the same sizes changes.
+    /// and points, and a fingerprint (FNV-1a) of its `owner`, `neighbour` and `faces` lists, which
+    /// a mesh renumbered (`renumberMesh`) or rewritten with the same sizes changes.
     pub fn mesh_of(mesh: &umcf_foam_mesh::PolyMesh) -> [u64; 4] {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        // A label at a time (not a byte): a quarter of the multiplications.
+        let mut mix = |x: u64| h = (h ^ x).wrapping_mul(0x0100_0000_01b3);
+        // A label at a time (not a byte): a quarter of the multiplications. The faces' points
+        // too, each face's count first: two faces of one cell that trade places keep every
+        // owner and neighbour, and a face label found before would then show the other face.
         for x in mesh.owner.iter().chain(&mesh.neighbour) {
-            h = (h ^ u64::from(*x)).wrapping_mul(0x0100_0000_01b3);
+            mix(u64::from(*x));
+        }
+        for f in (0..mesh.n_faces()).filter_map(|i| mesh.face(i)) {
+            mix(f.len() as u64);
+            f.iter().for_each(|x| mix(u64::from(*x)));
         }
         [mesh.n_cells() as u64, mesh.n_faces() as u64, mesh.n_points() as u64, h]
     }

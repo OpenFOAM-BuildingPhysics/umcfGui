@@ -637,6 +637,12 @@ fn transparent_layers_in_the_same_place_give_the_same_nearest_everywhere() {
 /// A row of `n` unit hexahedra along x (cell `i` from x = i to i + 1), its ends patch `ends`,
 /// the rest `sides`, and the cells `zoned` in a cell zone `brick`.
 pub(crate) fn row(n: usize, zoned: &[u32]) -> PolyMesh {
+    row_swapped(n, zoned, false)
+}
+
+/// [`row`], with the first cell's two sides at y = 0 and y = 1 in each other's places (the same
+/// owner, patch and sizes).
+fn row_swapped(n: usize, zoned: &[u32], swap: bool) -> PolyMesh {
     let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
     let p = |i: usize, j: usize, k: usize| i * 4 + j * 2 + k;
     let mut points = String::new();
@@ -666,6 +672,9 @@ pub(crate) fn row(n: usize, zoned: &[u32]) -> PolyMesh {
         faces.push(vec![p(i, 0, 0), p(i, 1, 0), p(i + 1, 1, 0), p(i + 1, 0, 0)]);
         faces.push(vec![p(i, 0, 1), p(i + 1, 0, 1), p(i + 1, 1, 1), p(i, 1, 1)]);
         owner.extend([i; 4]);
+    }
+    if swap {
+        faces.swap(n + 1, n + 2);
     }
     let list =
         |v: &[usize]| format!("{}\n(\n{}\n)\n", v.len(), v.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
@@ -804,4 +813,15 @@ fn what_a_check_found_is_drawn_where_it_is() {
     assert!(o.points.iter().all(|p| (1.0..=3.0).contains(&p[0])));
     // Nothing found: nothing drawn.
     assert!(Object::from_found("air", &mesh, &Found::default(), Vec3::ZERO).triangles.is_empty());
+}
+
+#[test]
+fn a_mesh_whose_faces_trade_places_is_another_mesh() {
+    use crate::Found;
+    let (mesh, swapped) = (row(3, &[]), row_swapped(3, &[], true));
+    // Same sizes, owners and neighbours: only the faces' points tell them apart.
+    assert_eq!((mesh.n_faces(), &mesh.owner, &mesh.neighbour), (swapped.n_faces(), &swapped.owner, &swapped.neighbour));
+    assert_ne!(mesh.face(4), swapped.face(4));
+    assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&swapped));
+    assert_eq!(Found::mesh_of(&mesh), Found::mesh_of(&row(3, &[])));
 }
