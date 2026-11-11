@@ -2029,6 +2029,14 @@ fn the_cut_card_shows_the_cells_near_a_surface() {
     h.run();
     assert!(h.state().shown().get("cuts").is_none());
     let _ = h.get_by_label_contains("no STL surface");
+    // Nothing to show: the region's boundary isn't hidden from the view (the card keeps its
+    // hiding, which comes back once there is something to show).
+    let hidden = |d: &[umcf_engine::DisplayEntry]| d.iter().any(|e| e.mode == Some(umcf_render::raster::Mode::Hidden));
+    assert!(hidden(&h.state().display));
+    assert!(!hidden(&h.state().view_display()));
+    h.get_by_label("Plane").click();
+    h.run();
+    assert!(hidden(&h.state().view_display()));
 }
 
 #[test]

@@ -182,6 +182,26 @@ impl App {
         }
     }
 
+    /// The display entries the view draws with: without the card's hiding of its region while
+    /// the card has nothing to show (no surface, a patch or check missing), so that the region's
+    /// boundary shows then rather than an empty view.
+    pub(crate) fn view_display(&self) -> Vec<DisplayEntry> {
+        let mut out = self.display.clone();
+        let idle = self.cut_shown().is_none();
+        if let Some(r) = self.cut.as_ref().filter(|f| idle && !f.released).and_then(|f| f.hid.clone()) {
+            let layer = Layer::Region(r);
+            if let Some(k) = out.iter().rposition(|e| e.layer == layer && e.mode == Some(Mode::Hidden)) {
+                match out.get_mut(k) {
+                    Some(e) if e.opacity.is_some() => e.mode = None,
+                    _ => {
+                        out.remove(k);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Keeps the card's hiding entry last, after the display's entries are sorted (patches
     /// after regions), so that it still wins over the region's patches.
     pub(crate) fn keep_hiding_last(&mut self) {

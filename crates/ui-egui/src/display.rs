@@ -180,6 +180,7 @@ impl App {
     /// region gone from its file, say, would have the command refused).
     pub(crate) fn display_json(&mut self) -> Value {
         let params = self.shown();
+        let entries = self.view_display();
         let Ok(scene) = self.session.scene(&params) else { return Value::Array(Vec::new()) };
         let shown = |layer: &Layer| {
             scene.objects.iter().any(|o| match (layer, &o.source) {
@@ -195,7 +196,7 @@ impl App {
                 _ => false,
             })
         };
-        self.display.iter().filter(|e| shown(&e.layer)).map(DisplayEntry::to_json).collect()
+        entries.iter().filter(|e| shown(&e.layer)).map(DisplayEntry::to_json).collect()
     }
 
     /// Drops the entries of what the case no longer has (a patch renamed, a surface an undo

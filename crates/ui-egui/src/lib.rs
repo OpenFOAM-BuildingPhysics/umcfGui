@@ -1346,7 +1346,7 @@ impl App {
             let params = self.shown();
             let selection = self.session.selection().to_vec();
             let revision = self.revision;
-            let entries = self.display.clone();
+            let entries = self.view_display();
             let failed = self.scene_error.as_ref().filter(|(r, _)| *r == revision).map(|(_, e)| e.clone());
             // A scene not built for this revision is built as a job; one that is taken from the
             // cache here.

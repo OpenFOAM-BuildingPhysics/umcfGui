@@ -96,8 +96,9 @@ cut](scene.md#a-cut-through-the-mesh)); `--found air` checks a region's mesh and
 and cells the check found, the region's boundary hidden ([what a check
 found](scene.md#what-a-check-found)); `--layers air/buildings=3` draws the first 3 layers of
 cells at a patch, each in its colour, the patch faces where they stop short marked ([the layers
-at a wall](scene.md#the-layers-at-a-wall)); `--near air/buildings.stl=2` draws the cells within
-2 m of an STL surface, each size in its colour ([the cells near a
+at a wall](scene.md#the-layers-at-a-wall)); `--near air/buildings.stl=2` draws the cells with a
+point within 2 m of an STL surface (a cell the surface crosses with all its points farther away
+isn't one), each size in its colour ([the cells near a
 surface](scene.md#the-cells-near-a-surface)). The exit status is 0 when the image is written and 2
 when the case can't be opened or drawn. How many regions are read at once, and how much is kept
 of hidden ones, follows the memory free, or `UMCF_MEMORY` when it is set to a whole number of
