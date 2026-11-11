@@ -55,6 +55,17 @@ coordinates that are not numbers. The solver solves no flow equations on that me
 carries the leaf temperature and the radiation exchange), and cases with a few wrongly oriented
 faces there run: the large 3×3 cases have 6 to 12, which `checkMesh` reports too.
 
+What the check found is kept for the 3D view: per region, the faces and cells of each problem
+(the first 1000) and of `checkMesh`'s sets of faces and cells, shown as the region's cut
+([what a check found](scene.md#what-a-check-found); the desktop app's cut card, *Check
+findings*). The whole mesh the check read is handed to the view with them, while it fits in what
+the 3D scene's budget for hidden objects leaves ([memory](scene.md#memory)): a check of several
+regions holds the meshes it hands over as it goes on to the next region, up to that quarter of
+the memory more than before. A mesh read again by a check that has no room for it replaces what
+the view kept of the region: the view reads it again when it shows its cut. Until the scene is
+next built (in the desktop app, when the view next shows the scene), the mesh the view kept and
+the one handed over are both held.
+
 ### With `-allGeometry`
 
 `umcf-cli mesh --all-geometry` (`mesh.check` with `all_geometry: true`) adds the checks of

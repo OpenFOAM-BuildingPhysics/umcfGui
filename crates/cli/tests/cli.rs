@@ -490,3 +490,48 @@ fn render_picks_with_the_style_flags() {
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(out.exists());
 }
+
+#[test]
+fn render_draws_what_a_check_found() {
+    // Turned inside out: its cell's volume is negative, which the check finds.
+    let dir = cube("render-found", true);
+    let out = dir.join("shot.png");
+    let o = cli(&[
+        "render",
+        "--found",
+        "air",
+        "--size",
+        "32x24",
+        "--json",
+        "--out",
+        out.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let cut =
+        v["objects"].as_array().unwrap().iter().find(|x| x.get("cut") == Some(&serde_json::json!("air"))).cloned();
+    let cut = cut.unwrap_or_else(|| panic!("no cut: {v}"));
+    // Three problems: the cell by its six faces (two triangles each) twice, and its six faces.
+    assert_eq!(
+        cut["classes"],
+        serde_json::json!([
+            "cells of a high aspect ratio",
+            "cells of zero or negative volume",
+            "faces with a wrong pyramid"
+        ]),
+        "{v}"
+    );
+    assert_eq!(cut["triangles"], 36, "{v}");
+    assert!(out.exists());
+}
+
+#[test]
+fn render_refuses_a_region_cut_and_checked_before_checking() {
+    let dir = cube("render-twice", false);
+    let out = dir.join("shot.png");
+    let o =
+        cli(&["render", "--found", "air", "--cut", "air:x=0.5", "--out", out.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("cut or checked twice"), "{o:?}");
+}

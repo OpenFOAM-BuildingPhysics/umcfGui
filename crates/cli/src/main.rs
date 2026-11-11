@@ -45,7 +45,8 @@ usage:
 
   umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
                  [--surface <file>]... [--edges] [--no-grid] [--no-origin] [--light]
-                 [--select <what>]... [--pick <x>,<y>] [--cut <region>:<axis>=<at>]... [--json]
+                 [--select <what>]... [--pick <x>,<y>] [--cut <region>:<axis>=<at>]...
+                 [--found <region>]... [--json]
       Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
       region with a mesh, or the STL surfaces when there is none, each in its own colour.
       --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
@@ -63,6 +64,9 @@ usage:
       --cut        cut a region's mesh across x, y or z at a position (air:x=115; :z=2 in a
                    single-region case): the cells the plane crosses, whole, the region's
                    boundary hidden (its whole mesh is read); can be repeated, once a region
+      --found      check a region's mesh (mesh.check) and draw the faces and cells it found
+                   (the first 1000 of each problem), the region's boundary hidden; can be
+                   repeated, once a region, and not with --cut on the same region
       --json       one JSON object: the image's camera and objects, and the pick
       Exit status: 0 drawn, 2 the case could not be opened or drawn.
 
@@ -258,7 +262,7 @@ fn render(args: &[String]) -> Result<u8, String> {
     let mut case = None;
     let (mut out_file, mut pick, mut as_json) = (None, None, false);
     let (mut regions, mut surfaces, mut select) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut cuts, mut hidden) = (Vec::new(), Vec::new());
+    let (mut cuts, mut hidden, mut checks) = (Vec::new(), Vec::new(), Vec::new());
     let mut params = serde_json::Map::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -312,8 +316,21 @@ fn render(args: &[String]) -> Result<u8, String> {
                 if let (Some(p), Some(n)) = (point.get_mut(k), normal.get_mut(k)) {
                     (*p, *n) = (at, 1.0);
                 }
+                if cuts.iter().any(|c: &Value| c["region"] == region) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
                 cuts.push(json!({ "region": region, "point": point, "normal": normal }));
                 hidden.push(json!({ "region": region, "mode": "hidden" }));
+            }
+            "--found" => {
+                let region = value("--found")?;
+                // Refused now, not after the check (minutes on a big mesh).
+                if cuts.iter().any(|c: &Value| c["region"] == region.as_str()) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
+                cuts.push(json!({ "region": region, "found": true }));
+                hidden.push(json!({ "region": region, "mode": "hidden" }));
+                checks.push(region);
             }
             "--pick" => {
                 let v = value("--pick")?;
@@ -341,6 +358,9 @@ fn render(args: &[String]) -> Result<u8, String> {
     }
     let mut s = Session::new();
     s.execute("case.open", &json!({ "path": case, "fields": false })).map_err(|e| e.to_string())?;
+    for region in &checks {
+        s.execute("mesh.check", &json!({ "region": region })).map_err(|e| e.to_string())?;
+    }
     if !select.is_empty() {
         s.execute("select.set", &json!({ "items": select })).map_err(|e| e.to_string())?;
     }

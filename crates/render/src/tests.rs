@@ -637,6 +637,12 @@ fn transparent_layers_in_the_same_place_give_the_same_nearest_everywhere() {
 /// A row of `n` unit hexahedra along x (cell `i` from x = i to i + 1), its ends patch `ends`,
 /// the rest `sides`, and the cells `zoned` in a cell zone `brick`.
 pub(crate) fn row(n: usize, zoned: &[u32]) -> PolyMesh {
+    row_swapped(n, zoned, false)
+}
+
+/// [`row`], with the first cell's two sides at y = 0 and y = 1 in each other's places (the same
+/// owner, patch and sizes).
+fn row_swapped(n: usize, zoned: &[u32], swap: bool) -> PolyMesh {
     let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
     let p = |i: usize, j: usize, k: usize| i * 4 + j * 2 + k;
     let mut points = String::new();
@@ -666,6 +672,9 @@ pub(crate) fn row(n: usize, zoned: &[u32]) -> PolyMesh {
         faces.push(vec![p(i, 0, 0), p(i, 1, 0), p(i + 1, 1, 0), p(i + 1, 0, 0)]);
         faces.push(vec![p(i, 0, 1), p(i + 1, 0, 1), p(i + 1, 1, 1), p(i, 1, 1)]);
         owner.extend([i; 4]);
+    }
+    if swap {
+        faces.swap(n + 1, n + 2);
     }
     let list =
         |v: &[usize]| format!("{}\n(\n{}\n)\n", v.len(), v.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
@@ -764,4 +773,59 @@ fn a_cut_shows_the_cells_a_plane_crosses_whole() {
     )
     .unwrap();
     assert_eq!(o.triangles.len(), 12);
+}
+
+#[test]
+fn what_a_check_found_is_drawn_where_it_is() {
+    use crate::{Found, FoundClass};
+    let mesh = row(3, &[]);
+    let class = |name: &str, cells: bool, labels: &[u32]| FoundClass {
+        name: name.into(),
+        cells,
+        labels: labels.to_vec(),
+        count: labels.len(),
+    };
+    // Face 0 (between cells 0 and 1, at x = 1) twice, a label past the mesh; cell 2 whole, and
+    // cells 1 and 2 for another check.
+    let found = Found {
+        classes: vec![
+            class("skew faces", false, &[0, 0, 9999]),
+            class("open cells", true, &[2, 2]),
+            class("concave cells", true, &[1, 2]),
+        ],
+        mesh: Found::mesh_of(&mesh),
+    };
+    let o = Object::from_found("air", &mesh, &found, Vec3::ZERO);
+    assert_eq!(o.source, Source::Cut { region: "air".into() });
+    assert_eq!(o.classes, ["skew faces", "open cells", "concave cells"]);
+    assert_eq!(o.kinds, ["faces", "cells", "cells"]);
+    let of = |k: u32| -> Vec<u32> {
+        let mut f: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == k).map(|(f, _)| *f).collect();
+        f.dedup();
+        f
+    };
+    // The face once, two triangles, at x = 1.
+    assert_eq!(of(0), [0]);
+    assert_eq!(o.class.iter().filter(|c| **c == 0).count(), 2);
+    // Cell 2's six faces; cells 1 and 2: eleven (the face between them once).
+    assert_eq!(of(1).len(), 6);
+    assert_eq!(of(2).len(), 11);
+    assert!(o.points.iter().all(|p| (1.0..=3.0).contains(&p[0])));
+    // Nothing found: nothing drawn.
+    assert!(Object::from_found("air", &mesh, &Found::default(), Vec3::ZERO).triangles.is_empty());
+}
+
+#[test]
+fn a_mesh_whose_faces_trade_places_or_points_move_is_another_mesh() {
+    use crate::Found;
+    let (mesh, swapped) = (row(3, &[]), row_swapped(3, &[], true));
+    // Same sizes, owners and neighbours: only the faces' points tell them apart.
+    assert_eq!((mesh.n_faces(), &mesh.owner, &mesh.neighbour), (swapped.n_faces(), &swapped.owner, &swapped.neighbour));
+    assert_ne!(mesh.face(4), swapped.face(4));
+    assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&swapped));
+    assert_eq!(Found::mesh_of(&mesh), Found::mesh_of(&row(3, &[])));
+    // Nor is one moved: the same faces, a point elsewhere.
+    let mut moved = row(3, &[]);
+    moved.points[0][0] = -0.25;
+    assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&moved));
 }

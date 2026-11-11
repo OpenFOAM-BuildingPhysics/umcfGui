@@ -103,7 +103,7 @@ pub(crate) struct Job {
     pub cancellable: bool,
     /// Whether it takes the whole window: opening or saving the case.
     pub modal: bool,
-    work: Work,
+    pub(crate) work: Work,
     done: Receiver<(Session, Done)>,
 }
 
@@ -445,23 +445,25 @@ impl App {
                 }
                 // A fit asked for while it ran.
                 if let Some(view) = self.fit_pending.take() {
-                    self.fit_view(view);
+                    self.fit(view);
                 }
             }
             (Work::Scene { params }, Done::Scene(result)) => match result {
                 Ok(()) => {
                     self.scene_built = Some((self.revision, params));
                     if let Some(view) = self.fit_pending.take() {
-                        self.fit_view(view);
+                        self.fit(view);
                     }
                 }
                 Err(Error::Cancelled { .. }) => {
                     self.fit_pending = None;
+                    self.fit_found = false;
                     let message = "Reading cancelled: Fit (F), or a change to what is shown, reads it again.";
                     self.scene_error = Some((self.revision, message.to_string()));
                 }
                 Err(e) => {
                     self.fit_pending = None;
+                    self.fit_found = false;
                     self.scene_error = Some((self.revision, e.to_string()));
                 }
             },
@@ -473,7 +475,7 @@ impl App {
                     let _ = self.after(step, result);
                 }
                 if let Some(view) = self.fit_pending.take() {
-                    self.fit_view(view);
+                    self.fit(view);
                 }
             }
             // A job gives back what its work makes.

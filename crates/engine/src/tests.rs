@@ -834,6 +834,150 @@ fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
     assert_eq!(out.data["in"], 1, "{}", out.data);
 }
 
+/// What `mesh.check` found is shown as the region's cut, from the mesh it read.
+#[test]
+fn what_a_check_found_is_shown_without_reading_the_mesh_again() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    // checkMesh's sets: a face (2) and the cell, and a set of points (not drawn).
+    let set = |class: &str, labels: &str| {
+        format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n{labels}\n")
+    };
+    fs.insert("constant/air/polyMesh/sets/skewFaces", set("faceSet", "1\n(\n2\n)"));
+    fs.insert("constant/air/polyMesh/sets/concaveCells", set("cellSet", "1\n(\n0\n)"));
+    fs.insert("constant/air/polyMesh/sets/nearPoints", set("pointSet", "1\n(\n3\n)"));
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = Counting { fs, file: "constant/air/polyMesh/neighbour", reads: std::sync::Arc::clone(&reads) };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(counting), "mem", OpenOptions::default(), false).unwrap();
+    let found = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "found": true }] });
+    // Before a check: nothing to show.
+    let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
+    assert!(e.contains("no check of region `air` to show: run mesh.check on it"), "{e}");
+    assert!(s.found("air").is_none());
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    let after_check = reads.load(std::sync::atomic::Ordering::Relaxed);
+    let f = s.found("air").unwrap();
+    let names: Vec<&str> = f.classes.iter().map(|c| c.name.as_str()).collect();
+    // The sets of faces and cells (not points); the cube itself is fine.
+    assert_eq!(names, ["checkMesh: concave cells", "checkMesh: faces with skewness above 4"]);
+    // Its box is known before it is shown.
+    assert_eq!(s.whole_bounds("air").unwrap().max.x, 1.0);
+    let out = s.execute("scene.snapshot", &found).unwrap();
+    // The cell by its six faces, the face: two triangles.
+    assert_eq!(
+        out.data["objects"][1],
+        json!({ "cut": "air", "triangles": 14, "classes": ["checkMesh: concave cells", "checkMesh: faces with skewness above 4"] })
+    );
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), after_check, "the mesh isn't read again");
+    // A plane and back: the mesh still kept.
+    let plane = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "point": [0.5, 0.5, 0.5], "normal": [1, 0, 0] }] });
+    s.execute("scene.snapshot", &plane).unwrap();
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), after_check);
+    // Refused: `found` not true, or with a plane.
+    for cut in
+        [json!({ "region": "air", "found": false }), json!({ "region": "air", "found": true, "point": [0, 0, 0] })]
+    {
+        let e = s.execute("scene.snapshot", &json!({ "cuts": [cut] })).unwrap_err().to_string();
+        assert!(e.contains("`found` is true"), "{e}");
+    }
+    // A reload that fails leaves what was found; one that works drops it.
+    let mut bad = found.clone();
+    bad["reload"] = json!(true);
+    bad["view"] = json!("sideways");
+    assert!(s.execute("scene.snapshot", &bad).is_err());
+    assert!(s.found("air").is_some());
+    // Refused after the scene is built (the view is checked then): what was found is left
+    // too, but not the mesh the check handed over: the reload read the files again.
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    let e = s.execute("scene.snapshot", &json!({ "reload": true, "view": "sideways" })).unwrap_err().to_string();
+    assert!(e.contains("no view `sideways`"), "{e}");
+    assert!(s.found("air").is_some());
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n + 1, "read again, not the mesh handed before");
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8, "reload": true })).unwrap();
+    assert!(s.found("air").is_none());
+    let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
+    assert!(e.contains("run mesh.check on it"), "{e}");
+    let mut again = found.clone();
+    again["reload"] = json!(true);
+    let e = s.execute("scene.snapshot", &again).unwrap_err().to_string();
+    assert!(e.contains("a reload drops what was found"), "{e}");
+    // A plane's cut keeps the whole mesh. A check with no room to hand its mesh over: the mesh
+    // kept from before isn't used either (the files may have changed), it is read again.
+    s.execute("scene.snapshot", &plane).unwrap();
+    assert!(s.whole_bounds("air").is_some());
+    let read = s.budget().read;
+    s.set_budget(crate::Budget { read, spare: 0 });
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    assert!(s.whole_bounds("air").is_none());
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n + 1, "read again, not the mesh from before");
+    // With room, a check of the region being cut hands its mesh over in the room the old one
+    // takes: shown without a read.
+    s.execute("scene.snapshot", &plane).unwrap();
+    let whole = 1 << 20;
+    s.set_budget(crate::Budget { read, spare: whole });
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n);
+}
+
+/// A case on `MemFs` the test can change while the session has it (OpenFOAM rewriting a mesh).
+struct Shared(std::sync::Arc<std::sync::Mutex<MemFs>>);
+
+impl umcf_core::CaseFs for Shared {
+    fn read(&self, rel: &str, limit: u64) -> Result<Option<Vec<u8>>, umcf_core::FsError> {
+        self.0.lock().unwrap().read(rel, limit)
+    }
+    fn is_file(&self, rel: &str) -> bool {
+        self.0.lock().unwrap().is_file(rel)
+    }
+    fn is_dir(&self, rel: &str) -> bool {
+        self.0.lock().unwrap().is_dir(rel)
+    }
+    fn list(&self, rel: &str) -> Result<Vec<String>, umcf_core::FsError> {
+        self.0.lock().unwrap().list(rel)
+    }
+}
+
+impl umcf_core::CaseWrite for Shared {
+    fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<(), umcf_core::FsError> {
+        self.0.lock().unwrap().write(rel, bytes)
+    }
+}
+
+/// What a check found is not drawn on a mesh rewritten since, read again from disk.
+#[test]
+fn what_a_check_found_is_not_drawn_on_another_mesh() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    let set = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class faceSet;\n}\n1\n(\n2\n)\n";
+    fs.insert("constant/air/polyMesh/sets/skewFaces", set);
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(fs));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(Shared(std::sync::Arc::clone(&shared))), "mem", OpenOptions::default(), false).unwrap();
+    // No room to hand the mesh over: it is read again when shown.
+    let read = s.budget().read;
+    s.set_budget(crate::Budget { read, spare: 0 });
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    // Rewritten meanwhile: a point more.
+    let h = "FoamFile\n{\n    version 2.0;\n    format ascii;\n    class vectorField;\n}\n";
+    let points =
+        format!("{h}9\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n(5 5 5)\n)\n");
+    shared.lock().unwrap().insert("constant/air/polyMesh/points", points);
+    let found = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "found": true }] });
+    let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
+    assert!(e.contains("changed since mesh.check found what it shows: check it again"), "{e}");
+    // Checked again: shown.
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    s.execute("scene.snapshot", &found).unwrap();
+}
+
 #[test]
 fn picking_selects_patches_and_lists_what_is_behind() {
     let mut s = scene_session();

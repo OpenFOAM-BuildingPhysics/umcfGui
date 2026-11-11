@@ -169,6 +169,18 @@ pub struct Session {
     selection: Vec<Sel>,
     /// The 3D scene last built, for picking and snapshots.
     scene: Option<std::sync::Arc<cmd::scene::Cached>>,
+    /// What `mesh.check` found last in each region it checked (faces and cells), for the 3D
+    /// view's cuts; opening a case or reading its meshes again (`reload`) drops it.
+    found: Vec<(String, std::sync::Arc<umcf_render::Found>)>,
+    /// The whole meshes `mesh.check` read, handed to the next scene built (within the budget for
+    /// hidden objects), so that showing what it found reads nothing again.
+    handed: Vec<cmd::scene::Whole>,
+    /// Regions `mesh.check` checked without handing their mesh over (no room for it, or it
+    /// couldn't be read): the whole meshes the scene kept of them from before are not used again
+    /// (the files may have changed since).
+    outdated: Vec<String>,
+    /// How many times a scene was built with `reload` (the meshes read again).
+    reloads: u64,
     /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
     cancel: umcf_core::Cancel,
     /// The memory the session plans with (see [`Budget`]).
@@ -200,6 +212,14 @@ struct Saved {
     redo: Vec<Step>,
     /// The journal only grows during a command (or is cleared by an open): its length is enough.
     journal: usize,
+    /// What `mesh.check` found and handed over (a `reload` drops it; a command that fails after
+    /// gives it back).
+    found: Vec<(String, std::sync::Arc<umcf_render::Found>)>,
+    handed: Vec<cmd::scene::Whole>,
+    outdated: Vec<String>,
+    /// How many reloads had read the meshes again: the hand-over is given back unless one did
+    /// during the command.
+    reloads: u64,
 }
 
 impl Session {
@@ -222,6 +242,10 @@ impl Session {
             opens: 0,
             selection: Vec::new(),
             scene: None,
+            found: Vec::new(),
+            handed: Vec::new(),
+            outdated: Vec::new(),
+            reloads: 0,
             cancel: umcf_core::Cancel::new(),
             budget: Budget::system(),
         }
@@ -344,6 +368,9 @@ impl Session {
         self.journal.clear();
         self.selection.clear();
         self.scene = None;
+        self.found.clear();
+        self.handed.clear();
+        self.outdated.clear();
         self.opens += 1;
         Ok(())
     }
@@ -355,6 +382,10 @@ impl Session {
             undo: self.undo.clone(),
             redo: self.redo.clone(),
             journal: self.journal.len(),
+            found: self.found.clone(),
+            handed: self.handed.clone(),
+            outdated: self.outdated.clone(),
+            reloads: self.reloads,
         }
     }
 
@@ -362,6 +393,16 @@ impl Session {
     /// again if there was none before; if there was one, the newly opened case stays, with an
     /// empty history and journal.
     fn restore(&mut self, saved: Saved) {
+        // Of the case that was open; a case opened since starts without them. After a reload
+        // only what was found comes back (its fingerprint keeps it off a mesh that changed): the
+        // meshes handed over before are older than those it read. Else the hand-over comes back
+        // too (a scene that took it may be dropped; one that keeps it takes it again as is).
+        if self.opens == saved.opens {
+            self.found = saved.found;
+            if self.reloads == saved.reloads {
+                (self.handed, self.outdated) = (saved.handed, saved.outdated);
+            }
+        }
         match (saved.case, &mut self.opened) {
             (Some(case), Some(o)) if self.opens == saved.opens => o.case = case,
             // The command opened a case (the same one again, or another) and then failed: keep
@@ -460,6 +501,10 @@ impl Session {
         s.opens = self.opens;
         s.selection = self.selection.clone();
         s.scene = if with_scene { self.scene.clone() } else { None };
+        s.found = self.found.clone();
+        // What a check handed over, or made outdated, is taken into the scene by this session's
+        // next build: the copy, which reads nothing, draws the scene as it is (a pending change
+        // would have it build, copying the scene whole).
         s.budget = self.budget;
         s
     }

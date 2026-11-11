@@ -1919,13 +1919,97 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
 }
 
 #[test]
+fn the_cut_card_shows_what_check_mesh_found() {
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    h.get_by_label("Check findings").click();
+    h.run();
+    // Not checked yet: nothing to cut, no plane to drag; the card says so.
+    assert!(h.state().cut.as_ref().unwrap().found);
+    assert!(h.state().shown().get("cuts").is_none());
+    assert!(h.state().cut.as_ref().unwrap().plane().is_none());
+    let _ = h.get_by_label_contains("No check of this region to show");
+    h.get_by_label("Check mesh").click();
+    h.run();
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    // Checked: the region's findings are the cut (the canyon's mesh is fine: none listed).
+    assert_eq!(h.state().shown()["cuts"], json!([{ "region": "", "found": true }]));
+    assert!(h.state().session().found("").is_some());
+    let _ = h.get_by_label_contains("found nothing here");
+    let params = h.state().shown();
+    let scene = h.state_mut().session.scene(&params).unwrap();
+    assert!(scene.objects.iter().any(|o| o.source == umcf_render::Source::Cut { region: String::new() }));
+    // Back to the plane.
+    h.get_by_label("Plane").click();
+    h.run();
+    assert!(h.state().shown()["cuts"][0].get("point").is_some());
+}
+
+#[test]
+fn the_view_frames_what_was_found() {
+    // checkMesh's set: the bottom face (z = 0) of the one cell.
+    let mut fs = case();
+    fs.insert("constant/polyMesh/sets/skewFaces", format!("{}1\n(\n0\n)\n", h("faceSet")));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.run("mesh.check", json!({})).unwrap();
+    app.start_up(Some("found")).unwrap();
+    let mut h = harness(app);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    // On the face, not the cell's middle.
+    let target = h.state().viewport.camera.unwrap().target;
+    assert!(target.z.abs() < 1e-9 && (target.x - 0.5).abs() < 1e-9, "{target:?}");
+    let _ = h.get_by_label_contains("faces with skewness above 4: 1 face");
+    // Fit (F) frames the whole scene again.
+    h.state_mut().fit_view(None);
+    assert!((h.state().viewport.camera.unwrap().target.z - 0.5).abs() < 1e-9);
+    // The card's Fit: on what was found again.
+    h.get_by_label("Fit findings").click();
+    h.run();
+    assert!(h.state().viewport.camera.unwrap().target.z.abs() < 1e-9);
+}
+
+#[test]
+fn a_whole_scene_fit_asked_after_a_waiting_findings_fit_frames_the_scene() {
+    let mut fs = case();
+    fs.insert("constant/polyMesh/sets/skewFaces", format!("{}1\n(\n0\n)\n", h("faceSet")));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.run("mesh.check", json!({})).unwrap();
+    // The findings fit waits for the scene, read as a job; Fit (F) is asked meanwhile.
+    app.start_up(Some("found")).unwrap();
+    assert!(app.fit_found);
+    app.fit_view(None);
+    let mut h = harness(app);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    // The whole cell, not the face found.
+    let target = h.state().viewport.camera.unwrap().target;
+    assert!((target.z - 0.5).abs() < 1e-9, "{target:?}");
+    assert!(!h.state().fit_found);
+}
+
+#[test]
 fn no_cut_opens_where_no_case_is_open() {
     let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
     assert!(!app.can_cut());
     let e = app.start_up(Some("cut")).unwrap_err();
     assert!(e.contains("--open cut: no case is open"), "{e}");
     assert!(app.cut.is_none());
+    let e = app.start_up(Some("found")).unwrap_err();
+    assert!(e.contains("--open found: no case is open"), "{e}");
     assert!(self::app().can_cut());
+    // `found`: the card showing what Check mesh found.
+    let mut app = self::app();
+    app.run("mesh.check", json!({})).unwrap();
+    app.start_up(Some("found")).unwrap();
+    assert!(app.cut.as_ref().unwrap().found);
+    assert_eq!(app.shown()["cuts"], json!([{ "region": "", "found": true }]));
 }
 
 #[test]

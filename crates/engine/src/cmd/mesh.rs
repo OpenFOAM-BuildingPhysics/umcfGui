@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use umcf_core::CaseFs;
 use umcf_foam_mesh::{Limits, PolyMesh, mesh_dir};
+use umcf_render::{Found as Shown, FoundClass};
 use umcf_validate::mesh::{
     AllGeometry, CHECKMESH_SETS, CheckMeshLog, Found, MAX_LISTED, MAX_LOG_RESULTS, Quality, SetOf, SnappyLog,
     checkmesh_log_diagnostics, diagnostics, layer_diagnostics, parse_checkmesh_log, parse_snappy_log, quality_steps,
@@ -10,7 +11,10 @@ use umcf_validate::mesh::{
 };
 use umcf_validate::{Diagnostic, Level};
 
+use std::sync::Arc;
+
 use super::case::{count, diagnostic};
+use super::scene::{Whole, room_left};
 use crate::params::Params;
 use crate::{CommandSpec, Error, Outcome, Session, needs_case};
 
@@ -19,7 +23,7 @@ pub(super) const CHECK: CommandSpec = CommandSpec {
     label: "Check mesh",
     menu: "Mesh/Check",
     shortcut: None,
-    params: "region: one region (default: every region with a mesh). Counts its progress (the mesh files' bytes read, then the faces checked) and stops when cancelled, within 65,536 faces (all_geometry's own checks only at their end). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
+    params: "region: one region (default: every region with a mesh). Counts its progress (the mesh files' bytes read, then the faces checked) and stops when cancelled, within 65,536 faces (all_geometry's own checks only at their end). Reads the whole mesh (a mesh that can't be read is a `mesh.unreadable` error, and the other regions are still checked), then reports what checkMesh checks by default: closed cells and boundary, aspect ratio, face areas, cell volumes, non-orthogonality, face pyramids, skewness; with checkMesh's thresholds, and the faces and cells involved (the first 1000 of each). What it found in each region (those faces and cells, and those of checkMesh's sets of faces and cells that aren't stale) is kept for the 3D view, `scene.snapshot`'s cuts {\"region\", \"found\": true}, with the whole mesh it read while it fits in the budget for hidden objects (so that showing them reads nothing again; a mesh that doesn't fit, or can't be read, makes the scene drop the region's whole mesh it kept before), until the next check of the region, the case opened again or its meshes read again (reload). all_geometry: true adds the checks of checkMesh -allGeometry (face tets, short edges, near points, concave faces and cells, warped faces, cell determinants, face weights, volume ratios); slower.",
     enabled: needs_case,
     run: check,
     journal: false,
@@ -198,8 +202,14 @@ fn set_warning(region: &str, path: String, message: String) -> Diagnostic {
 }
 
 /// The sets `checkMesh -writeSets` left in the region's `polyMesh/sets`, with their labels;
-/// one naming more than the mesh has is stale (`mesh.stale-set`).
-fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<Diagnostic>) -> Vec<Value> {
+/// one naming more than the mesh has is stale (`mesh.stale-set`). Besides, the first labels of
+/// each set of faces or cells that is not stale, for the 3D view.
+fn checkmesh_sets(
+    fs: &dyn CaseFs,
+    region: &str,
+    mesh: &PolyMesh,
+    out: &mut Vec<Diagnostic>,
+) -> (Vec<Value>, Vec<FoundClass>) {
     let dir = mesh_dir(region);
     let present = match umcf_foam_mesh::list_sets(fs, &dir) {
         Ok(p) => p,
@@ -209,10 +219,11 @@ fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<
                 format!("{dir}/sets"),
                 format!("the sets could not be listed, so checkMesh's sets were not read: {e}"),
             ));
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
     let mut sets = Vec::new();
+    let mut shown = Vec::new();
     for (name, of, holds) in CHECKMESH_SETS.iter().filter(|(n, _, _)| present.iter().any(|p| p == n)) {
         let size = match of {
             SetOf::Faces => mesh.n_faces(),
@@ -240,6 +251,14 @@ fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<
             out.push(stale_set(region, name, m, size, *of));
         }
         let first: Vec<u32> = set.labels.iter().take(MAX_LISTED).copied().collect();
+        if !stale && !first.is_empty() && !matches!(of, SetOf::Points) {
+            shown.push(FoundClass {
+                name: format!("checkMesh: {holds}"),
+                cells: matches!(of, SetOf::Cells),
+                labels: first.clone(),
+                count: set.labels.len(),
+            });
+        }
         sets.push(json!({
             "name": name,
             "holds": holds,
@@ -249,7 +268,43 @@ fn checkmesh_sets(fs: &dyn CaseFs, region: &str, mesh: &PolyMesh, out: &mut Vec<
             "stale": stale,
         }));
     }
-    sets
+    (sets, shown)
+}
+
+/// What the native check found, by the faces and cells where it is (the first
+/// [`MAX_LISTED`] of each), and what checkMesh's sets name, for the 3D view: what found
+/// nothing is left out, and so are points.
+fn shown(q: &Quality, sets: Vec<FoundClass>, mesh: &PolyMesh) -> Shown {
+    let mut list: Vec<(&str, bool, &umcf_validate::mesh::Found)> = vec![
+        ("open cells", true, &q.open_cells),
+        ("cells of a high aspect ratio", true, &q.high_aspect_cells),
+        ("faces of zero area", false, &q.zero_area_faces),
+        ("cells of zero or negative volume", true, &q.negative_volume_cells),
+        ("faces more than 70° non-orthogonal", false, &q.severe_non_orthogonal_faces),
+        ("faces 90° or more non-orthogonal", false, &q.non_orthogonality_errors),
+        ("skew faces", false, &q.skew_faces),
+        ("faces with a wrong pyramid", false, &q.wrong_pyramids),
+        ("faces too large to measure", false, &q.non_finite_faces),
+        ("cells too large to measure", true, &q.non_finite_cells),
+    ];
+    if let Some(a) = &q.all {
+        list.extend([
+            ("faces of poor tetrahedra", false, &a.low_quality_tets),
+            ("concave faces", false, &a.concave_faces),
+            ("warped faces", false, &a.warped_faces),
+            ("underdetermined cells", true, &a.underdetermined_cells),
+            ("concave cells", true, &a.concave_cells),
+            ("faces of a low weight", false, &a.low_weight_faces),
+            ("faces of a low volume ratio", false, &a.low_volume_ratio_faces),
+        ]);
+    }
+    let mut classes: Vec<FoundClass> = list
+        .into_iter()
+        .filter(|(_, _, f)| !f.first.is_empty())
+        .map(|(name, cells, f)| FoundClass { name: name.to_string(), cells, labels: f.first.clone(), count: f.places })
+        .collect();
+    classes.extend(sets);
+    Shown { classes, mesh: Shown::mesh_of(mesh) }
 }
 
 fn found(f: &Found) -> Value {
@@ -393,6 +448,12 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let mut regions = Vec::new();
     let mut lines = Vec::new();
     let (mut errors, mut warnings) = (0, 0);
+    // What was found and the meshes read, for the 3D view: a mesh is kept while it fits in what
+    // the budget for hidden objects leaves.
+    let mut found: Vec<(String, Arc<Shown>)> = Vec::new();
+    let mut hand: Vec<Whole> = Vec::new();
+    let mut room = room_left(s, &names);
+
     for (r, noted) in names.iter().zip(&noted) {
         let name = if r.is_empty() { "mesh" } else { r.as_str() };
         let candidates: Vec<&CheckMeshLog> = logs.iter().filter(|l| &l.region == r).collect();
@@ -447,7 +508,8 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 let q = quality_with(mesh, all_geometry, &s.cancel)
                     .ok_or_else(|| Error::Cancelled { id: CHECK.id.to_string() })?;
                 d.extend(diagnostics(&q, r));
-                let sets = checkmesh_sets(fs, r, mesh, &mut d);
+                let (sets, from_sets) = checkmesh_sets(fs, r, mesh, &mut d);
+                found.push((r.clone(), Arc::new(shown(&q, from_sets, mesh))));
                 (Some(q), sets)
             }
             // A read stopped by a cancel: the command stops, not the region.
@@ -555,6 +617,12 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             },
             "diagnostics": from_logs.iter().chain(&d).map(diagnostic).collect::<Vec<_>>(),
         }));
+        if let (Ok(m), true) = (mesh, q.is_some())
+            && m.bytes() <= room
+        {
+            room -= m.bytes();
+            hand.push(Whole::of(r, Arc::new(m)));
+        }
     }
     // Logs of the default mesh in a case without one that no region's mesh matches.
     if region.is_none() && !has_default {
@@ -594,6 +662,18 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if names.is_empty() {
         lines.push("no region has a mesh".to_string());
     }
+    s.found.retain(|(r, _)| !names.contains(r));
+    s.found.extend(found);
+    s.handed.retain(|w| !names.iter().any(|r| w.is(r)));
+    // A region checked and its mesh not handed over (no room, or it couldn't be read): the scene
+    // doesn't use what it kept of it before, as the files may have changed.
+    for r in names.iter().filter(|r| !hand.iter().any(|w| w.is(r))) {
+        if !s.outdated.contains(r) {
+            s.outdated.push(r.clone());
+        }
+    }
+    s.outdated.retain(|r| !hand.iter().any(|w| w.is(r)));
+    s.handed.extend(hand);
     let data = json!({
         "errors": errors,
         "warnings": warnings,
@@ -601,4 +681,52 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         "diagnostics": notes.iter().map(diagnostic).collect::<Vec<_>>(),
     });
     Ok(Outcome::new(lines.join("; "), data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_was_found_is_kept_by_problem_faces_or_cells() {
+        let mut q = Quality::default();
+        q.skew_faces.first = vec![4, 7];
+        q.skew_faces.places = 2000;
+        q.open_cells.first = vec![1];
+        let mut all = AllGeometry::default();
+        all.concave_cells.first = vec![2];
+        q.all = Some(all);
+        let set = FoundClass { name: "checkMesh: concave faces".into(), cells: false, labels: vec![3], count: 1 };
+        let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+        let fs = umcf_core::MemFs::new()
+            .with("m/points", format!("{}4\n(\n(0 0 0)\n(1 0 0)\n(0 1 0)\n(0 0 1)\n)\n", h("vectorField")))
+            .with("m/faces", format!("{}4\n(\n3(0 2 1)\n3(0 1 3)\n3(0 3 2)\n3(1 2 3)\n)\n", h("faceList")))
+            .with("m/owner", format!("{}4\n(\n0 0 0 0\n)\n", h("labelList")))
+            .with("m/neighbour", format!("{}0\n(\n)\n", h("labelList")))
+            .with(
+                "m/boundary",
+                format!("{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces 4;\n        startFace 0;\n    }}\n)\n", h("polyBoundaryMesh")),
+            );
+        let mesh = PolyMesh::read(&fs, "m", &Limits::default()).unwrap();
+        let f = shown(&q, vec![set], &mesh);
+        assert_eq!(f.mesh[..3], [1, 4, 4]);
+        // Renumbered (the same sizes): another mesh.
+        let mut other = mesh.clone();
+        other.owner.reverse();
+        other.owner[0] = 1;
+        assert_ne!(Shown::mesh_of(&other), f.mesh);
+        assert_eq!(f.classes[1].count, 2000);
+        let got: Vec<(&str, bool, &[u32])> =
+            f.classes.iter().map(|c| (c.name.as_str(), c.cells, c.labels.as_slice())).collect();
+        assert_eq!(
+            got,
+            [
+                ("open cells", true, &[1][..]),
+                ("skew faces", false, &[4, 7][..]),
+                ("concave cells", true, &[2][..]),
+                ("checkMesh: concave faces", false, &[3][..]),
+            ]
+        );
+        assert!(shown(&Quality::default(), Vec::new(), &mesh).classes.is_empty());
+    }
 }

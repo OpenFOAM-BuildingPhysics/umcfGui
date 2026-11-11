@@ -48,9 +48,79 @@ pub enum Source {
     /// An STL surface (case-relative path); its classes are the regions OpenFOAM makes of it, a
     /// triangle's source index is its index in the file.
     Surface { file: String },
-    /// The cells of a region's mesh a plane cuts ([`Object::from_cut`]); its classes are the
-    /// cell zones (`cells` for those in none), a triangle's source index is its mesh face.
+    /// What is shown of a region's cells ([`Cells`]): those a plane cuts ([`Object::from_cut`];
+    /// its classes are the cell zones, `cells` for those in none) or the faces and cells a mesh
+    /// check named ([`Object::from_found`]; its classes are what was found). A triangle's source
+    /// index is its mesh face.
     Cut { region: String },
+}
+
+/// What a cut ([`Source::Cut`]) shows of a region's cells.
+#[derive(Debug, Clone)]
+pub enum Cells {
+    /// The cells a plane crosses, whole ([`Object::from_cut`]).
+    Plane(Plane),
+    /// The faces and cells a mesh check named ([`Object::from_found`]).
+    Found(std::sync::Arc<Found>),
+}
+
+impl PartialEq for Cells {
+    /// Planes by value; what was found by identity (a check run again is another).
+    fn eq(&self, other: &Cells) -> bool {
+        match (self, other) {
+            (Cells::Plane(a), Cells::Plane(b)) => a == b,
+            (Cells::Found(a), Cells::Found(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// The faces and cells a mesh check named, by what it found.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Found {
+    pub classes: Vec<FoundClass>,
+    /// The mesh it was found on ([`Found::mesh_of`]): its labels are of that mesh.
+    pub mesh: [u64; 4],
+}
+
+impl Found {
+    /// What tells a mesh from another for the labels of its faces and cells: its cells, faces
+    /// and points, and a fingerprint (FNV-1a) of its `owner`, `neighbour`, `faces` and `points`
+    /// lists, which a mesh renumbered (`renumberMesh`), moved or rewritten with the same sizes
+    /// changes.
+    pub fn mesh_of(mesh: &umcf_foam_mesh::PolyMesh) -> [u64; 4] {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| h = (h ^ x).wrapping_mul(0x0100_0000_01b3);
+        // A label at a time (not a byte): a quarter of the multiplications. The faces' points
+        // too, each face's count first: two faces of one cell that trade places keep every
+        // owner and neighbour, and a face label found before would then show the other face.
+        for x in mesh.owner.iter().chain(&mesh.neighbour) {
+            mix(u64::from(*x));
+        }
+        for f in (0..mesh.n_faces()).filter_map(|i| mesh.face(i)) {
+            mix(f.len() as u64);
+            f.iter().for_each(|x| mix(u64::from(*x)));
+        }
+        // And where the points are: a mesh moved or smoothed with the same faces would be shown
+        // findings made for the old geometry.
+        for x in mesh.points.iter().flatten() {
+            mix(x.to_bits());
+        }
+        [mesh.n_cells() as u64, mesh.n_faces() as u64, mesh.n_points() as u64, h]
+    }
+}
+
+/// One thing a mesh check found: the faces or cells where it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundClass {
+    /// What was found, for people (`skew faces`).
+    pub name: String,
+    /// Cells (else faces).
+    pub cells: bool,
+    /// Their labels in the mesh (the first, where there are many).
+    pub labels: Vec<u32>,
+    /// How many faces or cells it was found at, listed or not.
+    pub count: usize,
 }
 
 /// A plane: the points `x` with `normal · (x - point) = 0`.
@@ -205,6 +275,95 @@ impl Object {
         o
     }
 
+    /// Adds face `face` (labelled `index`) of a mesh with `points`, split into a fan from its
+    /// first point, in class `class`; `map` takes each mesh point to the object's, filled as
+    /// faces use them. A face with a point that is not finite (or out of range) is left out and
+    /// counted.
+    fn push_face(&mut self, points: &[[f64; 3]], map: &mut [u32], face: &[u32], index: u32, class: u32, origin: Vec3) {
+        let mut ids: Vec<u32> = Vec::with_capacity(face.len());
+        for p in face {
+            let Some(slot) = map.get_mut(*p as usize) else { break };
+            if *slot == u32::MAX {
+                let Some(w) = points.get(*p as usize) else { break };
+                let r = relative(Vec3::new(w[0], w[1], w[2]), origin);
+                if !r.iter().all(|c| c.is_finite()) {
+                    break;
+                }
+                let Ok(id) = u32::try_from(self.points.len()) else { break };
+                self.points.push(r);
+                *slot = id;
+            }
+            ids.push(*slot);
+        }
+        if ids.len() != face.len() || ids.len() < 3 {
+            self.dropped += 1;
+            return;
+        }
+        let k = ids.len();
+        for i in 1..k - 1 {
+            let (Some(a), Some(b), Some(c)) = (ids.first(), ids.get(i), ids.get(i + 1)) else { continue };
+            self.triangles.push([*a, *b, *c]);
+            self.class.push(class);
+            self.origin_index.push(index);
+            self.edges.push(0b010 | u8::from(i == 1) | (u8::from(i == k - 2) << 2));
+        }
+    }
+
+    /// The faces and cells of `mesh` that `found` names, each in the class of what was found: a
+    /// face as it is, a cell by all its faces. A label beyond the mesh is left out; a face of
+    /// two cells named for one thing is drawn once.
+    pub fn from_found(region: &str, mesh: &umcf_foam_mesh::PolyMesh, found: &Found, origin: Vec3) -> Object {
+        let mut o = Object::new(Source::Cut { region: region.to_string() });
+        let mut map: Vec<u32> = vec![u32::MAX; mesh.points.len()];
+        // Each named cell's classes.
+        let mut cells: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        for (k, c) in found.classes.iter().enumerate() {
+            let Ok(class) = u32::try_from(k) else { break };
+            o.classes.push(c.name.clone());
+            o.kinds.push(if c.cells { "cells" } else { "faces" }.to_string());
+            o.groups.push(Vec::new());
+            if c.cells {
+                for l in &c.labels {
+                    let of = cells.entry(*l).or_default();
+                    if !of.contains(&class) {
+                        of.push(class);
+                    }
+                }
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                for f in &c.labels {
+                    if !seen.insert(*f) {
+                        continue;
+                    }
+                    if let Some(face) = mesh.face(*f as usize) {
+                        o.push_face(&mesh.points, &mut map, face, *f, class, origin);
+                    }
+                }
+            }
+        }
+        if !cells.is_empty() {
+            let mut classes: Vec<u32> = Vec::new();
+            for f in 0..mesh.n_faces() {
+                classes.clear();
+                for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
+                    for k in cells.get(c).into_iter().flatten() {
+                        if !classes.contains(k) {
+                            classes.push(*k);
+                        }
+                    }
+                }
+                if classes.is_empty() {
+                    continue;
+                }
+                let (Some(face), Ok(index)) = (mesh.face(f), u32::try_from(f)) else { continue };
+                for k in &classes {
+                    o.push_face(&mesh.points, &mut map, face, index, *k, origin);
+                }
+            }
+        }
+        o
+    }
+
     /// The cells of `mesh` that `plane` cuts, as a "crinkle" cut: each such cell whole, so the
     /// mesh's cells are seen as they are (no face is cut). A cell is cut when it has points on
     /// the plane's negative side and points on it or past it: of two layers of cells that only
@@ -303,33 +462,7 @@ impl Object {
                 o.groups.push(Vec::new());
                 next
             });
-            let mut ids: Vec<u32> = Vec::with_capacity(face.len());
-            for p in face {
-                let Some(slot) = map.get_mut(*p as usize) else { break };
-                if *slot == u32::MAX {
-                    let Some(w) = mesh.points.get(*p as usize) else { break };
-                    let r = relative(Vec3::new(w[0], w[1], w[2]), origin);
-                    if !r.iter().all(|c| c.is_finite()) {
-                        break;
-                    }
-                    let Ok(id) = u32::try_from(o.points.len()) else { break };
-                    o.points.push(r);
-                    *slot = id;
-                }
-                ids.push(*slot);
-            }
-            if ids.len() != face.len() || ids.len() < 3 {
-                o.dropped += 1;
-                continue;
-            }
-            let k = ids.len();
-            for i in 1..k - 1 {
-                let (Some(a), Some(b), Some(c)) = (ids.first(), ids.get(i), ids.get(i + 1)) else { continue };
-                o.triangles.push([*a, *b, *c]);
-                o.class.push(class);
-                o.origin_index.push(index);
-                o.edges.push(0b010 | u8::from(i == 1) | (u8::from(i == k - 2) << 2));
-            }
+            o.push_face(&mesh.points, &mut map, face, index, class, origin);
         }
         Some(o)
     }
