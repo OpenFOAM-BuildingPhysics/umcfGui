@@ -246,15 +246,16 @@ fn ground_and_top(case: &Case, region: &str) -> (Side, Side, bool) {
     let g = [format!("constant/{region}/g"), "constant/g".to_string()].iter().find_map(|rel| {
         let e = case.dict(rel)?.get(&["value"])?;
         let [umcf_foam_dict::Node::List { items, .. }] = e.value.as_slice() else { return None };
-        let v: Vec<f64> = items
+        // Exactly three numbers, all finite, one at least not 0: else no gravity is read.
+        let v: Option<Vec<f64>> = items
             .iter()
-            .filter_map(|n| match n {
-                umcf_foam_dict::Node::Atom(t) => t.text.parse::<f64>().ok(),
+            .map(|n| match n {
+                umcf_foam_dict::Node::Atom(t) => t.text.parse::<f64>().ok().filter(|x| x.is_finite()),
                 _ => None,
             })
             .collect();
-        match v.as_slice() {
-            [x, y, z] if [x, y, z].iter().any(|c| c.is_finite() && **c != 0.0) => Some([*x, *y, *z]),
+        match v?.as_slice() {
+            [x, y, z] if [x, y, z].iter().any(|c| **c != 0.0) => Some([*x, *y, *z]),
             _ => None,
         }
     });
@@ -309,15 +310,12 @@ fn blocks(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
         s if s == top => Place::Top,
         _ => Place::Around,
     };
-    let mut named: Vec<(Side, &str)> = grid.sides.iter().map(|(s, n)| (*s, n.as_str())).collect();
+    // Each patch where it owns a face once the single faces have taken theirs: a side's patch
+    // whose every face went to another isn't on that side.
     let all = grid.boundary();
-    for (n, faces) in &grid.faces {
-        for f in faces {
-            if let Some((cat, _)) = all.get(f) {
-                named.push((*cat, n.as_str()));
-            }
-        }
-    }
+    let mut pairs: HashSet<(Side, &str)> = HashSet::new();
+    let named: Vec<(Side, &str)> =
+        all.values().filter_map(|(c, n)| n.map(|n| (*c, n))).filter(|p| pairs.insert(*p)).collect();
     let described: HashMap<&str, Option<Role>> = r.patches.iter().map(|p| (p.name.as_str(), p.role)).collect();
     let unknown: Vec<&str> = grid.patch_names().into_iter().filter(|n| !described.contains_key(n)).collect();
     for n in unknown.iter().take(MAX_SAID) {

@@ -286,11 +286,13 @@ umcf-cli run --case path/to/case \
 | `dropSettings` | `true` to lose what the dictionary there holds besides its patches (cell zones, curved edges, a scale, other keys) |
 | `replace` | `true` to write over a `blockMeshDict` umcfGui didn't write, or one edited since |
 | `remove` | `true` takes the blocks out of the description; the dictionary stays, the case's own |
-
-With only `region`, the dictionary is written again from the blocks there. A grid with problems
-(stations that don't increase, a span without cells or with a section blockMesh would give
-none, a missing block outside the grid or listed twice, a `cyclic`, `nonConformal`, `mapped` or `processor` type, a whole layer of missing blocks, a face without a patch, a single face inside the mesh,
-more than 20 000 blocks, more than 10 000 names in `faces`, `noFaces` or `types`, a dictionary too large to read back) is refused and nothing changes. The blocks go into the
+ With only `region`, the dictionary is written again from the blocks there. A grid with problems
+(stations that don't increase, a span without cells or with a section blockMesh would give none, a
+missing block outside the grid or listed twice, a `cyclic`, `nonConformal`, `mapped` or `processor`
+type, a whole layer of missing blocks, a face without a patch, a single face inside the mesh, more
+than 20 000 blocks, more than 10 000 names in `faces`, `noFaces` or `types` (or in `dropPatches`,
+`dropEntries`), more than 40 000 missing blocks or 120 000 single faces, a dictionary too large to
+read back) is refused and nothing changes. The blocks go into the
 description key by key, only those that change, so the comments around them stay (those inside a
 key that changes are not kept: the key is written again on one line). The dictionary is written
 whole, generated: its header says so (`Written by umcfGui from the case workflow; edit the
@@ -398,11 +400,13 @@ the single faces', then those without faces), so the faces are numbered otherwis
 are not kept (that one is in the backup once the case is saved).
 
 The case check (`workflow.blocks`) reads each region's blocks: the grid's problems, a patch the
-region's `patches` don't list, a patch on a side its role doesn't fit (an inlet on top, say;
-the ground and top are the sides across the gravity of `constant/<region>/g`, else
-`constant/g`; without either, z is taken as up and the warning says so), a `blockMeshDict` that
-isn't there, doesn't load, or isn't what the blocks make (edited by hand, written from other
-blocks, or a patch's type the blocks' `types` or its role give otherwise now). The grid's
+region's `patches` don't list, a patch on a side its role doesn't fit (an inlet on top, say; a
+side's patch counts there only where it still has a face once `faces` took theirs; the ground
+and top are the sides across the gravity of `constant/<region>/g`, else `constant/g`; without
+either, or with one that isn't three finite numbers not all 0, z is taken as up and the warning
+says so), a `blockMeshDict` that isn't there, doesn't load, or isn't what the blocks make
+(edited by hand, written from other blocks, or a patch's type the blocks' `types` or its role
+give otherwise now). The grid's
 problems are listed together, the first 20 of them and then how many more; so are the patches
 the description doesn't list, and the patches where a role doesn't fit, 20 of each.
 

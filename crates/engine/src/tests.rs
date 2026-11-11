@@ -3817,7 +3817,12 @@ fn a_blocks_entry_that_doesnt_read_isnt_written_over_and_many_keys_are_quick() {
 
 #[test]
 fn a_dictionary_larger_than_the_case_reads_isnt_written() {
-    let options = OpenOptions { dict_bytes: 6000, ..OpenOptions::default() };
+    // Just over the example's own dictionary, as checked out (CRLF on Windows: a byte more a
+    // line), so that it is read and imported.
+    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/of12/streetCanyon_CFDHAM/system/air/blockMeshDict");
+    let limit = std::fs::metadata(own).unwrap().len() + 200;
+    let options = OpenOptions { dict_bytes: limit, ..OpenOptions::default() };
     let mut s = Session::with_backup(".umcfgui/backup/test");
     s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", options, false).unwrap();
     s.execute("workflow.import", &Value::Null).unwrap();
@@ -3833,12 +3838,12 @@ fn a_dictionary_larger_than_the_case_reads_isnt_written() {
         json!([3, 1]),
         json!(80),
     ];
-    for i in 1..=15 {
+    for i in 1..=40 {
         x.push(json!([1, 1]));
         x.push(json!(80 + 10 * i));
     }
     let e = s.execute("mesh.block", &json!({"region": "air", "replace": true, "x": x})).unwrap_err().to_string();
-    assert!(e.contains("more than the case reads as a dictionary (6000)"), "{e}");
+    assert!(e.contains(&format!("more than the case reads as a dictionary ({limit})")), "{e}");
 }
 
 #[test]
@@ -3854,4 +3859,25 @@ fn a_dictionary_two_regions_read_isnt_written_for_one() {
     .unwrap();
     let e = s.execute("mesh.block", &json!({"region": "air", "replace": true})).unwrap_err().to_string();
     assert!(e.contains("read by the mesh of region street too"), "{e}");
+}
+
+#[test]
+fn long_parameter_lists_are_counted_before_they_are_read() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let names: Vec<Value> = (0..10_001).map(|i| json!(format!("n{i}"))).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "noFaces": names})).unwrap_err().to_string();
+    assert!(e.contains("noFaces has 10001 names, 10000 at most"), "{e}");
+    let e = s
+        .execute("mesh.block", &json!({"region": "air", "replace": true, "dropPatches": names}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("dropPatches has 10001 names"), "{e}");
+    let missing: Vec<Value> = (0..40_001).map(|_| json!(1)).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "missing": missing})).unwrap_err().to_string();
+    assert!(e.contains("missing lists 40001 blocks, 40000 at most"), "{e}");
+    let faces: Vec<Value> = (0..120_001).map(|_| json!(1)).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "faces": {"a": faces}})).unwrap_err().to_string();
+    assert!(e.contains("faces lists more than 120000 faces"), "{e}");
 }

@@ -1948,11 +1948,11 @@ pub fn dict_patches(doc: &Document) -> Result<DictPatches, String> {
             }
             Item::Value(_) => return Err("it has a value without a key".into()),
         }
-        let mut keys: HashSet<&str> = HashSet::new();
-        for k in doc.root.entries().map(|e| e.key()) {
-            if !keys.insert(k) {
-                return Err(format!("it gives {k} twice"));
-            }
+    }
+    let mut keys: HashSet<&str> = HashSet::new();
+    for k in doc.root.entries().map(|e| e.key()) {
+        if !keys.insert(k) {
+            return Err(format!("it gives {k} twice"));
         }
     }
     let list = |key: &str| -> Result<Option<&[Node]>, String> {
@@ -2095,9 +2095,10 @@ pub fn dict_settings(doc: &Document) -> Vec<String> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut others: Vec<&str> = Vec::new();
     let mut twice: Vec<&str> = Vec::new();
+    let mut twice_set: HashSet<&str> = HashSet::new();
     for k in doc.root.entries().map(|e| e.key()) {
         if !seen.insert(k) {
-            if !twice.contains(&k) {
+            if twice_set.insert(k) {
                 twice.push(k);
             }
         } else if !known.contains(&k) {

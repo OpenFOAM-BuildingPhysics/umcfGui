@@ -731,6 +731,9 @@ fn the_docs_examples_of_blocks_have_no_problem() {
     let docs = [include_str!("../../../docs/common-workflow.md"), include_str!("../../../docs/user-guide/workflow.md")];
     let mut n = 0;
     for d in docs {
+        // As checked out: CRLF on Windows.
+        let d = d.replace("\r\n", "\n");
+        let d = d.as_str();
         for (at, _) in d.match_indices("blocks") {
             let rest = &d[at..];
             // `blocks {` or `blocks      {` followed by its dictionary.
@@ -957,4 +960,23 @@ boundary ( );";
     let s = dict_settings(&doc);
     assert!(s.contains(&"entries given twice (boundary)".to_string()), "{s:?}");
     assert!(s.contains(&"expressions in its blocks ($macros, #calc)".to_string()), "{s:?}");
+}
+
+#[test]
+// Native only: timed with the clock.
+#[allow(clippy::disallowed_methods)]
+fn many_root_entries_are_read_in_one_pass() {
+    let mut text = String::from("vertices ( (0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 1) (1 0 1) (1 1 1) (0 1 1) );\n");
+    text.push_str("blocks ( hex (0 1 2 3 4 5 6 7) (1 1 1) simpleGrading (1 1 1) );\n");
+    for i in 0..200_000 {
+        text.push_str(&format!("a{i} 1;\n"));
+    }
+    text.push_str("a7 2;\n");
+    let doc = Document::parse(&text).unwrap();
+    let start = std::time::Instant::now();
+    assert!(dict_patches(&doc).unwrap_err().contains("gives a7 twice"));
+    let s = dict_settings(&doc);
+    assert!(s.iter().any(|x| x.starts_with("other entries (a0, a1,") && x.ends_with("and 199980 more)")), "{s:?}");
+    assert!(s.contains(&"entries given twice (a7)".to_string()), "{s:?}");
+    assert!(start.elapsed().as_secs() < 3, "{:?}", start.elapsed());
 }

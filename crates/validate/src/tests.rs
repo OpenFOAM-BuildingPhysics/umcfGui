@@ -2375,4 +2375,53 @@ fn the_ground_and_top_of_blocks_follow_the_gravity() {
         m.iter().any(|x| x.contains("patch ground is on the south side") && x.ends_with("(no g: z taken as up)")),
         "{m:#?}"
     );
+    // Nor a g with a component that isn't a finite number, or not three of them.
+    for bad in ["(NaN -9.81 0)", "(0 0 -9.81 foo)", "(0 -9.81)", "(inf 0 0)"] {
+        fs.insert("constant/air/g", format!("{}value {bad};\n", header("uniformDimensionedVectorField")));
+        let m = fits(&fs);
+        assert!(
+            m.iter().any(|x| x.contains("patch ground is on the south side") && x.ends_with("(no g: z taken as up)")),
+            "{bad}: {m:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_side_whose_faces_all_went_elsewhere_has_no_patch_there() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    let grid = "        mesh        blocks;
+        blocks
+        {
+            x       ( 0 (2 1) 1 );
+            y       ( 0 (2 1) 1 );
+            z       ( 0 (2 1) 1 );
+            patches { west ground; east ground; south ground; north ground; ground ground; top inlet; }
+            faces   { roof ( (0 0 0 top) ); }
+        }
+";
+    fs.insert(
+        PATH,
+        d.write().replacen("        kind        fluid;\n", &format!("        kind        fluid;\n{grid}"), 1),
+    );
+    let c = Case::open(&complete(&fs)).unwrap();
+    let m: Vec<String> = check(&c).into_iter().filter(|d| d.code == "workflow.blocks").map(|d| d.message).collect();
+    // inlet has no face on top (roof took the only one): nothing said of it there.
+    assert!(!m.iter().any(|x| x.contains("patch inlet is on the top side")), "{m:#?}");
+    // Without the single face, it is.
+    fs.insert(
+        PATH,
+        d.write().replacen(
+            "        kind        fluid;\n",
+            &format!(
+                "        kind        fluid;\n{}",
+                grid.replace("            faces   { roof ( (0 0 0 top) ); }\n", "")
+            ),
+            1,
+        ),
+    );
+    let c = Case::open(&complete(&fs)).unwrap();
+    let m: Vec<String> = check(&c).into_iter().filter(|d| d.code == "workflow.blocks").map(|d| d.message).collect();
+    assert!(m.iter().any(|x| x.contains("patch inlet is on the top side")), "{m:#?}");
 }
