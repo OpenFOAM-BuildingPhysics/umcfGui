@@ -79,8 +79,6 @@ impl Sel {
 /// desktop app draws from while a job runs ([`Session::stand_in`]).
 #[derive(Clone)]
 pub(crate) struct Cached {
-    /// Tells this build from every other in the process (an address can be reused).
-    pub(crate) serial: u64,
     opens: u64,
     regions: Vec<String>,
     /// Each surface, with the bytes a command put there (compared by identity: the case keeps
@@ -485,6 +483,8 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     let result = build_now(s, id, p);
     if result.is_err() {
         (s.found, s.handed, s.outdated) = (found, handed, outdated);
+    } else {
+        s.reloads += 1;
     }
     result
 }
@@ -841,9 +841,7 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         if reload {
             s.selection.retain(|x| !matches!(x, Sel::Face { region, .. } if regions.contains(region)));
         }
-        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         s.scene = Some(std::sync::Arc::new(Cached {
-            serial: SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             opens: s.opens,
             regions,
             surfaces: versions,
