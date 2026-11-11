@@ -911,11 +911,13 @@ fn corner_block() -> PolyMesh {
     let mut faces: Vec<([usize; 4], usize)> =
         vec![(x_face(1, 0), 0), (y_face(0, 1), 0), (y_face(1, 1), 1), (x_face(1, 1), 2)];
     let neighbour = [1usize, 2, 3, 3];
-    faces.extend([(x_face(0, 0), 0), (y_face(0, 0), 0)]);
-    faces.extend([(y_face(1, 0), 1), (x_face(2, 0), 1), (x_face(0, 1), 2), (y_face(0, 2), 2)]);
+    // At x = 0, y = 0 and z = 0 the faces turned round, so that each points out of its cell.
+    let out = |f: [usize; 4]| [f[0], f[3], f[2], f[1]];
+    faces.extend([(out(x_face(0, 0)), 0), (out(y_face(0, 0)), 0)]);
+    faces.extend([(out(y_face(1, 0)), 1), (x_face(2, 0), 1), (out(x_face(0, 1)), 2), (y_face(0, 2), 2)]);
     faces.extend([(x_face(2, 1), 3), (y_face(1, 2), 3)]);
     for c in 0..4 {
-        faces.extend([(z_face(c % 2, c / 2, 0), c), (z_face(c % 2, c / 2, 1), c)]);
+        faces.extend([(out(z_face(c % 2, c / 2, 0)), c), (z_face(c % 2, c / 2, 1), c)]);
     }
     let text: String = faces.iter().map(|(f, _)| format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3])).collect();
     let owner: Vec<String> = faces.iter().map(|(_, o)| o.to_string()).collect();

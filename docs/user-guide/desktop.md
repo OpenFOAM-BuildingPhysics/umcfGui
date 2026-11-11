@@ -163,9 +163,10 @@ again while the mesh fits in the memory for hidden objects.
 *Wall layers* shows the layers of cells at a patch of the region ([the layers at a
 wall](scene.md#the-layers-at-a-wall)): *Patch* (the region's walls first, the first of them to
 start with) and *Layers* (how many, 1 to 50; 5 to start with). Each layer is listed under them in
-its colour with its count of cells (scrolled where there are many), and the patch faces where the layers stop short (a cell split
-or collapsed) in a colour of their own. Past the layers the mesh has, the cells beyond count as
-layers too. `umcf-gui <case> --open layers` opens the card on them at the start.
+its colour with its count of cells (scrolled where there are many), and the patch faces where the
+layers stop short (a cell split or collapsed) in a colour of their own. Past the layers the mesh
+has, the cells beyond count as layers too. `umcf-gui <case> --open layers` opens the card on them at
+the start.
 
 ## The GPU view
 

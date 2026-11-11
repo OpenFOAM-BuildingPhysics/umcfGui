@@ -790,7 +790,10 @@ fn a_cut_shows_the_layers_at_a_patch() {
     let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "floor" }))).unwrap();
     assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
     let e = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "ground" }))).unwrap_err();
-    assert!(e.to_string().contains("patch `ground` isn't in the mesh of region air"), "{e}");
+    assert!(
+        e.to_string().contains("patch `ground` isn't in the mesh of region air as the case names its patches"),
+        "{e}"
+    );
     // Refused.
     for (cut, says) in [
         (json!({ "region": "air", "patch": "roof" }), "patch `roof` isn't in the mesh of region air"),

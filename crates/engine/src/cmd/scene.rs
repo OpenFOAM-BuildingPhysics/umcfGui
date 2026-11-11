@@ -832,7 +832,7 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                     };
                                     let Some(on_disk) = on_disk else {
                                         return Err(Error::Failed(format!(
-                                            "{id}: patch `{patch}` isn't in the mesh{which}"
+                                            "{id}: patch `{patch}` isn't in the mesh{which} as the case names its patches (renamed and not saved?)"
                                         )));
                                     };
                                     Object::from_layers(&region, &m, &on_disk, layers, origin)
