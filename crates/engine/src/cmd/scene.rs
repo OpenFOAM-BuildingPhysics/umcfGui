@@ -13,9 +13,8 @@
 //! moves more than 10 km, what is shown is read again around it and the kept ones are dropped.
 //!
 //! A region's cut shows the cells a plane crosses, what `mesh.check` found there or the layers of
-//! cells at a patch; all come
-//! from the region's whole mesh, read on request and kept, or handed over by `mesh.check`
-//! (which then makes the scene drop what it kept of the region before).
+//! cells at a patch; all come from the region's whole mesh, read on request and kept, or handed
+//! over by `mesh.check` (which then makes the scene drop what it kept of the region before).
 
 use std::sync::Arc;
 
@@ -565,9 +564,12 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         )));
     }
     // The files the scene is drawn from that commands may have put: the surfaces, and the
-    // meshes' patch lists (a patch renamed or retyped).
+    // meshes' patch lists (a patch renamed or retyped), also those of the regions whose layers
+    // at a patch are shown (named as the case has it).
+    let at_patch = cuts.iter().filter(|(_, c)| matches!(c, Cells::Layers { .. })).map(|(r, _)| r);
     let boundaries: Vec<String> = regions
         .iter()
+        .chain(at_patch)
         .flat_map(|r| {
             let b = format!("{}/boundary", mesh_dir(r));
             [format!("{b}.gz"), b]
@@ -595,11 +597,12 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             files: vec![(f.to_string(), case.put_bytes(f).cloned())],
             cells: None,
         };
-        // A cut is of the mesh's cells and zones, which no command puts (its patches don't
-        // matter): a patch renamed leaves it, and its whole mesh, as they are.
+        // A cut is of the mesh's cells and zones, which no command puts: a patch renamed leaves
+        // it, and its whole mesh, as they are; but the layers at a patch are at a patch named as
+        // the case has it, so its patch list is part of what they are built from.
         let cut_key = |(r, cells): &(String, Cells)| Key {
             source: Source::Cut { region: r.clone() },
-            files: Vec::new(),
+            files: if matches!(cells, Cells::Layers { .. }) { mesh_files(r) } else { Vec::new() },
             cells: Some(cells.clone()),
         };
         let wanted: Vec<Key> = regions
@@ -808,14 +811,32 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                     Object::from_found(&region, &m, &found, origin)
                                 }
                                 Some(Cells::Layers { patch, layers }) => {
-                                    Object::from_layers(&region, &m, &patch, layers, origin).map_err(|e| {
-                                        let which = if region.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" of region {region}")
-                                        };
-                                        Error::Failed(format!("{id}: {e}{which}"))
-                                    })?
+                                    // The patch as the case names it (renamed and not saved yet),
+                                    // when its patches are the mesh's faces.
+                                    let named = case
+                                        .region(&region)
+                                        .and_then(|x| x.patches.as_ref())
+                                        .filter(|ps| {
+                                            ps.len() == m.boundary.len()
+                                                && ps.iter().zip(&m.boundary).all(|(a, b)| a.faces() == b.faces())
+                                        })
+                                        .map(|ps| ps.iter().position(|x| x.name == patch));
+                                    let which =
+                                        if region.is_empty() { String::new() } else { format!(" of region {region}") };
+                                    let on_disk = match named {
+                                        Some(Some(k)) => m.boundary.get(k).map(|b| b.name.clone()),
+                                        // Not a patch the case has (one renamed has it by another
+                                        // name on disk, which isn't asked for).
+                                        Some(None) => None,
+                                        None => Some(patch.clone()),
+                                    };
+                                    let Some(on_disk) = on_disk else {
+                                        return Err(Error::Failed(format!(
+                                            "{id}: patch `{patch}` isn't in the mesh{which}"
+                                        )));
+                                    };
+                                    Object::from_layers(&region, &m, &on_disk, layers, origin)
+                                        .map_err(|e| Error::Failed(format!("{id}: {e}{which}")))?
                                 }
                                 None => return Err(Error::Failed(format!("{id}: a cut without what it shows"))),
                             },

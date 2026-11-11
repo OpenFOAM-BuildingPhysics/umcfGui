@@ -2481,6 +2481,17 @@ mod tests {
     /// A block of 3 × 2 × 2 unit hexahedra, cut across x through its middle cells: a cut object
     /// of their skin (with faces inside the block's boundary).
     fn cut_scene() -> Scene {
+        let mesh = block_mesh();
+        let plane = umcf_render::Plane { point: Vec3::new(1.5, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0) };
+        let cut = Object::from_cut("air", &mesh, plane, Vec3::ZERO).unwrap();
+        assert_eq!(cut.triangles.len(), 2 * 16, "the middle column's skin: 4 cells, 16 faces");
+        let mut scene = Scene::new(Vec3::ZERO);
+        scene.objects.push(cut);
+        scene
+    }
+
+    /// A block of 3 × 2 × 2 unit cells, its boundary the patch `walls`.
+    fn block_mesh() -> umcf_foam_mesh::PolyMesh {
         let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
         let (nx, ny, nz) = (3usize, 2usize, 2usize);
         let p = |i: usize, j: usize, k: usize| (k * (ny + 1) + j) * (nx + 1) + i;
@@ -2554,13 +2565,22 @@ mod tests {
                     internal.len()
                 ),
             );
-        let mesh = umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap();
-        let plane = umcf_render::Plane { point: Vec3::new(1.5, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0) };
-        let cut = Object::from_cut("air", &mesh, plane, Vec3::ZERO).unwrap();
-        assert_eq!(cut.triangles.len(), 2 * 16, "the middle column's skin: 4 cells, 16 faces");
+        umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap()
+    }
+
+    #[test]
+    fn the_layers_at_a_wall_are_drawn_as_the_cpu_view_draws_them() {
+        // Every cell is at the walls: one layer, each in its colour, drawn by its skin.
+        let layers = Object::from_layers("air", &block_mesh(), "walls", 3, Vec3::ZERO).unwrap();
+        assert!(!layers.triangles.is_empty());
         let mut scene = Scene::new(Vec3::ZERO);
-        scene.objects.push(cut);
-        scene
+        scene.objects.push(layers);
+        for edges in [false, true] {
+            let mut style = Style { edges, ..Style::default() };
+            let Some((cpu, image)) = both(&scene, &mut style) else { return };
+            let off = differing(&cpu, &image, 6);
+            assert!(off < 0.01, "edges {edges}: {:.1}% of the pixels differ", off * 100.0);
+        }
     }
 
     #[test]

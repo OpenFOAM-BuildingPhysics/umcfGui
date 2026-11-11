@@ -21,8 +21,9 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
   --open        a command whose card opens at the start, as its ribbon button opens it (bc.set),
                 or cut: the cut card, or found: the cut card showing what Check mesh found (on
                 the first region it found something in; check with --cmd mesh.check), or layers:
-                the cut card showing the layers of cells at a wall (at its first wall); umcf-gui
-                stops with an error where no case is open or no region has a mesh
+                the cut card showing the layers of cells at a patch (its region's first wall,
+                else its first patch); umcf-gui stops with an error where no case is open or no
+                region has a mesh
   --dark        the dark theme
   --size        the window's size in points (default 1440x900)
   --renderer    what draws the 3D view at the start: without it, the CPU, with the window on a

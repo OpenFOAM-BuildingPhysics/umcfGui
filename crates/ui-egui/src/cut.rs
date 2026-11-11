@@ -1,8 +1,7 @@
 //! The cut card: the inside of a region's mesh (the scene's `cuts`): a plane through it, the
 //! cells it crosses drawn whole; the faces and cells *Check mesh* found there; or the layers of
-//! cells at one of its patches. The plane
-//! is across an axis at a position within the region's extent; the region's boundary is hidden
-//! while the card is open, so what is inside it shows.
+//! cells at one of its patches. The plane is across an axis at a position within the region's
+//! extent; the region's boundary is hidden while the card is open, so what is inside it shows.
 
 use eframe::egui::{self, Align, Layout, RichText, Sense, Ui, vec2};
 use serde_json::{Value, json};
@@ -407,14 +406,18 @@ impl App {
                 }
                 match classes {
                     Some(classes) if !classes.is_empty() => {
-                        for (k, c) in classes.iter().enumerate() {
-                            ui.horizontal_top(|ui| {
-                                let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                                let [red, green, blue] = umcf_render::raster::palette(k).map(|x| (x * 255.0) as u8);
-                                ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(red, green, blue));
-                                ui.add(egui::Label::new(c.as_str()).wrap());
-                            });
-                        }
+                        // Up to 50 layers: scrolled, so the card stays within the window.
+                        egui::ScrollArea::vertical().id_salt("cut-layers").max_height(160.0).show(ui, |ui| {
+                            for (k, c) in classes.iter().enumerate() {
+                                ui.horizontal_top(|ui| {
+                                    let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                                    let [red, green, blue] =
+                                        umcf_render::raster::palette(k).map(|x| (x * 255.0) as u8);
+                                    ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(red, green, blue));
+                                    ui.add(egui::Label::new(c.as_str()).wrap());
+                                });
+                            }
+                        });
                     }
                     Some(_) => {
                         ui.label("No cells at this patch.");

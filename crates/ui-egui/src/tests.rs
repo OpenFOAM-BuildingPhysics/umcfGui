@@ -1926,7 +1926,7 @@ fn the_cut_card_shows_what_check_mesh_found() {
     h.get_by_label("Check findings").click();
     h.run();
     // Not checked yet: nothing to cut, no plane to drag; the card says so.
-    assert!(h.state().cut.as_ref().unwrap().show == crate::cut::Show::Found);
+    assert_eq!(h.state().cut.as_ref().unwrap().show, crate::cut::Show::Found);
     assert!(h.state().shown().get("cuts").is_none());
     assert!(h.state().cut.as_ref().unwrap().plane().is_none());
     let _ = h.get_by_label_contains("No check of this region to show");
@@ -2045,7 +2045,7 @@ fn no_cut_opens_where_no_case_is_open() {
     let mut app = self::app();
     app.run("mesh.check", json!({})).unwrap();
     app.start_up(Some("found")).unwrap();
-    assert!(app.cut.as_ref().unwrap().show == crate::cut::Show::Found);
+    assert_eq!(app.cut.as_ref().unwrap().show, crate::cut::Show::Found);
     assert_eq!(app.shown()["cuts"], json!([{ "region": "", "found": true }]));
 }
 

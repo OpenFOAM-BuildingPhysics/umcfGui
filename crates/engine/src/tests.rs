@@ -785,6 +785,12 @@ fn a_cut_shows_the_layers_at_a_patch() {
     assert_eq!(out.data["objects"], json!([{ "cut": "air", "triangles": 12, "classes": ["layer 1: 1 cell"] }]));
     let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "walls", "layers": 2 }))).unwrap();
     assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
+    // A patch renamed and not saved: its layers by the new name, not the old one.
+    s.execute("patch.set", &json!({ "name": "floor", "patches": [{ "region": "air", "patch": "ground" }] })).unwrap();
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "floor" }))).unwrap();
+    assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
+    let e = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "ground" }))).unwrap_err();
+    assert!(e.to_string().contains("patch `ground` isn't in the mesh of region air"), "{e}");
     // Refused.
     for (cut, says) in [
         (json!({ "region": "air", "patch": "roof" }), "patch `roof` isn't in the mesh of region air"),

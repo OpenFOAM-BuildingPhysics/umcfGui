@@ -406,12 +406,13 @@ impl Object {
     /// The first `layers` layers of cells at patch `patch` of `mesh`, each layer a class
     /// (`layer 1: 120 cells`, …): from each face of the patch a column of cells, its cell at the
     /// face, then each next across the face that shares no point with the one it came in by (a
-    /// prism's or hexahedron's opposite face, as snappyHexMesh's layers are made). A column
-    /// stops at the boundary, at a cell already in a layer (another column's, of a lower layer or
-    /// the same), and where a cell has no such face or more than one (a cell split or
-    /// collapsed, as where layers failed): the patch faces whose column stopped there before
-    /// `layers` are a class of their own (`stopped short of 5 layers (a cell split or collapsed): 12 faces`), drawn in place of
-    /// the cell's face at the patch. Past the layers a mesh has, the columns go on into the
+    /// prism's or hexahedron's opposite face, as snappyHexMesh's layers are made). A cell with
+    /// two patch faces (a corner) starts a column from each. A column stops at the boundary, at
+    /// a cell already in a layer (another column's, of a lower layer or the same), and where a
+    /// cell has no such face or more than one (a cell split or collapsed, as where layers
+    /// failed): the patch faces whose column stopped there before `layers` are a class of their
+    /// own (`stopped short of 5 layers (a cell split or collapsed): 12 faces`), drawn in place
+    /// of the cell's face at the patch. Past the layers a mesh has, the columns go on into the
     /// cells beyond, which are counted as layers too. Drawn by the skin of the cells in layers
     /// (each face between one and a cell in none, or of the boundary) and the faces between two
     /// layers, each in the class of its cell (the lower layer between two). `Err` names a
@@ -432,17 +433,20 @@ impl Object {
         let mut layer: Vec<u8> = vec![0; cells];
         // Each column at its last cell: (cell, the face it came in by, its patch face).
         let mut front: Vec<(u32, u32, u32)> = Vec::new();
+        // A column from every patch face, also where a cell has two (a corner): each walks on
+        // from its own face. The cell counts once.
+        let mut first = 0usize;
         for f in at.faces() {
             let (Some(c), Ok(f)) = (mesh.owner.get(f), u32::try_from(f)) else { continue };
-            if let Some(slot) = layer.get_mut(*c as usize)
-                && *slot == 0
-            {
+            let Some(slot) = layer.get_mut(*c as usize) else { continue };
+            if *slot == 0 {
                 *slot = 1;
-                front.push((*c, f, f));
+                first += 1;
             }
+            front.push((*c, f, f));
         }
         // Each layer's count of cells; none at a patch without faces.
-        let mut count: Vec<usize> = if front.is_empty() { Vec::new() } else { vec![front.len()] };
+        let mut count: Vec<usize> = if first == 0 { Vec::new() } else { vec![first] };
         let mut short: std::collections::HashSet<u32> = std::collections::HashSet::new();
         // Each cell's faces, once (for the walk past the first layer): a layer then looks at its
         // own cells' faces only, not at every face of the mesh again.
@@ -523,7 +527,7 @@ impl Object {
                 (a, b) => a.min(b),
             };
             let (Some(face), Ok(index)) = (mesh.face(f), u32::try_from(f)) else { continue };
-            let class = if fewer.contains(&index) { short } else { u32::from(k) - 1 };
+            let class = if fewer.contains(&index) { short } else { u32::from(k).saturating_sub(1) };
             o.push_face(&mesh.points, &mut map, face, index, class, origin);
         }
         Ok(o)

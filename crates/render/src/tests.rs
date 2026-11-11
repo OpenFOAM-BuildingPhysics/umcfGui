@@ -878,15 +878,67 @@ fn a_column_stopped_short_marks_its_patch_face() {
         );
     let mesh = PolyMesh::read(&fs, "t", &Limits::default()).unwrap();
     let o = Object::from_layers("", &mesh, "walls", 2, Vec3::ZERO).unwrap();
-    assert_eq!(o.classes, ["layer 1: 1 cell", "stopped short of 2 layers (a cell split or collapsed): 1 face"]);
+    assert_eq!(o.classes, ["layer 1: 1 cell", "stopped short of 2 layers (a cell split or collapsed): 4 faces"]);
     assert_eq!(o.kinds, ["layer", "faces"]);
-    // Its four faces, the one its column started from (face 0) marked.
+    // Its four faces, each a column of its own, all marked.
     assert_eq!(o.triangles.len(), 4);
     let marked: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == 1).map(|(f, _)| *f).collect();
-    assert_eq!(marked, [0]);
+    assert_eq!(marked, [0, 1, 2, 3]);
     // A patch without faces: no layer.
     let none = Object::from_layers("", &mesh, "none", 3, Vec3::ZERO).unwrap();
     assert!(none.classes.is_empty() && none.triangles.is_empty());
     // One layer asked for: none short.
     assert_eq!(Object::from_layers("", &mesh, "walls", 1, Vec3::ZERO).unwrap().classes, ["layer 1: 1 cell"]);
+}
+
+/// A 2 × 2 × 1 block of unit cells (cell `i + 2 j` at x = i, y = j), its boundary the patch
+/// `corner` (cell 0's faces at x = 0 and y = 0) and `rest`.
+fn corner_block() -> PolyMesh {
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let p = |i: usize, j: usize, k: usize| k * 9 + j * 3 + i;
+    let mut points = String::new();
+    for k in 0..2 {
+        for j in 0..3 {
+            for i in 0..3 {
+                points += &format!("({i} {j} {k})\n");
+            }
+        }
+    }
+    let x_face = |i: usize, j: usize| [p(i, j, 0), p(i, j + 1, 0), p(i, j + 1, 1), p(i, j, 1)];
+    let y_face = |i: usize, j: usize| [p(i, j, 0), p(i, j, 1), p(i + 1, j, 1), p(i + 1, j, 0)];
+    let z_face = |i: usize, j: usize, k: usize| [p(i, j, k), p(i + 1, j, k), p(i + 1, j + 1, k), p(i, j + 1, k)];
+    // Internal (owner < neighbour, by owner), then `corner`, then `rest`.
+    let mut faces: Vec<([usize; 4], usize)> =
+        vec![(x_face(1, 0), 0), (y_face(0, 1), 0), (y_face(1, 1), 1), (x_face(1, 1), 2)];
+    let neighbour = [1usize, 2, 3, 3];
+    faces.extend([(x_face(0, 0), 0), (y_face(0, 0), 0)]);
+    faces.extend([(y_face(1, 0), 1), (x_face(2, 0), 1), (x_face(0, 1), 2), (y_face(0, 2), 2)]);
+    faces.extend([(x_face(2, 1), 3), (y_face(1, 2), 3)]);
+    for c in 0..4 {
+        faces.extend([(z_face(c % 2, c / 2, 0), c), (z_face(c % 2, c / 2, 1), c)]);
+    }
+    let text: String = faces.iter().map(|(f, _)| format!("4({} {} {} {})\n", f[0], f[1], f[2], f[3])).collect();
+    let owner: Vec<String> = faces.iter().map(|(_, o)| o.to_string()).collect();
+    let nb: Vec<String> = neighbour.iter().map(usize::to_string).collect();
+    let patch = |n: &str, count: usize, start: usize| {
+        format!("    {n}\n    {{\n        type wall;\n        nFaces {count};\n        startFace {start};\n    }}\n")
+    };
+    let fs = MemFs::new()
+        .with("c/points", format!("{}18\n(\n{points})\n", h("vectorField")))
+        .with("c/faces", format!("{}{}\n(\n{text})\n", h("faceList"), faces.len()))
+        .with("c/owner", format!("{}{}\n(\n{}\n)\n", h("labelList"), owner.len(), owner.join(" ")))
+        .with("c/neighbour", format!("{}4\n(\n{}\n)\n", h("labelList"), nb.join(" ")))
+        .with(
+            "c/boundary",
+            format!("{}2\n(\n{}{})\n", h("polyBoundaryMesh"), patch("corner", 2, 4), patch("rest", faces.len() - 6, 6)),
+        );
+    PolyMesh::read(&fs, "c", &Limits::default()).unwrap()
+}
+
+#[test]
+fn a_cell_at_a_corner_starts_a_column_from_each_of_its_patch_faces() {
+    // Cell 0 at the corner: from its face at x = 0 the column goes on to cell 1, from the one at
+    // y = 0 to cell 2; then both reach the boundary.
+    let o = Object::from_layers("air", &corner_block(), "corner", 3, Vec3::ZERO).unwrap();
+    assert_eq!(o.classes, ["layer 1: 1 cell", "layer 2: 2 cells"]);
 }

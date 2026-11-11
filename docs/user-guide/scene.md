@@ -187,7 +187,8 @@ A region's cut can show the layers of cells at one of its patches, the first `la
 
 - **Which cells**: from each face of the patch a column of cells: its cell at the face, then
   each next across the cell's face that shares no point with the face it came in by (a prism's
-  or hexahedron's opposite face, as snappyHexMesh's layers are made). A column ends at the
+  or hexahedron's opposite face, as snappyHexMesh's layers are made). A cell with two patch
+  faces (at a corner) starts a column from each. A column ends at the
   boundary and at a cell already in a layer (another column's: the lower layer wins), and stops
   where a cell has no such face or more than one (a cell split or collapsed, as where layers
   failed). Past the layers a mesh has, the columns go on into the cells beyond, which count as
@@ -200,7 +201,8 @@ A region's cut can show the layers of cells at one of its patches, the first `la
   cell's face at the patch; columns that end at the boundary or at another column's cell aren't
   counted there. A patch without faces shows nothing.
 - **Errors**: a patch the region doesn't have (*patch `roof` isn't in the mesh of region air*),
-  and `layers` that isn't a whole number from 1 to 50.
+  and `layers` that isn't a whole number from 1 to 50. The patch is named as the case has it: a
+  patch renamed (`patch.set`) and not saved yet is asked for by its new name.
 - **Reading**: the region's whole mesh, as for a plane's cut, read once and kept; another patch or
   count reads nothing again. Each cell's faces are listed once (about 8 bytes a face), and each
   layer then looks only at its own cells. Six layers at the buildings take 0.2 s in the small
