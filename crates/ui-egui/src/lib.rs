@@ -1606,7 +1606,8 @@ impl App {
                                 let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
                                 let layer = Layer::Region(r.name.clone());
                                 let entry = self.layer_entry(&layer);
-                                let detail = match (&r.patches, entry.map(display::note).filter(|n| !n.is_empty())) {
+                                let note = Some(self.layer_note(&layer)).filter(|n| !n.is_empty());
+                                let detail = match (&r.patches, note) {
                                     (Some(p), None) => format!("{} patches", p.len()),
                                     (Some(p), Some(n)) => format!("{} patches · {n}", p.len()),
                                     (None, _) => "no mesh".to_string(),

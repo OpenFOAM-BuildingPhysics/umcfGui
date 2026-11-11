@@ -134,9 +134,9 @@ shows the cells it crosses, whole ([a cut](scene.md#a-cut-through-the-mesh)): th
 mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider over the region's
 extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
 layer on the plane's other side where it lies on faces between cells. While the card is open the
-region's boundary is hidden (its layer in the browser says so), as it would hide the cut, except while
-the card has nothing to show (no check, patch or surface yet), when it shows; closing
-the card takes the cut away and shows the boundary again. A mode set for the region in the browser
+region's boundary is hidden (its layer in the browser says so), as it would hide the cut, except
+while the card has nothing to show (no check, patch or surface yet), when it shows; closing the
+card takes the cut away and shows the boundary again. A mode set for the region in the browser
 while the card is open (*Wireframe*, say), or a reset of it, ends the card's hiding: the region is
 drawn so, and stays so once the card closes. A mode set for one of its patches shows once the card
 closes or the region is shown. The view draws the plane, a translucent rectangle a little past the

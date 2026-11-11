@@ -187,19 +187,26 @@ impl App {
     /// boundary shows then rather than an empty view.
     pub(crate) fn view_display(&self) -> Vec<DisplayEntry> {
         let mut out = self.display.clone();
-        let idle = self.cut_shown().is_none();
-        if let Some(r) = self.cut.as_ref().filter(|f| idle && !f.released).and_then(|f| f.hid.clone()) {
-            let layer = Layer::Region(r);
-            if let Some(k) = out.iter().rposition(|e| e.layer == layer && e.mode == Some(Mode::Hidden)) {
-                match out.get_mut(k) {
-                    Some(e) if e.opacity.is_some() => e.mode = None,
-                    _ => {
-                        out.remove(k);
-                    }
+        if let Some(k) = self.idle_hiding() {
+            match out.get_mut(k) {
+                Some(e) if e.opacity.is_some() => e.mode = None,
+                _ => {
+                    out.remove(k);
                 }
             }
         }
         out
+    }
+
+    /// Where in `display` the card's hiding of its region is while the card has nothing to show
+    /// (and so the view draws without its mode); `None` else.
+    pub(crate) fn idle_hiding(&self) -> Option<usize> {
+        if self.cut_shown().is_some() {
+            return None;
+        }
+        let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
+        let layer = Layer::Region(r);
+        self.display.iter().rposition(|e| e.layer == layer && e.mode == Some(Mode::Hidden))
     }
 
     /// Keeps the card's hiding entry last, after the display's entries are sorted (patches

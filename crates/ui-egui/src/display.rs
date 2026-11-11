@@ -91,13 +91,27 @@ impl App {
         self.display.iter().find(|e| e.layer == *layer)
     }
 
+    /// A short note of how `layer`'s own entry draws it, for the browser, as the view draws it
+    /// (without the cut card's hiding while the card shows nothing); empty without one.
+    pub(crate) fn layer_note(&self, layer: &Layer) -> String {
+        let idle = self.idle_hiding();
+        match self.display.iter().enumerate().find(|(_, e)| e.layer == *layer) {
+            Some((k, e)) if idle == Some(k) => note(&DisplayEntry { mode: None, ..e.clone() }),
+            Some((_, e)) => note(e),
+            None => String::new(),
+        }
+    }
+
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
     /// cut card's hiding only while it shows something), as for one of its classes (`groups`: a
     /// patch's groups).
     pub(crate) fn layer_display(&self, layer: &Layer, groups: &[String]) -> Display {
         let mut d = Display::default();
-        for e in self.view_display().iter().filter(|e| e.layer == *layer || holds(&e.layer, layer, groups)) {
-            if let Some(m) = e.mode {
+        let idle = self.idle_hiding();
+        for (k, e) in
+            self.display.iter().enumerate().filter(|(_, e)| e.layer == *layer || holds(&e.layer, layer, groups))
+        {
+            if let Some(m) = e.mode.filter(|_| idle != Some(k)) {
                 d.mode = m;
             }
             if let Some(a) = e.opacity {
