@@ -816,7 +816,7 @@ fn what_a_check_found_is_drawn_where_it_is() {
 }
 
 #[test]
-fn a_mesh_whose_faces_trade_places_is_another_mesh() {
+fn a_mesh_whose_faces_trade_places_or_points_move_is_another_mesh() {
     use crate::Found;
     let (mesh, swapped) = (row(3, &[]), row_swapped(3, &[], true));
     // Same sizes, owners and neighbours: only the faces' points tell them apart.
@@ -824,4 +824,8 @@ fn a_mesh_whose_faces_trade_places_is_another_mesh() {
     assert_ne!(mesh.face(4), swapped.face(4));
     assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&swapped));
     assert_eq!(Found::mesh_of(&mesh), Found::mesh_of(&row(3, &[])));
+    // Nor is one moved: the same faces, a point elsewhere.
+    let mut moved = row(3, &[]);
+    moved.points[0][0] = -0.25;
+    assert_ne!(Found::mesh_of(&mesh), Found::mesh_of(&moved));
 }

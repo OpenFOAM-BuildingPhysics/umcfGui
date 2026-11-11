@@ -85,8 +85,9 @@ pub struct Found {
 
 impl Found {
     /// What tells a mesh from another for the labels of its faces and cells: its cells, faces
-    /// and points, and a fingerprint (FNV-1a) of its `owner`, `neighbour` and `faces` lists, which
-    /// a mesh renumbered (`renumberMesh`) or rewritten with the same sizes changes.
+    /// and points, and a fingerprint (FNV-1a) of its `owner`, `neighbour`, `faces` and `points`
+    /// lists, which a mesh renumbered (`renumberMesh`), moved or rewritten with the same sizes
+    /// changes.
     pub fn mesh_of(mesh: &umcf_foam_mesh::PolyMesh) -> [u64; 4] {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         let mut mix = |x: u64| h = (h ^ x).wrapping_mul(0x0100_0000_01b3);
@@ -99,6 +100,11 @@ impl Found {
         for f in (0..mesh.n_faces()).filter_map(|i| mesh.face(i)) {
             mix(f.len() as u64);
             f.iter().for_each(|x| mix(u64::from(*x)));
+        }
+        // And where the points are: a mesh moved or smoothed with the same faces would be shown
+        // findings made for the old geometry.
+        for x in mesh.points.iter().flatten() {
+            mix(x.to_bits());
         }
         [mesh.n_cells() as u64, mesh.n_faces() as u64, mesh.n_points() as u64, h]
     }
