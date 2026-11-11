@@ -371,8 +371,8 @@ above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is i
   files held besides), and 24 more a point for an ASCII one (its points are parsed into a list
   that grows). Building a plane's cut adds about 21 bytes a cell and 12 a point; the layers at a
   wall about 5 bytes a cell, 8 a face and 21 a triangle drawn; the cells near a surface at most
-  53 bytes a cell, 41 a point, 21 a triangle of the mesh's faces and about 210 a triangle of the
-  surface (its file's size over 50 bytes a triangle, five times that compressed). The whole mesh
+  53 bytes a cell, 41 a point, 21 a triangle of the mesh's faces and about 230 a triangle of the
+  surface (its file's size over 50 bytes a triangle, ten times that compressed). The whole mesh
   `mesh.check` read is handed to the scene while it fits in what the hidden objects and the
   whole meshes kept leave of the quarter ([what a check found](#what-a-check-found)).
 

@@ -320,7 +320,8 @@ pub(crate) fn patch_on_disk(case: &umcf_model::Case, region: &str, mesh: &PolyMe
 /// What building the cells near a surface of `mesh` takes, at most, with `triangles` the
 /// surface's (estimated): each cell's place among the near ones (4 bytes) and, where all are near,
 /// its extent and size (49), each point's copy (24), flag (1) and map (4), the surface in double
-/// precision with the tree over it (about 210 bytes a triangle), and the object, at most every
+/// precision twice (the caller's and `near`'s) with the tree over it (about 230 bytes a
+/// triangle), and the object, at most every
 /// face's triangles (21 bytes each) and each point in single precision (12).
 pub(crate) fn near_need(mesh: &PolyMesh, triangles: u64) -> u64 {
     let drawn: u64 = (0..mesh.n_faces())
@@ -329,16 +330,16 @@ pub(crate) fn near_need(mesh: &PolyMesh, triangles: u64) -> u64 {
     (mesh.n_cells() as u64)
         .saturating_mul(53)
         .saturating_add((mesh.n_points() as u64).saturating_mul(24 + 1 + 4 + 12))
-        .saturating_add(triangles.saturating_mul(210))
+        .saturating_add(triangles.saturating_mul(230))
         .saturating_add(drawn.saturating_mul(21))
 }
 
 /// About how many triangles surface `file` has, at most, from its size: a binary STL's 50 bytes
-/// a triangle (an ASCII one has fewer), five times as many for a compressed one; [`UNKNOWN`]
+/// a triangle (an ASCII one has fewer), ten times as many for a compressed one; [`UNKNOWN`]
 /// when its size can't be told.
 fn surface_triangles(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
     let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file));
-    let ratio = if file.ends_with(".gz") { 5 } else { 1 };
+    let ratio = if file.ends_with(".gz") { 10 } else { 1 };
     size.map_or(UNKNOWN, |n| (n / 50).saturating_add(1).saturating_mul(ratio))
 }
 
