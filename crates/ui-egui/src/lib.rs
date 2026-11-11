@@ -1340,6 +1340,7 @@ impl App {
                     Ok(scene) => {
                         let display = umcf_engine::display_style(scene, &entries);
                         let look = self.look;
+                        self.viewport.cut_plane = self.cut.as_ref().and_then(cut::CutForm::plane);
                         action = self.viewport.show(ui, rect, scene, &selection, &display, [revision, look], &t);
                         None
                     }
@@ -1413,6 +1414,7 @@ impl App {
                 self.act("select.brush", p);
             }
             Some(Action::Fit(view)) => self.fit_view(Some(view)),
+            Some(Action::MoveCut { point }) => self.move_cut(point),
             None => {}
         }
         self.browser(ui.ctx(), rect);

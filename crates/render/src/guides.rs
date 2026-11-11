@@ -9,6 +9,11 @@
 //!   axis), sized with the view, with their edges and the axes (x red, y green, z blue): what
 //!   the scene shows in front of them hides them.
 //!
+//! - A cut's plane, while it is moved (the desktop app's cut card): a translucent rectangle
+//!   over the region's extent, a little past it so that its frame shows outside the cut cells,
+//!   its frame, and an arrow along its normal from its middle, the handles a drag moves it by
+//!   ([`CutPlane::handles`]); brighter while it is held or the pointer is on it.
+//!
 //! The spacing, the extent, the fade and the colours are ported from SolidCraft's viewport
 //! (<https://github.com/tangency-labs/solidcraft>, MIT or Apache-2.0, at commit 9325e3a:
 //! `crates/engine/src/view.rs` `grid_step`, `grid_ext`, `GridFade`, and
@@ -16,7 +21,7 @@
 //! Copyright (c) 2026 SolidCraft contributors, under the MIT licence
 //! (`assets/licenses/MIT-SolidCraft.txt`; `ATTRIBUTION.md`).
 
-use umcf_geom::Vec3;
+use umcf_geom::{BBox, Vec3};
 
 use crate::Scene;
 use crate::camera::Camera;
@@ -49,6 +54,69 @@ pub struct Square {
     pub colour: [f32; 3],
     pub alpha: f32,
 }
+
+/// A cut's plane, drawn to be dragged along its normal (world coordinates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CutPlane {
+    /// A point on the plane.
+    pub point: Vec3,
+    /// Its normal (any length but zero).
+    pub normal: Vec3,
+    /// The region's extent: the rectangle covers it, seen along the normal.
+    pub extent: BBox,
+    /// Held, or the pointer on a handle: drawn brighter.
+    pub active: bool,
+}
+
+/// How far the rectangle reaches past the extent, of its half sides.
+const CUT_MARGIN: f64 = 0.15;
+/// The arrow's length, of the rectangle's longer half side.
+const ARROW: f64 = 0.6;
+
+/// The handles of a cut's plane (world coordinates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Handles {
+    /// The rectangle's corners, in order.
+    pub corners: [Vec3; 4],
+    /// The arrow, from the rectangle's middle (on the plane) to its tip.
+    pub base: Vec3,
+    pub tip: Vec3,
+    /// The unit normal and two unit axes in the plane.
+    pub normal: Vec3,
+    pub u: Vec3,
+    pub v: Vec3,
+}
+
+impl CutPlane {
+    /// The rectangle over the extent seen along the normal (its middle the extent's middle
+    /// moved onto the plane), a little past it, and the arrow; `None` for a normal of zero
+    /// length or anything not finite.
+    pub fn handles(&self) -> Option<Handles> {
+        let length = self.normal.length();
+        if !(length.is_finite() && length > 0.0) {
+            return None;
+        }
+        let n = self.normal * (1.0 / length);
+        let other = if n.z.abs() < 0.9 { Vec3::new(0.0, 0.0, 1.0) } else { Vec3::new(1.0, 0.0, 0.0) };
+        let u = n.cross(other);
+        let u = u * (1.0 / u.length());
+        let v = n.cross(u);
+        let middle = self.extent.centre();
+        let c = middle - n * n.dot(middle - self.point);
+        let half = self.extent.size() * 0.5;
+        let reach = |a: Vec3| a.x.abs() * half.x + a.y.abs() * half.y + a.z.abs() * half.z;
+        let (hu, hv) = (reach(u) * (1.0 + CUT_MARGIN), reach(v) * (1.0 + CUT_MARGIN));
+        let corners = [c - u * hu - v * hv, c + u * hu - v * hv, c + u * hu + v * hv, c - u * hu + v * hv];
+        let tip = c + n * (hu.max(hv) * ARROW);
+        let ok = corners.iter().chain([&c, &tip]).all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite());
+        ok.then_some(Handles { corners, base: c, tip, normal: n, u, v })
+    }
+}
+
+/// The cut's plane: its rectangle, frame and arrow. Light over a dark background, dark over a
+/// light one; brighter when active.
+const CUT_DARK: [u8; 3] = [255, 214, 102];
+const CUT_LIGHT: [u8; 3] = [196, 120, 0];
 
 /// What is drawn: the grid's lines (under everything), the origin's squares and lines (hidden
 /// by what is in front of them), each in the order it is drawn.
@@ -103,7 +171,7 @@ pub fn origin_size(half_height: f64) -> f64 {
 
 /// The guides `which` for `scene` seen by `camera`; `dark` for the colours over a dark
 /// background.
-pub fn build(scene: &Scene, camera: &Camera, which: Guides, dark: bool) -> Drawn {
+pub fn build(scene: &Scene, camera: &Camera, which: Guides, dark: bool, cut: Option<&CutPlane>) -> Drawn {
     let mut out = Drawn::default();
     let f = camera.frame();
     let half_height = camera.distance * f.tan_half;
@@ -153,7 +221,81 @@ pub fn build(scene: &Scene, camera: &Camera, which: Guides, dark: bool) -> Drawn
             }
         }
     }
+    if let Some(h) = cut.and_then(|c| c.handles().map(|h| (h, c.active))) {
+        plane(&mut out, h.0, h.1, dark, f.eye, &rel);
+    }
     out
+}
+
+/// The sides of the arrow's shaft and head.
+const ARROW_SIDES: usize = 16;
+
+/// A cut's plane: the rectangle, its frame, and the arrow, solid: a shaft and a cone, each facet
+/// shaded by how squarely it faces the eye at `eye`. Those facing away are left out, and the
+/// parts go far to near (the squares are drawn in order, not sorted by depth).
+fn plane(out: &mut Drawn, h: Handles, active: bool, dark: bool, eye: Vec3, rel: &dyn Fn(Vec3) -> [f32; 3]) {
+    let c = if dark { CUT_DARK } else { CUT_LIGHT };
+    let colour = rgb(c[0], c[1], c[2]);
+    let (fill, line) = if active { (0.22, 1.0) } else { (0.12, 0.8) };
+    out.squares.push(Square { corners: h.corners.map(rel), colour, alpha: fill });
+    for k in 0..4 {
+        let (Some(p), Some(q)) = (h.corners.get(k), h.corners.get((k + 1) % 4)) else { continue };
+        out.lines.push(Line { a: rel(*p), b: rel(*q), colour, alpha: line });
+    }
+    let length = (h.tip - h.base).length();
+    let (shaft_r, head_r, head) = (length * 0.025, length * 0.075, length * 0.25);
+    let neck = h.tip - h.normal * head;
+    let ring = |centre: Vec3, r: f64, k: usize| {
+        let a = std::f64::consts::TAU * k as f64 / ARROW_SIDES as f64;
+        centre + h.u * (r * a.cos()) + h.v * (r * a.sin())
+    };
+    // Lit as it faces the eye; brighter held.
+    let lift = if active { 1.0 } else { 0.85 };
+    let mut facet = |out: &mut Drawn, corners: [Vec3; 4], outward: Vec3| {
+        let [a, b, c, d] = corners;
+        let middle = (a + b + c + d) * 0.25;
+        let to_eye = eye - middle;
+        let facing = outward.dot(to_eye) / (outward.length() * to_eye.length()).max(1e-300);
+        if facing.is_nan() || facing <= 0.0 {
+            return;
+        }
+        let shade = ((0.45 + 0.55 * facing) * lift) as f32;
+        out.squares.push(Square {
+            corners: corners.map(rel),
+            colour: colour.map(|x| (x * shade).min(1.0)),
+            alpha: 1.0,
+        });
+    };
+    let shaft = |out: &mut Drawn, facet: &mut dyn FnMut(&mut Drawn, [Vec3; 4], Vec3)| {
+        for k in 0..ARROW_SIDES {
+            let (a, b) = (ring(h.base, shaft_r, k), ring(h.base, shaft_r, k + 1));
+            let (c, d) = (ring(neck, shaft_r, k + 1), ring(neck, shaft_r, k));
+            facet(out, [a, b, c, d], (a + b) * 0.5 - h.base);
+        }
+    };
+    let cone = |out: &mut Drawn, facet: &mut dyn FnMut(&mut Drawn, [Vec3; 4], Vec3)| {
+        for k in 0..ARROW_SIDES {
+            let (a, b) = (ring(neck, head_r, k), ring(neck, head_r, k + 1));
+            // Outward: across the side, tilted toward the tip by the cone's slope.
+            let side = (a + b) * 0.5 - neck;
+            let outward = side * (1.0 / side.length().max(1e-300)) + h.normal * (head_r / head);
+            facet(out, [a, b, h.tip, h.tip], outward);
+        }
+        // Its base, seen from behind.
+        for k in 0..ARROW_SIDES {
+            let (a, b) = (ring(neck, head_r, k + 1), ring(neck, head_r, k));
+            facet(out, [neck, a, b, b], h.normal * -1.0);
+        }
+    };
+    // Seen from past the head's base the shaft is behind the head; from short of it (the head's
+    // base facing the eye), in front of it.
+    if h.normal.dot(eye - neck) >= 0.0 {
+        shaft(out, &mut facet);
+        cone(out, &mut facet);
+    } else {
+        cone(out, &mut facet);
+        shaft(out, &mut facet);
+    }
 }
 
 /// The grid on z = 0 around where the view's axis meets it, its lines fading out with the
@@ -258,7 +400,7 @@ mod tests {
         let scene = Scene::new(Vec3::new(100.0, 200.0, 0.0));
         let camera =
             Camera::fit(View::Iso, &BBox { min: Vec3::new(90.0, 190.0, 0.0), max: Vec3::new(110.0, 210.0, 10.0) }, 1.5);
-        let d = build(&scene, &camera, Guides::ALL, true);
+        let d = build(&scene, &camera, Guides::ALL, true, None);
         assert!(!d.grid.is_empty() && d.squares.len() == 3 && d.lines.len() > 12);
         // The grid on z = 0 (relative to the scene's origin, also 0 here), faded towards its ends.
         assert!(d.grid.iter().all(|l| l.a[2] == 0.0 && l.b[2] == 0.0));
@@ -266,6 +408,45 @@ mod tests {
         // The origin's xy square from the world's origin: (-100, -200) relative to the scene's.
         assert_eq!(d.squares[0].corners[0], [-100.0, -200.0, 0.0]);
         // Nothing asked, nothing drawn.
-        assert_eq!(build(&scene, &camera, Guides::default(), true), Drawn::default());
+        assert_eq!(build(&scene, &camera, Guides::default(), true, None), Drawn::default());
+    }
+
+    #[test]
+    fn a_cut_s_plane_covers_the_extent_and_has_its_arrow() {
+        let extent = BBox { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(10.0, 20.0, 4.0) };
+        let plane =
+            CutPlane { point: Vec3::new(3.0, 0.0, 0.0), normal: Vec3::new(2.0, 0.0, 0.0), extent, active: false };
+        let h = plane.handles().unwrap();
+        // Across x at 3, over y and z a little past the extent.
+        assert!(h.corners.iter().all(|p| p.x == 3.0));
+        let ys: Vec<f64> = h.corners.iter().map(|p| p.y).collect();
+        assert!(ys.iter().any(|y| *y < 0.0) && ys.iter().any(|y| *y > 20.0) && ys.iter().all(|y| y.abs() < 22.0));
+        assert_eq!(h.base, Vec3::new(3.0, 10.0, 2.0));
+        assert!(h.tip.x > 3.0 && h.tip.y == 10.0);
+        // Drawn: the rectangle, its frame, and the arrow solid: the facets facing the eye, of
+        // the shaft's and the head's sides (and the head's base, seen from behind), shaded.
+        let scene = Scene::new(Vec3::ZERO);
+        let camera = Camera::fit(View::Iso, &extent, 1.5);
+        let d = build(&scene, &camera, Guides::default(), true, Some(&plane));
+        assert_eq!(d.lines.len(), 4);
+        let solid: Vec<&Square> = d.squares.iter().filter(|q| q.alpha == 1.0).collect();
+        assert!(solid.len() >= ARROW_SIDES && solid.len() < 3 * ARROW_SIDES, "{}", solid.len());
+        assert!(solid.iter().any(|q| q.colour != solid[0].colour), "shaded");
+        let held = build(&scene, &camera, Guides::default(), true, Some(&CutPlane { active: true, ..plane }));
+        assert!(held.squares[0].alpha > d.squares[0].alpha);
+        // The head over the shaft seen from past the head's base; the shaft over the head's base
+        // seen from short of it, even from the tip's side of the plane (the last square drawn:
+        // a side of the head has the tip twice, one of the shaft four corners).
+        let from = |x: f64| {
+            let camera =
+                Camera { target: Vec3::new(x, 10.0, 2.0), distance: 50.0, azimuth: 0.0, elevation: 0.0, fov: 30.0 };
+            let d = build(&scene, &camera, Guides::default(), true, Some(&plane));
+            let last = *d.squares.last().unwrap();
+            last.corners[2] == last.corners[3]
+        };
+        assert!(from(30.0), "the head last, seen from past it");
+        assert!(!from(4.0), "the shaft last, seen from short of the head's base");
+        // A normal of zero: nothing.
+        assert!(CutPlane { normal: Vec3::ZERO, ..plane }.handles().is_none());
     }
 }

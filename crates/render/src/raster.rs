@@ -96,6 +96,8 @@ pub struct Style {
     pub background: Option<[[f32; 3]; 2]>,
     /// The grid and the origin drawn beside the scene (none by default).
     pub guides: crate::guides::Guides,
+    /// A cut's plane drawn to be moved (the desktop app's cut card; none by default).
+    pub cut_plane: Option<crate::guides::CutPlane>,
 }
 
 /// An image, rows from the top, 4 bytes (RGBA) per pixel.
@@ -994,7 +996,7 @@ pub fn draw(scene: &Scene, camera: &Camera, style: &Style) -> Image {
     };
     let lens = Lens::new(scene, camera, wu, hu);
     let background = style.background.unwrap_or([TOP, BOTTOM]);
-    let guides = crate::guides::build(scene, camera, style.guides, is_dark(background));
+    let guides = crate::guides::build(scene, camera, style.guides, is_dark(background), style.cut_plane.as_ref());
     // The grid first, under everything: what the scene shows hides it.
     let view_of = |p: [f32; 3]| lens.point(Vec3::from_f32(p));
     for g in &guides.grid {

@@ -920,7 +920,18 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let image = draw(
         scene,
         &cam,
-        &Style { width, height, edges, selected, selected_faces, colour_by, display, guides, background },
+        &Style {
+            width,
+            height,
+            edges,
+            selected,
+            selected_faces,
+            colour_by,
+            display,
+            guides,
+            background,
+            cut_plane: None,
+        },
     );
     let file = png::encode(&image);
     let labels: Vec<String> = scene.objects.iter().map(Object::label).collect();

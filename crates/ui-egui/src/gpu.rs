@@ -496,7 +496,8 @@ fn fs_back(in: Back) -> Pixel {
 }
 "#;
 
-/// The guides (the grid, the origin's squares and lines: `render::guides`), from a vertex buffer
+/// The guides (the grid, the origin's squares and lines, a cut's plane and arrow:
+/// `render::guides`), from a vertex buffer
 /// of positions (relative to the scene's origin) and colours. The grid is drawn in the scene's
 /// pass under everything (no depth test); the origin's squares and lines in the marks' pass,
 /// behind the surfaces' depths, as the CPU view draws them.
@@ -1489,9 +1490,15 @@ impl Gpu {
             }
         }
         // The guides, as the CPU view makes them: one vertex buffer, the grid's lines, the
-        // origin's squares (two triangles each), its lines.
+        // squares (two triangles each: the origin's, a cut's plane and arrow), the lines.
         let background = style.background.unwrap_or(BACKGROUND);
-        let guides = umcf_render::guides::build(scene, camera, style.guides, umcf_render::raster::is_dark(background));
+        let guides = umcf_render::guides::build(
+            scene,
+            camera,
+            style.guides,
+            umcf_render::raster::is_dark(background),
+            style.cut_plane.as_ref(),
+        );
         let mut vertices: Vec<f32> = Vec::new();
         let vertex =
             |v: &mut Vec<f32>, p: [f32; 3], c: [f32; 3], a: f32| v.extend([p[0], p[1], p[2], c[0], c[1], c[2], a]);
@@ -2564,6 +2571,21 @@ mod tests {
             let Some((cpu, image)) = both(&scene, &mut style) else { return };
             let off = differing(&cpu, &image, 6);
             assert!(off < 0.01, "edges {edges}: {:.1}% of the pixels differ", off * 100.0);
+        }
+        // With its plane drawn to be dragged (the cut card's), held or not.
+        let extent = scene.bbox().unwrap();
+        let point = extent.centre();
+        for active in [false, true] {
+            let plane =
+                umcf_render::guides::CutPlane { point, normal: umcf_geom::Vec3::new(1.0, 0.0, 0.0), extent, active };
+            let mut style = Style { cut_plane: Some(plane), ..Style::default() };
+            let Some((cpu, image)) = both(&scene, &mut style) else { return };
+            let off = differing(&cpu, &image, 6);
+            assert!(off < 0.01, "plane, active {active}: {:.1}% of the pixels differ", off * 100.0);
+            let mut bare = Style::default();
+            let Some((without, image_without)) = both(&scene, &mut bare) else { return };
+            assert!(differing(&cpu, &without, 6) > 0.001, "the plane is drawn on the CPU");
+            assert!(differing(&image, &image_without, 6) > 0.001, "the plane is drawn on the GPU");
         }
     }
 

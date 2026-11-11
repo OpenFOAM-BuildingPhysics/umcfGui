@@ -1927,3 +1927,39 @@ fn no_cut_opens_where_no_case_is_open() {
     assert!(app.cut.is_none());
     assert!(self::app().can_cut());
 }
+
+#[test]
+fn the_cut_s_plane_is_dragged_by_its_arrow() {
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    h.run();
+    let form = h.state().cut.clone().unwrap();
+    let plane = form.plane().expect("the region's extent is known once its scene is drawn");
+    let handles = plane.handles().unwrap();
+    let camera = h.state().viewport.camera.unwrap();
+    let rect = h.state().viewport.rect.unwrap();
+    // Taken by the arrow, half way along it, and pulled on along it on the screen: the plane
+    // moves along its normal, the camera stays.
+    let screen = |p| crate::viewport::to_screen(&camera, rect, p).unwrap();
+    let (base, tip) = (screen(handles.base), screen(handles.tip));
+    let start = base + (tip - base) * 0.5;
+    assert!(crate::viewport::on_handle(&camera, rect, &handles, start));
+    drag(&mut h, start, start + (tip - base) * 0.3, Modifiers::NONE);
+    let moved = h.state().cut.clone().unwrap();
+    assert!(moved.at > form.at, "{} → {}", form.at, moved.at);
+    assert!(moved.placed);
+    assert!(moved.at <= moved.range.1);
+    assert_eq!(h.state().viewport.camera, Some(camera));
+    // It followed the pointer: the arrow's middle is where it was let go (within a few points).
+    let now = moved.plane().unwrap().handles().unwrap();
+    let middle = screen(now.base) + (screen(now.tip) - screen(now.base)) * 0.5;
+    let end = start + (tip - base) * 0.3;
+    assert!(middle.distance(end) < 3.0, "{middle:?} {end:?}");
+    // Away from the handles a drag turns the view, the plane staying.
+    let away = rect.left_top() + vec2(30.0, rect.height() - 30.0);
+    assert!(!crate::viewport::on_handle(&camera, rect, &handles, away));
+    drag(&mut h, away, away + vec2(40.0, 0.0), Modifiers::NONE);
+    assert_eq!(h.state().cut.as_ref().unwrap().at, moved.at);
+    assert_ne!(h.state().viewport.camera, Some(camera));
+}

@@ -31,6 +31,8 @@ pub struct CutForm {
     pub(crate) released: bool,
     /// The position was set by hand: kept when the region's extent comes to be known.
     pub(crate) placed: bool,
+    /// The region's extent (world), once known: the plane drawn over it in the view.
+    pub(crate) extent: Option<umcf_geom::BBox>,
 }
 
 impl CutForm {
@@ -44,6 +46,7 @@ impl CutForm {
             hid: None,
             released: false,
             placed: false,
+            extent: None,
         }
     }
 
@@ -56,6 +59,23 @@ impl CutForm {
             *p = self.at;
         }
         json!({ "region": self.region, "point": point, "normal": normal })
+    }
+
+    /// The plane as the view draws it to be dragged, once the region's extent is known.
+    pub fn plane(&self) -> Option<umcf_render::guides::CutPlane> {
+        let extent = self.extent?;
+        let mut axis = [0.0; 3];
+        let mut point = [extent.centre().x, extent.centre().y, extent.centre().z];
+        if let (Some(n), Some(p)) = (axis.get_mut(self.axis), point.get_mut(self.axis)) {
+            *n = if self.flip { -1.0 } else { 1.0 };
+            *p = self.at;
+        }
+        Some(umcf_render::guides::CutPlane {
+            point: umcf_geom::Vec3::new(point[0], point[1], point[2]),
+            normal: umcf_geom::Vec3::new(axis[0], axis[1], axis[2]),
+            extent,
+            active: false,
+        })
     }
 }
 
@@ -182,6 +202,7 @@ impl App {
                 _ => (b.min.z, b.max.z),
             };
             form.range = (lo, hi);
+            form.extent = Some(b);
             if (middle && !form.placed) || !(lo..=hi).contains(&form.at) {
                 form.at = 0.5 * (lo + hi);
             }
@@ -189,6 +210,7 @@ impl App {
             // Not known yet (a region turned off, its whole mesh not read): none, so that the
             // card fits it once the mesh is read, not keeping another region's or axis's.
             form.range = (0.0, 0.0);
+            form.extent = None;
         }
     }
 
@@ -270,6 +292,23 @@ impl App {
             ui.ctx().request_repaint();
         }
         close
+    }
+
+    /// The plane dragged in the view to pass through `point`: the position along the card's
+    /// axis, within the slider's range.
+    pub(crate) fn move_cut(&mut self, point: umcf_geom::Vec3) {
+        let Some(mut form) = self.cut.clone() else { return };
+        let mut at = [point.x, point.y, point.z].get(form.axis).copied().unwrap_or(form.at);
+        let (lo, hi) = form.range;
+        if hi > lo && lo.is_finite() && hi.is_finite() {
+            let step = (hi - lo) / 1000.0;
+            at = at.max(lo + step).min(hi - step);
+        }
+        if at.is_finite() && at != form.at {
+            form.at = at;
+            form.placed = true;
+            self.set_cut(form);
+        }
     }
 
     /// Takes the card's new state: the region's boundary hidden, and the view drawn again (its

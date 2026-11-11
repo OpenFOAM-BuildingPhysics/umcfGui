@@ -138,10 +138,15 @@ region's boundary is hidden (its layer in the browser says so), as it would hide
 the card takes the cut away and shows the boundary again. A mode set for the region in the browser
 while the card is open (*Wireframe*, say), or a reset of it, ends the card's hiding: the region is
 drawn so, and stays so once the card closes. A mode set for one of its patches shows once the card
-closes or the region is shown. *Edges* draws the cells' edges. The first cut of a region reads its
-whole mesh; moving the plane after reads nothing. Where no region has a mesh, *Cut* is greyed out.
-With nothing turned on in the browser, the cut shows on its own. `umcf-gui <case> --open cut` opens
-the card at the start.
+closes or the region is shown. The view draws the plane, a translucent rectangle a little past the
+region with a frame and a solid arrow along its normal, as ParaView's plane widget: take the frame
+or the arrow (the pointer turns into a hand, the plane brightens) and drag, and the plane moves
+along its normal with the pointer, within the slider's range, the slider following; let go, it
+stays. A drag that starts on the frame or the arrow moves the plane whatever a drag otherwise does
+(also in *Box select* and *Brush*); elsewhere a drag does as before. *Edges* draws the cells'
+edges. The first cut of a region reads its whole mesh; moving the plane after reads nothing. Where
+no region has a mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on
+its own. `umcf-gui <case> --open cut` opens the card at the start.
 
 ## The GPU view
 
