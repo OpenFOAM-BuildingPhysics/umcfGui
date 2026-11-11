@@ -776,6 +776,30 @@ fn a_cut_shows_the_cells_a_plane_crosses() {
     assert!(e.is_err());
 }
 
+#[test]
+fn a_cut_shows_the_layers_at_a_patch() {
+    let mut s = scene_session();
+    let layers = |p: Value| json!({ "regions": [], "cuts": [p], "width": 8, "height": 8 });
+    // The one cell at the ground; its column ends at the sky.
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "ground" }))).unwrap();
+    assert_eq!(out.data["objects"], json!([{ "cut": "air", "triangles": 12, "classes": ["layer 1: 1 cell"] }]));
+    let out = s.execute("scene.snapshot", &layers(json!({ "region": "air", "patch": "walls", "layers": 2 }))).unwrap();
+    assert_eq!(out.data["objects"][0]["classes"], json!(["layer 1: 1 cell"]));
+    // Refused.
+    for (cut, says) in [
+        (json!({ "region": "air", "patch": "roof" }), "patch `roof` isn't in the mesh of region air"),
+        (json!({ "region": "air", "patch": "ground", "layers": 0 }), "from 1 to 50"),
+        (json!({ "region": "air", "patch": "ground", "layers": 51 }), "from 1 to 50"),
+        (json!({ "region": "air", "patch": "ground", "layers": 2.5 }), "from 1 to 50"),
+        (json!({ "region": "air", "layers": 2 }), "`patch` names a patch"),
+        (json!({ "region": "air", "patch": "ground", "found": true }), "without a point, normal or `found`"),
+        (json!({ "region": "air", "patch": "ground", "point": [0, 0, 0] }), "without a point"),
+    ] {
+        let e = s.execute("scene.snapshot", &layers(cut.clone())).unwrap_err().to_string();
+        assert!(e.contains(says), "{cut}: {e}");
+    }
+}
+
 /// A case on `MemFs` that counts the reads of one file.
 struct Counting {
     fs: MemFs,

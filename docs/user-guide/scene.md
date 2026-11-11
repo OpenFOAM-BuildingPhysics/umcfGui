@@ -175,6 +175,38 @@ it last:
 `umcf-cli render --found air` checks the region's mesh and draws what it found, the region's
 boundary hidden.
 
+### The layers at a wall
+
+A region's cut can show the layers of cells at one of its patches, the first `layers` of them
+(5 when left out, at most 50), to see the near-wall layers snappyHexMesh added, or failed to:
+
+```json
+{"cuts": [{"region": "air", "patch": "buildings", "layers": 3}],
+ "display": [{"region": "air", "mode": "hidden"}]}
+```
+
+- **Which cells**: from each face of the patch a column of cells: its cell at the face, then
+  each next across the cell's face that shares no point with the face it came in by (a prism's
+  or hexahedron's opposite face, as snappyHexMesh's layers are made). A column ends at the
+  boundary and at a cell already in a layer (another column's: the lower layer wins), and stops
+  where a cell has no such face or more than one (a cell split or collapsed, as where layers
+  failed). Past the layers a mesh has, the columns go on into the cells beyond, which count as
+  layers too: ask for as many as the mesh has.
+- **What is drawn**: each layer is a class in its own colour, named with its count (`layer 1:
+  1440 cells`), drawn by the skin of the cells in layers (each face between one and a cell in
+  none, or of the boundary) and the faces between two layers (in the lower one's colour). The
+  patch faces whose column stopped short are a class of their own (`fewer than 3 layers: 16
+  faces`), drawn in place of their cell's face at the patch.
+- **Errors**: a patch the region doesn't have (*patch `roof` isn't in the mesh of region air*),
+  and `layers` that isn't a whole number from 1 to 50.
+- **Reading**: the region's whole mesh, as for a plane's cut, read once and kept; another patch or
+  count reads nothing again. Six layers at the buildings take 0.2 s in the small 3×3 case and
+  2 s in the 3.1-million-cell air region of `new_Mesh_3x3`, with its reading (each layer looks
+  at every face once).
+
+`umcf-cli render --layers air/buildings=3` (`<patch>` alone in a single-region case; 5 without
+`=n`) draws them, the region's boundary hidden.
+
 ## Picking
 
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same

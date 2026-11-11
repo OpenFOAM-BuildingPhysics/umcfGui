@@ -12,7 +12,8 @@
 //! (the middle of what is shown); an object is never moved to another origin: when the middle
 //! moves more than 10 km, what is shown is read again around it and the kept ones are dropped.
 //!
-//! A region's cut shows the cells a plane crosses or what `mesh.check` found there; both come
+//! A region's cut shows the cells a plane crosses, what `mesh.check` found there or the layers of
+//! cells at a patch; all come
 //! from the region's whole mesh, read on request and kept, or handed over by `mesh.check`
 //! (which then makes the scene drop what it kept of the region before).
 
@@ -404,10 +405,16 @@ fn cached<'s>(s: &'s Session, id: &str) -> Result<&'s Scene, Error> {
     s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
 }
 
+/// The layers at a patch a cut shows when it doesn't say.
+pub const DEFAULT_LAYERS: u32 = 5;
+/// The most layers at a patch a cut shows: more than any mesh's layers.
+pub const MAX_LAYERS: u32 = 50;
+
 /// What `cuts` asks to be shown of the regions' cells: `[{"region", "point": [x, y, z],
 /// "normal": [x, y, z]}, …]` for the cells a plane crosses (the normal not zero), or
-/// `{"region", "found": true}` for what `mesh.check` found there last; one a region, each a
-/// region with a mesh.
+/// `{"region", "found": true}` for what `mesh.check` found there last, or `{"region", "patch",
+/// "layers": n}` for the first `n` layers of cells at a patch (5 without `layers`, at most
+/// [`MAX_LAYERS`]); one a region, each a region with a mesh.
 fn cuts(
     id: &str,
     p: &Params,
@@ -417,13 +424,15 @@ fn cuts(
     let Some(v) = optional(p, "cuts")? else { return Ok(Vec::new()) };
     let bad = |why: &str| {
         Error::Params(format!(
-            "{id}: `cuts` is a list of {{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}} or {{\"region\", \"found\": true}}: {why}"
+            "{id}: `cuts` is a list of {{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}}, {{\"region\", \"found\": true}} or {{\"region\", \"patch\", \"layers\": n}}: {why}"
         ))
     };
     let mut out: Vec<(String, Cells)> = Vec::new();
     for c in v.as_array().ok_or_else(|| bad("not a list"))? {
         let o = c.as_object().ok_or_else(|| bad("an entry isn't an object"))?;
-        if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "region" | "point" | "normal" | "found")) {
+        if let Some(k) =
+            o.keys().find(|k| !matches!(k.as_str(), "region" | "point" | "normal" | "found" | "patch" | "layers"))
+        {
             return Err(bad(&format!("unknown `{k}`")));
         }
         let region = o.get("region").and_then(Value::as_str).ok_or_else(|| bad("a cut names its region"))?;
@@ -432,6 +441,22 @@ fn cuts(
         }
         if out.iter().any(|(r, _)| r == region) {
             return Err(bad(&format!("region `{region}` is cut twice")));
+        }
+        if o.contains_key("patch") || o.contains_key("layers") {
+            let patch = o.get("patch").and_then(Value::as_str).ok_or_else(|| bad("`patch` names a patch"))?;
+            if ["point", "normal", "found"].iter().any(|k| o.contains_key(*k)) {
+                return Err(bad("a patch's layers, without a point, normal or `found`"));
+            }
+            let layers = match o.get("layers") {
+                None => DEFAULT_LAYERS,
+                Some(n) => n
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| (1..=MAX_LAYERS).contains(n))
+                    .ok_or_else(|| bad(&format!("`layers` is a whole number from 1 to {MAX_LAYERS}")))?,
+            };
+            out.push((region.to_string(), Cells::Layers { patch: patch.to_string(), layers }));
+            continue;
         }
         if let Some(f) = o.get("found") {
             if f != &Value::Bool(true) || o.contains_key("point") || o.contains_key("normal") {
@@ -736,7 +761,8 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
                         // Each cell's reach (16 bytes), zone (4) and whether it is cut (1),
                         // each point's distance (8) and map (4); the cut object itself is a
-                        // slice of it.
+                        // slice of it. (Layers take less: each cell's layer and place in the
+                        // front, 5 bytes, and each point's map.)
                         Read::Whole(m) => (m.n_cells() as u64)
                             .saturating_mul(21)
                             .saturating_add((m.n_points() as u64).saturating_mul(12)),
@@ -761,6 +787,16 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                         )));
                                     }
                                     Object::from_found(&region, &m, &found, origin)
+                                }
+                                Some(Cells::Layers { patch, layers }) => {
+                                    Object::from_layers(&region, &m, &patch, layers, origin).map_err(|e| {
+                                        let which = if region.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" of region {region}")
+                                        };
+                                        Error::Failed(format!("{id}: {e}{which}"))
+                                    })?
                                 }
                                 None => return Err(Error::Failed(format!("{id}: a cut without what it shows"))),
                             },
@@ -988,7 +1024,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], or {\"region\", \"found\": true}, one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; or the faces and cells mesh.check found there last (the first 1000 of each problem, and of checkMesh's sets of faces and cells), each problem in its colour, a cell by its faces (an error before a check, after one that couldn't read the mesh, and when the mesh read for it isn't the one the check read: its sizes, or its numbering, as renumberMesh changes it); its whole mesh is read once (or taken from mesh.check) and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones and what mesh.check found (a call refused gives back what was found: reload first, then check); faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], {\"region\", \"found\": true} or {\"region\", \"patch\", \"layers\": n}, one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; or the faces and cells mesh.check found there last (the first 1000 of each problem, and of checkMesh's sets of faces and cells), each problem in its colour, a cell by its faces (an error before a check, after one that couldn't read the mesh, and when the mesh read for it isn't the one the check read: its sizes, or its numbering, as renumberMesh changes it, or its faces or points); or the first n layers of cells at the patch (default 5, at most 50; from each patch face a column of cells, each next across the face sharing no point with the one it came in by, as snappyHexMesh's layers are made), each layer in its colour, drawn by their skin and the faces between layers, the patch faces whose column stopped short (a cell with no such face, or more than one: split or collapsed layers) marked (an error for a patch the region doesn't have); its whole mesh is read once (or taken from mesh.check) and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones and what mesh.check found (a call refused gives back what was found: reload first, then check); faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,

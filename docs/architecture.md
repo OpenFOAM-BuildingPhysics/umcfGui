@@ -132,7 +132,9 @@ The workflow the GUI supports end to end:
    never checked:
    - non-orthogonality, skewness, aspect ratio;
    - negative or tiny volumes, open cells;
-   - layer coverage.
+   - layer coverage: the layers of cells at a wall are drawn as the region's cut
+     (`render::Cells::Layers`, `Object::from_layers`), walked from each patch face through the
+     opposite faces, the patch faces where they stop short marked.
 
    Every problem carries the faces or cells involved. The session keeps them per region
    (`render::Found`, the first 1000 of each problem and of `checkMesh`'s sets), with the whole

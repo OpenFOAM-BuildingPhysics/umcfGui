@@ -1,5 +1,6 @@
-//! The cut card: the inside of a region's mesh (the scene's `cuts`), either a plane through it,
-//! the cells it crosses drawn whole, or the faces and cells *Check mesh* found there. The plane
+//! The cut card: the inside of a region's mesh (the scene's `cuts`): a plane through it, the
+//! cells it crosses drawn whole; the faces and cells *Check mesh* found there; or the layers of
+//! cells at one of its patches. The plane
 //! is across an axis at a position within the region's extent; the region's boundary is hidden
 //! while the card is open, so what is inside it shows.
 
@@ -12,12 +13,26 @@ use umcf_render::raster::Mode;
 use crate::icons::{self, Icon, Ink};
 use crate::{App, theme};
 
+/// What the card shows of the region's cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Show {
+    /// The cells a plane crosses.
+    Plane,
+    /// What *Check mesh* found.
+    Found,
+    /// The layers of cells at a patch.
+    Layers,
+}
+
 /// What the card holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutForm {
     pub region: String,
-    /// What *Check mesh* found in the region is shown, not the cells a plane crosses.
-    pub found: bool,
+    pub show: Show,
+    /// The patch whose layers are shown (with [`Show::Layers`]).
+    pub patch: String,
+    /// How many layers.
+    pub layers: u32,
     /// 0, 1, 2: across x, y or z.
     pub axis: usize,
     /// Where along the axis.
@@ -42,7 +57,9 @@ impl CutForm {
     pub fn new(region: &str) -> CutForm {
         CutForm {
             region: region.to_string(),
-            found: false,
+            show: Show::Plane,
+            patch: String::new(),
+            layers: umcf_engine::DEFAULT_LAYERS,
             axis: 0,
             at: 0.0,
             flip: false,
@@ -56,8 +73,10 @@ impl CutForm {
 
     /// The scene's `cuts` entry.
     pub fn cut(&self) -> Value {
-        if self.found {
-            return json!({ "region": self.region, "found": true });
+        match self.show {
+            Show::Found => return json!({ "region": self.region, "found": true }),
+            Show::Layers => return json!({ "region": self.region, "patch": self.patch, "layers": self.layers }),
+            Show::Plane => {}
         }
         let mut normal = [0.0; 3];
         let mut point = [0.0; 3];
@@ -69,9 +88,9 @@ impl CutForm {
     }
 
     /// The plane as the view draws it to be dragged, once the region's extent is known (none
-    /// while what a check found is shown).
+    /// while what a check found or a patch's layers are shown).
     pub fn plane(&self) -> Option<umcf_render::guides::CutPlane> {
-        if self.found {
+        if self.show != Show::Plane {
             return None;
         }
         let extent = self.extent?;
@@ -104,13 +123,37 @@ impl App {
     }
 
     /// The card's `cuts` entry for the scene, when there is something to show: what a check
-    /// found only once there is a check of the region.
+    /// found only once there is a check of the region, layers once a patch of it is chosen.
     pub(crate) fn cut_shown(&self) -> Option<Value> {
         let form = self.cut.as_ref()?;
-        if form.found && self.session.found(&form.region).is_none() {
-            return None;
+        match form.show {
+            Show::Found if self.session.found(&form.region).is_none() => return None,
+            Show::Layers if !self.patches(&form.region).contains(&form.patch) => return None,
+            _ => {}
         }
         Some(form.cut())
+    }
+
+    /// The patches of region `region`'s mesh, the walls first (where layers are grown).
+    pub(crate) fn patches(&self, region: &str) -> Vec<String> {
+        let Some(patches) = self
+            .session
+            .case()
+            .and_then(|c| c.regions.iter().find(|r| r.name == region))
+            .and_then(|r| r.patches.as_ref())
+        else {
+            return Vec::new();
+        };
+        let wall = |p: &&umcf_model::Patch| p.kind.to_lowercase().contains("wall");
+        patches.iter().filter(wall).chain(patches.iter().filter(|p| !wall(p))).map(|p| p.name.clone()).collect()
+    }
+
+    /// The card's patch kept where the region has it, else its first (a wall where it has one).
+    fn fit_patch(&self, form: &mut CutForm) {
+        let patches = self.patches(&form.region);
+        if !patches.contains(&form.patch) {
+            form.patch = patches.into_iter().next().unwrap_or_default();
+        }
     }
 
     /// Keeps the card's hiding entry last, after the display's entries are sorted (patches
@@ -165,8 +208,17 @@ impl App {
         if let Some(r) = with {
             form.region = r.clone();
         }
-        form.found = true;
+        form.show = Show::Found;
         self.fit_cut(&mut form, true);
+        self.set_cut(form);
+    }
+
+    /// Switches the open card to the layers of cells at a patch of its region (a wall where it
+    /// has one).
+    pub(crate) fn show_layers(&mut self) {
+        let Some(mut form) = self.cut.clone() else { return };
+        form.show = Show::Layers;
+        self.fit_patch(&mut form);
         self.set_cut(form);
     }
 
@@ -285,14 +337,34 @@ impl App {
                     .labelled_by(label.id);
                 ui.end_row();
                 ui.label("Show");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut form.found, false, "Plane")
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut form.show, Show::Plane, "Plane")
                         .on_hover_text("The cells a plane crosses, whole");
-                    ui.selectable_value(&mut form.found, true, "Check findings")
+                    ui.selectable_value(&mut form.show, Show::Found, "Check findings")
                         .on_hover_text("The faces and cells Check mesh found in the region");
+                    ui.selectable_value(&mut form.show, Show::Layers, "Wall layers")
+                        .on_hover_text("The layers of cells at a patch, each in its colour");
                 });
                 ui.end_row();
-                if form.found {
+                if form.show == Show::Layers {
+                    let label = ui.label("Patch");
+                    egui::ComboBox::from_id_salt("cut-patch")
+                        .selected_text(form.patch.as_str())
+                        .show_ui(ui, |ui| {
+                            for p in self.patches(&form.region) {
+                                ui.selectable_value(&mut form.patch, p.clone(), p);
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                    ui.end_row();
+                    let label = ui.label("Layers");
+                    ui.add(egui::DragValue::new(&mut form.layers).range(1..=umcf_engine::MAX_LAYERS).speed(0.05))
+                        .on_hover_text("How many layers to follow from the patch")
+                        .labelled_by(label.id);
+                    ui.end_row();
+                }
+                if form.show != Show::Plane {
                     return;
                 }
                 ui.label("Across");
@@ -320,7 +392,30 @@ impl App {
                 }
                 ui.end_row();
             });
-            if form.found {
+            if form.show == Show::Layers {
+                // The layers as the scene built them last (each class's name says its count).
+                let shown = self.session.last_scene().and_then(|scene| {
+                    scene.objects.iter().find(|o| matches!(&o.source, Source::Cut { region } if *region == form.region))
+                });
+                let classes = shown.filter(|_| before.show == Show::Layers).map(|o| o.classes.clone());
+                match classes {
+                    Some(classes) if !classes.is_empty() => {
+                        for (k, c) in classes.iter().enumerate() {
+                            ui.horizontal_top(|ui| {
+                                let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                                let [red, green, blue] = umcf_render::raster::palette(k).map(|x| (x * 255.0) as u8);
+                                ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(red, green, blue));
+                                ui.add(egui::Label::new(c.as_str()).wrap());
+                            });
+                        }
+                    }
+                    Some(_) => {
+                        ui.label("No cells at this patch.");
+                    }
+                    None => {}
+                }
+            }
+            if form.show == Show::Found {
                 match found {
                     Some(f) if f.classes.is_empty() => {
                         ui.label("Check mesh found nothing here.");
@@ -363,10 +458,14 @@ impl App {
                         .clicked();
                 });
             }
-            let note = if form.found {
-                "The faces and cells Check mesh found, each problem in its colour, a cell by its faces (the first 1000 of each). The region's boundary is hidden while they are shown."
-            } else {
-                "The cells the plane crosses, whole. The region's boundary is hidden while the cut is shown."
+            let note = match form.show {
+                Show::Found => {
+                    "The faces and cells Check mesh found, each problem in its colour, a cell by its faces (the first 1000 of each). The region's boundary is hidden while they are shown."
+                }
+                Show::Layers => {
+                    "From each face of the patch, the cells across their opposite faces, each layer in its colour; where that stops short (a cell split or collapsed), the patch face is marked. Past the mesh's layers, the cells beyond count as layers too. The region's boundary is hidden while they are shown."
+                }
+                Show::Plane => "The cells the plane crosses, whole. The region's boundary is hidden while the cut is shown.",
             };
             ui.label(RichText::new(note).size(12.0).color(t.text_muted));
             if check {
@@ -382,6 +481,9 @@ impl App {
         });
         // Another region or axis: the slider over its extent, the plane in its middle; the
         // extent once known (the region drawn), the position kept if set by hand.
+        if form.show == Show::Layers {
+            self.fit_patch(&mut form);
+        }
         let other = form.region != before.region || form.axis != before.axis;
         if other {
             form.placed = false;

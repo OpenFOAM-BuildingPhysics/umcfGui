@@ -50,8 +50,9 @@ pub enum Source {
     Surface { file: String },
     /// What is shown of a region's cells ([`Cells`]): those a plane cuts ([`Object::from_cut`];
     /// its classes are the cell zones, `cells` for those in none) or the faces and cells a mesh
-    /// check named ([`Object::from_found`]; its classes are what was found). A triangle's source
-    /// index is its mesh face.
+    /// check named ([`Object::from_found`]; its classes are what was found) or the layers of cells
+    /// at a patch ([`Object::from_layers`]; its classes are the layers). A triangle's source index
+    /// is its mesh face.
     Cut { region: String },
 }
 
@@ -62,13 +63,16 @@ pub enum Cells {
     Plane(Plane),
     /// The faces and cells a mesh check named ([`Object::from_found`]).
     Found(std::sync::Arc<Found>),
+    /// The first `layers` layers of cells at patch `patch` ([`Object::from_layers`]).
+    Layers { patch: String, layers: u32 },
 }
 
 impl PartialEq for Cells {
-    /// Planes by value; what was found by identity (a check run again is another).
+    /// Planes and layers by value; what was found by identity (a check run again is another).
     fn eq(&self, other: &Cells) -> bool {
         match (self, other) {
             (Cells::Plane(a), Cells::Plane(b)) => a == b,
+            (Cells::Layers { patch: a, layers: m }, Cells::Layers { patch: b, layers: n }) => a == b && m == n,
             (Cells::Found(a), Cells::Found(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -362,6 +366,142 @@ impl Object {
             }
         }
         o
+    }
+
+    /// The first `layers` layers of cells at patch `patch` of `mesh`, each layer a class
+    /// (`layer 1: 120 cells`, …): from each face of the patch a column of cells, its cell at the
+    /// face, then each next across the face that shares no point with the one it came in by (a
+    /// prism's or hexahedron's opposite face, as snappyHexMesh's layers are made). A column
+    /// stops at the boundary, at a cell already in a layer (another column's, of a lower layer or
+    /// the same), and where a cell has no such face or more than one (a cell split or
+    /// collapsed, as where layers failed): the patch faces whose column stopped there before
+    /// `layers` are a class of their own (`fewer than 5 layers: 12 faces`), drawn in place of
+    /// the cell's face at the patch. Past the layers a mesh has, the columns go on into the
+    /// cells beyond, which are counted as layers too. Drawn by the skin of the cells in layers
+    /// (each face between one and a cell in none, or of the boundary) and the faces between two
+    /// layers, each in the class of its cell (the lower layer between two). `Err` names a
+    /// patch the mesh doesn't have.
+    pub fn from_layers(
+        region: &str,
+        mesh: &umcf_foam_mesh::PolyMesh,
+        patch: &str,
+        layers: u32,
+        origin: Vec3,
+    ) -> Result<Object, String> {
+        let Some(at) = mesh.boundary.iter().find(|p| p.name == patch) else {
+            return Err(format!("patch `{patch}` isn't in the mesh"));
+        };
+        let layers = layers.clamp(1, u32::from(u8::MAX));
+        let cells = mesh.n_cells();
+        // Each cell's layer, 0 for none.
+        let mut layer: Vec<u8> = vec![0; cells];
+        // Each column at its last cell: (cell, the face it came in by, its patch face).
+        let mut front: Vec<(u32, u32, u32)> = Vec::new();
+        for f in at.faces() {
+            let (Some(c), Ok(f)) = (mesh.owner.get(f), u32::try_from(f)) else { continue };
+            if let Some(slot) = layer.get_mut(*c as usize)
+                && *slot == 0
+            {
+                *slot = 1;
+                front.push((*c, f, f));
+            }
+        }
+        let mut count: Vec<usize> = vec![front.len()];
+        let mut fewer: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // Each cell of the front's place in it, u32::MAX for none.
+        let mut slot: Vec<u32> = vec![u32::MAX; cells];
+        for k in 2..=layers {
+            if front.is_empty() {
+                break;
+            }
+            for (i, (c, _, _)) in front.iter().enumerate() {
+                if let (Some(s), Ok(i)) = (slot.get_mut(*c as usize), u32::try_from(i)) {
+                    *s = i;
+                }
+            }
+            // Each front cell's faces that share no point with the one it came in by: the
+            // first, and whether there are more.
+            let mut next: Vec<(Option<u32>, bool)> = vec![(None, false); front.len()];
+            for f in 0..mesh.n_faces() {
+                let Ok(label) = u32::try_from(f) else { break };
+                for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
+                    let Some(i) = slot.get(*c as usize).copied().filter(|i| *i != u32::MAX) else { continue };
+                    let (Some((_, entry, _)), Some(n)) = (front.get(i as usize), next.get_mut(i as usize)) else {
+                        continue;
+                    };
+                    if *entry == label {
+                        continue;
+                    }
+                    let (Some(face), Some(by)) = (mesh.face(f), mesh.face(*entry as usize)) else { continue };
+                    if face.iter().any(|p| by.contains(p)) {
+                        continue;
+                    }
+                    match n.0 {
+                        None => n.0 = Some(label),
+                        Some(_) => n.1 = true,
+                    }
+                }
+            }
+            for (c, _, _) in &front {
+                if let Some(s) = slot.get_mut(*c as usize) {
+                    *s = u32::MAX;
+                }
+            }
+            let mut ahead: Vec<(u32, u32, u32)> = Vec::new();
+            for ((c, _, origin_face), n) in front.iter().zip(&next) {
+                let across = match n {
+                    (Some(g), false) => *g,
+                    _ => {
+                        fewer.insert(*origin_face);
+                        continue;
+                    }
+                };
+                // The cell on the other side; none at the boundary, where the column ends.
+                let other = match (mesh.owner.get(across as usize), mesh.neighbour.get(across as usize)) {
+                    (Some(o), Some(nb)) if o == c => *nb,
+                    (Some(o), Some(_)) => *o,
+                    _ => continue,
+                };
+                if let Some(l) = layer.get_mut(other as usize)
+                    && *l == 0
+                {
+                    *l = u8::try_from(k).unwrap_or(u8::MAX);
+                    ahead.push((other, across, *origin_face));
+                }
+            }
+            if !ahead.is_empty() {
+                count.push(ahead.len());
+            }
+            front = ahead;
+        }
+        let mut o = Object::new(Source::Cut { region: region.to_string() });
+        for (k, n) in count.iter().enumerate() {
+            o.classes.push(format!("layer {}: {n} cell{}", k + 1, if *n == 1 { "" } else { "s" }));
+            o.kinds.push("layer".to_string());
+            o.groups.push(Vec::new());
+        }
+        let short = u32::try_from(count.len()).unwrap_or(u32::MAX);
+        if !fewer.is_empty() {
+            let n = fewer.len();
+            o.classes.push(format!("fewer than {layers} layers: {n} face{}", if n == 1 { "" } else { "s" }));
+            o.kinds.push("faces".to_string());
+            o.groups.push(Vec::new());
+        }
+        let mut map: Vec<u32> = vec![u32::MAX; mesh.points.len()];
+        let of = |c: Option<&u32>| c.and_then(|c| layer.get(*c as usize)).copied().unwrap_or(0);
+        for f in 0..mesh.n_faces() {
+            let (lo, ln) = (of(mesh.owner.get(f)), of(mesh.neighbour.get(f)));
+            let k = match (lo, ln) {
+                (0, 0) => continue,
+                (a, b) if a == b => continue,
+                (0, b) | (b, 0) => b,
+                (a, b) => a.min(b),
+            };
+            let (Some(face), Ok(index)) = (mesh.face(f), u32::try_from(f)) else { continue };
+            let class = if fewer.contains(&index) { short } else { u32::from(k) - 1 };
+            o.push_face(&mesh.points, &mut map, face, index, class, origin);
+        }
+        Ok(o)
     }
 
     /// The cells of `mesh` that `plane` cuts, as a "crinkle" cut: each such cell whole, so the
