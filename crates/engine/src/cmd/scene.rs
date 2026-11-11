@@ -302,9 +302,6 @@ fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
     }
 }
 
-/// About how many bytes of the case's files reading `source` reads: a mesh's `boundary`,
-/// `points` and `faces` (plain or compressed, as on disk), a surface's file unless a command put
-/// it (then it is in memory). 0 where the sizes can't be told.
 /// The name on disk of the patch `patch` the case has in region `region` (renamed by
 /// `patch.set` and not saved yet), when the case's patches are those of `mesh` (the same faces);
 /// `patch` itself when they aren't (the files are the authority then); `None` when the case's
@@ -336,6 +333,9 @@ pub(crate) fn layers_need(mesh: &PolyMesh, patch: Option<&str>, layers: u32) -> 
         .saturating_add((mesh.n_points() as u64).saturating_mul(16))
 }
 
+/// About how many bytes of the case's files reading `source` reads: a mesh's `boundary`,
+/// `points` and `faces` (plain or compressed, as on disk), a surface's file unless a command put
+/// it (then it is in memory). 0 where the sizes can't be told.
 fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Source) -> u64 {
     let size = |f: &str| fs.size(f).or_else(|| fs.size(&format!("{f}.gz"))).unwrap_or(0);
     match source {
