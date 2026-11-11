@@ -765,3 +765,42 @@ fn a_cut_shows_the_cells_a_plane_crosses_whole() {
     .unwrap();
     assert_eq!(o.triangles.len(), 12);
 }
+
+#[test]
+fn what_a_check_found_is_drawn_where_it_is() {
+    use crate::{Found, FoundClass};
+    let mesh = row(3, &[]);
+    let class = |name: &str, cells: bool, labels: &[u32]| FoundClass {
+        name: name.into(),
+        cells,
+        labels: labels.to_vec(),
+        count: labels.len(),
+    };
+    // Face 0 (between cells 0 and 1, at x = 1) twice, a label past the mesh; cell 2 whole, and
+    // cells 1 and 2 for another check.
+    let found = Found {
+        classes: vec![
+            class("skew faces", false, &[0, 0, 9999]),
+            class("open cells", true, &[2, 2]),
+            class("concave cells", true, &[1, 2]),
+        ],
+    };
+    let o = Object::from_found("air", &mesh, &found, Vec3::ZERO);
+    assert_eq!(o.source, Source::Cut { region: "air".into() });
+    assert_eq!(o.classes, ["skew faces", "open cells", "concave cells"]);
+    assert_eq!(o.kinds, ["faces", "cells", "cells"]);
+    let of = |k: u32| -> Vec<u32> {
+        let mut f: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == k).map(|(f, _)| *f).collect();
+        f.dedup();
+        f
+    };
+    // The face once, two triangles, at x = 1.
+    assert_eq!(of(0), [0]);
+    assert_eq!(o.class.iter().filter(|c| **c == 0).count(), 2);
+    // Cell 2's six faces; cells 1 and 2: eleven (the face between them once).
+    assert_eq!(of(1).len(), 6);
+    assert_eq!(of(2).len(), 11);
+    assert!(o.points.iter().all(|p| (1.0..=3.0).contains(&p[0])));
+    // Nothing found: nothing drawn.
+    assert!(Object::from_found("air", &mesh, &Found::default(), Vec3::ZERO).triangles.is_empty());
+}

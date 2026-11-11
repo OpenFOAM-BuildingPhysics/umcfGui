@@ -19,7 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
-| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh) (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
+| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh), `--open found` the card showing what *Check mesh* found (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window always on OpenGL, no switch (for a machine where a GPU window opens but can't show, as over `ssh -X`). A GPU window that doesn't open is opened again on OpenGL ([the GPU view](#the-gpu-view)) |
@@ -147,6 +147,17 @@ stays. A drag that starts on the frame or the arrow moves the plane whatever a d
 edges. The first cut of a region reads its whole mesh; moving the plane after reads nothing. Where
 no region has a mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on
 its own. `umcf-gui <case> --open cut` opens the card at the start.
+
+*Show* switches the card between the *Plane* and the *Check findings*: the faces and cells *Check
+mesh* found in the region ([what a check found](scene.md#what-a-check-found)), each problem in its
+own colour, listed under it with that colour and how many faces or cells it has (the first 1000 of
+each). The region's boundary is hidden as for the plane, and no plane is drawn; *Fit findings*
+frames the view on them (they are often few in a big region). Before the region
+was checked the card says so, and its *Check mesh* button checks it (as a job, with the status
+bar's progress and *Cancel*); the findings show when it ends. A check from the ribbon shows here
+too, and `umcf-gui <case> --cmd mesh.check --open found` opens the card on them at the start (on
+the first region where something was found), framed. *Check mesh* hands the whole mesh it read to the view, so showing its findings reads nothing
+again while the mesh fits in the memory for hidden objects.
 
 ## The GPU view
 

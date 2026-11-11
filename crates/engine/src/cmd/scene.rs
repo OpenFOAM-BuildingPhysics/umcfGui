@@ -21,7 +21,7 @@ use umcf_geom::bvh::Ray;
 use umcf_geom::stl;
 use umcf_render::camera::{Camera, View};
 use umcf_render::raster::{self, ColourBy, MAX_PIXELS, MAX_SIDE, Style, draw};
-use umcf_render::{Object, Pick, Plane, Scene, Source, png};
+use umcf_render::{Cells, Found, Object, Pick, Plane, Scene, Source, png};
 
 use super::case::count;
 use super::display;
@@ -85,8 +85,9 @@ pub(crate) struct Cached {
     keys: Vec<Key>,
     /// Objects built for this case and not shown now: shown again without reading them again.
     spare: Vec<(Key, Object)>,
-    /// The planes the regions are cut by ([`Object::from_cut`]), in the order given.
-    cuts: Vec<(String, Plane)>,
+    /// What is shown of the regions' cells (a plane's cut, what a check found), in the order
+    /// given.
+    cuts: Vec<(String, Cells)>,
     /// Regions' whole meshes, read for their cuts: those cut now, and others kept aside (within
     /// the budget for hidden objects, with `spare`), least recently used first.
     wholes: Vec<Whole>,
@@ -100,20 +101,49 @@ pub(crate) struct Whole {
     mesh: Arc<PolyMesh>,
 }
 
+/// How much of the budget for hidden objects is left for a whole mesh handed to the scene: what
+/// the scene keeps aside (objects and whole meshes) and what was handed to it already take the
+/// rest.
+pub(crate) fn room_left(s: &Session) -> u64 {
+    let kept = s.scene.as_ref().map_or(0, |c| {
+        let spare: u64 = c.spare.iter().map(|(_, o)| o.bytes()).sum();
+        let wholes: u64 = c.wholes.iter().map(Whole::bytes).sum();
+        spare.saturating_add(wholes)
+    });
+    let handed: u64 = s.handed.iter().map(Whole::bytes).sum();
+    s.budget.spare.saturating_sub(kept.saturating_add(handed))
+}
+
+impl Whole {
+    /// Region `region`'s whole mesh as a command read it (`mesh.check`), for its cuts.
+    pub(crate) fn of(region: &str, mesh: Arc<PolyMesh>) -> Whole {
+        Whole { region: region.to_string(), files: Vec::new(), mesh }
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.mesh.bytes()
+    }
+
+    /// Whether it is region `region`'s.
+    pub(crate) fn is(&self, region: &str) -> bool {
+        self.region == region
+    }
+}
+
 /// What an object was built from: a region's mesh or a surface, with the versions of the files
 /// commands may have put (compared by identity; `None`: as on disk).
 #[derive(Debug, Clone)]
 pub(crate) struct Key {
     source: Source,
     files: Vec<(String, Option<Arc<Vec<u8>>>)>,
-    /// A cut's plane.
-    plane: Option<Plane>,
+    /// What a cut shows of the cells.
+    cells: Option<Cells>,
 }
 
 impl Key {
     /// Whether `other` is the same source with the same file versions (and plane).
     fn same(&self, other: &Key) -> bool {
-        self.source == other.source && same_files(&self.files, &other.files) && self.plane == other.plane
+        self.source == other.source && same_files(&self.files, &other.files) && self.cells == other.cells
     }
 }
 
@@ -368,19 +398,26 @@ fn cached<'s>(s: &'s Session, id: &str) -> Result<&'s Scene, Error> {
     s.scene.as_ref().map(|c| &c.scene).ok_or_else(|| Error::Failed(format!("{id}: no scene")))
 }
 
-/// The planes `cuts` asks the regions to be cut by: `[{"region", "point": [x, y, z], "normal":
-/// [x, y, z]}, …]`, one a region, each a region with a mesh, the normal not zero.
-fn cuts(id: &str, p: &Params, with_mesh: &[&str]) -> Result<Vec<(String, Plane)>, Error> {
+/// What `cuts` asks to be shown of the regions' cells: `[{"region", "point": [x, y, z],
+/// "normal": [x, y, z]}, …]` for the cells a plane crosses (the normal not zero), or
+/// `{"region", "found": true}` for what `mesh.check` found there last; one a region, each a
+/// region with a mesh.
+fn cuts(
+    id: &str,
+    p: &Params,
+    with_mesh: &[&str],
+    found: &[(String, Arc<Found>)],
+) -> Result<Vec<(String, Cells)>, Error> {
     let Some(v) = optional(p, "cuts")? else { return Ok(Vec::new()) };
     let bad = |why: &str| {
         Error::Params(format!(
-            "{id}: `cuts` is a list of {{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}}: {why}"
+            "{id}: `cuts` is a list of {{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}} or {{\"region\", \"found\": true}}: {why}"
         ))
     };
-    let mut out: Vec<(String, Plane)> = Vec::new();
+    let mut out: Vec<(String, Cells)> = Vec::new();
     for c in v.as_array().ok_or_else(|| bad("not a list"))? {
         let o = c.as_object().ok_or_else(|| bad("an entry isn't an object"))?;
-        if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "region" | "point" | "normal")) {
+        if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "region" | "point" | "normal" | "found")) {
             return Err(bad(&format!("unknown `{k}`")));
         }
         let region = o.get("region").and_then(Value::as_str).ok_or_else(|| bad("a cut names its region"))?;
@@ -389,6 +426,17 @@ fn cuts(id: &str, p: &Params, with_mesh: &[&str]) -> Result<Vec<(String, Plane)>
         }
         if out.iter().any(|(r, _)| r == region) {
             return Err(bad(&format!("region `{region}` is cut twice")));
+        }
+        if let Some(f) = o.get("found") {
+            if f != &Value::Bool(true) || o.contains_key("point") || o.contains_key("normal") {
+                return Err(bad("`found` is true, without a point or normal"));
+            }
+            let Some((_, f)) = found.iter().find(|(r, _)| r == region) else {
+                let which = if region.is_empty() { "the mesh".to_string() } else { format!("region `{region}`") };
+                return Err(Error::Failed(format!("{id}: nothing found in {which}: run mesh.check on it first")));
+            };
+            out.push((region.to_string(), Cells::Found(Arc::clone(f))));
+            continue;
         }
         let point = |k: &str| -> Result<umcf_geom::Vec3, Error> {
             let a = o.get(k).and_then(Value::as_array).ok_or_else(|| bad(&format!("`{k}` is [x, y, z]")))?;
@@ -403,13 +451,20 @@ fn cuts(id: &str, p: &Params, with_mesh: &[&str]) -> Result<Vec<(String, Plane)>
         if length == 0.0 || !length.is_finite() {
             return Err(bad("a normal of zero length, or too long to be told"));
         }
-        out.push((region.to_string(), plane));
+        out.push((region.to_string(), Cells::Plane(plane)));
     }
     Ok(out)
 }
 
 /// Builds the scene the parameters ask for into the cache, unless it is there already.
 fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
+    let reload = p.bool("reload")?.unwrap_or(false);
+    // The meshes are read again (OpenFOAM rewrote them): what a check found and read was of
+    // the meshes before.
+    if reload {
+        s.found.clear();
+        s.handed.clear();
+    }
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let with_mesh: Vec<&str> = case.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.as_str()).collect();
     let regions: Vec<String> = match optional(p, "regions")? {
@@ -452,7 +507,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         }
         None => Vec::new(),
     };
-    let cuts = cuts(id, p, &with_mesh)?;
+    let cuts = cuts(id, p, &with_mesh, &s.found)?;
     if regions.is_empty() && surfaces.is_empty() && cuts.is_empty() {
         return Err(Error::Failed(format!(
             "{id}: nothing to show: the case has no mesh and no STL surface in {SURFACE_DIR}"
@@ -469,7 +524,6 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         .collect();
     let versions: Vec<(String, Option<Arc<Vec<u8>>>)> =
         surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
-    let reload = p.bool("reload")?.unwrap_or(false);
     let same =
         |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions) && c.cuts == cuts;
     if reload || !s.scene.as_deref().is_some_and(same) {
@@ -480,18 +534,18 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             [format!("{b}.gz"), b].into_iter().map(|f| (f.clone(), case.put_bytes(&f).cloned())).collect()
         };
         let mesh_key =
-            |r: &str| Key { source: Source::Mesh { region: r.to_string() }, files: mesh_files(r), plane: None };
+            |r: &str| Key { source: Source::Mesh { region: r.to_string() }, files: mesh_files(r), cells: None };
         let surface_key = |f: &str| Key {
             source: Source::Surface { file: f.to_string() },
             files: vec![(f.to_string(), case.put_bytes(f).cloned())],
-            plane: None,
+            cells: None,
         };
         // A cut is of the mesh's cells and zones, which no command puts (its patches don't
         // matter): a patch renamed leaves it, and its whole mesh, as they are.
-        let cut_key = |(r, plane): &(String, Plane)| Key {
+        let cut_key = |(r, cells): &(String, Cells)| Key {
             source: Source::Cut { region: r.clone() },
             files: Vec::new(),
-            plane: Some(*plane),
+            cells: Some(cells.clone()),
         };
         let wanted: Vec<Key> = regions
             .iter()
@@ -512,9 +566,11 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             /// A region's whole mesh, for a cut: read, or kept from before.
             Whole(Arc<PolyMesh>),
         }
-        // The whole meshes kept from before, still of the files the case has.
+        // The whole meshes a check handed over, else kept from before.
+        let handed = &s.handed;
         let kept_whole = |r: &str| -> Option<Arc<PolyMesh>> {
-            previous?.wholes.iter().find(|w| w.region == r).map(|w| Arc::clone(&w.mesh))
+            let mut all = handed.iter().chain(previous.into_iter().flat_map(|c| c.wholes.iter()));
+            all.find(|w| w.region == r).map(|w| Arc::clone(&w.mesh))
         };
         let budget = s.budget;
         let jobs_for = |keys: &[&Key]| -> Vec<(u64, Job<'_, Read>)> {
@@ -632,7 +688,7 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             .zip(read)
             .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
-                let plane = k.plane;
+                let cells = k.cells.clone();
                 if let Read::Whole(m) = &x {
                     wholes.push(Whole { region: region_of(&k.source), files: k.files.clone(), mesh: Arc::clone(m) });
                 }
@@ -659,12 +715,12 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         Ok(match (source, x) {
                             (Source::Mesh { region }, Read::Mesh(m)) => Object::from_mesh(&region, &m, origin),
                             (Source::Surface { file }, Read::Surface(stl)) => Object::from_stl(&file, &stl, origin),
-                            (Source::Cut { region }, Read::Whole(m)) => {
-                                let plane =
-                                    plane.ok_or_else(|| Error::Failed(format!("{id}: a cut without its plane")))?;
-                                Object::from_cut(&region, &m, plane, origin)
-                                    .ok_or_else(|| Error::Failed(format!("{id}: a cut's normal of zero length")))?
-                            }
+                            (Source::Cut { region }, Read::Whole(m)) => match cells {
+                                Some(Cells::Plane(plane)) => Object::from_cut(&region, &m, plane, origin)
+                                    .ok_or_else(|| Error::Failed(format!("{id}: a cut's normal of zero length")))?,
+                                Some(Cells::Found(found)) => Object::from_found(&region, &m, &found, origin),
+                                None => return Err(Error::Failed(format!("{id}: a cut without what it shows"))),
+                            },
                             _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
                         })
                     }),
@@ -678,10 +734,14 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         // there and isn't shown now is kept aside, the ones shown least recently first (those
         // hidden before, then those hidden now), within the budget for them.
         // The whole meshes kept so far, before the cache is taken apart.
-        let before: Vec<Whole> = match s.scene.as_ref() {
+        let mut before: Vec<Whole> = match s.scene.as_ref() {
             Some(c) if c.opens == s.opens && !reload => c.wholes.clone(),
             _ => Vec::new(),
         };
+        // Those a check handed over are of the files as they are now: they replace those kept.
+        let handed = std::mem::take(&mut s.handed);
+        before.retain(|w| !handed.iter().any(|h| h.region == w.region));
+        before.extend(handed);
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
                 // Copied only while a copy of the session still holds it.
@@ -883,7 +943,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; its whole mesh is read once and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], or {\"region\", \"found\": true}, one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; or the faces and cells mesh.check found there last (the first 1000 of each problem, and of checkMesh's sets of faces and cells), each problem in its colour, a cell by its faces (an error before a check); its whole mesh is read once (or taken from mesh.check) and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones and what mesh.check found; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
@@ -1467,11 +1527,19 @@ impl Session {
     }
 
     /// The box around region `region`'s whole mesh, in world coordinates, when it is kept (read
-    /// for a cut); `None` else. Reads nothing.
+    /// for a cut, or by `mesh.check`); `None` else. Reads nothing.
     pub fn whole_bounds(&self, region: &str) -> Option<BBox> {
-        let w = self.scene.as_ref()?.wholes.iter().find(|w| w.region == region)?;
+        let kept = self.scene.as_ref().into_iter().flat_map(|c| c.wholes.iter());
+        let w = self.handed.iter().chain(kept).find(|w| w.region == region)?;
         let (lo, hi) = w.mesh.bounds()?;
         Some(BBox { min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]), max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]) })
+    }
+
+    /// What `mesh.check` found last in region `region` (its faces and cells, by what was found),
+    /// to show as its cut (`{"region", "found": true}`); `None` before a check or after the
+    /// meshes were read again.
+    pub fn found(&self, region: &str) -> Option<&Found> {
+        self.found.iter().find(|(r, _)| r == region).map(|(_, f)| f.as_ref())
     }
 
     /// The scene `regions`, `surfaces`, `cuts` and `reload` in `params` ask for (as `scene.snapshot`

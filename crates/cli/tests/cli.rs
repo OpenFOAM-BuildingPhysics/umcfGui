@@ -490,3 +490,25 @@ fn render_picks_with_the_style_flags() {
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(out.exists());
 }
+
+#[test]
+fn render_draws_what_a_check_found() {
+    let dir = cube("render-found", false);
+    let out = dir.join("shot.png");
+    let o = cli(&[
+        "render",
+        "--found",
+        "air",
+        "--size",
+        "32x24",
+        "--json",
+        "--out",
+        out.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let objects = v["objects"].as_array().unwrap();
+    assert!(objects.iter().any(|x| x.get("cut") == Some(&serde_json::json!("air"))), "{v}");
+    assert!(out.exists());
+}

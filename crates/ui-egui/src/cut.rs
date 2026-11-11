@@ -1,6 +1,7 @@
-//! The cut card: a plane through a region's mesh, the cells it crosses drawn whole (the scene's
-//! `cuts`). The plane is across an axis at a position within the region's extent; the region's
-//! boundary is hidden while the card is open, so the cut inside it shows.
+//! The cut card: the inside of a region's mesh (the scene's `cuts`), either a plane through it,
+//! the cells it crosses drawn whole, or the faces and cells *Check mesh* found there. The plane
+//! is across an axis at a position within the region's extent; the region's boundary is hidden
+//! while the card is open, so what is inside it shows.
 
 use eframe::egui::{self, Align, Layout, RichText, Sense, Ui, vec2};
 use serde_json::{Value, json};
@@ -15,6 +16,8 @@ use crate::{App, theme};
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutForm {
     pub region: String,
+    /// What *Check mesh* found in the region is shown, not the cells a plane crosses.
+    pub found: bool,
     /// 0, 1, 2: across x, y or z.
     pub axis: usize,
     /// Where along the axis.
@@ -39,6 +42,7 @@ impl CutForm {
     pub fn new(region: &str) -> CutForm {
         CutForm {
             region: region.to_string(),
+            found: false,
             axis: 0,
             at: 0.0,
             flip: false,
@@ -52,6 +56,9 @@ impl CutForm {
 
     /// The scene's `cuts` entry.
     pub fn cut(&self) -> Value {
+        if self.found {
+            return json!({ "region": self.region, "found": true });
+        }
         let mut normal = [0.0; 3];
         let mut point = [0.0; 3];
         if let (Some(n), Some(p)) = (normal.get_mut(self.axis), point.get_mut(self.axis)) {
@@ -61,8 +68,12 @@ impl CutForm {
         json!({ "region": self.region, "point": point, "normal": normal })
     }
 
-    /// The plane as the view draws it to be dragged, once the region's extent is known.
+    /// The plane as the view draws it to be dragged, once the region's extent is known (none
+    /// while what a check found is shown).
     pub fn plane(&self) -> Option<umcf_render::guides::CutPlane> {
+        if self.found {
+            return None;
+        }
         let extent = self.extent?;
         let mut axis = [0.0; 3];
         let mut point = [extent.centre().x, extent.centre().y, extent.centre().z];
@@ -90,6 +101,16 @@ impl App {
     /// Whether a cut can be made: a region of the case has a mesh.
     pub(crate) fn can_cut(&self) -> bool {
         !self.meshed().is_empty()
+    }
+
+    /// The card's `cuts` entry for the scene, when there is something to show: what a check
+    /// found only once there is a check of the region.
+    pub(crate) fn cut_shown(&self) -> Option<Value> {
+        let form = self.cut.as_ref()?;
+        if form.found && self.session.found(&form.region).is_none() {
+            return None;
+        }
+        Some(form.cut())
     }
 
     /// Keeps the card's hiding entry last, after the display's entries are sorted (patches
@@ -133,6 +154,20 @@ impl App {
         self.fit_cut(&mut form, true);
         self.cut = Some(form);
         self.hide_boundary();
+    }
+
+    /// Switches the open card to what *Check mesh* found, on the first region it found something
+    /// in (else the card's region, which says it wasn't checked or that nothing was found).
+    pub(crate) fn show_found(&mut self) {
+        let Some(mut form) = self.cut.clone() else { return };
+        let regions = self.meshed();
+        let with = regions.iter().find(|r| self.session.found(r).is_some_and(|f| !f.classes.is_empty()));
+        if let Some(r) = with {
+            form.region = r.clone();
+        }
+        form.found = true;
+        self.fit_cut(&mut form, true);
+        self.set_cut(form);
     }
 
     /// Closes the card: the cut goes, the region's boundary shows as before.
@@ -233,6 +268,10 @@ impl App {
                 });
             });
             ui.separator();
+            let found = self.session.found(&form.region);
+            let is_check = |w: &crate::jobs::Work| matches!(w, crate::jobs::Work::Command { id, .. } if id == "mesh.check");
+            let checking = self.job.as_ref().is_some_and(|j| is_check(&j.work)) || self.queue.iter().any(is_check);
+            let (mut check, mut fit) = (false, false);
             egui::Grid::new("cut-form").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
                 let label = ui.label("Region");
                 egui::ComboBox::from_id_salt("cut-region")
@@ -245,6 +284,17 @@ impl App {
                     .response
                     .labelled_by(label.id);
                 ui.end_row();
+                ui.label("Show");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut form.found, false, "Plane")
+                        .on_hover_text("The cells a plane crosses, whole");
+                    ui.selectable_value(&mut form.found, true, "Check findings")
+                        .on_hover_text("The faces and cells Check mesh found in the region");
+                });
+                ui.end_row();
+                if form.found {
+                    return;
+                }
                 ui.label("Across");
                 ui.horizontal(|ui| {
                     for (k, name) in ["x", "y", "z"].iter().enumerate() {
@@ -270,13 +320,61 @@ impl App {
                 }
                 ui.end_row();
             });
-            ui.label(
-                RichText::new(
-                    "The cells the plane crosses, whole. The region's boundary is hidden while the cut is shown.",
-                )
-                .size(12.0)
-                .color(t.text_muted),
-            );
+            if form.found {
+                match found {
+                    Some(f) if f.classes.is_empty() => {
+                        ui.label("Check mesh found nothing here.");
+                    }
+                    Some(f) => {
+                        for (k, c) in f.classes.iter().enumerate() {
+                            ui.horizontal_top(|ui| {
+                                let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                                let [red, green, blue] = umcf_render::raster::palette(k).map(|x| (x * 255.0) as u8);
+                                ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(red, green, blue));
+                                let what = if c.cells { "cell" } else { "face" };
+                                let (shown, n) = (c.labels.len(), c.count.max(c.labels.len()));
+                                let plural = if n == 1 { "" } else { "s" };
+                                let text = if shown < n {
+                                    format!("{}: {n} {what}{plural}, the first {shown} shown", c.name)
+                                } else {
+                                    format!("{}: {n} {what}{plural}", c.name)
+                                };
+                                ui.add(egui::Label::new(text).wrap());
+                            });
+                        }
+                    }
+                    None => {
+                        ui.label("Check mesh hasn't run on this region since it was read.");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    let label = if checking { "Checking…" } else { "Check mesh" };
+                    let tip = "Check this region's mesh (its whole mesh is read; what it finds is shown here)";
+                    check = ui.add_enabled(!checking, egui::Button::new(label)).on_hover_text(tip).clicked();
+                    let any = found.is_some_and(|f| !f.classes.is_empty());
+                    fit = ui
+                        .add_enabled(any, egui::Button::new("Fit findings"))
+                        .on_hover_text("Frame the view on what was found")
+                        .clicked();
+                });
+            }
+            let note = if form.found {
+                "The faces and cells Check mesh found, each problem in its colour, a cell by its faces (the first 1000 of each). The region's boundary is hidden while they are shown."
+            } else {
+                "The cells the plane crosses, whole. The region's boundary is hidden while the cut is shown."
+            };
+            ui.label(RichText::new(note).size(12.0).color(t.text_muted));
+            if check {
+                self.start(crate::jobs::Work::Command {
+                    id: "mesh.check".to_string(),
+                    params: json!({ "region": form.region }),
+                    then: crate::jobs::Then::Nothing,
+                });
+            }
+            if fit {
+                self.fit_found = true;
+                self.fit_view(None);
+            }
         });
         // Another region or axis: the slider over its extent, the plane in its middle; the
         // extent once known (the region drawn), the position kept if set by hand.

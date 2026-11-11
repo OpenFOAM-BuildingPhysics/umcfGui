@@ -140,6 +140,34 @@ On the command line, `umcf-cli render --cut air:x=115` (repeatable, one a region
 single-region case) cuts across an axis and hides the region's boundary. In the desktop app it is
 [the cut card](desktop.md#a-cut-through-the-mesh).
 
+### What a check found
+
+A region's cut can show, in place of a plane's cells, the faces and cells `mesh.check` found in
+it last:
+
+```json
+{"cuts": [{"region": "air", "found": true}], "display": [{"region": "air", "mode": "hidden"}]}
+```
+
+- **What is drawn**: for each problem the check found (skew faces, faces more than 70°
+  non-orthogonal, open cells, with `all_geometry` concave cells and the others it adds), and
+  for each of checkMesh's sets of faces or cells in `polyMesh/sets` that isn't stale, its first
+  1000 faces or cells (those the check lists), a face as it is and a cell by all its faces. Each
+  problem is a class of its own, in its own colour (its classes are the problems' names, such
+  as `skew faces` or `checkMesh: faces with skewness above 4`). Points (`nearPoints`,
+  `shortEdges`) are not drawn.
+- **Before a check** of the region the cut is refused (*run mesh.check on it first*); a region
+  whose mesh the check couldn't read has nothing found. A check of the region again replaces what
+  was found; opening the case again or reading its meshes again (`reload`) drops it, as the
+  labels may no longer be of the same faces and cells.
+- **Reading**: `mesh.check` reads the whole mesh to check it and hands it to the scene, kept
+  while it fits in what the budget for hidden objects leaves ([memory](#memory)): showing what it
+  found then reads nothing. A mesh that doesn't fit is read again when it is shown, as for a
+  plane's cut.
+
+`umcf-cli render --found air` checks the region's mesh and draws what it found, the region's
+boundary hidden.
+
 ## Picking
 
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same
@@ -267,7 +295,9 @@ above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is i
   hidden objects leave of the quarter once it isn't (the least recently cut dropped first). Its
   read is estimated as about 24 bytes a point and 28 a face, twice that for a binary mesh (its
   files held besides), and 24 more a point for an ASCII one (its points are parsed into a list
-  that grows). Building the cut adds about 21 bytes a cell and 12 a point.
+  that grows). Building the cut adds about 21 bytes a cell and 12 a point. The whole mesh
+  `mesh.check` read is handed to the scene while it fits in what the hidden objects and the
+  whole meshes kept leave of the quarter ([what a check found](#what-a-check-found)).
 
 The estimates are plans, not limits: what is shown is always kept, however big. The Hong Kong
 project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.3 s with at most

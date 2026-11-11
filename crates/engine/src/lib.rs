@@ -169,6 +169,12 @@ pub struct Session {
     selection: Vec<Sel>,
     /// The 3D scene last built, for picking and snapshots.
     scene: Option<std::sync::Arc<cmd::scene::Cached>>,
+    /// What `mesh.check` found last in each region it checked (faces and cells), for the 3D
+    /// view's cuts; opening a case or reading its meshes again (`reload`) drops it.
+    found: Vec<(String, std::sync::Arc<umcf_render::Found>)>,
+    /// The whole meshes `mesh.check` read, handed to the next scene built (within the budget for
+    /// hidden objects), so that showing what it found reads nothing again.
+    handed: Vec<cmd::scene::Whole>,
     /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
     cancel: umcf_core::Cancel,
     /// The memory the session plans with (see [`Budget`]).
@@ -222,6 +228,8 @@ impl Session {
             opens: 0,
             selection: Vec::new(),
             scene: None,
+            found: Vec::new(),
+            handed: Vec::new(),
             cancel: umcf_core::Cancel::new(),
             budget: Budget::system(),
         }
@@ -344,6 +352,8 @@ impl Session {
         self.journal.clear();
         self.selection.clear();
         self.scene = None;
+        self.found.clear();
+        self.handed.clear();
         self.opens += 1;
         Ok(())
     }
@@ -460,6 +470,8 @@ impl Session {
         s.opens = self.opens;
         s.selection = self.selection.clone();
         s.scene = if with_scene { self.scene.clone() } else { None };
+        s.found = self.found.clone();
+        s.handed = if with_scene { self.handed.clone() } else { Vec::new() };
         s.budget = self.budget;
         s
     }

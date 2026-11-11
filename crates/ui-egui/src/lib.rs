@@ -149,6 +149,8 @@ pub struct App {
     classes: Vec<(String, Vec<String>)>,
     /// *Fit* waits for the scene being read: the view it asked for.
     fit_pending: Option<Option<View>>,
+    /// The next fit frames what *Check mesh* found, shown in the cut card, not the whole scene.
+    pub(crate) fit_found: bool,
     /// How long a job is waited for before the window shows it running (a quick one looks as
     /// if it ran in place).
     pub job_wait: std::time::Duration,
@@ -283,6 +285,7 @@ impl App {
             job: None,
             queue: std::collections::VecDeque::new(),
             fit_pending: None,
+            fit_found: false,
             classes: Vec::new(),
             job_wait: std::time::Duration::from_millis(150),
             styled: false,
@@ -644,9 +647,17 @@ impl App {
             Some(v) => v.angles(),
             None => self.viewport.camera.map_or(View::Iso.angles(), |c| (c.azimuth, c.elevation)),
         };
+        // What the check found, when the card asked for it (else, or when it is empty, the scene).
+        let found = std::mem::take(&mut self.fit_found)
+            .then(|| self.cut.as_ref().filter(|f| f.found).map(|f| f.region.clone()))
+            .flatten();
         match self.session.scene(&params) {
             Ok(scene) => {
-                if let Some(b) = scene.bbox() {
+                let of_found = found.and_then(|r| {
+                    let o = scene.objects.iter().find(|o| o.source == Source::Cut { region: r.clone() })?;
+                    o.bbox(scene.origin)
+                });
+                if let Some(b) = of_found.or_else(|| scene.bbox()) {
                     self.viewport.camera = Some(Camera::fit_angles(az, el, &b, aspect));
                 }
                 // It builds now (a file changed outside the window): the view draws it.
@@ -659,8 +670,8 @@ impl App {
     /// The parameters of the scene the 3D view shows.
     fn shown(&self) -> Value {
         let mut p = json!({ "regions": self.shown_regions, "surfaces": self.shown_surfaces });
-        if let Some(c) = &self.cut {
-            p["cuts"] = json!([c.cut()]);
+        if let Some(c) = self.cut_shown() {
+            p["cuts"] = json!([c]);
         }
         p
     }
@@ -1312,7 +1323,7 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut.is_none() {
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut_shown().is_none() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
@@ -2569,8 +2580,8 @@ impl App {
     /// for) and the field files when they were listed only. The command is asked for first, as
     /// other work would drop a scene already waiting.
     pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
-        // The cut card, which is no command's.
-        if open == Some("cut") {
+        // The cut card, which is no command's: with `found`, showing what Check mesh found.
+        if let Some(which @ ("cut" | "found")) = open {
             if let Some(tab) = self
                 .workspace
                 .tabs()
@@ -2582,10 +2593,15 @@ impl App {
             self.toggle_cut();
             if self.cut.is_none() {
                 return Err(if self.session.case().is_none() {
-                    "--open cut: no case is open".to_string()
+                    format!("--open {which}: no case is open")
                 } else {
-                    "--open cut: no region of the case has a mesh".to_string()
+                    format!("--open {which}: no region of the case has a mesh")
                 });
+            }
+            if which == "found" {
+                self.show_found();
+                self.fit_found = true;
+                self.fit_view(None);
             }
         } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;

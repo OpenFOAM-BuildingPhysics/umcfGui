@@ -834,6 +834,60 @@ fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
     assert_eq!(out.data["in"], 1, "{}", out.data);
 }
 
+/// What `mesh.check` found is shown as the region's cut, from the mesh it read.
+#[test]
+fn what_a_check_found_is_shown_without_reading_the_mesh_again() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    // checkMesh's sets: a face (2) and the cell, and a set of points (not drawn).
+    let set = |class: &str, labels: &str| {
+        format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n{labels}\n")
+    };
+    fs.insert("constant/air/polyMesh/sets/skewFaces", set("faceSet", "1\n(\n2\n)"));
+    fs.insert("constant/air/polyMesh/sets/concaveCells", set("cellSet", "1\n(\n0\n)"));
+    fs.insert("constant/air/polyMesh/sets/nearPoints", set("pointSet", "1\n(\n3\n)"));
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = Counting { fs, file: "constant/air/polyMesh/neighbour", reads: std::sync::Arc::clone(&reads) };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(counting), "mem", OpenOptions::default(), false).unwrap();
+    let found = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "found": true }] });
+    // Before a check: nothing to show.
+    let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
+    assert!(e.contains("run mesh.check on it first"), "{e}");
+    assert!(s.found("air").is_none());
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    let after_check = reads.load(std::sync::atomic::Ordering::Relaxed);
+    let f = s.found("air").unwrap();
+    let names: Vec<&str> = f.classes.iter().map(|c| c.name.as_str()).collect();
+    // The sets of faces and cells (not points); the cube itself is fine.
+    assert_eq!(names, ["checkMesh: concave cells", "checkMesh: faces with skewness above 4"]);
+    // Its box is known before it is shown.
+    assert_eq!(s.whole_bounds("air").unwrap().max.x, 1.0);
+    let out = s.execute("scene.snapshot", &found).unwrap();
+    // The cell by its six faces, the face: two triangles.
+    assert_eq!(
+        out.data["objects"][1],
+        json!({ "cut": "air", "triangles": 14, "classes": ["checkMesh: concave cells", "checkMesh: faces with skewness above 4"] })
+    );
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), after_check, "the mesh isn't read again");
+    // A plane and back: the mesh still kept.
+    let plane = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "point": [0.5, 0.5, 0.5], "normal": [1, 0, 0] }] });
+    s.execute("scene.snapshot", &plane).unwrap();
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), after_check);
+    // Refused: `found` not true, or with a plane.
+    for cut in
+        [json!({ "region": "air", "found": false }), json!({ "region": "air", "found": true, "point": [0, 0, 0] })]
+    {
+        let e = s.execute("scene.snapshot", &json!({ "cuts": [cut] })).unwrap_err().to_string();
+        assert!(e.contains("`found` is true"), "{e}");
+    }
+    // The meshes read again: what was found goes with what was read.
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8, "reload": true })).unwrap();
+    assert!(s.found("air").is_none());
+    assert!(s.execute("scene.snapshot", &found).is_err());
+}
+
 #[test]
 fn picking_selects_patches_and_lists_what_is_behind() {
     let mut s = scene_session();
