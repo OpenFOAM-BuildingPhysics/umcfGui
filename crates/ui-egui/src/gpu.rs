@@ -2567,6 +2567,27 @@ mod tests {
     }
 
     #[test]
+    fn the_cells_near_a_surface_are_drawn_as_the_cpu_view_draws_them() {
+        // A plane at x = 0: the four cells there, one size.
+        let (a, b, c, d) = (
+            Vec3::new(0.0, -1.0, -1.0),
+            Vec3::new(0.0, 3.0, -1.0),
+            Vec3::new(0.0, 3.0, 3.0),
+            Vec3::new(0.0, -1.0, 3.0),
+        );
+        let near = Object::from_near("air", &block_mesh(), &[[a, b, c], [a, c, d]], 0.5, Vec3::ZERO);
+        assert_eq!(near.classes, ["cells about 1 m across: 4"]);
+        let mut scene = Scene::new(Vec3::ZERO);
+        scene.objects.push(near);
+        for edges in [false, true] {
+            let mut style = Style { edges, ..Style::default() };
+            let Some((cpu, image)) = both(&scene, &mut style) else { return };
+            let off = differing(&cpu, &image, 6);
+            assert!(off < 0.01, "edges {edges}: {:.1}% of the pixels differ", off * 100.0);
+        }
+    }
+
+    #[test]
     fn the_layers_at_a_wall_are_drawn_as_the_cpu_view_draws_them() {
         // Three layers from x = 0, each of 4 cells in its colour, with the faces between them.
         let layers = Object::from_layers("air", &block_mesh(), "west", 3, Vec3::ZERO).unwrap();

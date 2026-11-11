@@ -1,6 +1,6 @@
 //! The cut card: the inside of a region's mesh (the scene's `cuts`): a plane through it, the
-//! cells it crosses drawn whole; the faces and cells *Check mesh* found there; or the layers of
-//! cells at one of its patches. The plane is across an axis at a position within the region's
+//! cells it crosses drawn whole; the faces and cells *Check mesh* found there; the layers of
+//! cells at one of its patches; or the cells near an STL surface, by size. The plane is across an axis at a position within the region's
 //! extent; the region's boundary is hidden while the card is open, so what is inside it shows.
 
 use eframe::egui::{self, Align, Layout, RichText, Sense, Ui, vec2};
@@ -21,6 +21,8 @@ pub enum Show {
     Found,
     /// The layers of cells at a patch.
     Layers,
+    /// The cells near an STL surface.
+    Near,
 }
 
 /// What the card holds.
@@ -32,6 +34,10 @@ pub struct CutForm {
     pub patch: String,
     /// How many layers.
     pub layers: u32,
+    /// The surface the cells near which are shown (case-relative, with [`Show::Near`]).
+    pub surface: String,
+    /// How near, in metres.
+    pub distance: f64,
     /// 0, 1, 2: across x, y or z.
     pub axis: usize,
     /// Where along the axis.
@@ -59,6 +65,8 @@ impl CutForm {
             show: Show::Plane,
             patch: String::new(),
             layers: umcf_engine::DEFAULT_LAYERS,
+            surface: String::new(),
+            distance: 1.0,
             axis: 0,
             at: 0.0,
             flip: false,
@@ -75,6 +83,9 @@ impl CutForm {
         match self.show {
             Show::Found => return json!({ "region": self.region, "found": true }),
             Show::Layers => return json!({ "region": self.region, "patch": self.patch, "layers": self.layers }),
+            Show::Near => {
+                return json!({ "region": self.region, "surface": self.surface, "distance": self.distance });
+            }
             Show::Plane => {}
         }
         let mut normal = [0.0; 3];
@@ -128,6 +139,7 @@ impl App {
         match form.show {
             Show::Found if self.session.found(&form.region).is_none() => return None,
             Show::Layers if !self.patches(&form.region).contains(&form.patch) => return None,
+            Show::Near if !self.surfaces.contains(&form.surface) => return None,
             _ => {}
         }
         Some(form.cut())
@@ -145,6 +157,21 @@ impl App {
         };
         let wall = |p: &&umcf_model::Patch| p.kind.to_lowercase().contains("wall");
         patches.iter().filter(wall).chain(patches.iter().filter(|p| !wall(p))).map(|p| p.name.clone()).collect()
+    }
+
+    /// The card's surface kept while the case has it, else its first.
+    fn fit_surface(&self, form: &mut CutForm) {
+        if !self.surfaces.contains(&form.surface) {
+            form.surface = self.surfaces.first().cloned().unwrap_or_default();
+        }
+    }
+
+    /// Switches the open card to the cells near a surface of the case (its first).
+    pub(crate) fn show_near(&mut self) {
+        let Some(mut form) = self.cut.clone() else { return };
+        form.show = Show::Near;
+        self.fit_surface(&mut form);
+        self.set_cut(form);
     }
 
     /// The card's patch kept where the region has it, else its first (a wall where it has one).
@@ -335,16 +362,20 @@ impl App {
                     .response
                     .labelled_by(label.id);
                 ui.end_row();
+            });
+            // What to show: a row of its own, which wraps on a narrow card.
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Show");
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut form.show, Show::Plane, "Plane")
-                        .on_hover_text("The cells a plane crosses, whole");
-                    ui.selectable_value(&mut form.show, Show::Found, "Check findings")
-                        .on_hover_text("The faces and cells Check mesh found in the region");
-                    ui.selectable_value(&mut form.show, Show::Layers, "Wall layers")
-                        .on_hover_text("The layers of cells at a patch, each in its colour");
-                });
-                ui.end_row();
+                ui.selectable_value(&mut form.show, Show::Plane, "Plane")
+                    .on_hover_text("The cells a plane crosses, whole");
+                ui.selectable_value(&mut form.show, Show::Found, "Check findings")
+                    .on_hover_text("The faces and cells Check mesh found in the region");
+                ui.selectable_value(&mut form.show, Show::Layers, "Wall layers")
+                    .on_hover_text("The layers of cells at a patch, each in its colour");
+                ui.selectable_value(&mut form.show, Show::Near, "Near a surface")
+                    .on_hover_text("The cells near an STL surface, each size in its colour");
+            });
+            egui::Grid::new("cut-form-2").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
                 if form.show == Show::Layers {
                     let label = ui.label("Patch");
                     egui::ComboBox::from_id_salt("cut-patch")
@@ -360,6 +391,25 @@ impl App {
                     let label = ui.label("Layers");
                     ui.add(egui::DragValue::new(&mut form.layers).range(1..=umcf_engine::MAX_LAYERS).speed(0.05))
                         .on_hover_text("How many layers to follow from the patch")
+                        .labelled_by(label.id);
+                    ui.end_row();
+                }
+                if form.show == Show::Near {
+                    let label = ui.label("Surface");
+                    let name = |f: &str| f.rsplit('/').next().unwrap_or(f).to_string();
+                    egui::ComboBox::from_id_salt("cut-surface")
+                        .selected_text(name(&form.surface))
+                        .show_ui(ui, |ui| {
+                            for f in &self.surfaces {
+                                ui.selectable_value(&mut form.surface, f.clone(), name(f));
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                    ui.end_row();
+                    let label = ui.label("Within");
+                    ui.add(egui::DragValue::new(&mut form.distance).range(0.001..=100_000.0).speed(0.05).suffix(" m"))
+                        .on_hover_text("The cells with a point this near the surface")
                         .labelled_by(label.id);
                     ui.end_row();
                 }
@@ -391,18 +441,24 @@ impl App {
                 }
                 ui.end_row();
             });
-            if form.show == Show::Layers {
-                // The layers as the scene built them last (each class's name says its count), once
+            if matches!(form.show, Show::Layers | Show::Near) {
+                // The layers (or sizes) as the scene built them last (each class's name says its count), once
                 // they are those of the card's patch and count (the scene is built after it,
                 // as a job: till then, or where it failed, another cut's are there).
-                let wanted = umcf_render::Cells::Layers { patch: form.patch.clone(), layers: form.layers };
+                let wanted = match form.show {
+                    Show::Near => umcf_render::Cells::Near { surface: form.surface.clone(), distance: form.distance },
+                    _ => umcf_render::Cells::Layers { patch: form.patch.clone(), layers: form.layers },
+                };
                 let built = self.session.last_cut(&form.region) == Some(&wanted);
                 let shown = self.session.last_scene().filter(|_| built).and_then(|scene| {
                     scene.objects.iter().find(|o| matches!(&o.source, Source::Cut { region } if *region == form.region))
                 });
                 let classes = shown.map(|o| o.classes.clone());
-                if self.patches(&form.region).is_empty() {
+                if form.show == Show::Layers && self.patches(&form.region).is_empty() {
                     ui.add(egui::Label::new("This region's mesh has no patches to show layers at.").wrap());
+                }
+                if form.show == Show::Near && self.surfaces.is_empty() {
+                    ui.add(egui::Label::new("The case has no STL surface in constant/triSurface.").wrap());
                 }
                 match classes {
                     Some(classes) if !classes.is_empty() => {
@@ -420,10 +476,24 @@ impl App {
                         });
                     }
                     Some(_) => {
-                        ui.label("No cells at this patch.");
+                        ui.label(if form.show == Show::Near {
+                            "No cells that near the surface."
+                        } else {
+                            "No cells at this patch."
+                        });
                     }
                     None => {}
                 }
+                let any = built
+                    && self.session.last_scene().is_some_and(|scene| {
+                    scene.objects.iter().any(|o| {
+                        matches!(&o.source, Source::Cut { region } if *region == form.region) && !o.triangles.is_empty()
+                    })
+                });
+                fit |= ui
+                    .add_enabled(any, egui::Button::new("Fit cells"))
+                    .on_hover_text("Frame the view on the cells shown")
+                    .clicked();
             }
             if form.show == Show::Found {
                 match found {
@@ -475,6 +545,9 @@ impl App {
                 Show::Layers => {
                     "From each face of the patch, the cells across their opposite faces, each layer in its colour; where that stops short (a cell split or collapsed), the patch face is marked. Past the mesh's layers, the cells beyond count as layers too. The region's boundary is hidden while they are shown."
                 }
+                Show::Near => {
+                    "The cells with a point within the distance of the surface, each size in its colour (halvings of the largest, as snappyHexMesh refines). The region's boundary is hidden while they are shown."
+                }
                 Show::Plane => "The cells the plane crosses, whole. The region's boundary is hidden while the cut is shown.",
             };
             ui.label(RichText::new(note).size(12.0).color(t.text_muted));
@@ -493,6 +566,9 @@ impl App {
         // extent once known (the region drawn), the position kept if set by hand.
         if form.show == Show::Layers {
             self.fit_patch(&mut form);
+        }
+        if form.show == Show::Near {
+            self.fit_surface(&mut form);
         }
         let other = form.region != before.region || form.axis != before.axis;
         if other {

@@ -212,6 +212,36 @@ A region's cut can show the layers of cells at one of its patches, the first `la
 `umcf-cli render --layers air/buildings=3` (`<patch>` alone in a single-region case; 5 without
 `=n`) draws them, the region's boundary hidden.
 
+### The cells near a surface
+
+A region's cut can show the cells near an STL surface of the case (in `constant/triSurface`),
+to see how snappyHexMesh refined the mesh around buildings, trees or terrain:
+
+```json
+{"cuts": [{"region": "air", "surface": "buildings.stl", "distance": 2}],
+ "display": [{"region": "air", "mode": "hidden"}]}
+```
+
+- **Which cells**: those with a point within `distance` metres of one of the surface's
+  triangles. A cell the surface crosses with all its points farther away than that (a big cell,
+  a small distance) isn't one of them: take a distance about the size of the cells near it.
+- **What is drawn**: the cells by size, each size a class in its own colour. A cell's size is its
+  points' largest extent along an axis, and the sizes are halvings of the largest, as
+  snappyHexMesh refines (`cells about 12.5 m across: 14`, `cells about 6.26 m across: 10`),
+  the largest first. Drawn by the skin of the cells near (each face between one and a
+  cell not near, or of the boundary) and the faces between two sizes, in the smaller's colour.
+- **The surface** is read as a command put it (imported, repaired, not saved yet) or from disk;
+  a surface put again builds the cut again. Errors: a surface the case doesn't have (*there is
+  no surface constant/triSurface/x.stl*), a name that isn't a surface of the case, and a
+  `distance` that isn't a positive number.
+- **Reading**: the region's whole mesh, as for a plane's cut, read once and kept, and the surface.
+  The cells within 1 m of the vegetation of the 3.1-million-cell `new_Mesh_3x3` take 2.6 s with
+  the mesh's reading (12 288 cells, refined to 0.694 m), those of the small 3×3 case 0.2 s (24
+  cells, of 12.5 m and 6.26 m).
+
+`umcf-cli render --near air/buildings.stl=2` (`<surface>=<distance>` in a single-region case)
+draws them, the region's boundary hidden.
+
 ## Picking
 
 `select.pick` casts a ray through a pixel of the image `scene.snapshot` draws with the same

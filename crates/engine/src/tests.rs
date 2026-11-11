@@ -822,6 +822,34 @@ fn a_cut_shows_the_layers_at_a_patch() {
     }
 }
 
+#[test]
+fn a_cut_shows_the_cells_near_a_surface() {
+    let mut s = scene_session();
+    let near = |p: Value| json!({ "regions": [], "cuts": [p], "width": 8, "height": 8 });
+    // The box on the one cell: its six faces, one size.
+    let out =
+        s.execute("scene.snapshot", &near(json!({ "region": "air", "surface": "box.stl", "distance": 0.1 }))).unwrap();
+    assert_eq!(
+        out.data["objects"],
+        json!([{ "cut": "air", "triangles": 12, "classes": ["cells about 1 m across: 1"] }])
+    );
+    // Refused.
+    for (cut, says) in [
+        (
+            json!({ "region": "air", "surface": "none.stl", "distance": 1 }),
+            "there is no surface constant/triSurface/none.stl",
+        ),
+        (json!({ "region": "air", "surface": "../box.stl", "distance": 1 }), "not a surface of the case"),
+        (json!({ "region": "air", "surface": "box.stl" }), "`distance` is a positive number"),
+        (json!({ "region": "air", "surface": "box.stl", "distance": 0 }), "`distance` is a positive number"),
+        (json!({ "region": "air", "distance": 1 }), "`surface` names an STL file"),
+        (json!({ "region": "air", "surface": "box.stl", "distance": 1, "patch": "ground" }), "without a point"),
+    ] {
+        let e = s.execute("scene.snapshot", &near(cut.clone())).unwrap_err().to_string();
+        assert!(e.contains(says), "{cut}: {e}");
+    }
+}
+
 /// A case on `MemFs` that counts the reads of one file.
 struct Counting {
     fs: MemFs,

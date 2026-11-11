@@ -19,7 +19,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `<case>` | Opens the case (`case.open`) |
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
-| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh), `--open found` the card showing what *Check mesh* found, `--open layers` the card showing the layers of cells at a wall (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
+| `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh), `--open found` the card showing what *Check mesh* found, `--open layers` the card showing the layers of cells at a wall, `--open near` the card showing the cells near an STL surface, framed (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
 | `--dark` | The dark theme |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window always on OpenGL, no switch (for a machine where a GPU window opens but can't show, as over `ssh -X`). A GPU window that doesn't open is opened again on OpenGL ([the GPU view](#the-gpu-view)) |
@@ -148,7 +148,8 @@ edges. The first cut of a region reads its whole mesh; moving the plane after re
 no region has a mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on
 its own. `umcf-gui <case> --open cut` opens the card at the start.
 
-*Show* switches the card between the *Plane*, the *Check findings* and the *Wall layers*: the faces and cells *Check
+*Show* switches the card between the *Plane*, the *Check findings*, the *Wall layers* and the
+cells *Near a surface*: the faces and cells *Check
 mesh* found in the region ([what a check found](scene.md#what-a-check-found)), each problem in its
 own colour, listed under it with that colour and how many faces or cells it has (the first 1000 of
 each). The region's boundary is hidden as for the plane, and no plane is drawn; *Fit findings*
@@ -167,6 +168,14 @@ its colour with its count of cells (scrolled where there are many), and the patc
 layers stop short (a cell split or collapsed) in a colour of their own. Past the layers the mesh
 has, the cells beyond count as layers too. `umcf-gui <case> --open layers` opens the card on them at
 the start.
+
+*Near a surface* shows the cells near an STL surface of the case ([the cells near a
+surface](scene.md#the-cells-near-a-surface)): *Surface* (the case's surfaces, the first to start
+with) and *Within* (the distance in metres; 1 m to start with). Each size of cell is listed in its
+colour with its count, the largest first, so snappyHexMesh's refinement levels near the surface
+show each in its own. *Fit cells* frames the view on the cells shown (also for the *Wall
+layers*); where the case has no surface, the card says so. `umcf-gui <case> --open near` opens
+the card on them at the start, framed.
 
 ## The GPU view
 

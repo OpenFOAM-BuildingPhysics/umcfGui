@@ -51,8 +51,9 @@ pub enum Source {
     /// What is shown of a region's cells ([`Cells`]): those a plane cuts ([`Object::from_cut`];
     /// its classes are the cell zones, `cells` for those in none) or the faces and cells a mesh
     /// check named ([`Object::from_found`]; its classes are what was found) or the layers of cells
-    /// at a patch ([`Object::from_layers`]; its classes are the layers). A triangle's source index
-    /// is its mesh face.
+    /// at a patch ([`Object::from_layers`]; its classes are the layers) or the cells near a
+    /// surface ([`Object::from_near`]; its classes are their sizes). A triangle's source index is
+    /// its mesh face.
     Cut { region: String },
 }
 
@@ -65,6 +66,9 @@ pub enum Cells {
     Found(std::sync::Arc<Found>),
     /// The first `layers` layers of cells at patch `patch` ([`Object::from_layers`]).
     Layers { patch: String, layers: u32 },
+    /// The cells within `distance` of the STL surface `surface` (case-relative)
+    /// ([`Object::from_near`]).
+    Near { surface: String, distance: f64 },
 }
 
 impl PartialEq for Cells {
@@ -73,6 +77,7 @@ impl PartialEq for Cells {
         match (self, other) {
             (Cells::Plane(a), Cells::Plane(b)) => a == b,
             (Cells::Layers { patch: a, layers: m }, Cells::Layers { patch: b, layers: n }) => a == b && m == n,
+            (Cells::Near { surface: a, distance: m }, Cells::Near { surface: b, distance: n }) => a == b && m == n,
             (Cells::Found(a), Cells::Found(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -147,6 +152,19 @@ fn cell_faces(mesh: &umcf_foam_mesh::PolyMesh) -> (Vec<u32>, Vec<u32>) {
         }
     }
     (start, faces)
+}
+
+/// A length in metres for people, to three significant figures (`2 m`, `0.25 m`, `1.5 km`).
+fn metres(x: f64) -> String {
+    if !x.is_finite() {
+        return "? m".to_string();
+    }
+    let (x, unit) = if x >= 1000.0 { (x / 1000.0, "km") } else { (x, "m") };
+    let digits = if x > 0.0 { x.abs().log10().floor() as i32 } else { 0 };
+    let decimals = (2 - digits).clamp(0, 6) as usize;
+    let text = format!("{x:.decimals$}");
+    let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text };
+    format!("{text} {unit}")
 }
 
 /// One thing a mesh check found: the faces or cells where it is.
@@ -531,6 +549,99 @@ impl Object {
             o.push_face(&mesh.points, &mut map, face, index, class, origin);
         }
         Ok(o)
+    }
+
+    /// The cells of `mesh` with a point within `distance` of one of `triangles` (an STL
+    /// surface's, world coordinates), grouped by size: each cell's size is its points' largest
+    /// extent along an axis, and the cells are classed by it in halvings of the largest
+    /// (`cells about 2 m across: 120`, `cells about 1 m across: 480`, …), as snappyHexMesh
+    /// refines them, the largest first. Drawn by the skin of the cells near (each face between one
+    /// and a cell not near, or of the boundary) and the faces between two classes, in the class of
+    /// the smaller cell. A point or triangle that is not finite is never near; a cell with no
+    /// finite point has no size and isn't drawn.
+    pub fn from_near(
+        region: &str,
+        mesh: &umcf_foam_mesh::PolyMesh,
+        triangles: &[[Vec3; 3]],
+        distance: f64,
+        origin: Vec3,
+    ) -> Object {
+        let points: Vec<Vec3> = mesh.points.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+        let close = umcf_geom::near::near(triangles, &points, distance);
+        drop(points);
+        let cells = mesh.n_cells();
+        let mut near: Vec<bool> = vec![false; cells];
+        for f in 0..mesh.n_faces() {
+            let Some(face) = mesh.face(f) else { continue };
+            if face.iter().any(|p| close.get(*p as usize).copied().unwrap_or(false)) {
+                for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
+                    if let Some(n) = near.get_mut(*c as usize) {
+                        *n = true;
+                    }
+                }
+            }
+        }
+        drop(close);
+        // Each near cell's extent: the least and the most of its finite points' coordinates.
+        let mut extent: std::collections::HashMap<u32, ([f64; 3], [f64; 3])> = std::collections::HashMap::new();
+        for f in 0..mesh.n_faces() {
+            let Some(face) = mesh.face(f) else { continue };
+            for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
+                if !near.get(*c as usize).copied().unwrap_or(false) {
+                    continue;
+                }
+                let (lo, hi) = extent.entry(*c).or_insert(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]));
+                for x in face.iter().filter_map(|p| mesh.points.get(*p as usize)) {
+                    if !x.iter().all(|c| c.is_finite()) {
+                        continue;
+                    }
+                    for ((l, h), v) in lo.iter_mut().zip(hi.iter_mut()).zip(x) {
+                        *l = l.min(*v);
+                        *h = h.max(*v);
+                    }
+                }
+            }
+        }
+        let size =
+            |(lo, hi): &([f64; 3], [f64; 3])| lo.iter().zip(hi).map(|(l, h)| h - l).fold(f64::NEG_INFINITY, f64::max);
+        let largest = extent.values().map(size).filter(|s| s.is_finite() && *s > 0.0).fold(0.0, f64::max);
+        // Each cell's halvings of the largest (u8::MAX for none: not drawn).
+        let level = |s: f64| -> u8 {
+            if !(s.is_finite() && s > 0.0 && largest > 0.0) {
+                return u8::MAX;
+            }
+            (largest / s).log2().round().clamp(0.0, 60.0) as u8
+        };
+        let of: std::collections::HashMap<u32, u8> = extent.iter().map(|(c, e)| (*c, level(size(e)))).collect();
+        drop(extent);
+        let mut levels: Vec<u8> = of.values().copied().filter(|l| *l != u8::MAX).collect();
+        levels.sort_unstable();
+        let mut o = Object::new(Source::Cut { region: region.to_string() });
+        let mut class_of: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+        let mut k = 0usize;
+        while k < levels.len() {
+            let l = levels.get(k).copied().unwrap_or(0);
+            let n = levels.iter().skip(k).take_while(|x| **x == l).count();
+            let across = largest / f64::from(2u32.saturating_pow(u32::from(l)).max(1));
+            o.classes.push(format!("cells about {} across: {n}", metres(across)));
+            o.kinds.push("cells".to_string());
+            o.groups.push(Vec::new());
+            class_of.insert(l, u32::try_from(class_of.len()).unwrap_or(u32::MAX));
+            k += n;
+        }
+        let class = |c: Option<&u32>| c.and_then(|c| of.get(c)).copied().filter(|l| *l != u8::MAX);
+        let mut map: Vec<u32> = vec![u32::MAX; mesh.points.len()];
+        for f in 0..mesh.n_faces() {
+            let l = match (class(mesh.owner.get(f)), class(mesh.neighbour.get(f))) {
+                (None, None) => continue,
+                (Some(a), Some(b)) if a == b => continue,
+                (Some(a), None) | (None, Some(a)) => a,
+                (Some(a), Some(b)) => a.max(b),
+            };
+            let (Some(face), Ok(index), Some(k)) = (mesh.face(f), u32::try_from(f), class_of.get(&l)) else { continue };
+            o.push_face(&mesh.points, &mut map, face, index, *k, origin);
+        }
+        o
     }
 
     /// The cells of `mesh` that `plane` cuts, as a "crinkle" cut: each such cell whole, so the

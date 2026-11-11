@@ -46,7 +46,8 @@ usage:
   umcf-cli render <case> --out <file.png> [--view <view>] [--size <w>x<h>] [--region <r>]...
                  [--surface <file>]... [--edges] [--no-grid] [--no-origin] [--light]
                  [--select <what>]... [--pick <x>,<y>] [--cut <region>:<axis>=<at>]...
-                 [--found <region>]... [--layers <region>/<patch>[=<n>]]... [--json]
+                 [--found <region>]... [--layers <region>/<patch>[=<n>]]...
+                 [--near <region>/<surface>=<distance>]... [--json]
       Draw the case in 3D (the CPU renderer) into a PNG file: the boundary patches of every
       region with a mesh, or the STL surfaces when there is none, each in its own colour.
       --view       iso (default), top, bottom, front, back, left or right; --azimuth <deg>,
@@ -71,6 +72,11 @@ usage:
                    single-region case; 5 without =n, at most 50), each layer in its colour, the
                    patch faces where they stop short marked, the region's boundary hidden (its
                    whole mesh is read); can be repeated, once a region
+      --near       draw the cells within a distance in metres of an STL surface in
+                   constant/triSurface (air/buildings.stl=2; <surface>=<distance> in a
+                   single-region case), each size in its colour (snappyHexMesh's refinement
+                   levels), the region's boundary hidden (its whole mesh is read); can be
+                   repeated, once a region
       --json       one JSON object: the image's camera and objects, and the pick
       Exit status: 0 drawn, 2 the case could not be opened or drawn.
 
@@ -355,6 +361,22 @@ fn render(args: &[String]) -> Result<u8, String> {
                     cut["layers"] = json!(n);
                 }
                 cuts.push(cut);
+                hidden.push(json!({ "region": region, "mode": "hidden" }));
+            }
+            "--near" => {
+                let v = value("--near")?;
+                let bad =
+                    || format!("render: --near is <region>/<surface>=<distance> (air/buildings.stl=2), not `{v}`");
+                let (at, d) = v.rsplit_once('=').ok_or_else(bad)?;
+                let d: f64 = d.parse().ok().filter(|d: &f64| d.is_finite() && *d > 0.0).ok_or_else(bad)?;
+                let (region, surface) = at.split_once('/').unwrap_or(("", at));
+                if surface.is_empty() {
+                    return Err(bad());
+                }
+                if cuts.iter().any(|c: &Value| c["region"] == region) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
+                cuts.push(json!({ "region": region, "surface": surface, "distance": d }));
                 hidden.push(json!({ "region": region, "mode": "hidden" }));
             }
             "--pick" => {

@@ -1983,6 +1983,55 @@ fn the_cut_card_shows_the_layers_at_a_wall() {
 }
 
 #[test]
+fn the_cut_card_shows_the_cells_near_a_surface() {
+    let mut fs = case();
+    fs.insert(
+        "constant/triSurface/floor.stl",
+        "solid floor\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid floor\n",
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs.clone()), "mem", OpenOptions::default(), false).unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().toggle_cut();
+    h.run();
+    h.get_by_label("Near a surface").click();
+    h.run();
+    // The case's surface, within 1 m; no plane to drag.
+    let form = h.state().cut.clone().unwrap();
+    assert_eq!(
+        (form.show, form.surface.as_str(), form.distance),
+        (crate::cut::Show::Near, "constant/triSurface/floor.stl", 1.0)
+    );
+    assert!(form.plane().is_none());
+    assert_eq!(
+        h.state().shown()["cuts"],
+        json!([{ "region": "", "surface": "constant/triSurface/floor.stl", "distance": 1.0 }])
+    );
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    let _ = h.get_by_label("cells about 1 m across: 1");
+    // Fit cells frames them: the one cell.
+    h.get_by_label("Fit cells").click();
+    h.run();
+    let target = h.state().viewport.camera.unwrap().target;
+    assert!((target.x - 0.5).abs() < 1e-9 && (target.z - 0.5).abs() < 1e-9, "{target:?}");
+    // `--open near`.
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("near")).unwrap();
+    assert_eq!(app.cut.as_ref().unwrap().show, crate::cut::Show::Near);
+    // A case without a surface: nothing to show, and the card says so.
+    let mut h = harness(self::app());
+    h.state_mut().toggle_cut();
+    h.run();
+    h.get_by_label("Near a surface").click();
+    h.run();
+    assert!(h.state().shown().get("cuts").is_none());
+    let _ = h.get_by_label_contains("no STL surface");
+}
+
+#[test]
 fn the_view_frames_what_was_found() {
     // checkMesh's set: the bottom face (z = 0) of the one cell.
     let mut fs = case();
