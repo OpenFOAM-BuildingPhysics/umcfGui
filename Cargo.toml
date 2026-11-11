@@ -25,7 +25,7 @@ umcf-engine = { path = "crates/engine" }
 
 # foundation
 thiserror = "2"
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # Scanning the solver source (xtask catalog), and the quoted patch patterns of field files
 # (validate), which OpenFOAM matches as regular expressions.
 regex = "1"

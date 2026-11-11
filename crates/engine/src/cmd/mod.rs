@@ -9,6 +9,7 @@ mod edit;
 mod geometry;
 mod material;
 mod mesh;
+pub(crate) mod mesh_block;
 mod patch;
 mod region;
 pub(crate) mod scene;
@@ -38,6 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     geometry::REPAIR,
     geometry::SCALE,
     mesh::CHECK,
+    mesh_block::BLOCK,
     scene::SNAPSHOT,
     scene::PICK,
     scene::RECT,

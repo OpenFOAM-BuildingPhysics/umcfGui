@@ -247,6 +247,7 @@ fn odd_names_come_back_as_they_were() {
                     partner: Some((odd.into(), odd.into())),
                 }],
                 materials: vec![MaterialDesc { name: odd.into(), model: Some(odd.into()) }],
+                blocks: None,
             }],
             features: false,
             radiation: Some(Radiation {

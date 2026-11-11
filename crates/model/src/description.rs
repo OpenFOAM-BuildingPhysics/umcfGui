@@ -47,6 +47,7 @@ use std::fmt::Write as _;
 use umcf_core::OfVersion;
 use umcf_foam_dict::{Document, Entry, Node, unquote};
 
+use crate::blocks::BlockGrid;
 use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Workflow};
 use crate::{Case, Patch, RegionKind};
 
@@ -143,6 +144,9 @@ pub struct RegionDesc {
     pub patches: Vec<PatchDesc>,
     /// A solid's materials, in the order of its `buildingMaterials`; none for other kinds.
     pub materials: Vec<MaterialDesc>,
+    /// The grid of blocks its `blockMeshDict` is written from ([`crate::blocks`]); `None`: not
+    /// described (the dictionary is the case's own).
+    pub blocks: Option<BlockGrid>,
 }
 
 /// The components a case has that its regions don't tell (the air, the solids' heat and
@@ -283,6 +287,17 @@ impl Description {
                     None => notes.push(format!("region {name}: no buildingMaterials list in {}", materials_file(name))),
                 }
             }
+            let blocks = mesh.and_then(|m| import_blocks(case, name, region.kind, &m.build, &patches, &mut notes));
+            // A region without a mesh: its patches are those its blocks name, without a role.
+            if region.patches.is_none()
+                && let Some(g) = &blocks
+            {
+                for n in g.patch_names() {
+                    if !patches.iter().any(|p| p.name == n) {
+                        patches.push(PatchDesc { name: n.to_string(), role: None, partner: None });
+                    }
+                }
+            }
             regions.push(RegionDesc {
                 name: name.to_string(),
                 kind: region.kind,
@@ -290,7 +305,22 @@ impl Description {
                 steps: mesh.map(|m| m.steps.clone()).unwrap_or_default(),
                 patches,
                 materials,
+                blocks,
             });
+        }
+        // A blockMeshDict two regions' meshes read: written from one's blocks, it would change
+        // the other's.
+        let mut readers: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+        for r in &regions {
+            if let Some(p) = r.mesh.as_ref().and_then(|m| crate::blocks::dict_path(&r.name, m)) {
+                readers.entry(p).or_default().push(r.name.as_str());
+            }
+        }
+        for (p, rs) in readers.iter().filter(|(_, rs)| rs.len() > 1) {
+            notes.push(format!(
+                "{p} is read by the meshes of regions {}: mesh.block writes it for none of them until each has its own",
+                rs.join(", ")
+            ));
         }
         for u in &wf.unmatched {
             if !u.redundant {
@@ -373,6 +403,9 @@ impl Description {
                 Some(MeshBuild::Root(steps)) => {
                     let _ = writeln!(s, "        mesh        ( {} );", root_steps(steps));
                 }
+            }
+            if let Some(g) = &r.blocks {
+                s.push_str(&g.entry("        "));
             }
             if !r.steps.is_empty() {
                 let _ = writeln!(s, "        steps       ( {} );", region_steps(&r.steps));
@@ -586,7 +619,7 @@ fn kind_name(k: RegionKind) -> &'static str {
 }
 
 /// A name as a dictionary word: quoted when it isn't a plain word.
-fn word(s: &str) -> String {
+pub(crate) fn word(s: &str) -> String {
     let plain = !s.is_empty()
         && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ':'))
         && !s.starts_with(|c: char| c.is_ascii_digit() || c == '-');
@@ -631,7 +664,7 @@ fn region_steps(steps: &[RegionStep]) -> String {
 
 /// A word or a quoted string as the name it stands for: a quoted one without its quotes and
 /// with the escapes [`quote`] writes undone (a backslash before a backslash or a quote).
-fn unescaped(t: &str) -> String {
+pub(crate) fn unescaped(t: &str) -> String {
     match t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
         Some(inner) if t.len() >= 2 => {
             let mut out = String::with_capacity(inner.len());
@@ -652,7 +685,12 @@ fn unescaped(t: &str) -> String {
 }
 
 /// Whether `e`'s key came before in its dictionary (a problem at `at`, and the entry is left out).
-fn twice<'a>(seen: &mut HashSet<&'a str>, e: &'a Entry, at: &str, problem: &mut impl FnMut(&str, String)) -> bool {
+pub(crate) fn twice<'a>(
+    seen: &mut HashSet<&'a str>,
+    e: &'a Entry,
+    at: &str,
+    problem: &mut impl FnMut(&str, String),
+) -> bool {
     if seen.insert(e.key()) {
         return false;
     }
@@ -661,12 +699,12 @@ fn twice<'a>(seen: &mut HashSet<&'a str>, e: &'a Entry, at: &str, problem: &mut 
 }
 
 /// An entry's key as the name it stands for.
-fn entry_name(e: &Entry) -> String {
+pub(crate) fn entry_name(e: &Entry) -> String {
     unescaped(&e.key.text)
 }
 
 /// The one word of `e`'s value, as a name.
-fn single(e: &Entry) -> Option<String> {
+pub(crate) fn single(e: &Entry) -> Option<String> {
     match e.words()?.as_slice() {
         [w] => Some(unescaped(w)),
         _ => None,
@@ -681,7 +719,7 @@ fn flag(e: &Entry) -> Option<bool> {
     }
 }
 
-fn atom(n: &Node) -> Option<&str> {
+pub(crate) fn atom(n: &Node) -> Option<&str> {
     match n {
         Node::Atom(t) => Some(t.text.as_str()),
         _ => None,
@@ -695,7 +733,7 @@ fn string(n: &Node) -> Option<String> {
 }
 
 /// The items of `e`'s value when it is one list.
-fn list(e: &Entry) -> Option<&[Node]> {
+pub(crate) fn list(e: &Entry) -> Option<&[Node]> {
     match e.value.as_slice() {
         [Node::List { items, .. }] => Some(items),
         _ => None,
@@ -758,6 +796,7 @@ fn read_region(
         steps: Vec::new(),
         patches: Vec::new(),
         materials: Vec::new(),
+        blocks: None,
     };
     let mut kind = None;
     let mut materials_given = false;
@@ -782,6 +821,10 @@ fn read_region(
                     Err(m) => problem(&here, m),
                 },
                 _ => problem(&here, "is blocks, or the steps that build it in constant/polyMesh: ( blockMesh [\"dict\"] createPatch snappyHexMesh [\"dict\"] )".into()),
+            },
+            "blocks" => match e.dict() {
+                Some(b) => r.blocks = BlockGrid::read(b, &here, problem),
+                None => problem(&here, "is a dictionary: { x ( … ); y ( … ); z ( … ); patches { … } }".into()),
             },
             "steps" => match list(e).map(read_steps) {
                 Some(Ok(steps)) => r.steps = steps,
@@ -903,6 +946,48 @@ fn read_material(
         }
     }
     m
+}
+
+/// The grid of blocks of region `name`'s `blockMeshDict` (the one its `mesh` reads), when it
+/// is one; notes on what doesn't fit: a dictionary that isn't such a grid (left as it is), a
+/// patch whose type there isn't the one its role gives.
+fn import_blocks(
+    case: &Case,
+    name: &str,
+    kind: RegionKind,
+    build: &MeshBuild,
+    patches: &[PatchDesc],
+    notes: &mut Vec<String>,
+) -> Option<BlockGrid> {
+    let path = crate::blocks::dict_path(name, build)?;
+    let Some(doc) = case.dict(&path) else {
+        if case.exists(&path) == Some(true) {
+            notes.push(format!("region {name}: {path} doesn't load as a dictionary: no blocks read from it"));
+        }
+        return None;
+    };
+    match crate::blocks::import(doc) {
+        Ok(imp) => {
+            let mut grid = imp.grid;
+            // The types the roles wouldn't give, kept: the dictionary is written again with them.
+            for (patch, t) in imp.types {
+                let role = patches.iter().find(|p| p.name == patch).and_then(|p| p.role);
+                // blockMesh's own patch is empty unless typed otherwise.
+                let want =
+                    if patch == crate::blocks::DEFAULT_FACES { "empty" } else { crate::blocks::patch_type(kind, role) };
+                if unquote(&t) != want {
+                    grid.types.push((patch, unquote(&t).to_string()));
+                }
+            }
+            Some(grid)
+        }
+        Err(why) => {
+            notes.push(format!(
+                "region {name}: {path} is not a grid of blocks ({why}): left as it is, the description has no blocks for it"
+            ));
+            None
+        }
+    }
 }
 
 /// Where a solid region's materials are: its `transportProperties`.

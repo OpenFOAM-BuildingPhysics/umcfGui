@@ -618,7 +618,8 @@ fn q(s: &str) -> String {
 fn header(functions: &str, what: &str) -> String {
     let stop = if functions == "RunFunctions" { "set -e\n" } else { "" };
     format!(
-        "#!/bin/sh\n# {what}\n# Written by umcfGui from the case workflow; edit the workflow, not this file.\ncd \"${{0%/*}}\" || exit 1\n. \"$WM_PROJECT_DIR/bin/tools/{functions}\"\n{stop}\n"
+        "#!/bin/sh\n# {what}\n# {}\ncd \"${{0%/*}}\" || exit 1\n. \"$WM_PROJECT_DIR/bin/tools/{functions}\"\n{stop}\n",
+        crate::blocks::GENERATED
     )
 }
 

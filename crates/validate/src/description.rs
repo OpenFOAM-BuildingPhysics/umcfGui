@@ -4,12 +4,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use umcf_model::blocks::{self, DEFAULT_FACES, DictState, Side};
 use umcf_model::description::{CaseMaterial, PATH, RegionDesc, Role, case_materials, materials_file};
 use umcf_model::{Case, RegionKind};
 
 use crate::{Diagnostic, Level};
 
 const CODE: &str = "workflow.description";
+const BLOCKS: &str = "workflow.blocks";
 
 pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     let Some((d, problems)) = case.description() else { return };
@@ -89,6 +91,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
             }
         }
         materials(case, r, out);
+        blocks(case, r, out);
         // The patches against the mesh, where the region has one.
         let Some(mesh) = cr.patches.as_ref() else { continue };
         for p in &r.patches {
@@ -223,4 +226,180 @@ fn materials(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
             ));
         }
     }
+}
+
+/// Where a side of a grid of blocks is, seen from the gravity: around, on the ground, on top,
+/// or around the missing blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Around,
+    Ground,
+    Top,
+    Missing,
+}
+
+/// The sides on the ground and on top: those across the axis the gravity is along (the region's
+/// `constant/<region>/g`, else `constant/g`; z down without either), the ground the one it
+/// points to.
+/// The third value: whether a `g` was read (else z is taken as up).
+fn ground_and_top(case: &Case, region: &str) -> (Side, Side, bool) {
+    let g = [format!("constant/{region}/g"), "constant/g".to_string()].iter().find_map(|rel| {
+        let e = case.dict(rel)?.get(&["value"])?;
+        let [umcf_foam_dict::Node::List { items, .. }] = e.value.as_slice() else { return None };
+        let v: Vec<f64> = items
+            .iter()
+            .filter_map(|n| match n {
+                umcf_foam_dict::Node::Atom(t) => t.text.parse::<f64>().ok(),
+                _ => None,
+            })
+            .collect();
+        match v.as_slice() {
+            [x, y, z] if [x, y, z].iter().any(|c| c.is_finite() && **c != 0.0) => Some([*x, *y, *z]),
+            _ => None,
+        }
+    });
+    let read = g.is_some();
+    let g = g.unwrap_or([0.0, 0.0, -1.0]);
+    let axis = (0..3).max_by(|a, b| g[*a].abs().total_cmp(&g[*b].abs())).unwrap_or(2);
+    let [low, high] = [[Side::West, Side::East], [Side::South, Side::North], [Side::Ground, Side::Top]][axis];
+    if g[axis] < 0.0 { (low, high, read) } else { (high, low, read) }
+}
+
+/// Whether a patch of `role` belongs at `place`: an inlet, outlet or side around, the top on
+/// top, the ground (or a solid's bottom) on the ground or around the missing blocks, the sky
+/// around or on top; a coupled patch or a solid's interior anywhere; the canopy nowhere (it is
+/// no face of the blocks).
+fn fits(place: Place, role: Role) -> bool {
+    match role {
+        Role::Inlet | Role::Outlet | Role::Side => place == Place::Around,
+        Role::Top => place == Place::Top,
+        Role::Ground | Role::Bottom => matches!(place, Place::Ground | Place::Missing),
+        Role::Sky => matches!(place, Place::Around | Place::Top),
+        Role::Coupled | Role::Interior => true,
+        Role::Canopy => false,
+    }
+}
+
+/// The most warnings of one kind said one by one for a region's blocks.
+const MAX_SAID: usize = 20;
+
+/// A region's blocks: what is wrong with the grid, the patches it names against the region's,
+/// and its `blockMeshDict` against it (stale, edited by hand, missing).
+fn blocks(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
+    let Some(grid) = &r.blocks else { return };
+    let name = &r.name;
+    let warn = |path: &str, m: String| Diagnostic::new(Level::Warning, BLOCKS, path, m).region(name);
+    if r.mesh.is_none() {
+        out.push(warn(
+            PATH,
+            format!("region {name} has blocks but no mesh: give it mesh blocks; (or the steps that build it) for them to be meshed"),
+        ));
+    }
+    let problems = grid.problems();
+    for (at, m) in &problems {
+        let at = if at.is_empty() { "blocks".to_string() } else { format!("blocks/{at}") };
+        out.push(warn(PATH, format!("region {name}, {at}: {m}")));
+    }
+    // The patches it names: the region's, in a place their role fits.
+    let (ground, top, by_g) = ground_and_top(case, name);
+    let gravity = if by_g { "" } else { " (no g: z taken as up)" };
+    let place = |side: Side| match side {
+        Side::Missing => Place::Missing,
+        s if s == ground => Place::Ground,
+        s if s == top => Place::Top,
+        _ => Place::Around,
+    };
+    let mut named: Vec<(Side, &str)> = grid.sides.iter().map(|(s, n)| (*s, n.as_str())).collect();
+    let all = grid.boundary();
+    for (n, faces) in &grid.faces {
+        for f in faces {
+            if let Some((cat, _)) = all.get(f) {
+                named.push((*cat, n.as_str()));
+            }
+        }
+    }
+    let described: HashMap<&str, Option<Role>> = r.patches.iter().map(|p| (p.name.as_str(), p.role)).collect();
+    let unknown: Vec<&str> = grid.patch_names().into_iter().filter(|n| !described.contains_key(n)).collect();
+    for n in unknown.iter().take(MAX_SAID) {
+        out.push(
+            warn(
+                PATH,
+                format!("region {name}, blocks: patch {n} is not one of the region's patches in the description"),
+            )
+            .patch(n),
+        );
+    }
+    if unknown.len() > MAX_SAID {
+        out.push(warn(
+            PATH,
+            format!(
+                "region {name}, blocks: and {} more patches the description doesn't list",
+                unknown.len() - MAX_SAID
+            ),
+        ));
+    }
+    let mut misfits: HashSet<(&str, Side)> = HashSet::new();
+    let mut said = 0usize;
+    for (side, n) in named {
+        if n == DEFAULT_FACES || misfits.contains(&(n, side)) {
+            continue;
+        }
+        let Some(Some(role)) = described.get(n).copied() else { continue };
+        let at = place(side);
+        if !fits(at, role) {
+            misfits.insert((n, side));
+            said += 1;
+            if said > MAX_SAID {
+                continue;
+            }
+            let where_ = match at {
+                Place::Missing => "around the missing blocks".to_string(),
+                Place::Ground if side != Side::Ground => {
+                    format!("on the {} side, the ground (by the gravity)", side.name())
+                }
+                Place::Top if side != Side::Top => format!("on the {} side, the top (by the gravity)", side.name()),
+                Place::Around if matches!(side, Side::Ground | Side::Top) => {
+                    format!("on the {} side, a side (by the gravity)", side.name())
+                }
+                _ => format!("on the {} side", side.name()),
+            };
+            out.push(
+                warn(
+                    PATH,
+                    format!(
+                        "region {name}, blocks: patch {n} is {where_}, where its role ({}) doesn't fit{gravity}",
+                        role.name()
+                    ),
+                )
+                .patch(n),
+            );
+        }
+    }
+    if said > MAX_SAID {
+        out.push(warn(
+            PATH,
+            format!("region {name}, blocks: and {} more patches where their role doesn't fit", said - MAX_SAID),
+        ));
+    }
+    if !problems.is_empty() {
+        return;
+    }
+    let Some((path, state)) = blocks::dict_state(case, r) else { return };
+    let message = match state {
+        DictState::Same => return,
+        DictState::Missing => format!("not there: mesh.block writes it from the blocks of region {name}"),
+        DictState::NotLoaded => format!(
+            "doesn't load as a dictionary: mesh.block can't write it from the blocks of region {name} until it is mended or removed"
+        ),
+        DictState::Differs { untouched: true, why, types_only: true } => format!(
+            "written by umcfGui from region {name}'s blocks as they are, but a patch's type changed since in the blocks' types or by its role ({why}): mesh.block writes it again, listing the type it changes (one from wall or a constraint type only when its types names the patch)"
+        ),
+        DictState::Differs { untouched: true, why, types_only: false } => format!(
+            "written by umcfGui from other blocks than region {name}'s now ({why}): mesh.block writes it again, listing any patch type it changes"
+        ),
+        DictState::Differs { untouched: false, why, .. } => format!(
+            "not what the blocks of region {name} make ({why}): edited by hand or not written by umcfGui; mesh.block with replace writes it from them, listing any patch type it changes and any patch it drops or adds, and refusing to change a wall or constraint type (symmetryPlane, empty, …) unless the call's types names the patch, or to drop such a patch unless dropPatches names it (the one there is kept in the backup when the case is saved)"
+        ),
+    };
+    out.push(warn(&path, message));
 }
