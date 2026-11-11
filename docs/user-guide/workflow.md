@@ -286,7 +286,8 @@ umcf-cli run --case path/to/case \
 | `dropSettings` | `true` to lose what the dictionary there holds besides its patches (cell zones, curved edges, a scale, other keys) |
 | `replace` | `true` to write over a `blockMeshDict` umcfGui didn't write, or one edited since |
 | `remove` | `true` takes the blocks out of the description; the dictionary stays, the case's own |
- With only `region`, the dictionary is written again from the blocks there. A grid with problems
+
+With only `region`, the dictionary is written again from the blocks there. A grid with problems
 (stations that don't increase, a span without cells or with a section blockMesh would give none, a
 missing block outside the grid or listed twice, a `cyclic`, `nonConformal`, `mapped` or `processor`
 type, a whole layer of missing blocks, a face without a patch, a single face inside the mesh, more
