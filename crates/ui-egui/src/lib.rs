@@ -1385,8 +1385,12 @@ impl App {
                     ui.set_width(RESULTS_W.min(ui.ctx().content_rect().width() - 40.0).max(120.0));
                     // No taller than the room under the field: on a short window, a popup moved up into it
                     // would cover what is typed.
-                    let below = ui.ctx().content_rect().bottom() - r.rect.bottom() - 40.0;
-                    egui::ScrollArea::vertical().max_height(380.0_f32.min(below).max(60.0)).show(ui, |ui| {
+                    // The room under the field, less the gap above the popup, the card's margins and
+                    // stroke, and a little air; egui's own least height for a scroll area (64) is
+                    // overridden, else it would grow past that room.
+                    let below = ui.ctx().content_rect().bottom() - r.rect.bottom() - 6.0 - 2.0 * 9.0 - 4.0;
+                    let height = 380.0_f32.min(below).max(0.0);
+                    egui::ScrollArea::vertical().max_height(height).min_scrolled_height(height).show(ui, |ui| {
                         for c in matches {
                             let enabled = self.session.enabled(c.id);
                             let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());

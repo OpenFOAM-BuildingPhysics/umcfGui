@@ -329,6 +329,25 @@ fn the_narrowest_window_keeps_tabs_and_search_usable() {
     assert!(row.left() >= -0.5 && row.right() <= 200.5, "{row:?}");
 }
 
+/// On a short window the search results stay wholly under the field and inside the window:
+/// the popup is never moved up over what is typed.
+#[test]
+fn the_search_results_stay_under_the_field_on_a_short_window() {
+    for height in [150.0, 220.0, 400.0] {
+        let mut h = Harness::builder()
+            .with_size(vec2(900.0, height))
+            .with_max_steps(16)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app());
+        h.run();
+        h.get_by_role_and_label(egui::Role::TextInput, "Search commands").click();
+        h.run();
+        let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+        let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("search-results"))).expect("the results are open");
+        assert!(popup.top() >= field.bottom() - 0.5, "at {height}: {popup:?} over the field {field:?}");
+        assert!(popup.bottom() <= height + 0.5, "at {height}: {popup:?} past the window");
+    }
+}
+
 /// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in
 /// the window.
 #[test]
