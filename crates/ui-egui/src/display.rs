@@ -91,15 +91,23 @@ impl App {
         self.display.iter().find(|e| e.layer == *layer)
     }
 
-    /// A short note of how `layer`'s own entry draws it, for the browser, as the view draws it
-    /// (without the cut card's hiding while the card shows nothing); empty without one.
+    /// A short note of how `layer`'s own entries draw it, for the browser, as the view draws it:
+    /// the last mode and the last opacity set (a region's own entry and the cut card's hiding,
+    /// the hiding left out while the card shows nothing); empty without one.
     pub(crate) fn layer_note(&self, layer: &Layer) -> String {
         let idle = self.idle_hiding();
-        match self.display.iter().enumerate().find(|(_, e)| e.layer == *layer) {
-            Some((k, e)) if idle == Some(k) => note(&DisplayEntry { mode: None, ..e.clone() }),
-            Some((_, e)) => note(e),
-            None => String::new(),
+        let mut own = DisplayEntry { layer: layer.clone(), mode: None, opacity: None };
+        let mut any = false;
+        for (k, e) in self.display.iter().enumerate().filter(|(_, e)| e.layer == *layer) {
+            any = true;
+            if let Some(m) = e.mode.filter(|_| idle != Some(k)) {
+                own.mode = Some(m);
+            }
+            if let Some(a) = e.opacity {
+                own.opacity = Some(a);
+            }
         }
+        if any { note(&own) } else { String::new() }
     }
 
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
