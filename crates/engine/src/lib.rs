@@ -42,7 +42,7 @@ mod params;
 pub use budget::Budget;
 pub use cmd::COMMANDS;
 pub use cmd::display::{DisplayEntry, Layer, parse as parse_display, style as display_style};
-pub use cmd::scene::{DEFAULT_LAYERS, MAX_LAYERS, Sel, camera_json, selected_faces};
+pub use cmd::scene::{DEFAULT_LAYERS, MAX_LAYERS, Sel, WholeMesh, camera_json, selected_faces};
 pub use cmd::workflow::settings_json;
 pub use umcf_core::Cancel;
 

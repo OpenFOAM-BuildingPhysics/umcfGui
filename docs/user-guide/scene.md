@@ -376,6 +376,13 @@ above 0, takes their place (`UMCF_MEMORY=4000 umcf-gui case`; another value is i
   `mesh.check` read is handed to the scene while it fits in what the hidden objects and the
   whole meshes kept leave of the quarter ([what a check found](#what-a-check-found)).
 
+The desktop app's history bar says which regions are read whole and what they take (`air read
+whole · 1.2 GB`, or `2 regions read whole · 1.6 GB`); its tooltip lists each region with its
+size, cut now or kept aside, and the quarter for hidden objects they share (a long region name
+is shortened in the bar, whole in the tooltip). While a job runs it says what the session held
+before the job started. Without a whole mesh held, nothing is said. The engine lists them with
+`Session::whole_meshes`.
+
 The estimates are plans, not limits: what is shown is always kept, however big. The Hong Kong
 project's five regions (16, 8.4, 8.5, 3.2 and 1.9 million cells) are drawn in 4.3 s with at most
 1.27 GB with the memory of a 32 GB machine, 5.9 s and 1.15 GB with `UMCF_MEMORY=2000`, 7.0 s and
