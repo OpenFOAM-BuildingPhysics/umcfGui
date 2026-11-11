@@ -872,18 +872,21 @@ fn a_column_stopped_short_marks_its_patch_face() {
         .with(
             "t/boundary",
             format!(
-                "{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces 4;\n        startFace 0;\n    }}\n)\n",
+                "{}2\n(\n    walls\n    {{\n        type wall;\n        nFaces 4;\n        startFace 0;\n    }}\n    none\n    {{\n        type wall;\n        nFaces 0;\n        startFace 4;\n    }}\n)\n",
                 h("polyBoundaryMesh")
             ),
         );
     let mesh = PolyMesh::read(&fs, "t", &Limits::default()).unwrap();
     let o = Object::from_layers("", &mesh, "walls", 2, Vec3::ZERO).unwrap();
-    assert_eq!(o.classes, ["layer 1: 1 cell", "fewer than 2 layers: 1 face"]);
+    assert_eq!(o.classes, ["layer 1: 1 cell", "stopped short of 2 layers (a cell split or collapsed): 1 face"]);
     assert_eq!(o.kinds, ["layer", "faces"]);
     // Its four faces, the one its column started from (face 0) marked.
     assert_eq!(o.triangles.len(), 4);
     let marked: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(_, c)| **c == 1).map(|(f, _)| *f).collect();
     assert_eq!(marked, [0]);
+    // A patch without faces: no layer.
+    let none = Object::from_layers("", &mesh, "none", 3, Vec3::ZERO).unwrap();
+    assert!(none.classes.is_empty() && none.triangles.is_empty());
     // One layer asked for: none short.
     assert_eq!(Object::from_layers("", &mesh, "walls", 1, Vec3::ZERO).unwrap().classes, ["layer 1: 1 cell"]);
 }

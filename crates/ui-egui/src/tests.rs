@@ -1952,8 +1952,13 @@ fn the_cut_card_shows_the_layers_at_a_wall() {
     let mut h = harness(app());
     h.state_mut().toggle_cut();
     h.run();
+    // The plane's cut built first: its class (`cells`) is no layer.
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    assert!(h.state().session().last_cut("").is_some());
     h.get_by_label("Wall layers").click();
     h.run();
+    assert!(h.query_by_label("cells").is_none());
     // At the region's first wall, five layers; no plane to drag.
     let patches = h.state().patches("");
     let form = h.state().cut.clone().unwrap();

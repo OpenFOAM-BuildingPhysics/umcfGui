@@ -195,14 +195,17 @@ A region's cut can show the layers of cells at one of its patches, the first `la
 - **What is drawn**: each layer is a class in its own colour, named with its count (`layer 1:
   1440 cells`), drawn by the skin of the cells in layers (each face between one and a cell in
   none, or of the boundary) and the faces between two layers (in the lower one's colour). The
-  patch faces whose column stopped short are a class of their own (`fewer than 3 layers: 16
-  faces`), drawn in place of their cell's face at the patch.
+  patch faces whose column stopped short at a cell split or collapsed are a class of their own
+  (`stopped short of 3 layers (a cell split or collapsed): 16 faces`), drawn in place of their
+  cell's face at the patch; columns that end at the boundary or at another column's cell aren't
+  counted there. A patch without faces shows nothing.
 - **Errors**: a patch the region doesn't have (*patch `roof` isn't in the mesh of region air*),
   and `layers` that isn't a whole number from 1 to 50.
 - **Reading**: the region's whole mesh, as for a plane's cut, read once and kept; another patch or
-  count reads nothing again. Six layers at the buildings take 0.2 s in the small 3×3 case and
-  2 s in the 3.1-million-cell air region of `new_Mesh_3x3`, with its reading (each layer looks
-  at every face once).
+  count reads nothing again. Each cell's faces are listed once (about 8 bytes a face), and each
+  layer then looks only at its own cells. Six layers at the buildings take 0.2 s in the small
+  3×3 case; in the 3.1-million-cell air region of `new_Mesh_3x3`, with its reading, 2.6 s for
+  six and 2.7 s for 50, where a plane's cut takes 2.3 s.
 
 `umcf-cli render --layers air/buildings=3` (`<patch>` alone in a single-region case; 5 without
 `=n`) draws them, the region's boundary hidden.

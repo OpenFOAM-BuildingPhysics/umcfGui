@@ -393,11 +393,18 @@ impl App {
                 ui.end_row();
             });
             if form.show == Show::Layers {
-                // The layers as the scene built them last (each class's name says its count).
-                let shown = self.session.last_scene().and_then(|scene| {
+                // The layers as the scene built them last (each class's name says its count), once
+                // they are those of the card's patch and count (the scene is built after it,
+                // as a job: till then, or where it failed, another cut's are there).
+                let wanted = umcf_render::Cells::Layers { patch: form.patch.clone(), layers: form.layers };
+                let built = self.session.last_cut(&form.region) == Some(&wanted);
+                let shown = self.session.last_scene().filter(|_| built).and_then(|scene| {
                     scene.objects.iter().find(|o| matches!(&o.source, Source::Cut { region } if *region == form.region))
                 });
-                let classes = shown.filter(|_| before.show == Show::Layers).map(|o| o.classes.clone());
+                let classes = shown.map(|o| o.classes.clone());
+                if self.patches(&form.region).is_empty() {
+                    ui.add(egui::Label::new("This region's mesh has no patches to show layers at.").wrap());
+                }
                 match classes {
                     Some(classes) if !classes.is_empty() => {
                         for (k, c) in classes.iter().enumerate() {

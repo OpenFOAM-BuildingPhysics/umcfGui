@@ -759,10 +759,29 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         // Three points (12 bytes each), 21 bytes a triangle, and its region
                         // while the object is built.
                         Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
+                        // Layers: each cell's layer (1 byte) and where its faces start (4), each
+                        // face twice in the cells' lists (8), each point's map (4); and the
+                        // object, about six faces a cell in a layer (two triangles each, 42
+                        // bytes; at most every face) and each point in single precision.
+                        Read::Whole(m) if matches!(cells, Some(Cells::Layers { .. })) => {
+                            let (n, faces) = (m.n_cells() as u64, m.n_faces() as u64);
+                            let patch = match &cells {
+                                Some(Cells::Layers { patch, layers }) => m
+                                    .boundary
+                                    .iter()
+                                    .find(|p| p.name == *patch)
+                                    .map_or(0, |p| (p.n_faces as u64).saturating_mul(u64::from(*layers))),
+                                _ => 0,
+                            };
+                            let drawn = patch.saturating_mul(6).min(faces);
+                            n.saturating_mul(5)
+                                .saturating_add(faces.saturating_mul(8))
+                                .saturating_add(drawn.saturating_mul(42))
+                                .saturating_add((m.n_points() as u64).saturating_mul(16))
+                        }
                         // Each cell's reach (16 bytes), zone (4) and whether it is cut (1),
                         // each point's distance (8) and map (4); the cut object itself is a
-                        // slice of it. (Layers take less: each cell's layer and place in the
-                        // front, 5 bytes, and each point's map.)
+                        // slice of it.
                         Read::Whole(m) => (m.n_cells() as u64)
                             .saturating_mul(21)
                             .saturating_add((m.n_points() as u64).saturating_mul(12)),
@@ -1605,6 +1624,12 @@ impl Session {
     /// The scene built last, as it is (nothing is read or built); `None` before one is.
     pub fn last_scene(&self) -> Option<&Scene> {
         self.scene.as_ref().map(|c| &c.scene)
+    }
+
+    /// What the scene built last shows of region `region`'s cells (its `cuts` entry, as
+    /// parsed), so that what its cut object is drawn from can be told; `None` without one.
+    pub fn last_cut(&self, region: &str) -> Option<&Cells> {
+        self.scene.as_ref()?.cuts.iter().find(|(r, _)| r == region).map(|(_, c)| c)
     }
 
     /// The box around region `region`'s whole mesh, in world coordinates, when it is kept (read

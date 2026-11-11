@@ -114,6 +114,41 @@ impl Found {
     }
 }
 
+/// Each cell's faces in `mesh`: the faces of cell `c` are `faces[start[c]..start[c + 1]]`. A
+/// face whose owner or neighbour is past the cells is left out of that one's.
+fn cell_faces(mesh: &umcf_foam_mesh::PolyMesh) -> (Vec<u32>, Vec<u32>) {
+    let cells = mesh.n_cells();
+    let mut start: Vec<u32> = vec![0; cells + 1];
+    let sides = |f: usize| [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten();
+    for f in 0..mesh.n_faces() {
+        for c in sides(f) {
+            if let Some(n) = start.get_mut(*c as usize + 1) {
+                *n = n.saturating_add(1);
+            }
+        }
+    }
+    for k in 1..start.len() {
+        let before = start.get(k - 1).copied().unwrap_or(0);
+        if let Some(n) = start.get_mut(k) {
+            *n = n.saturating_add(before);
+        }
+    }
+    let mut faces: Vec<u32> = vec![0; start.last().copied().unwrap_or(0) as usize];
+    let mut fill: Vec<u32> = start.get(..cells).map(<[u32]>::to_vec).unwrap_or_default();
+    for f in 0..mesh.n_faces() {
+        let Ok(label) = u32::try_from(f) else { break };
+        for c in sides(f) {
+            if let Some(at) = fill.get_mut(*c as usize)
+                && let Some(slot) = faces.get_mut(*at as usize)
+            {
+                *slot = label;
+                *at += 1;
+            }
+        }
+    }
+    (start, faces)
+}
+
 /// One thing a mesh check found: the faces or cells where it is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FoundClass {
@@ -375,7 +410,7 @@ impl Object {
     /// stops at the boundary, at a cell already in a layer (another column's, of a lower layer or
     /// the same), and where a cell has no such face or more than one (a cell split or
     /// collapsed, as where layers failed): the patch faces whose column stopped there before
-    /// `layers` are a class of their own (`fewer than 5 layers: 12 faces`), drawn in place of
+    /// `layers` are a class of their own (`stopped short of 5 layers (a cell split or collapsed): 12 faces`), drawn in place of
     /// the cell's face at the patch. Past the layers a mesh has, the columns go on into the
     /// cells beyond, which are counted as layers too. Drawn by the skin of the cells in layers
     /// (each face between one and a cell in none, or of the boundary) and the faces between two
@@ -406,53 +441,41 @@ impl Object {
                 front.push((*c, f, f));
             }
         }
-        let mut count: Vec<usize> = vec![front.len()];
-        let mut fewer: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        // Each cell of the front's place in it, u32::MAX for none.
-        let mut slot: Vec<u32> = vec![u32::MAX; cells];
+        // Each layer's count of cells; none at a patch without faces.
+        let mut count: Vec<usize> = if front.is_empty() { Vec::new() } else { vec![front.len()] };
+        let mut short: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // Each cell's faces, once (for the walk past the first layer): a layer then looks at its
+        // own cells' faces only, not at every face of the mesh again.
+        let (start, faces_of) =
+            if layers > 1 && !front.is_empty() { cell_faces(mesh) } else { (Vec::new(), Vec::new()) };
         for k in 2..=layers {
             if front.is_empty() {
                 break;
             }
-            for (i, (c, _, _)) in front.iter().enumerate() {
-                if let (Some(s), Ok(i)) = (slot.get_mut(*c as usize), u32::try_from(i)) {
-                    *s = i;
-                }
-            }
-            // Each front cell's faces that share no point with the one it came in by: the
-            // first, and whether there are more.
-            let mut next: Vec<(Option<u32>, bool)> = vec![(None, false); front.len()];
-            for f in 0..mesh.n_faces() {
-                let Ok(label) = u32::try_from(f) else { break };
-                for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
-                    let Some(i) = slot.get(*c as usize).copied().filter(|i| *i != u32::MAX) else { continue };
-                    let (Some((_, entry, _)), Some(n)) = (front.get(i as usize), next.get_mut(i as usize)) else {
-                        continue;
-                    };
-                    if *entry == label {
+            let mut ahead: Vec<(u32, u32, u32)> = Vec::new();
+            for (c, entry, origin_face) in &front {
+                let (Some(from), Some(to)) = (start.get(*c as usize), start.get(*c as usize + 1)) else { continue };
+                let Some(by) = mesh.face(*entry as usize) else { continue };
+                // The cell's faces that share no point with the one it came in by: one, or the
+                // column stops short.
+                let mut across: Option<u32> = None;
+                let mut more = false;
+                for g in faces_of.get(*from as usize..*to as usize).into_iter().flatten() {
+                    if g == entry {
                         continue;
                     }
-                    let (Some(face), Some(by)) = (mesh.face(f), mesh.face(*entry as usize)) else { continue };
+                    let Some(face) = mesh.face(*g as usize) else { continue };
                     if face.iter().any(|p| by.contains(p)) {
                         continue;
                     }
-                    match n.0 {
-                        None => n.0 = Some(label),
-                        Some(_) => n.1 = true,
+                    if across.replace(*g).is_some() {
+                        more = true;
                     }
                 }
-            }
-            for (c, _, _) in &front {
-                if let Some(s) = slot.get_mut(*c as usize) {
-                    *s = u32::MAX;
-                }
-            }
-            let mut ahead: Vec<(u32, u32, u32)> = Vec::new();
-            for ((c, _, origin_face), n) in front.iter().zip(&next) {
-                let across = match n {
-                    (Some(g), false) => *g,
+                let across = match (across, more) {
+                    (Some(g), false) => g,
                     _ => {
-                        fewer.insert(*origin_face);
+                        short.insert(*origin_face);
                         continue;
                     }
                 };
@@ -474,6 +497,7 @@ impl Object {
             }
             front = ahead;
         }
+        let fewer = short;
         let mut o = Object::new(Source::Cut { region: region.to_string() });
         for (k, n) in count.iter().enumerate() {
             o.classes.push(format!("layer {}: {n} cell{}", k + 1, if *n == 1 { "" } else { "s" }));
@@ -483,7 +507,8 @@ impl Object {
         let short = u32::try_from(count.len()).unwrap_or(u32::MAX);
         if !fewer.is_empty() {
             let n = fewer.len();
-            o.classes.push(format!("fewer than {layers} layers: {n} face{}", if n == 1 { "" } else { "s" }));
+            let what = if n == 1 { "face" } else { "faces" };
+            o.classes.push(format!("stopped short of {layers} layers (a cell split or collapsed): {n} {what}"));
             o.kinds.push("faces".to_string());
             o.groups.push(Vec::new());
         }
