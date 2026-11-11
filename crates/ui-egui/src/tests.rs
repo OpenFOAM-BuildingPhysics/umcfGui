@@ -346,6 +346,23 @@ fn the_search_results_stay_under_the_field_on_a_short_window() {
         assert!(popup.top() >= field.bottom() - 0.5, "at {height}: {popup:?} over the field {field:?}");
         assert!(popup.bottom() <= height + 0.5, "at {height}: {popup:?} past the window");
     }
+    // Even at the shortest a result is in sight and runs: filter to Summary and click its row
+    // (the first, just under the card's top margin).
+    let mut a = app();
+    a.job_wait = std::time::Duration::from_secs(120);
+    let mut h = Harness::builder()
+        .with_size(vec2(900.0, 150.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), a);
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("summary");
+    h.run();
+    let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("search-results"))).expect("the results are open");
+    assert!(popup.height() >= 9.0 * 2.0 + 36.0 - 0.5, "a row's room at 150: {popup:?}");
+    click_at(&mut h, popup.left_top() + vec2(60.0, 9.0 + 18.0), Modifiers::NONE);
+    assert_eq!(h.state().log.last().map(|e| e.command.as_str()), Some("case.info"));
 }
 
 /// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in
