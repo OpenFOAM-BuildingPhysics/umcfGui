@@ -1435,6 +1435,69 @@ fn held() -> (App, Arc<AtomicBool>, Arc<AtomicBool>) {
     (app, hold, waiting)
 }
 
+/// While a scene job runs, the window draws from a copy of the session without the scene: the
+/// status bar still says which regions are read whole, as they were.
+#[test]
+fn the_regions_read_whole_are_still_said_while_a_job_runs() {
+    let (app, hold, waiting) = held();
+    hold.store(false, Ordering::SeqCst);
+    let mut h = Harness::builder()
+        .with_size(vec2(1200.0, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run_steps(2);
+    h.state_mut().wait_for_job();
+    h.state_mut().toggle_cut();
+    h.run_steps(2);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    let said = |h: &Harness<'static, App>| h.query_all_by_label_contains(" read whole · ").count();
+    assert_eq!(said(&h), 1);
+    // The meshes read again, held at their read: busy, the label stays.
+    hold.store(true, Ordering::SeqCst);
+    let mut params = h.state().shown();
+    params["reload"] = serde_json::json!(true);
+    h.state_mut().start(crate::jobs::Work::Scene { params });
+    h.run_steps(1);
+    wait_until(&waiting);
+    h.run_steps(2);
+    assert!(h.state().busy());
+    assert!(h.state().session().whole_meshes().is_empty(), "the copy holds no scene");
+    assert_eq!(said(&h), 1);
+    hold.store(false, Ordering::SeqCst);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    assert!(!h.state().busy());
+    assert_eq!(said(&h), 1);
+}
+
+/// Another case opened: the bar no longer says what the case before held, even while the new
+/// case's scene and fields are read right after (the window busy all along).
+#[test]
+fn another_case_opened_drops_the_regions_read_whole_of_the_one_before() {
+    let dir = std::env::temp_dir().join(format!("umcf-gui-{}-held", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("system")).unwrap();
+    std::fs::write(
+        dir.join("system/controlDict"),
+        format!(
+            "{HEADER}application urbanMicroclimateFoam;\nstartTime 0;\nendTime 3600;\ndeltaT 60;\nwriteInterval 600;\n"
+        ),
+    )
+    .unwrap();
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    assert_eq!(h.state().held.len(), 1);
+    // Opened as a job, no frame drawn after it: the session's own list already.
+    let app = h.state_mut();
+    app.folder_picked(crate::Picked::Folder(dir.to_string_lossy().into_owned()));
+    app.wait_for_job();
+    assert_eq!(app.session().location(), dir.to_str());
+    assert!(app.held.is_empty(), "{:?}", app.held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_slow_scene_is_a_job_the_window_shows_and_can_cancel() {
     let (app, hold, waiting) = held();
@@ -2029,6 +2092,33 @@ fn a_job_names_the_folder_it_makes_or_opens() {
     for none in ["", "  ", "/", "C:\\", "C:"] {
         assert_eq!(folder_name(none), None, "{none:?}");
     }
+}
+
+/// The status bar says which regions are read whole and what they take: from the cut on, kept
+/// aside once the cut is closed, and gone once dropped.
+#[test]
+fn the_status_bar_says_which_regions_are_read_whole() {
+    let mut h = harness(app());
+    let read_whole = |h: &Harness<'static, App>| h.query_all_by_label_contains(" read whole · ").count();
+    assert_eq!(read_whole(&h), 0);
+    h.state_mut().toggle_cut();
+    h.run();
+    assert_eq!(read_whole(&h), 1);
+    let held = h.state().session().whole_meshes();
+    assert_eq!(held.len(), 1);
+    assert!(held[0].cut);
+    h.get_by_label(&format!("mesh read whole · {}", crate::jobs::size(held[0].bytes)));
+    // Closed: kept aside, still said.
+    h.state_mut().toggle_cut();
+    h.run();
+    assert_eq!(read_whole(&h), 1);
+    assert!(!h.state().session().whole_meshes()[0].cut);
+    // Dropped (read again from disk): no longer said.
+    let mut reload = h.state().shown();
+    reload["reload"] = serde_json::json!(true);
+    h.state_mut().session.scene(&reload).unwrap();
+    h.run();
+    assert_eq!(read_whole(&h), 0);
 }
 
 #[test]

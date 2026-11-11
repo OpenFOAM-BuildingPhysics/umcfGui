@@ -64,10 +64,15 @@ pub(crate) struct Progress {
 
 /// `bytes` read, for people.
 fn megabytes(bytes: u64) -> String {
+    format!("{} read", size(bytes))
+}
+
+/// `bytes`, for people: in GB, MB or kB.
+pub(crate) fn size(bytes: u64) -> String {
     match bytes {
-        b if b >= 1 << 30 => format!("{:.1} GB read", b as f64 / f64::from(1u32 << 30)),
-        b if b >= 1 << 20 => format!("{:.0} MB read", b as f64 / f64::from(1u32 << 20)),
-        b => format!("{} kB read", b.div_ceil(1024)),
+        b if b >= 1 << 30 => format!("{:.1} GB", b as f64 / f64::from(1u32 << 30)),
+        b if b >= 1 << 20 => format!("{:.0} MB", b as f64 / f64::from(1u32 << 20)),
+        b => format!("{} kB", b.div_ceil(1024)),
     }
 }
 
@@ -305,6 +310,9 @@ impl App {
         match job.done.recv_timeout(wait) {
             Ok((session, result)) => {
                 self.session = session;
+                // What the session holds now, before the next job takes it away again (an open
+                // queues the new case's scene at once): not what the case before held.
+                self.held = self.session.whole_meshes();
                 // The job's own flag: a click on Cancel as it ended stops nothing after it.
                 self.session.canceller().reset();
                 if let Some(job) = self.job.take() {

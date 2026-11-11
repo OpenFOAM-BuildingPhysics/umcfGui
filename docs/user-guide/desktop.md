@@ -198,7 +198,9 @@ in the navigation bar switches between the two at any time, and so does a
 click on *GPU* or *CPU* at the right of the history bar. The label says which drew the view, its
 tooltip why the CPU did when the GPU was asked for; the click switches the setting, as *GPU*
 does (with the GPU on and a frame the CPU drew, *CPU* in amber, it turns the GPU view off).
-Without a GPU view the label is only shown, not a switch. Like *Edges*, the switch is a setting
+Without a GPU view the label is only shown, not a switch. Beside it, once a cut, a layer view, the
+cells near a surface or *Check mesh* has read a region's whole mesh, the bar says which regions
+are read whole and what they take ([memory](scene.md#memory)). Like *Edges*, the switch is a setting
 of the window, not a command: the command line's `scene.snapshot` and `umcf-cli render` always
 draw on the CPU.
 

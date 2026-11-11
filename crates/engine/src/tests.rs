@@ -913,6 +913,49 @@ fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
     assert_eq!(out.data["in"], 1, "{}", out.data);
 }
 
+/// The whole meshes held are listed for the status bar: cut, kept aside, handed over by a
+/// check; none once the budget leaves no room or the meshes are read again.
+#[test]
+fn the_whole_meshes_held_are_listed_with_what_they_take() {
+    let mut fs = fs();
+    cube_mesh(&mut fs, "constant/air/polyMesh");
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    assert!(s.whole_meshes().is_empty());
+    let plain = json!({ "width": 8, "height": 8 });
+    // The boundary alone reads no whole mesh.
+    s.execute("scene.snapshot", &plain).unwrap();
+    assert!(s.whole_meshes().is_empty());
+    let cut = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "point": [0.5, 0.5, 0.5], "normal": [1, 0, 0] }] });
+    s.execute("scene.snapshot", &cut).unwrap();
+    let held = s.whole_meshes();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!((held[0].region.as_str(), held[0].cut), ("air", true));
+    assert!(held[0].bytes > 0);
+    // The cut turned off: kept aside, the same mesh.
+    s.execute("scene.snapshot", &plain).unwrap();
+    let aside = s.whole_meshes();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert!(!aside[0].cut);
+    assert_eq!(aside[0].bytes, held[0].bytes);
+    // A check hands over the mesh it read: still one entry for the region, before and after a
+    // scene takes it.
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    assert_eq!(s.whole_meshes().len(), 1, "{:?}", s.whole_meshes());
+    s.execute("scene.snapshot", &plain).unwrap();
+    assert_eq!(s.whole_meshes().len(), 1, "{:?}", s.whole_meshes());
+    // Checked again with no room for hidden objects: the scene that takes the mesh drops it.
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    s.set_budget(crate::Budget { read: 1 << 30, spare: 0 });
+    s.execute("scene.snapshot", &plain).unwrap();
+    assert!(s.whole_meshes().is_empty(), "{:?}", s.whole_meshes());
+    // Cut again (held while cut, whatever the budget), then the meshes read again: none.
+    s.execute("scene.snapshot", &cut).unwrap();
+    assert_eq!(s.whole_meshes().len(), 1);
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8, "reload": true })).unwrap();
+    assert!(s.whole_meshes().is_empty(), "{:?}", s.whole_meshes());
+}
+
 /// What `mesh.check` found is shown as the region's cut, from the mesh it read.
 #[test]
 fn what_a_check_found_is_shown_without_reading_the_mesh_again() {

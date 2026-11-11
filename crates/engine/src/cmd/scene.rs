@@ -106,6 +106,17 @@ pub(crate) struct Whole {
     mesh: Arc<PolyMesh>,
 }
 
+/// A region's whole mesh the session holds ([`Session::whole_meshes`]), for the status bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WholeMesh {
+    pub region: String,
+    /// What it takes in memory, by the mesh's own count ([`PolyMesh::bytes`]).
+    pub bytes: u64,
+    /// Whether the scene shows a cut of it now (else it is kept aside, within the budget for
+    /// hidden objects, and dropped first when room is needed).
+    pub cut: bool,
+}
+
 /// How much of the budget for hidden objects is left for a whole mesh handed to the scene: what
 /// the scene keeps aside (objects and whole meshes) and what was handed to it already take the
 /// rest, but for the whole meshes of the regions in `replaced` (those being checked again, whose
@@ -1764,6 +1775,22 @@ impl Session {
         let w = self.handed.iter().chain(kept).find(|w| w.region == region)?;
         let (lo, hi) = w.mesh.bounds()?;
         Some(BBox { min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]), max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]) })
+    }
+
+    /// The regions whose whole mesh the session holds (read for a cut, a layer view or the
+    /// cells near a surface, or by `mesh.check`), in the order the scene keeps them (those kept
+    /// aside first, least recently used first), then those a check handed over and no scene
+    /// has taken yet. Each region once. Reads nothing.
+    pub fn whole_meshes(&self) -> Vec<WholeMesh> {
+        let cached = self.scene.as_ref();
+        let cut = |region: &str| cached.is_some_and(|c| c.cuts.iter().any(|(r, _)| r == region));
+        let kept = cached
+            .into_iter()
+            .flat_map(|c| c.wholes.iter())
+            .filter(|w| !self.outdated.contains(&w.region) && !self.handed.iter().any(|h| h.region == w.region));
+        kept.chain(self.handed.iter())
+            .map(|w| WholeMesh { region: w.region.clone(), bytes: w.bytes(), cut: cut(&w.region) })
+            .collect()
     }
 
     /// What `mesh.check` found last in region `region` (its faces and cells, by what was found),
