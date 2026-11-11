@@ -210,6 +210,11 @@ struct Saved {
     redo: Vec<Step>,
     /// The journal only grows during a command (or is cleared by an open): its length is enough.
     journal: usize,
+    /// What `mesh.check` found and handed over (a `reload` drops it; a command that fails after
+    /// gives it back).
+    found: Vec<(String, std::sync::Arc<umcf_render::Found>)>,
+    handed: Vec<cmd::scene::Whole>,
+    outdated: Vec<String>,
 }
 
 impl Session {
@@ -371,6 +376,9 @@ impl Session {
             undo: self.undo.clone(),
             redo: self.redo.clone(),
             journal: self.journal.len(),
+            found: self.found.clone(),
+            handed: self.handed.clone(),
+            outdated: self.outdated.clone(),
         }
     }
 
@@ -378,6 +386,10 @@ impl Session {
     /// again if there was none before; if there was one, the newly opened case stays, with an
     /// empty history and journal.
     fn restore(&mut self, saved: Saved) {
+        // Of the case that was open; a case opened since starts without them.
+        if self.opens == saved.opens {
+            (self.found, self.handed, self.outdated) = (saved.found, saved.handed, saved.outdated);
+        }
         match (saved.case, &mut self.opened) {
             (Some(case), Some(o)) if self.opens == saved.opens => o.case = case,
             // The command opened a case (the same one again, or another) and then failed: keep

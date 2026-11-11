@@ -625,8 +625,22 @@ impl App {
         }
     }
 
-    /// Frames the scene the 3D view shows from `view`; `None` keeps the direction.
+    /// Frames the scene the 3D view shows from `view`; `None` keeps the direction. A findings
+    /// fit asked for before and still waiting gives way to it.
     pub fn fit_view(&mut self, view: Option<View>) {
+        self.fit_found = false;
+        self.fit(view);
+    }
+
+    /// Frames what *Check mesh* found, shown in the cut card (the whole scene where nothing is).
+    pub(crate) fn fit_findings(&mut self) {
+        self.fit_found = true;
+        self.fit(None);
+    }
+
+    /// The fit [`App::fit_view`] or [`App::fit_findings`] asked for: now, or, while work runs or
+    /// the scene isn't read, once it is (`fit_pending`, with `fit_found` kept).
+    pub(crate) fn fit(&mut self, view: Option<View>) {
         // While work runs or waits, the fit follows the next scene read.
         if self.working() {
             self.fit_pending = Some(view);
@@ -2600,8 +2614,7 @@ impl App {
             }
             if which == "found" {
                 self.show_found();
-                self.fit_found = true;
-                self.fit_view(None);
+                self.fit_findings();
             }
         } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;

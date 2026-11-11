@@ -493,7 +493,8 @@ fn render_picks_with_the_style_flags() {
 
 #[test]
 fn render_draws_what_a_check_found() {
-    let dir = cube("render-found", false);
+    // Turned inside out: its cell's volume is negative, which the check finds.
+    let dir = cube("render-found", true);
     let out = dir.join("shot.png");
     let o = cli(&[
         "render",
@@ -508,8 +509,20 @@ fn render_draws_what_a_check_found() {
     ]);
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    let objects = v["objects"].as_array().unwrap();
-    assert!(objects.iter().any(|x| x.get("cut") == Some(&serde_json::json!("air"))), "{v}");
+    let cut =
+        v["objects"].as_array().unwrap().iter().find(|x| x.get("cut") == Some(&serde_json::json!("air"))).cloned();
+    let cut = cut.unwrap_or_else(|| panic!("no cut: {v}"));
+    // Three problems: the cell by its six faces (two triangles each) twice, and its six faces.
+    assert_eq!(
+        cut["classes"],
+        serde_json::json!([
+            "cells of a high aspect ratio",
+            "cells of zero or negative volume",
+            "faces with a wrong pyramid"
+        ]),
+        "{v}"
+    );
+    assert_eq!(cut["triangles"], 36, "{v}");
     assert!(out.exists());
 }
 

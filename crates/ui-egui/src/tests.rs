@@ -1974,6 +1974,27 @@ fn the_view_frames_what_was_found() {
 }
 
 #[test]
+fn a_whole_scene_fit_asked_after_a_waiting_findings_fit_frames_the_scene() {
+    let mut fs = case();
+    fs.insert("constant/polyMesh/sets/skewFaces", format!("{}1\n(\n0\n)\n", h("faceSet")));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.run("mesh.check", json!({})).unwrap();
+    // The findings fit waits for the scene, read as a job; Fit (F) is asked meanwhile.
+    app.start_up(Some("found")).unwrap();
+    assert!(app.fit_found);
+    app.fit_view(None);
+    let mut h = harness(app);
+    h.state_mut().wait_for_job();
+    h.run_steps(2);
+    // The whole cell, not the face found.
+    let target = h.state().viewport.camera.unwrap().target;
+    assert!((target.z - 0.5).abs() < 1e-9, "{target:?}");
+    assert!(!h.state().fit_found);
+}
+
+#[test]
 fn no_cut_opens_where_no_case_is_open() {
     let mut app = App::new(Session::with_backup(".umcfgui/backup/test"));
     assert!(!app.can_cut());

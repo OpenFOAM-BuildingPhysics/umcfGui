@@ -445,14 +445,14 @@ impl App {
                 }
                 // A fit asked for while it ran.
                 if let Some(view) = self.fit_pending.take() {
-                    self.fit_view(view);
+                    self.fit(view);
                 }
             }
             (Work::Scene { params }, Done::Scene(result)) => match result {
                 Ok(()) => {
                     self.scene_built = Some((self.revision, params));
                     if let Some(view) = self.fit_pending.take() {
-                        self.fit_view(view);
+                        self.fit(view);
                     }
                 }
                 Err(Error::Cancelled { .. }) => {
@@ -475,7 +475,7 @@ impl App {
                     let _ = self.after(step, result);
                 }
                 if let Some(view) = self.fit_pending.take() {
-                    self.fit_view(view);
+                    self.fit(view);
                 }
             }
             // A job gives back what its work makes.

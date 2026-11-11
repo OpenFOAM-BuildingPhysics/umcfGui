@@ -377,8 +377,7 @@ impl App {
                 });
             }
             if fit {
-                self.fit_found = true;
-                self.fit_view(None);
+                self.fit_findings();
             }
         });
         // Another region or axis: the slider over its extent, the plane in its middle; the
