@@ -134,7 +134,10 @@ The workflow the GUI supports end to end:
    - negative or tiny volumes, open cells;
    - layer coverage.
 
-   Every problem carries the faces or cells involved.
+   Every problem carries the faces or cells involved. The session keeps them per region
+   (`render::Found`, the first 1000 of each problem and of `checkMesh`'s sets), with the whole
+   mesh the check read handed to the 3D scene within the budget for hidden objects; the scene
+   draws them as the region's cut (`render::Cells::Found`, `Object::from_found`).
 5. **Assign boundary conditions in 3D** (`bc.set`): picking in the view selects patches (or
    groups, or a region's whole boundary). `bc.set` takes that selection as its parameters, so
    the same assignment is a CLI or MCP call too. Picking faces to create a new patch

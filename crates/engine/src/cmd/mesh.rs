@@ -452,7 +452,9 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     // the budget for hidden objects leaves.
     let mut found: Vec<(String, Arc<Shown>)> = Vec::new();
     let mut hand: Vec<Whole> = Vec::new();
-    let mut room = room_left(s);
+    let mut room = room_left(s, &names);
+    // The regions whose mesh was read (and so may differ from what the scene kept of it).
+    let mut read: Vec<String> = Vec::new();
     for (r, noted) in names.iter().zip(&noted) {
         let name = if r.is_empty() { "mesh" } else { r.as_str() };
         let candidates: Vec<&CheckMeshLog> = logs.iter().filter(|l| &l.region == r).collect();
@@ -616,11 +618,12 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             },
             "diagnostics": from_logs.iter().chain(&d).map(diagnostic).collect::<Vec<_>>(),
         }));
-        if let (Ok(m), true) = (mesh, q.is_some())
-            && m.bytes() <= room
-        {
-            room -= m.bytes();
-            hand.push(Whole::of(r, Arc::new(m)));
+        if let (Ok(m), true) = (mesh, q.is_some()) {
+            read.push(r.clone());
+            if m.bytes() <= room {
+                room -= m.bytes();
+                hand.push(Whole::of(r, Arc::new(m)));
+            }
         }
     }
     // Logs of the default mesh in a case without one that no region's mesh matches.
@@ -664,6 +667,13 @@ fn check(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     s.found.retain(|(r, _)| !names.contains(r));
     s.found.extend(found);
     s.handed.retain(|w| !names.iter().any(|r| w.is(r)));
+    // A mesh read and not handed over: the scene doesn't use what it kept of the region before.
+    for r in read.iter().filter(|r| !hand.iter().any(|w| w.is(r))) {
+        if !s.outdated.contains(r) {
+            s.outdated.push(r.clone());
+        }
+    }
+    s.outdated.retain(|r| !hand.iter().any(|w| w.is(r)));
     s.handed.extend(hand);
     let data = json!({
         "errors": errors,

@@ -155,7 +155,8 @@ each). The region's boundary is hidden as for the plane, and no plane is drawn; 
 frames the view on them (they are often few in a big region). Before the region
 was checked the card says so, and its *Check mesh* button checks it (as a job, with the status
 bar's progress and *Cancel*); the findings show when it ends. A check from the ribbon shows here
-too, and `umcf-gui <case> --cmd mesh.check --open found` opens the card on them at the start (on
+too. Where the check couldn't read the region's mesh, the card says there is no check to show.
+`umcf-gui <case> --cmd mesh.check --open found` opens the card on them at the start (on
 the first region where something was found), framed. *Check mesh* hands the whole mesh it read to the view, so showing its findings reads nothing
 again while the mesh fits in the memory for hidden objects.
 

@@ -512,3 +512,13 @@ fn render_draws_what_a_check_found() {
     assert!(objects.iter().any(|x| x.get("cut") == Some(&serde_json::json!("air"))), "{v}");
     assert!(out.exists());
 }
+
+#[test]
+fn render_refuses_a_region_cut_and_checked_before_checking() {
+    let dir = cube("render-twice", false);
+    let out = dir.join("shot.png");
+    let o =
+        cli(&["render", "--found", "air", "--cut", "air:x=0.5", "--out", out.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("cut or checked twice"), "{o:?}");
+}

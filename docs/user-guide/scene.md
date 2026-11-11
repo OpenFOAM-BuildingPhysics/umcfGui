@@ -156,14 +156,17 @@ it last:
   problem is a class of its own, in its own colour (its classes are the problems' names, such
   as `skew faces` or `checkMesh: faces with skewness above 4`). Points (`nearPoints`,
   `shortEdges`) are not drawn.
-- **Before a check** of the region the cut is refused (*run mesh.check on it first*); a region
-  whose mesh the check couldn't read has nothing found. A check of the region again replaces what
-  was found; opening the case again or reading its meshes again (`reload`) drops it, as the
-  labels may no longer be of the same faces and cells.
+- **Before a check** of the region the cut is refused (*no check of region `air` to show*), and
+  so it is after a check that couldn't read the region's mesh. A check of the region again
+  replaces what was found; opening the case again or reading its meshes again (`reload`, once
+  the scene is built: a reload that fails leaves it) drops it, as the labels may no longer be of
+  the same faces and cells. After OpenFOAM rewrote a mesh, reload first, then check.
 - **Reading**: `mesh.check` reads the whole mesh to check it and hands it to the scene, kept
-  while it fits in what the budget for hidden objects leaves ([memory](#memory)): showing what it
-  found then reads nothing. A mesh that doesn't fit is read again when it is shown, as for a
-  plane's cut.
+  while it fits in what the budget for hidden objects leaves ([memory](#memory); the mesh kept
+  of the region before doesn't count, as the new one replaces it): showing what it found then
+  reads nothing. A mesh that doesn't fit is read again when it is shown, as for a plane's cut,
+  and what the scene kept of the region from before isn't used again (the files may have
+  changed).
 
 `umcf-cli render --found air` checks the region's mesh and draws what it found, the region's
 boundary hidden.

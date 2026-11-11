@@ -853,7 +853,7 @@ fn what_a_check_found_is_shown_without_reading_the_mesh_again() {
     let found = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "found": true }] });
     // Before a check: nothing to show.
     let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
-    assert!(e.contains("run mesh.check on it first"), "{e}");
+    assert!(e.contains("no check of region `air` to show: run mesh.check on it"), "{e}");
     assert!(s.found("air").is_none());
     s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
     let after_check = reads.load(std::sync::atomic::Ordering::Relaxed);
@@ -882,10 +882,40 @@ fn what_a_check_found_is_shown_without_reading_the_mesh_again() {
         let e = s.execute("scene.snapshot", &json!({ "cuts": [cut] })).unwrap_err().to_string();
         assert!(e.contains("`found` is true"), "{e}");
     }
-    // The meshes read again: what was found goes with what was read.
+    // A reload that fails leaves what was found; one that works drops it.
+    let mut bad = found.clone();
+    bad["reload"] = json!(true);
+    bad["view"] = json!("sideways");
+    assert!(s.execute("scene.snapshot", &bad).is_err());
+    assert!(s.found("air").is_some());
     s.execute("scene.snapshot", &json!({ "width": 8, "height": 8, "reload": true })).unwrap();
     assert!(s.found("air").is_none());
-    assert!(s.execute("scene.snapshot", &found).is_err());
+    let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();
+    assert!(e.contains("run mesh.check on it"), "{e}");
+    let mut again = found.clone();
+    again["reload"] = json!(true);
+    let e = s.execute("scene.snapshot", &again).unwrap_err().to_string();
+    assert!(e.contains("after reload"), "{e}");
+    // A plane's cut keeps the whole mesh. A check with no room to hand its mesh over: the mesh
+    // kept from before isn't used either (the files may have changed), it is read again.
+    s.execute("scene.snapshot", &plane).unwrap();
+    assert!(s.whole_bounds("air").is_some());
+    let read = s.budget().read;
+    s.set_budget(crate::Budget { read, spare: 0 });
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    assert!(s.whole_bounds("air").is_none());
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n + 1, "read again, not the mesh from before");
+    // With room, a check of the region being cut hands its mesh over in the room the old one
+    // takes: shown without a read.
+    s.execute("scene.snapshot", &plane).unwrap();
+    let whole = 1 << 20;
+    s.set_budget(crate::Budget { read, spare: whole });
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n);
 }
 
 #[test]

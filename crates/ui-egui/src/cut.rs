@@ -344,7 +344,12 @@ impl App {
                         }
                     }
                     None => {
-                        ui.label("Check mesh hasn't run on this region since it was read.");
+                        ui.add(
+                            egui::Label::new(
+                                "No check of this region to show: Check mesh hasn't run on it since it was read, or couldn't read its mesh.",
+                            )
+                            .wrap(),
+                        );
                     }
                 }
                 ui.horizontal(|ui| {

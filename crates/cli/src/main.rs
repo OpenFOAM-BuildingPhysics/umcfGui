@@ -316,11 +316,18 @@ fn render(args: &[String]) -> Result<u8, String> {
                 if let (Some(p), Some(n)) = (point.get_mut(k), normal.get_mut(k)) {
                     (*p, *n) = (at, 1.0);
                 }
+                if cuts.iter().any(|c: &Value| c["region"] == region) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
                 cuts.push(json!({ "region": region, "point": point, "normal": normal }));
                 hidden.push(json!({ "region": region, "mode": "hidden" }));
             }
             "--found" => {
                 let region = value("--found")?;
+                // Refused now, not after the check (minutes on a big mesh).
+                if cuts.iter().any(|c: &Value| c["region"] == region.as_str()) {
+                    return Err(format!("render: region `{region}` is cut or checked twice"));
+                }
                 cuts.push(json!({ "region": region, "found": true }));
                 hidden.push(json!({ "region": region, "mode": "hidden" }));
                 checks.push(region);

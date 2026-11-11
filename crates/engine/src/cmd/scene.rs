@@ -103,14 +103,16 @@ pub(crate) struct Whole {
 
 /// How much of the budget for hidden objects is left for a whole mesh handed to the scene: what
 /// the scene keeps aside (objects and whole meshes) and what was handed to it already take the
-/// rest.
-pub(crate) fn room_left(s: &Session) -> u64 {
+/// rest, but for the whole meshes of the regions in `replaced` (those being checked again, whose
+/// meshes the new ones replace).
+pub(crate) fn room_left(s: &Session, replaced: &[String]) -> u64 {
+    let other = |w: &&Whole| !replaced.iter().any(|r| w.is(r));
     let kept = s.scene.as_ref().map_or(0, |c| {
         let spare: u64 = c.spare.iter().map(|(_, o)| o.bytes()).sum();
-        let wholes: u64 = c.wholes.iter().map(Whole::bytes).sum();
+        let wholes: u64 = c.wholes.iter().filter(other).map(Whole::bytes).sum();
         spare.saturating_add(wholes)
     });
-    let handed: u64 = s.handed.iter().map(Whole::bytes).sum();
+    let handed: u64 = s.handed.iter().filter(other).map(Whole::bytes).sum();
     s.budget.spare.saturating_sub(kept.saturating_add(handed))
 }
 
@@ -433,7 +435,14 @@ fn cuts(
             }
             let Some((_, f)) = found.iter().find(|(r, _)| r == region) else {
                 let which = if region.is_empty() { "the mesh".to_string() } else { format!("region `{region}`") };
-                return Err(Error::Failed(format!("{id}: nothing found in {which}: run mesh.check on it first")));
+                let reloaded = if p.bool("reload")?.unwrap_or(false) {
+                    " (after reload: what was found before was of the meshes before)"
+                } else {
+                    ""
+                };
+                return Err(Error::Failed(format!(
+                    "{id}: no check of {which} to show{reloaded}: run mesh.check on it (a check that couldn't read its mesh finds nothing)"
+                )));
             };
             out.push((region.to_string(), Cells::Found(Arc::clone(f))));
             continue;
@@ -456,15 +465,25 @@ fn cuts(
     Ok(out)
 }
 
-/// Builds the scene the parameters ask for into the cache, unless it is there already.
+/// Builds the scene the parameters ask for into the cache, unless it is there already. With
+/// `reload` (OpenFOAM rewrote the meshes), what `mesh.check` found and read goes, as it may be of
+/// the meshes before; a build that fails leaves it.
 fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
-    let reload = p.bool("reload")?.unwrap_or(false);
-    // The meshes are read again (OpenFOAM rewrote them): what a check found and read was of
-    // the meshes before.
-    if reload {
-        s.found.clear();
-        s.handed.clear();
+    if !p.bool("reload")?.unwrap_or(false) {
+        return build_now(s, id, p);
     }
+    let found = std::mem::take(&mut s.found);
+    let handed = std::mem::take(&mut s.handed);
+    let outdated = std::mem::take(&mut s.outdated);
+    let result = build_now(s, id, p);
+    if result.is_err() {
+        (s.found, s.handed, s.outdated) = (found, handed, outdated);
+    }
+    result
+}
+
+fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
+    let reload = p.bool("reload")?.unwrap_or(false);
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let with_mesh: Vec<&str> = case.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.as_str()).collect();
     let regions: Vec<String> = match optional(p, "regions")? {
@@ -567,10 +586,10 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             Whole(Arc<PolyMesh>),
         }
         // The whole meshes a check handed over, else kept from before.
-        let handed = &s.handed;
+        let (handed, outdated) = (&s.handed, &s.outdated);
         let kept_whole = |r: &str| -> Option<Arc<PolyMesh>> {
-            let mut all = handed.iter().chain(previous.into_iter().flat_map(|c| c.wholes.iter()));
-            all.find(|w| w.region == r).map(|w| Arc::clone(&w.mesh))
+            let kept = previous.into_iter().flat_map(|c| c.wholes.iter()).filter(|w| !outdated.contains(&w.region));
+            handed.iter().chain(kept).find(|w| w.region == r).map(|w| Arc::clone(&w.mesh))
         };
         let budget = s.budget;
         let jobs_for = |keys: &[&Key]| -> Vec<(u64, Job<'_, Read>)> {
@@ -739,8 +758,10 @@ fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             _ => Vec::new(),
         };
         // Those a check handed over are of the files as they are now: they replace those kept.
+        // Those of regions checked since and not handed over may be of other files: they go.
         let handed = std::mem::take(&mut s.handed);
-        before.retain(|w| !handed.iter().any(|h| h.region == w.region));
+        let outdated = std::mem::take(&mut s.outdated);
+        before.retain(|w| !handed.iter().any(|h| h.region == w.region) && !outdated.contains(&w.region));
         before.extend(handed);
         let mut pool: Vec<(Key, Object)> = match s.scene.take() {
             Some(c) if c.opens == s.opens && !reload && !moved => {
@@ -1529,7 +1550,12 @@ impl Session {
     /// The box around region `region`'s whole mesh, in world coordinates, when it is kept (read
     /// for a cut, or by `mesh.check`); `None` else. Reads nothing.
     pub fn whole_bounds(&self, region: &str) -> Option<BBox> {
-        let kept = self.scene.as_ref().into_iter().flat_map(|c| c.wholes.iter());
+        let kept = self
+            .scene
+            .as_ref()
+            .into_iter()
+            .flat_map(|c| c.wholes.iter())
+            .filter(|w| !self.outdated.contains(&w.region));
         let w = self.handed.iter().chain(kept).find(|w| w.region == region)?;
         let (lo, hi) = w.mesh.bounds()?;
         Some(BBox { min: umcf_geom::Vec3::new(lo[0], lo[1], lo[2]), max: umcf_geom::Vec3::new(hi[0], hi[1], hi[2]) })

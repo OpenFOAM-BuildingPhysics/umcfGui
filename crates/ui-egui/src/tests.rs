@@ -1929,7 +1929,7 @@ fn the_cut_card_shows_what_check_mesh_found() {
     assert!(h.state().cut.as_ref().unwrap().found);
     assert!(h.state().shown().get("cuts").is_none());
     assert!(h.state().cut.as_ref().unwrap().plane().is_none());
-    let _ = h.get_by_label_contains("hasn't run on this region");
+    let _ = h.get_by_label_contains("No check of this region to show");
     h.get_by_label("Check mesh").click();
     h.run();
     h.state_mut().wait_for_job();
