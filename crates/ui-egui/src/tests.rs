@@ -2224,6 +2224,8 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     // hidden (the plane moved after too); closing leaves the region as it was.
     let region = Layer::Region(String::new());
     let cut_layer = Layer::Cut(String::new());
+    // The region shown again (turned off above), so that its boundary is in the scene.
+    app.shown_regions.push(String::new());
     for start in [Vec::new(), before.clone()] {
         app.display = start.clone();
         app.toggle_cut();
@@ -2240,6 +2242,7 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
             let scene = app.session.scene(&app.shown()).unwrap();
             let style = umcf_engine::display_style(scene, &entries);
             assert!(scene.objects.iter().any(|o| matches!(o.source, umcf_render::Source::Cut { .. })));
+            assert!(scene.objects.iter().any(|o| matches!(o.source, umcf_render::Source::Mesh { .. })));
             for (k, o) in scene.objects.iter().enumerate() {
                 let want = match o.source {
                     umcf_render::Source::Cut { .. } => m,
@@ -2305,6 +2308,27 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert_eq!(app.cut.as_ref().unwrap().hid.as_deref(), Some("other"));
     assert!(app.display.iter().all(|e| !matches!(e.layer, Layer::Cut(_))), "{:?}", app.display);
     app.toggle_cut();
+}
+
+/// While the cut card shows a cut, the browser's note beside its region is the cut's: `cut`, then
+/// `cut wireframe` once the region's menu set that mode; the region's own once the card closes.
+#[test]
+fn the_browser_notes_the_cut_beside_its_region() {
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    let mut app = app();
+    assert_eq!(app.region_note(""), "");
+    app.toggle_cut();
+    assert_eq!(app.region_note(""), "cut");
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Mode(Mode::Wireframe));
+    assert_eq!(app.region_note(""), "cut wireframe");
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.4));
+    assert_eq!(app.region_note(""), "cut wireframe 40%");
+    app.toggle_cut();
+    assert_eq!(app.region_note(""), "");
+    // The region's own mode, without the card.
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Mode(Mode::Points));
+    assert_eq!(app.region_note(""), "points");
 }
 
 #[test]

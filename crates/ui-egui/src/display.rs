@@ -110,6 +110,21 @@ impl App {
         if any { note(&own) } else { String::new() }
     }
 
+    /// The note beside region `region` in the browser: while the cut card shows a cut of it, the
+    /// cut's (`cut`, or `cut wireframe` with a mode of its own) in place of the card's hiding (the
+    /// card says that), short so that the region's name keeps its room; else the region's own
+    /// ([`App::layer_note`]). Empty without one.
+    pub(crate) fn region_note(&self, region: &str) -> String {
+        let layer = Layer::Region(region.to_string());
+        match self.cut_takes(&layer) {
+            Some(cut) => match self.layer_entry(&cut).map(note).filter(|n| !n.is_empty()) {
+                Some(n) => format!("cut {n}"),
+                None => "cut".to_string(),
+            },
+            None => self.layer_note(&layer),
+        }
+    }
+
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
     /// cut card's hiding only while it shows something), as for one of its classes (`groups`: a
     /// patch's groups).
