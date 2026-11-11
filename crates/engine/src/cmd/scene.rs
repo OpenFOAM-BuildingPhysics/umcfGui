@@ -318,18 +318,29 @@ pub(crate) fn patch_on_disk(case: &umcf_model::Case, region: &str, mesh: &PolyMe
 
 /// What building the first `layers` layers at patch `patch` (its name on disk; `None` for none
 /// the mesh has) of `mesh` takes: each cell's layer (1 byte) and where its faces start (4), each
-/// face twice in the cells' lists (8), each point's map (4); and the object, about six faces a
-/// cell in a layer (two triangles each, 42 bytes; at most every face) and each point in single
-/// precision.
+/// face twice in the cells' lists (8), each point's map (4); and the object, the triangles of the
+/// cells in layers (21 bytes each: as many a cell as the mesh's cells have on average, counted
+/// from its faces' points, so that polyhedra and many-sided faces count; at most all of its
+/// faces') and each point in single precision.
 pub(crate) fn layers_need(mesh: &PolyMesh, patch: Option<&str>, layers: u32) -> u64 {
     let (n, faces) = (mesh.n_cells() as u64, mesh.n_faces() as u64);
-    let at = patch
+    // The triangles of every face, and those of every cell's faces (an internal face is two
+    // cells').
+    let (mut all, mut of_cells) = (0u64, 0u64);
+    for f in 0..mesh.n_faces() {
+        let t = mesh.face(f).map_or(0, |p| p.len().saturating_sub(2) as u64);
+        all = all.saturating_add(t);
+        let sides = 1 + u64::from(mesh.neighbour.get(f).is_some());
+        of_cells = of_cells.saturating_add(t.saturating_mul(sides));
+    }
+    let cells = patch
         .and_then(|name| mesh.boundary.iter().find(|p| p.name == name))
-        .map_or(0, |p| (p.n_faces as u64).saturating_mul(u64::from(layers)));
-    let drawn = at.saturating_mul(6).min(faces);
+        .map_or(0, |p| (p.n_faces as u64).saturating_mul(u64::from(layers)))
+        .min(n);
+    let drawn = cells.saturating_mul(of_cells).div_ceil(n.max(1)).min(all);
     n.saturating_mul(5)
         .saturating_add(faces.saturating_mul(8))
-        .saturating_add(drawn.saturating_mul(42))
+        .saturating_add(drawn.saturating_mul(21))
         .saturating_add((mesh.n_points() as u64).saturating_mul(16))
 }
 

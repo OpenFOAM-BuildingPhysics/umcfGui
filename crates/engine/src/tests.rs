@@ -3281,3 +3281,39 @@ fn material_set_changes_one_material_s_coefficients() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_layers_build_is_planned_by_the_triangles_its_cells_have() {
+    // One octagonal prism: 8 quadrilateral sides and two octagons, 28 triangles.
+    let h = |class: &str| format!("FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n}}\n");
+    let mut points = String::new();
+    for z in [0.0, 1.0] {
+        for k in 0..8 {
+            let a = std::f64::consts::FRAC_PI_4 * f64::from(k);
+            points += &format!("({} {} {z})\n", a.cos(), a.sin());
+        }
+    }
+    let mut faces: Vec<String> =
+        (0..8).map(|k| format!("4({} {} {} {})", k, (k + 1) % 8, (k + 1) % 8 + 8, k + 8)).collect();
+    faces.push(format!("8({})", (0..8).rev().map(|k: u32| k.to_string()).collect::<Vec<_>>().join(" ")));
+    faces.push(format!("8({})", (8..16).map(|k: u32| k.to_string()).collect::<Vec<_>>().join(" ")));
+    let fs = MemFs::new()
+        .with("m/points", format!("{}16\n(\n{points})\n", h("vectorField")))
+        .with("m/faces", format!("{}10\n(\n{}\n)\n", h("faceList"), faces.join("\n")))
+        .with("m/owner", format!("{}10\n(\n0 0 0 0 0 0 0 0 0 0\n)\n", h("labelList")))
+        .with("m/neighbour", format!("{}0\n(\n)\n", h("labelList")))
+        .with(
+            "m/boundary",
+            format!(
+                "{}1\n(\n    walls\n    {{\n        type wall;\n        nFaces 10;\n        startFace 0;\n    }}\n)\n",
+                h("polyBoundaryMesh")
+            ),
+        );
+    let mesh = umcf_foam_mesh::PolyMesh::read(&fs, "m", &umcf_foam_mesh::Limits::default()).unwrap();
+    // The cell (5 bytes), its 10 faces in its list (8 each), its 28 triangles (21 each), its 16
+    // points (16 each): not six faces of two triangles.
+    let need = crate::cmd::scene::layers_need(&mesh, Some("walls"), 3);
+    assert_eq!(need, 5 + 10 * 8 + 28 * 21 + 16 * 16);
+    // No patch: nothing drawn.
+    assert_eq!(crate::cmd::scene::layers_need(&mesh, None, 3), 5 + 10 * 8 + 16 * 16);
+}
