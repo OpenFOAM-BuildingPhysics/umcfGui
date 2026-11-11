@@ -888,10 +888,15 @@ fn what_a_check_found_is_shown_without_reading_the_mesh_again() {
     bad["view"] = json!("sideways");
     assert!(s.execute("scene.snapshot", &bad).is_err());
     assert!(s.found("air").is_some());
-    // Refused after the scene is built (the view is checked then): left too.
+    // Refused after the scene is built (the view is checked then): what was found is left
+    // too, but not the mesh the check handed over: the reload read the files again.
+    s.execute("mesh.check", &json!({ "region": "air" })).unwrap();
     let e = s.execute("scene.snapshot", &json!({ "reload": true, "view": "sideways" })).unwrap_err().to_string();
     assert!(e.contains("no view `sideways`"), "{e}");
     assert!(s.found("air").is_some());
+    let n = reads.load(std::sync::atomic::Ordering::Relaxed);
+    s.execute("scene.snapshot", &found).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), n + 1, "read again, not the mesh handed before");
     s.execute("scene.snapshot", &json!({ "width": 8, "height": 8, "reload": true })).unwrap();
     assert!(s.found("air").is_none());
     let e = s.execute("scene.snapshot", &found).unwrap_err().to_string();

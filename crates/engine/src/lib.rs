@@ -215,6 +215,9 @@ struct Saved {
     found: Vec<(String, std::sync::Arc<umcf_render::Found>)>,
     handed: Vec<cmd::scene::Whole>,
     outdated: Vec<String>,
+    /// Which scene was built ([`Session::scene_serial`]): the hand-over is given back only to
+    /// the scene it was pending for.
+    scene: u64,
 }
 
 impl Session {
@@ -379,16 +382,28 @@ impl Session {
             found: self.found.clone(),
             handed: self.handed.clone(),
             outdated: self.outdated.clone(),
+            scene: self.scene_serial(),
         }
     }
 
     /// Puts back what [`Session::saved`] kept. A case opened by the failed command is closed
     /// again if there was none before; if there was one, the newly opened case stays, with an
     /// empty history and journal.
+    /// The serial number of the scene built last (0: none), to tell whether one was built since
+    /// (not a second reference to it: that would make the next build copy it).
+    fn scene_serial(&self) -> u64 {
+        self.scene.as_ref().map_or(0, |c| c.serial)
+    }
+
     fn restore(&mut self, saved: Saved) {
-        // Of the case that was open; a case opened since starts without them.
+        // Of the case that was open; a case opened since starts without them. A scene built
+        // meanwhile (a reload) took or replaced what was pending: only what was found comes back
+        // (its fingerprint keeps it off a mesh that changed).
         if self.opens == saved.opens {
-            (self.found, self.handed, self.outdated) = (saved.found, saved.handed, saved.outdated);
+            self.found = saved.found;
+            if self.scene_serial() == saved.scene {
+                (self.handed, self.outdated) = (saved.handed, saved.outdated);
+            }
         }
         match (saved.case, &mut self.opened) {
             (Some(case), Some(o)) if self.opens == saved.opens => o.case = case,
