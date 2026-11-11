@@ -2297,7 +2297,18 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     app.set_cut(form);
     app.set_display(region.clone(), crate::display::Change::Mode(Mode::Surface));
     assert!(!hidden(&app) && app.layer_entry(&cut_layer).is_none(), "{:?}", app.display);
+    // Back to a plane: hidden again, the region's menu the cut's; closing leaves the region's
+    // own mode, set while the card showed nothing.
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Plane;
+    app.set_cut(form);
+    assert!(hidden(&app) && !app.cut.as_ref().unwrap().released, "{:?}", app.display);
+    assert_eq!(app.cut_takes(&region), Some(cut_layer.clone()));
+    app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
+    assert_eq!(app.layer_entry(&cut_layer).and_then(|e| e.mode), Some(Mode::Wireframe));
     app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: Some(Mode::Surface), opacity: None }]);
+    app.display.clear();
     // A cut mode, then the card moved to another region: the mode goes with the cut before.
     app.toggle_cut();
     app.set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));

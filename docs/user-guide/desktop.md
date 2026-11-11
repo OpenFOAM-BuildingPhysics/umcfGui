@@ -155,11 +155,11 @@ region's boundary stays hidden, and the browser notes the cut beside the region 
 or `cut` without a mode or opacity of its own). Closing the card takes that with the cut. While
 the card has nothing to show, a mode set for the region, or a reset of it, ends the card's hiding
 instead (and drops a mode set for the cut): the region is drawn so, and stays so once the card
-closes. A mode set for one of its patches shows once the card closes or the region is shown. The
-view draws the plane, a translucent rectangle a little past the region with a frame and a solid
-arrow along its normal, as ParaView's plane widget: take the frame
-or the arrow (the pointer turns into a hand, the plane brightens) and drag, and the plane moves
-along its normal with the pointer, within the slider's range, the slider following; let go, it
+closes; once the card shows a cut again, the boundary is hidden again and the menu is the cut's.
+A mode set for one of its patches shows once the card closes or the region is shown. The view
+draws the plane, a translucent rectangle a little past the region with a frame and a solid arrow
+along its normal, as ParaView's plane widget: take the frame or the arrow (the pointer turns into
+a hand, the plane brightens) and drag, and the plane moves along its normal with the pointer, within the slider's range, the slider following; let go, it
 stays. A drag that starts on the frame or the arrow moves the plane whatever a drag otherwise does
 (also in *Box select* and *Brush*); elsewhere a drag does as before. *Edges* draws the cells'
 edges. The first cut of a region reads its whole mesh; moving the plane after reads nothing. Where

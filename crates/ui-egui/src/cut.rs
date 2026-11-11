@@ -349,11 +349,21 @@ impl App {
         self.look += 1;
     }
 
-    /// Hides the boundary of the cut region (and shows again one hidden before for another).
+    /// Hides the boundary of the cut region (and shows again one hidden before for another). On
+    /// the same region, a hiding the browser ended while the card showed nothing comes back once
+    /// the card shows a cut again (the region's own entries stay, for when the card closes), so
+    /// that the cut is seen and the region's menu acts on it again.
     fn hide_boundary(&mut self) {
         let Some(form) = &self.cut else { return };
         let (region, before, released) = (form.region.clone(), form.hid.clone(), form.released);
         if before.as_deref() == Some(region.as_str()) {
+            if released && self.cut_shown().is_some() {
+                self.display.push(Self::hiding(&region));
+                if let Some(f) = &mut self.cut {
+                    f.released = false;
+                }
+                self.look += 1;
+            }
             return;
         }
         if let Some(r) = before.filter(|_| !released) {
