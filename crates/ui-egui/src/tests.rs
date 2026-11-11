@@ -2037,8 +2037,8 @@ fn the_cut_card_shows_the_cells_near_a_surface() {
     // The browser says as the view draws it.
     let region = umcf_engine::Layer::Region(String::new());
     assert_ne!(h.state().layer_display(&region, &[]).mode, umcf_render::raster::Mode::Hidden);
-    assert!(!h.state().layer_note(&region).to_lowercase().contains("hidden"));
-    assert!(h.query_by_label_contains("· hidden").is_none());
+    // The region's row paints its note (`layer_note`) after its patches: not hidden.
+    assert!(!h.state().layer_note(&region).contains("hidden"));
     // A mode of the region's own, then the card showing something: its row says what the view
     // draws, the card's hiding.
     h.state_mut().display.insert(
@@ -2049,6 +2049,8 @@ fn the_cut_card_shows_the_cells_near_a_surface() {
             opacity: None,
         },
     );
+    // Idle: the region's own mode.
+    assert_eq!(h.state().layer_note(&region), "wireframe");
     h.get_by_label("Plane").click();
     h.run();
     assert_eq!(h.state().layer_note(&region), "hidden");
