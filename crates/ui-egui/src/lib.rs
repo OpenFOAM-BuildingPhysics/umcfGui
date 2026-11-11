@@ -46,6 +46,7 @@ pub mod newpatch;
 pub mod patch;
 pub mod results;
 pub mod ribbon;
+pub mod ribbon_fit;
 pub mod theme;
 pub mod viewport;
 
@@ -252,7 +253,7 @@ impl App {
     pub fn new(session: Session) -> App {
         let mut app = App {
             session,
-            tokens: Tokens::light(),
+            tokens: Tokens::dark(),
             viewport: Viewport::default(),
             shown_regions: Vec::new(),
             shown_surfaces: Vec::new(),
@@ -959,14 +960,56 @@ impl App {
     fn ribbon(&mut self, ui: &mut Ui) {
         let t = self.tokens.clone();
         let tabs = self.workspace.tabs();
+        let full = ui.available_width();
+        // The search field gives way first, down to a third of the row; then tabs leave for the
+        // » menu ([`ribbon_fit::fit_tabs`]).
+        let search = (full / 3.0).clamp(SEARCH_MIN, SEARCH_W);
+        let font = |on: bool| if on { theme::strong(13.5) } else { egui::FontId::proportional(13.5) };
+        let gap = ui.spacing().item_spacing.x;
+        let specs: Vec<(f32, bool)> = tabs
+            .iter()
+            .enumerate()
+            .map(|(k, tab)| {
+                let w = ui.painter().layout_no_wrap(tab.name.to_string(), font(k == self.tab), t.text).size().x;
+                (w + 22.0 + gap, k == self.tab)
+            })
+            .collect();
+        let mut fits = ribbon_fit::fit_tabs(&specs, full - search - 2.0 * gap, MORE_TABS_W + gap);
+        // The chosen tab always stays, so a wide one can leave less than a usable field: then the
+        // search shows as its icon (a click or Ctrl+P opens the field), and while it is open every
+        // tab is in the » menu.
+        let used = |fits: &[bool]| {
+            specs.iter().zip(fits).filter(|(_, f)| **f).map(|((w, _), _)| w).sum::<f32>()
+                + if fits.iter().all(|f| *f) { 0.0 } else { MORE_TABS_W + gap }
+        };
+        let searching = self.search_open || self.focus_search;
+        let mut room = full - used(&fits) - 2.0 * gap;
+        // Not even the chosen tab, », and the search's icon fit (the narrowest windows): the
+        // chosen tab goes into » too, so tabs stay reachable.
+        if room < SEARCH_ICON_W && fits.iter().any(|f| *f) {
+            fits = vec![false; specs.len()];
+            room = full - used(&fits) - 2.0 * gap;
+        }
+        if searching && room < SEARCH_MIN {
+            fits = vec![false; specs.len()];
+            room = full - used(&fits) - 2.0 * gap;
+        }
+        // Open with less than its least width even beside », the field takes the whole row (the
+        // tabs and » come back when it closes).
+        let whole_row = searching && room < SEARCH_MIN;
+        let folded = !searching && room < SEARCH_MIN;
+        let field =
+            if whole_row { (full - 2.0 * gap).max(0.0) } else { room.clamp(SEARCH_MIN, search.max(SEARCH_MIN)) };
         ui.horizontal(|ui| {
             ui.set_height(26.0);
-            for (k, tab) in tabs.iter().enumerate() {
+            for ((k, tab), (w, _)) in tabs.iter().enumerate().zip(&specs) {
+                if !fits.get(k).copied().unwrap_or(true) {
+                    continue;
+                }
                 let on = k == self.tab;
-                let font = if on { theme::strong(13.5) } else { egui::FontId::proportional(13.5) };
                 let galley =
-                    ui.painter().layout_no_wrap(tab.name.to_string(), font, if on { t.accent } else { t.text });
-                let (rect, r) = ui.allocate_exact_size(vec2(galley.size().x + 22.0, 25.0), Sense::click());
+                    ui.painter().layout_no_wrap(tab.name.to_string(), font(on), if on { t.accent } else { t.text });
+                let (rect, r) = ui.allocate_exact_size(vec2(w - gap, 25.0), Sense::click());
                 if on {
                     ui.painter().rect_filled(rect, t.radius, t.accent_soft);
                 } else if r.hovered() {
@@ -978,10 +1021,25 @@ impl App {
                     self.tab = k;
                 }
             }
+            let left_out: Vec<(usize, &str)> = (0..tabs.len())
+                .filter(|_| !whole_row)
+                .filter(|&k| !fits.get(k).copied().unwrap_or(true))
+                .filter_map(|k| tabs.get(k).map(|tab| (k, tab.name)))
+                .collect();
+            let ink = ribbon_fit::Ink { back: t.hover, text: t.text, dim: t.text_muted };
+            if let Some(k) = ribbon_fit::more_tabs(ui, &left_out, self.tab, MORE_TABS_W, t.radius, ink) {
+                self.tab = k;
+            }
             if tabs.is_empty() {
                 ui.label(RichText::new(self.workspace.name()).font(theme::strong(13.5)).color(t.accent));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.search_field(ui));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if folded {
+                    self.search_icon(ui);
+                } else {
+                    self.search_field(ui, field);
+                }
+            });
         });
         let line = ui.cursor().top() + 2.0;
         ui.painter().hline(ui.max_rect().x_range(), line, Stroke::new(1.0, t.card_border));
@@ -994,43 +1052,166 @@ impl App {
             );
             return;
         };
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (name, items) in ribbon::groups(tab) {
-                ui.vertical(|ui| {
-                    ui.horizontal_top(|ui| {
-                        for item in &items {
-                            self.ribbon_item(ui, item);
-                        }
+        self.ribbon_groups(ui, tab, &t);
+    }
+
+    /// The groups of a tab, each at the level [`ribbon_fit::plan`] gives it for the ribbon's
+    /// width, in a row that scrolls sideways when even collapsed groups don't fit: no bar, but
+    /// ‹ › at the edges where there is more, and the mouse wheel or a drag.
+    fn ribbon_groups(&mut self, ui: &mut Ui, tab: &ribbon::Tab, t: &Tokens) {
+        // Commands the registry doesn't have take no room, nor a group left with none.
+        let groups: Vec<(&'static str, Vec<Item>)> = ribbon::groups(tab)
+            .into_iter()
+            .map(|(name, items)| {
+                let known = |i: &Item| !matches!(i, Item::Command(id, _, _) if Session::command(id).is_none());
+                (name, items.into_iter().filter(known).collect::<Vec<_>>())
+            })
+            .filter(|(_, items)| !items.is_empty())
+            .collect();
+        let widths: Vec<[f32; 3]> = groups.iter().map(|(name, items)| self.group_widths(ui, name, items)).collect();
+        let levels = ribbon_fit::plan(&widths, ui.available_width() - 4.0);
+        let pending_id = Id::unique("ribbon-scroll-pending");
+        let scroll = ribbon_fit::row(ui, ("ribbon-row", tab.name), pending_id, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for ((name, items), level) in groups.iter().zip(&levels) {
+                    if *level == ribbon_fit::COLLAPSED {
+                        self.collapsed_group(ui, name, items);
+                    } else {
+                        self.group(ui, name, items, *level == ribbon_fit::COMPACT);
+                    }
+                    ui.add_space(GROUP_GAP);
+                    let x = ui.cursor().left();
+                    let top = ui.min_rect().top();
+                    ui.painter().vline(x, top + 2.0..=top + 64.0, Stroke::new(1.0, t.card_border));
+                    ui.add_space(GROUP_GAP + 1.0);
+                }
+                if let Some(note) = tab.note {
+                    ui.vertical(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new(note).italics().size(12.5).color(t.text_muted));
                     });
-                    let w = ui.min_rect().width();
-                    ui.allocate_ui(vec2(w, 14.0), |ui| {
-                        ui.centered_and_justified(|ui| ui.label(RichText::new(name).size(11.5).color(t.text_muted)));
-                    });
-                });
-                ui.add_space(6.0);
-                let x = ui.cursor().left();
-                let top = ui.min_rect().top() + 2.0;
-                ui.painter().vline(x, top..=top + 64.0, Stroke::new(1.0, t.card_border));
-                ui.add_space(8.0);
-            }
-            if let Some(note) = tab.note {
-                ui.vertical(|ui| {
-                    ui.add_space(20.0);
-                    ui.label(RichText::new(note).italics().size(12.5).color(t.text_muted));
-                });
-            }
+                }
+            });
+        });
+        ribbon_fit::edge_chevrons(
+            ui,
+            &scroll,
+            pending_id,
+            ribbon_fit::Ink { back: t.card, text: t.text, dim: t.text_muted },
+        );
+    }
+
+    /// A group's width on the ribbon as designed, compact and collapsed, its divider included.
+    fn group_widths(&self, ui: &Ui, name: &str, items: &[Item]) -> [f32; 3] {
+        let name_w =
+            ui.painter().layout_no_wrap(name.to_string(), egui::FontId::proportional(11.5), Color32::WHITE).size().x;
+        let gaps = items.len().saturating_sub(1) as f32 * BUTTON_GAP;
+        let full: f32 = items.iter().map(|i| self.button_width(ui, &self.item_face(i).label)).sum::<f32>() + gaps;
+        // A button with only the generic command icon keeps its label: icons alone couldn't be
+        // told apart.
+        let compact: f32 = items
+            .iter()
+            .map(|i| {
+                let face = self.item_face(i);
+                if face.icon == Icon::Command { self.button_width(ui, &face.label) } else { ICON_BUTTON_W }
+            })
+            .sum::<f32>()
+            + gaps;
+        let divider = 2.0 * GROUP_GAP + 1.0;
+        [full.max(name_w + 10.0) + divider, compact.max(name_w + 10.0) + divider, collapsed_width(ui, name) + divider]
+    }
+
+    /// A ribbon button's width as designed: its label's, and at least its icon's.
+    fn button_width(&self, ui: &Ui, label: &str) -> f32 {
+        let font = egui::FontId::proportional(12.5);
+        ui.painter().layout_no_wrap(label.to_string(), font, self.tokens.text).size().x.max(36.0) + 16.0
+    }
+
+    /// A group as designed or compact: its buttons over its centred name. With
+    /// [`App::ribbon_groups`], after WordCraft's `group_titled` (`crates/ui-egui/src/widgets/groups.rs`,
+    /// commit ad5e1a6), Copyright (c) 2026 ArtCraft Team and the WordCraft contributors, MIT
+    /// licence (`assets/licenses/MIT-WordCraft.txt`; `ATTRIBUTION.md`).
+    fn group(&mut self, ui: &mut Ui, name: &str, items: &[Item], compact: bool) {
+        let t = self.tokens.clone();
+        ui.vertical(|ui| {
+            let name_w =
+                ui.painter().layout_no_wrap(name.to_string(), egui::FontId::proportional(11.5), t.text_muted).size().x;
+            ui.set_min_width(name_w + 10.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                for item in items {
+                    self.ribbon_item(ui, item, compact);
+                }
+            });
+            let w = ui.min_rect().width();
+            ui.allocate_ui(vec2(w, 14.0), |ui| {
+                ui.centered_and_justified(|ui| ui.label(RichText::new(name).size(11.5).color(t.text_muted)));
+            });
         });
     }
 
-    /// A big ribbon button: the icon over its label.
-    fn ribbon_button(&self, ui: &mut Ui, icon: Icon, label: &str, enabled: bool, on: bool) -> Response {
+    /// A group folded into one drop-down button: its first item's icon over its name; the
+    /// drop-down holds the whole group as designed, with its name. Running an item closes it.
+    ///
+    /// After WordCraft's `collapsed_group` (`crates/ui-egui/src/widgets/groups.rs`, commit
+    /// ad5e1a6), Copyright (c) 2026 ArtCraft Team and the WordCraft contributors, MIT licence
+    /// (`assets/licenses/MIT-WordCraft.txt`; `ATTRIBUTION.md`).
+    fn collapsed_group(&mut self, ui: &mut Ui, name: &str, items: &[Item]) {
+        let t = self.tokens.clone();
+        let (r, resp) = ui.allocate_exact_size(vec2(collapsed_width(ui, name), 52.0 + 14.0), Sense::click());
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        if open || resp.hovered() {
+            ui.painter().rect_filled(r, t.radius, if open { t.accent_soft } else { t.hover });
+        }
+        if let Some(first) = items.first() {
+            let icon = self.item_face(first).icon;
+            let at = Rect::from_center_size(pos2(r.center().x, r.top() + 17.0), vec2(26.0, 26.0));
+            icons::paint(ui.painter(), at, icon, self.ink());
+        }
+        ui.painter().text(
+            pos2(r.center().x, r.top() + 42.0),
+            Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(12.5),
+            t.text,
+        );
+        let c = pos2(r.center().x, r.top() + 57.0);
+        ui.painter().add(egui::Shape::line(
+            vec![c + vec2(-3.0, -1.5), c + vec2(0.0, 1.5), c + vec2(3.0, -1.5)],
+            Stroke::new(1.2, t.text_muted),
+        ));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+        let resp = resp.on_hover_text(name);
+        egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                    for item in items {
+                        if self.ribbon_item(ui, item, false) {
+                            ui.close();
+                        }
+                    }
+                });
+                let w = ui.min_rect().width();
+                ui.allocate_ui(vec2(w, 14.0), |ui| {
+                    ui.centered_and_justified(|ui| ui.label(RichText::new(name).size(11.5).color(t.text_muted)));
+                });
+            });
+        });
+    }
+
+    /// A ribbon button: the icon over its label, or (compact) the icon alone, its name in the
+    /// tooltip.
+    fn ribbon_button(&self, ui: &mut Ui, face: &Face, compact: bool) -> Response {
         let t = &self.tokens;
+        // The generic command icon alone says nothing: such a button keeps its label.
+        let compact = compact && face.icon != Icon::Command;
         let font = egui::FontId::proportional(12.5);
-        let width = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.text).size().x.max(36.0) + 16.0;
-        let (rect, r) =
-            ui.allocate_exact_size(vec2(width, 52.0), if enabled { Sense::click() } else { Sense::hover() });
-        if on {
+        let width = if compact { ICON_BUTTON_W } else { self.button_width(ui, &face.label) };
+        let sense = if face.enabled { Sense::click() } else { Sense::hover() };
+        let (rect, r) = ui.allocate_exact_size(vec2(width, 52.0), sense);
+        if face.on {
             ui.painter().rect(
                 rect,
                 t.radius,
@@ -1038,110 +1219,122 @@ impl App {
                 Stroke::new(1.0, t.accent.gamma_multiply(0.45)),
                 StrokeKind::Inside,
             );
-        } else if r.hovered() && enabled {
+        } else if r.hovered() && face.enabled {
             ui.painter().rect_filled(rect, t.radius, t.hover);
         }
-        let ink = if enabled {
+        let ink = if face.enabled {
             self.ink()
         } else {
             Ink { line: t.text_muted.gamma_multiply(0.55), fill: t.text_muted.gamma_multiply(0.45) }
         };
+        let icon_y = if compact { rect.center().y } else { rect.top() + 17.0 };
         icons::paint(
             ui.painter(),
-            Rect::from_center_size(pos2(rect.center().x, rect.top() + 17.0), vec2(26.0, 26.0)),
-            icon,
+            Rect::from_center_size(pos2(rect.center().x, icon_y), vec2(26.0, 26.0)),
+            face.icon,
             ink,
         );
-        let colour = if enabled { t.text } else { t.text_muted.gamma_multiply(0.8) };
-        ui.painter().text(pos2(rect.center().x, rect.top() + 42.0), Align2::CENTER_CENTER, label, font, colour);
-        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, label));
+        if !compact {
+            let colour = if face.enabled { t.text } else { t.text_muted.gamma_multiply(0.8) };
+            ui.painter().text(
+                pos2(rect.center().x, rect.top() + 42.0),
+                Align2::CENTER_CENTER,
+                &face.label,
+                font,
+                colour,
+            );
+        }
+        r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, face.enabled, face.on, &face.label));
         r
     }
 
-    fn ribbon_item(&mut self, ui: &mut Ui, item: &Item) {
+    /// What a ribbon item shows: its icon, label, whether it can run and is on, and its tip.
+    fn item_face(&self, item: &Item) -> Face {
+        let face =
+            |icon, label: &str, enabled, on, tip: String| Face { icon, label: label.to_string(), enabled, on, tip };
         match *item {
             Item::Command(id, label, icon) => {
-                let Some(spec) = Session::command(id) else { return };
                 let enabled = self.session.enabled(id);
                 let on = self.dialog.as_ref().is_some_and(|d| d.id == id);
-                let r = self.ribbon_button(ui, icon, label, enabled.is_ok(), on);
-                if r.on_hover_text(tip(spec, &enabled)).clicked() && enabled.is_ok() {
-                    self.invoke(id);
-                }
+                let tip = Session::command(id).map(|spec| tip(spec, &enabled)).unwrap_or_default();
+                face(icon, label, enabled.is_ok(), on, tip)
             }
-            Item::View(view, label, icon) => {
-                let has = self.session.case().is_some();
-                if self
-                    .ribbon_button(ui, icon, label, has, false)
-                    .on_hover_text(format!("{label} view of the whole scene"))
-                    .clicked()
-                {
-                    self.fit_view(Some(view));
-                }
+            Item::View(_, label, icon) => {
+                face(icon, label, self.session.case().is_some(), false, format!("{label} view of the whole scene"))
             }
-            Item::Edges => {
-                let on = self.viewport.edges;
-                if self
-                    .ribbon_button(ui, Icon::Edges, "Edges", true, on)
-                    .on_hover_text("Draw the faces' edges")
-                    .clicked()
-                {
-                    self.viewport.edges = !on;
-                }
-            }
+            Item::Edges => face(Icon::Edges, "Edges", true, self.viewport.edges, "Draw the faces' edges".into()),
             Item::Cut => {
                 let on = self.cut.is_some();
                 let can = on || self.can_cut();
                 let tip = if can { CUT_TIP } else { "Cut: no region of the case has a mesh" };
-                if self.ribbon_button(ui, Icon::Cut, "Cut", can, on).on_hover_text(tip).clicked() {
-                    self.toggle_cut();
-                }
+                face(Icon::Cut, "Cut", can, on, tip.into())
             }
-            Item::Grid => {
-                let on = self.viewport.guides.grid;
-                if self.ribbon_button(ui, Icon::Grid, "Grid", true, on).on_hover_text(GRID_TIP).clicked() {
-                    self.viewport.guides.grid = !on;
-                }
-            }
-            Item::Origin => {
-                let on = self.viewport.guides.origin;
-                if self.ribbon_button(ui, Icon::Origin, "Origin", true, on).on_hover_text(ORIGIN_TIP).clicked() {
-                    self.viewport.guides.origin = !on;
-                }
-            }
-            Item::DarkView => {
-                let on = self.viewport.dark;
-                if self.ribbon_button(ui, Icon::DarkView, "Dark view", true, on).on_hover_text(DARK_TIP).clicked() {
-                    self.viewport.dark = !on;
-                }
-            }
-            Item::Renderer => {
-                let on = self.viewport.renderer == Renderer::Gpu;
-                let can = self.viewport.has_gpu();
-                if self.ribbon_button(ui, Icon::Gpu, "GPU", can, on).on_hover_text(self.renderer_tip()).clicked() {
-                    self.toggle_renderer();
-                }
-            }
+            Item::Grid => face(Icon::Grid, "Grid", true, self.viewport.guides.grid, GRID_TIP.into()),
+            Item::Origin => face(Icon::Origin, "Origin", true, self.viewport.guides.origin, ORIGIN_TIP.into()),
+            Item::DarkView => face(Icon::DarkView, "Dark view", true, self.viewport.dark, DARK_TIP.into()),
+            Item::Renderer => face(
+                Icon::Gpu,
+                "GPU",
+                self.viewport.has_gpu(),
+                self.viewport.renderer == Renderer::Gpu,
+                self.renderer_tip(),
+            ),
             Item::Theme => {
                 let label = if self.tokens.dark { "Light" } else { "Dark" };
-                if self
-                    .ribbon_button(ui, Icon::Theme, label, true, false)
-                    .on_hover_text("Light or dark theme")
-                    .clicked()
-                {
-                    self.toggle_theme(ui.ctx());
-                }
+                face(Icon::Theme, label, true, false, "Light or dark theme".into())
             }
         }
     }
 
+    /// Draws a ribbon item and does what it does when clicked; true when it ran.
+    fn ribbon_item(&mut self, ui: &mut Ui, item: &Item, compact: bool) -> bool {
+        let face = self.item_face(item);
+        let r = self.ribbon_button(ui, &face, compact);
+        let hint = if compact && face.icon != Icon::Command {
+            format!("{}: {}", face.label, face.tip)
+        } else {
+            face.tip.clone()
+        };
+        if !(r.on_hover_text(hint).clicked() && face.enabled) {
+            return false;
+        }
+        match *item {
+            Item::Command(id, _, _) => self.invoke(id),
+            Item::View(view, _, _) => self.fit_view(Some(view)),
+            Item::Edges => self.viewport.edges = !self.viewport.edges,
+            Item::Cut => self.toggle_cut(),
+            Item::Grid => self.viewport.guides.grid = !self.viewport.guides.grid,
+            Item::Origin => self.viewport.guides.origin = !self.viewport.guides.origin,
+            Item::DarkView => self.viewport.dark = !self.viewport.dark,
+            Item::Renderer => self.toggle_renderer(),
+            Item::Theme => self.toggle_theme(ui.ctx()),
+        }
+        true
+    }
+
+    /// The search as its icon alone, where the tab row has no room for the field: a click opens
+    /// the field (as Ctrl+P does).
+    fn search_icon(&mut self, ui: &mut Ui) {
+        let t = &self.tokens;
+        let (rect, r) = ui.allocate_exact_size(vec2(SEARCH_ICON_W, 25.0), Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, t.radius, t.hover);
+        }
+        let at = Rect::from_center_size(rect.center(), vec2(14.0, 14.0));
+        icons::paint(ui.painter(), at, Icon::Search, Ink { line: t.text_muted, fill: t.accent });
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Search commands"));
+        if r.on_hover_text("Search commands (Ctrl+P)").clicked() {
+            self.focus_search = true;
+        }
+    }
+
     /// The command search: every command of the registry, filtered as you type (Ctrl+P).
-    fn search_field(&mut self, ui: &mut Ui) {
+    fn search_field(&mut self, ui: &mut Ui, width: f32) {
         let t = self.tokens.clone();
         let edit = egui::TextEdit::singleline(&mut self.search)
             .id(Id::unique(SEARCH_ID))
             .hint_text("Search commands      Ctrl+P")
-            .desired_width(240.0)
+            .desired_width(width)
             .margin(egui::Margin { left: 26, right: 6, top: 4, bottom: 4 });
         let r = ui.add(edit);
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Search commands"));
@@ -1154,6 +1347,10 @@ impl App {
         let entered = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
         if r.has_focus() {
             self.search_open = true;
+        } else if r.lost_focus() && self.search.is_empty() && ui.input(|i| i.key_pressed(Key::Tab)) {
+            // Left empty by Tab: it closes (back to its icon on a narrow window), as a press
+            // elsewhere closes it; a press on a result keeps it open to take the click.
+            self.search_open = false;
         }
         if !self.search_open {
             return;
@@ -1181,10 +1378,19 @@ impl App {
             .order(egui::Order::Foreground)
             .pivot(Align2::RIGHT_TOP)
             .fixed_pos(r.rect.right_bottom() + vec2(0.0, 6.0))
+            .constrain(true)
             .show(ui.ctx(), |ui| {
                 t.card_frame().show(ui, |ui| {
-                    ui.set_width(420.0);
-                    egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                    // As wide as the window allows (its frame and a margin left out).
+                    ui.set_width(RESULTS_W.min(ui.ctx().content_rect().width() - 40.0).max(120.0));
+                    // No taller than the room under the field: on a short window, a popup moved up into it
+                    // would cover what is typed.
+                    // The room under the field, less the gap above the popup, the card's margins and
+                    // stroke, and a little air; egui's own least height for a scroll area (64) is
+                    // overridden, else it would grow past that room.
+                    let below = ui.ctx().content_rect().bottom() - r.rect.bottom() - 6.0 - 2.0 * 9.0 - 4.0;
+                    let height = 380.0_f32.min(below).max(0.0);
+                    egui::ScrollArea::vertical().max_height(height).min_scrolled_height(height).show(ui, |ui| {
                         for c in matches {
                             let enabled = self.session.enabled(c.id);
                             let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -2370,7 +2576,8 @@ pub struct Options {
     pub screenshot: Option<String>,
     /// The window's inner size, points.
     pub size: Option<(f32, f32)>,
-    pub dark: bool,
+    /// The light theme; the window starts dark.
+    pub light: bool,
     /// What the 3D view shows first: mesh regions and surface files (`walls.stl`) by name;
     /// empty for the default.
     pub show: Vec<String>,
@@ -2509,6 +2716,36 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
 
 /// The view's guides' and background's tooltips.
 const BRUSH_TIP: &str = "Paint over what to select: what is seen under the stroke (Shift adds, Ctrl takes away; [ and ] change its size); a right or middle drag moves the view";
+/// The search field's full width (its margins included), and the least that is still usable.
+const SEARCH_W: f32 = 240.0;
+const SEARCH_MIN: f32 = 140.0;
+/// The search results' width, where the window allows it.
+const RESULTS_W: f32 = 420.0;
+/// The search folded to its icon.
+const SEARCH_ICON_W: f32 = 26.0;
+/// The » button of the tabs that don't fit.
+const MORE_TABS_W: f32 = 28.0;
+/// Between two buttons of a group; on each side of a group's divider.
+const BUTTON_GAP: f32 = 2.0;
+const GROUP_GAP: f32 = 7.0;
+/// A compact group's button: its icon alone.
+const ICON_BUTTON_W: f32 = 36.0;
+
+/// What a ribbon item shows ([`App::item_face`]).
+struct Face {
+    icon: Icon,
+    label: String,
+    enabled: bool,
+    on: bool,
+    tip: String,
+}
+
+/// A collapsed group's button width: its name with room around it.
+fn collapsed_width(ui: &Ui, name: &str) -> f32 {
+    let w = ui.painter().layout_no_wrap(name.to_string(), egui::FontId::proportional(12.5), Color32::WHITE).size().x;
+    (w + 20.0).max(52.0)
+}
+
 const CUT_TIP: &str = "Cut a region's mesh with a plane: the cells it crosses, whole (its whole mesh is read once)";
 const GRID_TIP: &str = "The grid on the ground (z = 0): its spacing follows the zoom; the scene hides it";
 const ORIGIN_TIP: &str = "The origin: its xy, xz and yz planes and its x, y and z axes, sized with the view";
@@ -2648,8 +2885,8 @@ pub fn run(options: Options) -> Result<(), String> {
     startup.extend(options.commands.iter().cloned());
     let mut app = App::new(Session::new());
     app.pick_folder = options.pick_folder;
-    if options.dark {
-        app.tokens = Tokens::dark();
+    if options.light {
+        app.tokens = Tokens::light();
     }
     // A case named on the command line opens first, its fields read as the window shows; with
     // commands to run, they are read at open, for the commands to act on.

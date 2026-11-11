@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use umcf_ui_egui::{Frame, Options, Picked, Start, run};
 
 const USAGE: &str = "\
-usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id>] [--dark]
+usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id>] [--light]
                 [--size <w>x<h>] [--renderer cpu|gpu|auto] [--screenshot <file.png>]
   <case>        a case directory to open
   --cmd         a command to run once the case is open (as umcf-cli run --cmd); repeat for more
@@ -25,7 +25,7 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
                 else its first patch), or near: the cut card showing the cells near an STL surface
                 (the case's first, within 1 m); umcf-gui stops with an error where no case is
                 open or no region has a mesh
-  --dark        the dark theme
+  --light       the light theme (the window starts dark; --dark is still taken, and does nothing)
   --size        the window's size in points (default 1440x900)
   --renderer    what draws the 3D view at the start: without it, the CPU, with the window on a
                 hardware GPU where there is one so that the view can be switched to it (GPU in
@@ -87,7 +87,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
             "-h" | "--help" => return Err(String::new()),
-            "--dark" => o.dark = true,
+            "--light" => o.light = true,
+            "--dark" => {}
             "--show" => o.show.push(value("--show")?),
             "--open" => o.open = Some(value("--open")?),
             "--screenshot" => o.screenshot = Some(value("--screenshot")?),
@@ -147,5 +148,24 @@ fn main() -> ExitCode {
             eprintln!("umcf-gui: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_window_starts_dark_and_light_on_asking() {
+        assert!(!parse(&args(&[])).unwrap().light);
+        assert!(parse(&args(&["--light"])).unwrap().light);
+        // `--dark`, from when the window started light, is taken and changes nothing.
+        assert!(!parse(&args(&["--dark"])).unwrap().light);
+        assert!(parse(&args(&["--dark", "--light"])).unwrap().light);
+        assert!(parse(&args(&["--light", "--dark"])).unwrap().light);
     }
 }

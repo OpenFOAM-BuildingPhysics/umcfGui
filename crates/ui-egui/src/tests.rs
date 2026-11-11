@@ -179,6 +179,225 @@ fn the_ribbon_comes_from_the_registry() {
     assert!(h.get_by_label("Undo").accesskit_node().is_disabled());
 }
 
+/// A window of this width, 800 high.
+fn harness_wide(mut app: App, width: f32) -> Harness<'static, App> {
+    // Jobs are waited for, as in `harness`.
+    app.job_wait = std::time::Duration::from_secs(120);
+    let mut h = Harness::builder()
+        .with_size(vec2(width, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run();
+    h
+}
+
+#[test]
+fn the_window_starts_dark() {
+    assert!(app().tokens.dark);
+    let mut h = harness(app());
+    h.get_by_role_and_label(egui::Role::Tab, "View").click();
+    h.run();
+    h.get_by_label("Light").click();
+    h.run();
+    assert!(!h.state().tokens.dark);
+}
+
+#[test]
+fn a_narrow_ribbon_gives_way_and_drops_nothing() {
+    // Wide: every button with its label.
+    let h = harness_wide(app(), 2600.0);
+    assert!(h.query_by_label("More tabs").is_none() && h.query_by_label("Scroll ribbon right").is_none());
+    assert!(h.get_by_label("Read fields").rect().width() > 50.0);
+    drop(h);
+    // Narrower: buttons with an icon of their own go compact (icon only, the name in the
+    // tooltip); those with only the generic command icon never lose their label: their group
+    // folds into its drop-down instead.
+    for width in [700.0, 1000.0, 1300.0] {
+        let h = harness_wide(app(), width);
+        // On the ribbon with its label, or in the More drop-down: never an icon alone.
+        match h.query_by_label("Read fields") {
+            Some(n) => assert!(n.rect().width() > 50.0, "at {width} Read fields is an icon alone"),
+            None => {
+                h.get_by_role_and_label(egui::Role::Button, "More");
+            }
+        };
+    }
+    // At 700 the More group, of generic icons only, is its drop-down rather than icons.
+    let h = harness_wide(app(), 700.0);
+    assert!(h.query_by_label("Read fields").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "More");
+    drop(h);
+    let mut a = app();
+    a.tab = 4;
+    let h = harness_wide(a, 700.0);
+    assert!(h.get_by_label("Snapshot").rect().width() < 40.0, "the View tab's buttons go compact");
+    drop(h);
+    // Narrow: groups fold into drop-down buttons, tabs into », and the ribbon scrolls.
+    let mut h = harness_wide(app(), 380.0);
+    assert!(h.query_by_label("Read fields").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "Inspect").click();
+    h.run();
+    h.get_by_label("Check").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "case.check");
+    assert!(h.query_by_label("Summary").is_none(), "running an item closes the drop-down");
+    h.get_by_label("Scroll ribbon right").click();
+    h.run();
+    h.run();
+    h.get_by_label("Scroll ribbon left");
+    h.get_by_role_and_label(egui::Role::Button, "More").click();
+    h.run();
+    h.get_by_label("Read fields").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "case.fields");
+    // The tabs that don't fit are in the » menu.
+    h.get_by_label("More tabs").click();
+    h.run();
+    h.get_by_label("View").click();
+    h.run();
+    assert_eq!(h.state().tab, 4);
+    h.get_by_role_and_label(egui::Role::Tab, "View");
+}
+
+/// A wide chosen tab on a narrow window leaves no room for a usable search field: it shows as
+/// its icon, which opens a field of usable width.
+#[test]
+fn the_search_folds_to_its_icon_rather_than_squeeze() {
+    let narrow = |width: f32| {
+        let mut a = app();
+        a.tab = 3;
+        harness_wide(a, width)
+    };
+    // Wide enough: the field, at its full width.
+    let h = narrow(1000.0);
+    assert!(h.query_by_role_and_label(egui::Role::Button, "Search commands").is_none());
+    assert!(h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect().width() >= 139.0);
+    drop(h);
+    // Somewhat narrower, the chosen "Boundary conditions" leaves no room for the field: the icon.
+    let width = (380..=700)
+        .step_by(10)
+        .map(|w| w as f32)
+        .find(|&w| narrow(w).query_by_role_and_label(egui::Role::Button, "Search commands").is_some())
+        .expect("a width with the search folded to its icon");
+    let mut h = narrow(width);
+    assert!(h.query_by_role_and_label(egui::Role::TextInput, "Search commands").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "Search commands").click();
+    h.run();
+    // Open, the field has its width, clear of the tabs (all in »), and it has the focus.
+    let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+    assert!(field.width() >= 139.0 && field.right() <= width + 0.5, "{field:?}");
+    assert!(h.query_all_by_role(egui::Role::Tab).all(|t| !t.rect().intersects(field)));
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("mesh");
+    h.run();
+    assert_eq!(h.state().search, "mesh");
+    // Escape closes it, back to the icon and the tabs.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    h.get_by_role_and_label(egui::Role::Button, "Search commands");
+    h.get_by_role_and_label(egui::Role::Tab, "Boundary conditions");
+}
+
+/// The narrowest window (200 points): tabs stay reachable through », the open search takes
+/// the tab row, and its results stay inside the window.
+#[test]
+fn the_narrowest_window_keeps_tabs_and_search_usable() {
+    let mut a = app();
+    a.tab = 3;
+    let mut h = harness_wide(a, 200.0);
+    let more = h.get_by_label("More tabs").rect();
+    assert!(more.right() <= 200.5, "» at {more:?}");
+    h.get_by_label("More tabs").click();
+    h.run();
+    h.get_by_label("Mesh").click();
+    h.run();
+    assert_eq!(h.state().tab, 2);
+    h.get_by_role_and_label(egui::Role::Button, "Search commands").click();
+    h.run();
+    let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+    // The ribbon is about 80 points wide there: the field takes most of it.
+    assert!(field.right() <= 200.5 && field.width() >= 40.0, "{field:?}");
+    assert!(h.query_by_label("More tabs").is_none(), "» gives the field its room");
+    // The results, under the field, inside the window.
+    // (The Mesh tab, now chosen, has a Check mesh button too: the result is the one under
+    // the field.)
+    let row = h
+        .query_all_by_label_contains("Check mesh")
+        .map(|n| n.rect())
+        .find(|r| r.top() > field.bottom())
+        .expect("Check mesh in the results");
+    assert!(row.left() >= -0.5 && row.right() <= 200.5, "{row:?}");
+}
+
+/// On a short window the search results stay wholly under the field and inside the window:
+/// the popup is never moved up over what is typed.
+#[test]
+fn the_search_results_stay_under_the_field_on_a_short_window() {
+    for height in [150.0, 220.0, 400.0] {
+        let mut h = Harness::builder()
+            .with_size(vec2(900.0, height))
+            .with_max_steps(16)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app());
+        h.run();
+        h.get_by_role_and_label(egui::Role::TextInput, "Search commands").click();
+        h.run();
+        let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+        let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("search-results"))).expect("the results are open");
+        assert!(popup.top() >= field.bottom() - 0.5, "at {height}: {popup:?} over the field {field:?}");
+        assert!(popup.bottom() <= height + 0.5, "at {height}: {popup:?} past the window");
+    }
+    // Even at the shortest a result is in sight and runs: filter to Summary and click its row
+    // (the first, just under the card's top margin).
+    let mut a = app();
+    a.job_wait = std::time::Duration::from_secs(120);
+    let mut h = Harness::builder()
+        .with_size(vec2(900.0, 150.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), a);
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").click();
+    h.run();
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("summary");
+    h.run();
+    let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("search-results"))).expect("the results are open");
+    assert!(popup.height() >= 9.0 * 2.0 + 36.0 - 0.5, "a row's room at 150: {popup:?}");
+    click_at(&mut h, popup.left_top() + vec2(60.0, 9.0 + 18.0), Modifiers::NONE);
+    assert_eq!(h.state().log.last().map(|e| e.command.as_str()), Some("case.info"));
+}
+
+/// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in
+/// the window.
+#[test]
+fn the_ribbon_never_overlaps_itself() {
+    for width in [380.0, 560.0, 760.0, 1000.0, 1300.0, 1800.0] {
+        for tab in 0..5 {
+            let mut a = app();
+            a.tab = tab;
+            let h = harness_wide(a, width);
+            let tabs: Vec<egui::Rect> = h.query_all_by_role(egui::Role::Tab).map(|n| n.rect()).collect();
+            assert!(tabs.iter().all(|r| r.right() <= width + 0.5), "tab past the window at {width}");
+            let buttons: Vec<(String, egui::Rect)> = h
+                .query_all_by_role(egui::Role::Button)
+                .filter_map(|n| Some((n.accesskit_node().label()?.to_string(), n.rect())))
+                .filter(|(l, r)| {
+                    r.top() > 70.0
+                        && r.top() < 160.0
+                        && r.right() > 110.0
+                        && r.left() < width
+                        && !l.starts_with("Scroll ribbon")
+                })
+                .collect();
+            assert!(!buttons.is_empty());
+            for (i, (a, ra)) in buttons.iter().enumerate() {
+                for (b, rb) in buttons.iter().skip(i + 1) {
+                    let o = ra.intersect(*rb);
+                    assert!(o.width() <= 0.5 || o.height() <= 0.5, "{a} and {b} overlap at {width}, tab {tab}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn the_workspace_switcher_offers_what_exists() {
     let mut h = harness(app());
