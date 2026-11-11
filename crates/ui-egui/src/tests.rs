@@ -2349,7 +2349,12 @@ fn the_browser_notes_the_cut_beside_its_region() {
 fn findings_that_come_hide_the_region_again() {
     use umcf_engine::Layer;
     use umcf_render::raster::Mode;
-    let mut h = harness(app());
+    // A checkMesh set of one face, for the check to find.
+    let mut fs = case();
+    fs.insert("constant/polyMesh/sets/skewFaces", format!("{}1\n(\n2\n)\n", h("faceSet")));
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut h = harness(App::new(s));
     h.state_mut().toggle_cut();
     h.run();
     let mut form = h.state().cut.clone().unwrap();
@@ -2363,10 +2368,53 @@ fn findings_that_come_hide_the_region_again() {
     assert!(!hidden(h.state()) && h.state().cut.as_ref().unwrap().released);
     // The check's findings come (here straight through the session: no change of the card).
     h.state_mut().session.execute("mesh.check", &serde_json::json!({ "region": "" })).unwrap();
+    assert!(h.state().session().found("").is_some_and(|f| !f.classes.is_empty()));
     assert!(h.state().cut_shown().is_some());
     h.run();
     assert!(hidden(h.state()) && !h.state().cut.as_ref().unwrap().released, "{:?}", h.state().display);
     assert_eq!(h.state().cut_takes(&region), Some(Layer::Cut(String::new())));
+}
+
+/// A check that found nothing shows nothing: the region's boundary stays as the browser set it
+/// (not hidden), its menu the region's; the empty findings are still asked for.
+#[test]
+fn a_check_that_found_nothing_leaves_the_region_shown() {
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    let mut form = h.state().cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    h.state_mut().set_cut(form);
+    h.run();
+    let region = Layer::Region(String::new());
+    h.state_mut().set_display(region.clone(), crate::display::Change::Mode(Mode::Wireframe));
+    // The cube has nothing to find.
+    h.state_mut().session.execute("mesh.check", &serde_json::json!({ "region": "" })).unwrap();
+    assert!(h.state().session().found("").is_some_and(|f| f.classes.is_empty()));
+    h.run();
+    let app = h.state();
+    assert!(app.cut_shown().is_some() && !app.cut_visible());
+    assert!(app.cut.as_ref().unwrap().released, "{:?}", app.display);
+    assert!(app.display.iter().all(|e| e.mode != Some(Mode::Hidden)), "{:?}", app.display);
+    assert!(app.cut_takes(&region).is_none());
+    assert_eq!(app.layer_display(&region, &[]).mode, Mode::Wireframe);
+    // Without a mode of the browser's, the card's hiding is left out of the view while it shows
+    // nothing, as before a check.
+    h.state_mut().toggle_cut();
+    h.state_mut().display.clear();
+    h.state_mut().toggle_cut();
+    let mut form = h.state().cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    h.state_mut().set_cut(form);
+    h.run();
+    assert!(h.state().idle_hiding().is_some());
+    assert!(h.state().view_display().iter().all(|e| e.mode != Some(Mode::Hidden)));
+    // Nothing turned on in the browser: the view says so, rather than an empty scene.
+    h.state_mut().shown_regions.clear();
+    h.run();
+    let _ = h.get_by_label_contains("Nothing shown");
 }
 
 #[test]

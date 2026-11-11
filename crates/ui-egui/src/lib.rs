@@ -1552,7 +1552,7 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut_shown().is_none() {
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && !self.cut_visible() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {

@@ -146,8 +146,8 @@ mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider o
 extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
 layer on the plane's other side where it lies on faces between cells. While the card is open the
 region's boundary is hidden (its layer in the browser says `cut`), as it would hide the cut, except
-while the card has nothing to show (no check, patch or surface yet), when it shows; closing the
-card takes the cut away and shows the boundary again. While the card shows a cut (a plane, the
+while the card has nothing to show (no check, patch or surface yet, or a check that found
+nothing), when it shows; closing the card takes the cut away and shows the boundary again. While the card shows a cut (a plane, the
 findings, the layers or the cells near a surface), the region's menu in the browser (*Cut of air*)
 sets how the cut is drawn: *Wireframe* or *Points* draw the cut's cells by their edges or points,
 *Hidden* hides it, an opacity makes them translucent, and a reset puts them back as surfaces; the

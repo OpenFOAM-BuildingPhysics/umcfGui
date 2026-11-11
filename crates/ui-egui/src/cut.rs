@@ -145,6 +145,17 @@ impl App {
         Some(form.cut())
     }
 
+    /// Whether the card shows something in the view: a cut it asks the scene for, but for a check
+    /// that found nothing (its entry stays in the scene, empty). While it shows nothing, the
+    /// region's boundary is drawn as the browser sets it and its menu is the region's.
+    pub(crate) fn cut_visible(&self) -> bool {
+        let Some(form) = self.cut.as_ref() else { return false };
+        if self.cut_shown().is_none() {
+            return false;
+        }
+        !(form.show == Show::Found && self.session.found(&form.region).is_some_and(|f| f.classes.is_empty()))
+    }
+
     /// The patches of region `region`'s mesh, the walls first (where layers are grown).
     pub(crate) fn patches(&self, region: &str) -> Vec<String> {
         let Some(patches) = self
@@ -201,7 +212,7 @@ impl App {
     /// Where in `display` the card's hiding of its region is while the card has nothing to show
     /// (and so the view draws without its mode); `None` else.
     pub(crate) fn idle_hiding(&self) -> Option<usize> {
-        if self.cut_shown().is_some() {
+        if self.cut_visible() {
             return None;
         }
         let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
@@ -226,7 +237,9 @@ impl App {
     pub(crate) fn cut_takes(&self, layer: &Layer) -> Option<Layer> {
         let form = self.cut.as_ref().filter(|f| !f.released)?;
         let r = form.hid.as_ref().filter(|r| *layer == Layer::Region((*r).clone()))?;
-        self.cut_shown()?;
+        if !self.cut_visible() {
+            return None;
+        }
         Some(Layer::Cut(r.clone()))
     }
 
@@ -355,7 +368,7 @@ impl App {
     /// entries stay, for when the card closes.
     pub(crate) fn hide_again(&mut self) {
         let Some(region) = self.cut.as_ref().filter(|f| f.released).and_then(|f| f.hid.clone()) else { return };
-        if self.cut.as_ref().is_none_or(|f| f.region != region) || self.cut_shown().is_none() {
+        if self.cut.as_ref().is_none_or(|f| f.region != region) || !self.cut_visible() {
             return;
         }
         self.display.push(Self::hiding(&region));
