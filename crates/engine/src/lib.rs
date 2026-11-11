@@ -175,8 +175,9 @@ pub struct Session {
     /// The whole meshes `mesh.check` read, handed to the next scene built (within the budget for
     /// hidden objects), so that showing what it found reads nothing again.
     handed: Vec<cmd::scene::Whole>,
-    /// Regions `mesh.check` read whose mesh it couldn't hand over: the whole meshes the scene
-    /// kept of them from before are not used again (the files may have changed since).
+    /// Regions `mesh.check` checked without handing their mesh over (no room for it, or it
+    /// couldn't be read): the whole meshes the scene kept of them from before are not used again
+    /// (the files may have changed since).
     outdated: Vec<String>,
     /// Stops what a command reads from a case `case.open` opened (see [`Session::canceller`]).
     cancel: umcf_core::Cancel,
@@ -476,8 +477,8 @@ impl Session {
         s.selection = self.selection.clone();
         s.scene = if with_scene { self.scene.clone() } else { None };
         s.found = self.found.clone();
-        s.handed = if with_scene { self.handed.clone() } else { Vec::new() };
-        s.outdated = self.outdated.clone();
+        // What a check handed over is taken into the scene by this session's next build: the
+        // copy, which reads nothing, draws the scene as it is (a build would copy it whole).
         s.budget = self.budget;
         s
     }

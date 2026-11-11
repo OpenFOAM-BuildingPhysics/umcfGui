@@ -79,8 +79,23 @@ impl PartialEq for Cells {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found {
     pub classes: Vec<FoundClass>,
-    /// The cells, faces and points of the mesh it was found on: its labels are of that mesh.
-    pub mesh: [usize; 3],
+    /// The mesh it was found on ([`Found::mesh_of`]): its labels are of that mesh.
+    pub mesh: [u64; 4],
+}
+
+impl Found {
+    /// What tells a mesh from another for the labels of its faces and cells: its cells, faces
+    /// and points, and a fingerprint (FNV-1a) of its `owner` and `neighbour` lists, which a mesh
+    /// renumbered (`renumberMesh`) or rewritten with the same sizes changes.
+    pub fn mesh_of(mesh: &umcf_foam_mesh::PolyMesh) -> [u64; 4] {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for x in mesh.owner.iter().chain(&mesh.neighbour) {
+            for b in x.to_le_bytes() {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        [mesh.n_cells() as u64, mesh.n_faces() as u64, mesh.n_points() as u64, h]
+    }
 }
 
 /// One thing a mesh check found: the faces or cells where it is.

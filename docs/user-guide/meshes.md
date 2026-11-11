@@ -62,7 +62,9 @@ findings*). The whole mesh the check read is handed to the view with them, while
 the 3D scene's budget for hidden objects leaves ([memory](scene.md#memory)): a check of several
 regions holds the meshes it hands over as it goes on to the next region, up to that quarter of
 the memory more than before. A mesh read again by a check that has no room for it replaces what
-the view kept of the region: the view reads it again when it shows its cut.
+the view kept of the region: the view reads it again when it shows its cut. Until the scene is
+next built (in the desktop app, the next frame), the mesh the view kept and the one handed over
+are both held.
 
 ### With `-allGeometry`
 

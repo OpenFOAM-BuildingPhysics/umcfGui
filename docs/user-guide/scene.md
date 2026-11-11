@@ -162,7 +162,8 @@ it last:
   refused for its parameters or a file that can't be read leaves it) drops it, as the labels may
   no longer be of the same faces and cells. After OpenFOAM rewrote a mesh, reload first, then
   check, then show it. A mesh read again from disk for the cut (one the check couldn't hand over)
-  that hasn't the size of the one checked is refused: *check it again*.
+  that isn't the one checked (its cells, faces and points, and a fingerprint of its `owner` and
+  `neighbour`, which `renumberMesh` changes) is refused: *check it again*.
 - **Reading**: `mesh.check` reads the whole mesh to check it and hands it to the scene, kept
   while it fits in what the budget for hidden objects leaves ([memory](#memory); the mesh kept
   of the region before doesn't count, as the new one replaces it): showing what it found then

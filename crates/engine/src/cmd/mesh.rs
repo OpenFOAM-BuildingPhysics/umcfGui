@@ -304,7 +304,7 @@ fn shown(q: &Quality, sets: Vec<FoundClass>, mesh: &PolyMesh) -> Shown {
         .map(|(name, cells, f)| FoundClass { name: name.to_string(), cells, labels: f.first.clone(), count: f.places })
         .collect();
     classes.extend(sets);
-    Shown { classes, mesh: [mesh.n_cells(), mesh.n_faces(), mesh.n_points()] }
+    Shown { classes, mesh: Shown::mesh_of(mesh) }
 }
 
 fn found(f: &Found) -> Value {
@@ -709,7 +709,12 @@ mod tests {
             );
         let mesh = PolyMesh::read(&fs, "m", &Limits::default()).unwrap();
         let f = shown(&q, vec![set], &mesh);
-        assert_eq!(f.mesh, [1, 4, 4]);
+        assert_eq!(f.mesh[..3], [1, 4, 4]);
+        // Renumbered (the same sizes): another mesh.
+        let mut other = mesh.clone();
+        other.owner.reverse();
+        other.owner[0] = 1;
+        assert_ne!(Shown::mesh_of(&other), f.mesh);
         assert_eq!(f.classes[1].count, 2000);
         let got: Vec<(&str, bool, &[u32])> =
             f.classes.iter().map(|c| (c.name.as_str(), c.cells, c.labels.as_slice())).collect();
