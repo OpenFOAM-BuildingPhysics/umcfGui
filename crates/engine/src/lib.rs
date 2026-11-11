@@ -478,7 +478,9 @@ impl Session {
         s.scene = if with_scene { self.scene.clone() } else { None };
         s.found = self.found.clone();
         // What a check handed over is taken into the scene by this session's next build: the
-        // copy, which reads nothing, draws the scene as it is (a build would copy it whole).
+        // copy, which reads nothing, draws the scene as it is (a build would copy it whole); it
+        // only knows which kept meshes not to use.
+        s.outdated = self.outdated.clone();
         s.budget = self.budget;
         s
     }

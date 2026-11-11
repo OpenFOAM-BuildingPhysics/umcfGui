@@ -89,10 +89,9 @@ impl Found {
     /// renumbered (`renumberMesh`) or rewritten with the same sizes changes.
     pub fn mesh_of(mesh: &umcf_foam_mesh::PolyMesh) -> [u64; 4] {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        // A label at a time (not a byte): a quarter of the multiplications.
         for x in mesh.owner.iter().chain(&mesh.neighbour) {
-            for b in x.to_le_bytes() {
-                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-            }
+            h = (h ^ u64::from(*x)).wrapping_mul(0x0100_0000_01b3);
         }
         [mesh.n_cells() as u64, mesh.n_faces() as u64, mesh.n_points() as u64, h]
     }
