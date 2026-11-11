@@ -898,8 +898,13 @@ fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
     s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("scene.snapshot", &at(0.6)).unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
-    // A patch renamed: the cut and its mesh as they were.
+    // The layers at a patch shown, then put aside; a patch renamed: the mesh kept aside is the
+    // same mesh (a patch list put says what the layers were drawn at, not what the mesh is).
+    let layers = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "patch": "inlet", "layers": 2 }] });
+    s.execute("scene.snapshot", &layers).unwrap();
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("patch.set", &json!({ "name": "west", "patches": [{ "region": "air", "patch": "inlet" }] })).unwrap();
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("scene.snapshot", &at(0.4)).unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
     // A rectangle selects through the cut.

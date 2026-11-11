@@ -983,6 +983,13 @@ fn the_cells_near_a_surface_are_drawn_by_their_size() {
     assert_eq!(o.triangles.len(), 46);
     let between: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(f, _)| **f == 3).map(|(_, c)| *c).collect();
     assert_eq!(between, [1, 1]);
+    // A point far off makes its cell the largest by far: the others are many halvings finer,
+    // each size told as it is (not one label for all past 32 halvings).
+    let mut far = row(5, &[]);
+    far.points[23][0] = 1e12;
+    let o = Object::from_near("air", &far, &plane(0.0), 1e13, Vec3::ZERO);
+    // 1e12 m over 2^40 halvings: 0.909 m, told as it is.
+    assert_eq!(o.classes, ["cells about 1000000000 km across: 1", "cells about 0.909 m across: 4"]);
     // Nothing near, a negative distance, no triangles: nothing.
     assert!(Object::from_near("air", &mesh, &plane(50.0), 1.0, Vec3::ZERO).classes.is_empty());
     assert!(Object::from_near("air", &mesh, &plane(0.0), -1.0, Vec3::ZERO).triangles.is_empty());

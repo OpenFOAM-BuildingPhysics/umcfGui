@@ -582,15 +582,24 @@ impl Object {
             }
         }
         drop(close);
+        // The near cells, in order, and each cell's place among them (u32::MAX for none).
+        let mut place: Vec<u32> = vec![u32::MAX; cells];
+        let mut count = 0u32;
+        for (p, n) in place.iter_mut().zip(&near) {
+            if *n {
+                *p = count;
+                count = count.saturating_add(1);
+            }
+        }
+        drop(near);
         // Each near cell's extent: the least and the most of its finite points' coordinates.
-        let mut extent: std::collections::HashMap<u32, ([f64; 3], [f64; 3])> = std::collections::HashMap::new();
+        let mut extent: Vec<([f64; 3], [f64; 3])> = vec![([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]); count as usize];
         for f in 0..mesh.n_faces() {
             let Some(face) = mesh.face(f) else { continue };
             for c in [mesh.owner.get(f), mesh.neighbour.get(f)].into_iter().flatten() {
-                if !near.get(*c as usize).copied().unwrap_or(false) {
+                let Some((lo, hi)) = place.get(*c as usize).and_then(|k| extent.get_mut(*k as usize)) else {
                     continue;
-                }
-                let (lo, hi) = extent.entry(*c).or_insert(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]));
+                };
                 for x in face.iter().filter_map(|p| mesh.points.get(*p as usize)) {
                     if !x.iter().all(|c| c.is_finite()) {
                         continue;
@@ -604,17 +613,17 @@ impl Object {
         }
         let size =
             |(lo, hi): &([f64; 3], [f64; 3])| lo.iter().zip(hi).map(|(l, h)| h - l).fold(f64::NEG_INFINITY, f64::max);
-        let largest = extent.values().map(size).filter(|s| s.is_finite() && *s > 0.0).fold(0.0, f64::max);
-        // Each cell's halvings of the largest (u8::MAX for none: not drawn).
+        let largest = extent.iter().map(size).filter(|s| s.is_finite() && *s > 0.0).fold(0.0, f64::max);
+        // Each near cell's halvings of the largest (u8::MAX for none: not drawn).
         let level = |s: f64| -> u8 {
             if !(s.is_finite() && s > 0.0 && largest > 0.0) {
                 return u8::MAX;
             }
-            (largest / s).log2().round().clamp(0.0, 60.0) as u8
+            (largest / s).log2().round().clamp(0.0, 200.0) as u8
         };
-        let of: std::collections::HashMap<u32, u8> = extent.iter().map(|(c, e)| (*c, level(size(e)))).collect();
+        let of: Vec<u8> = extent.iter().map(|e| level(size(e))).collect();
         drop(extent);
-        let mut levels: Vec<u8> = of.values().copied().filter(|l| *l != u8::MAX).collect();
+        let mut levels: Vec<u8> = of.iter().copied().filter(|l| *l != u8::MAX).collect();
         levels.sort_unstable();
         let mut o = Object::new(Source::Cut { region: region.to_string() });
         let mut class_of: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
@@ -622,14 +631,16 @@ impl Object {
         while k < levels.len() {
             let l = levels.get(k).copied().unwrap_or(0);
             let n = levels.iter().skip(k).take_while(|x| **x == l).count();
-            let across = largest / f64::from(2u32.saturating_pow(u32::from(l)).max(1));
+            let across = largest * 0.5f64.powi(i32::from(l));
             o.classes.push(format!("cells about {} across: {n}", metres(across)));
             o.kinds.push("cells".to_string());
             o.groups.push(Vec::new());
             class_of.insert(l, u32::try_from(class_of.len()).unwrap_or(u32::MAX));
             k += n;
         }
-        let class = |c: Option<&u32>| c.and_then(|c| of.get(c)).copied().filter(|l| *l != u8::MAX);
+        let class = |c: Option<&u32>| {
+            c.and_then(|c| place.get(*c as usize)).and_then(|k| of.get(*k as usize)).copied().filter(|l| *l != u8::MAX)
+        };
         let mut map: Vec<u32> = vec![u32::MAX; mesh.points.len()];
         for f in 0..mesh.n_faces() {
             let l = match (class(mesh.owner.get(f)), class(mesh.neighbour.get(f))) {

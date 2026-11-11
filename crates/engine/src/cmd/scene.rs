@@ -317,20 +317,29 @@ pub(crate) fn patch_on_disk(case: &umcf_model::Case, region: &str, mesh: &PolyMe
     }
 }
 
-/// What building the cells near a surface of `mesh` takes, at most, with `surface` what reading
-/// the surface takes: each cell's flag (1 byte) and, where all are near, its extent and size class
-/// (64), each point's copy (24), flag (1) and map (4), the surface's triangles in double
-/// precision (as much again as reading it), and the object, at most every face's triangles (21
-/// bytes each) and each point in single precision.
-pub(crate) fn near_need(mesh: &PolyMesh, surface: u64) -> u64 {
-    let triangles: u64 = (0..mesh.n_faces())
+/// What building the cells near a surface of `mesh` takes, at most, with `triangles` the
+/// surface's (estimated): each cell's place among the near ones (4 bytes) and, where all are near,
+/// its extent and size (49), each point's copy (24), flag (1) and map (4), the surface in double
+/// precision with the tree over it (about 210 bytes a triangle), and the object, at most every
+/// face's triangles (21 bytes each) and each point in single precision (12).
+pub(crate) fn near_need(mesh: &PolyMesh, triangles: u64) -> u64 {
+    let drawn: u64 = (0..mesh.n_faces())
         .map(|f| mesh.face(f).map_or(0, |p| p.len().saturating_sub(2) as u64))
         .fold(0, u64::saturating_add);
     (mesh.n_cells() as u64)
-        .saturating_mul(65)
-        .saturating_add((mesh.n_points() as u64).saturating_mul(29 + 12))
-        .saturating_add(surface.saturating_mul(2))
-        .saturating_add(triangles.saturating_mul(21))
+        .saturating_mul(53)
+        .saturating_add((mesh.n_points() as u64).saturating_mul(24 + 1 + 4 + 12))
+        .saturating_add(triangles.saturating_mul(210))
+        .saturating_add(drawn.saturating_mul(21))
+}
+
+/// About how many triangles surface `file` has, at most, from its size: a binary STL's 50 bytes
+/// a triangle (an ASCII one has fewer), five times as many for a compressed one; [`UNKNOWN`]
+/// when its size can't be told.
+fn surface_triangles(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, file: &str) -> u64 {
+    let size = case.put_bytes(file).map(|b| b.len() as u64).or_else(|| fs.size(file));
+    let ratio = if file.ends_with(".gz") { 5 } else { 1 };
+    size.map_or(UNKNOWN, |n| (n / 50).saturating_add(1).saturating_mul(ratio))
 }
 
 /// What building the first `layers` layers at patch `patch` (its name on disk; `None` for none
@@ -843,7 +852,9 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                     _ => None,
                 };
                 if let Read::Whole(m) = &x {
-                    wholes.push(Whole { region: region_of(&k.source), files: k.files.clone(), mesh: Arc::clone(m) });
+                    // The mesh's own files, which no command puts: those in the cut's key (a
+                    // surface's, a patch list's) say what is drawn of it, not what it is.
+                    wholes.push(Whole::of(&region_of(&k.source), Arc::clone(m)));
                 }
                 (
                     match &x {
@@ -862,7 +873,7 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                 Some(Cells::Near { surface, .. }) => surface.as_str(),
                                 _ => "",
                             };
-                            near_need(m, surface_need(case, fs, surface))
+                            near_need(m, surface_triangles(case, fs, surface))
                         }
                         Read::Whole(m) if matches!(cells, Some(Cells::Layers { .. })) => {
                             let layers = match &cells {
