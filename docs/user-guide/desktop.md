@@ -20,7 +20,7 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 | `--cmd '<id>=<json>'` | Runs a command once the case is open, as `umcf-cli run --cmd` does; repeat it for more |
 | `--show <name>` | What the 3D view shows first: a mesh region or a surface (`walls.stl`); repeat it for more |
 | `--open <id>` | Opens a command's card at the start, or runs it, as its ribbon button does (`--open bc.set`); a command that runs waits for the view's scene and the field files, when they were listed only. `--open cut` opens the [cut card](#a-cut-through-the-mesh), `--open found` the card showing what *Check mesh* found, `--open layers` the card showing the layers of cells at a wall, `--open near` the card showing the cells near an STL surface, framed (where no case is open or no region has a mesh, `umcf-gui` stops with an error, as for a command that isn't there) |
-| `--dark` | The dark theme |
+| `--light` | The light theme: the window starts dark (`--dark`, from before, is still taken and changes nothing) |
 | `--size <w>x<h>` | The window's size (default 1440x900) |
 | `--renderer cpu\|gpu\|auto` | What draws the 3D view at the start. Without it: the CPU, with the window on a hardware GPU where there is one, so that the view can be switched to it. `gpu`, or `auto` (a hardware GPU where there is one): the GPU from the start. `cpu`: the window always on OpenGL, no switch (for a machine where a GPU window opens but can't show, as over `ssh -X`). A GPU window that doesn't open is opened again on OpenGL ([the GPU view](#the-gpu-view)) |
 | `--screenshot <file.png>` | Writes a PNG of the window once it has drawn, then quits; fails without one when the case, a `--cmd` or a `--show` name does, or when the window gives no picture within half a minute |
@@ -28,12 +28,20 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
 ## The window
 
 - **The bar along the top**: open, save, undo and redo, the open case (`•` when it has unsaved
-  changes), and the theme.
+  changes), and the theme. The window starts dark; the light theme is a click away (and
+  `--light`).
 - **The workspace** (on the left of the ribbon): *Setup* holds what there is today. *Run* and
   *Results* are planned. Every workspace works on the same case and selection; only the ribbon
   changes.
 - **The ribbon**: the commands in tabs and groups (Case, Geometry, Mesh, Boundary conditions,
-  View). A command that can't run now is grey, and its tooltip says why. A command that needs
+  View). On a narrow window the ribbon gives way as a word processor's does: groups from the
+  right first drop their buttons' labels (the icons stay, the name is in the tooltip; a command
+  with only the generic command icon keeps its label), then fold
+  into one drop-down button named for the group that holds the whole group; room this frees
+  goes back from the left. If even folded groups don't fit, the ribbon scrolls sideways: **‹**
+  and **›** at its edges, the mouse wheel or a drag. Tabs that don't fit go into a **»** menu,
+  from the end (the chosen one stays), and the search field gets narrower. A command that can't
+  run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
   (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *New case…* (its

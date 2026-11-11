@@ -154,7 +154,12 @@ The workflow the GUI supports end to end:
 The GUI's 3D view borrows proven patterns from
 [SolidCraft](https://github.com/tangency-labs/solidcraft) (MIT/Apache-2.0, also a pure-Rust,
 egui, command-driven app). Code ported from it keeps its copyright notice and gets a row in
-`ATTRIBUTION.md`.
+`ATTRIBUTION.md`. Its UI kit (ribbon, menus, bars, theme, icons) has been under a separate brand
+licence since 2026-11-10 that doesn't allow reuse elsewhere: nothing is taken from it. The
+ribbon's fitting to a narrow window (groups compact then collapsed into drop-downs, the tabs'
+» menu, the bar-less scrolling row and its edge chevrons) is ported instead from
+[WordCraft](https://github.com/storytold/wordcraft) (MIT/Apache-2.0, a pure-Rust, egui word
+processor): `ui-egui/src/ribbon_fit.rs`, and `App::group` and `App::collapsed_group` after its group drawing.
 
 | Pattern | Here |
 |---|---|

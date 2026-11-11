@@ -179,6 +179,117 @@ fn the_ribbon_comes_from_the_registry() {
     assert!(h.get_by_label("Undo").accesskit_node().is_disabled());
 }
 
+/// A window of this width, 800 high.
+fn harness_wide(app: App, width: f32) -> Harness<'static, App> {
+    let mut h = Harness::builder()
+        .with_size(vec2(width, 800.0))
+        .with_max_steps(16)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run();
+    h
+}
+
+#[test]
+fn the_window_starts_dark() {
+    assert!(app().tokens.dark);
+    let mut h = harness(app());
+    h.get_by_role_and_label(egui::Role::Tab, "View").click();
+    h.run();
+    h.get_by_label("Light").click();
+    h.run();
+    assert!(!h.state().tokens.dark);
+}
+
+#[test]
+fn a_narrow_ribbon_gives_way_and_drops_nothing() {
+    // Wide: every button with its label.
+    let h = harness_wide(app(), 2600.0);
+    assert!(h.query_by_label("More tabs").is_none() && h.query_by_label("Scroll ribbon right").is_none());
+    assert!(h.get_by_label("Read fields").rect().width() > 50.0);
+    drop(h);
+    // Narrower: buttons with an icon of their own go compact (icon only, the name in the
+    // tooltip); those with only the generic command icon never lose their label: their group
+    // folds into its drop-down instead.
+    for width in [700.0, 1000.0, 1300.0] {
+        let h = harness_wide(app(), width);
+        // On the ribbon with its label, or in the More drop-down: never an icon alone.
+        match h.query_by_label("Read fields") {
+            Some(n) => assert!(n.rect().width() > 50.0, "at {width} Read fields is an icon alone"),
+            None => {
+                h.get_by_role_and_label(egui::Role::Button, "More");
+            }
+        };
+    }
+    // At 700 the More group, of generic icons only, is its drop-down rather than icons.
+    let h = harness_wide(app(), 700.0);
+    assert!(h.query_by_label("Read fields").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "More");
+    drop(h);
+    let mut a = app();
+    a.tab = 4;
+    let h = harness_wide(a, 700.0);
+    assert!(h.get_by_label("Snapshot").rect().width() < 40.0, "the View tab's buttons go compact");
+    drop(h);
+    // Narrow: groups fold into drop-down buttons, tabs into », and the ribbon scrolls.
+    let mut h = harness_wide(app(), 380.0);
+    assert!(h.query_by_label("Read fields").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "Inspect").click();
+    h.run();
+    h.get_by_label("Check").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "case.check");
+    assert!(h.query_by_label("Summary").is_none(), "running an item closes the drop-down");
+    h.get_by_label("Scroll ribbon right").click();
+    h.run();
+    h.run();
+    h.get_by_label("Scroll ribbon left");
+    h.get_by_role_and_label(egui::Role::Button, "More").click();
+    h.run();
+    h.get_by_label("Read fields").click();
+    h.run();
+    assert_eq!(h.state().log.last().unwrap().command, "case.fields");
+    // The tabs that don't fit are in the » menu.
+    h.get_by_label("More tabs").click();
+    h.run();
+    h.get_by_label("View").click();
+    h.run();
+    assert_eq!(h.state().tab, 4);
+    h.get_by_role_and_label(egui::Role::Tab, "View");
+}
+
+/// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in
+/// the window.
+#[test]
+fn the_ribbon_never_overlaps_itself() {
+    for width in [380.0, 560.0, 760.0, 1000.0, 1300.0, 1800.0] {
+        for tab in 0..5 {
+            let mut a = app();
+            a.tab = tab;
+            let h = harness_wide(a, width);
+            let tabs: Vec<egui::Rect> = h.query_all_by_role(egui::Role::Tab).map(|n| n.rect()).collect();
+            assert!(tabs.iter().all(|r| r.right() <= width + 0.5), "tab past the window at {width}");
+            let buttons: Vec<(String, egui::Rect)> = h
+                .query_all_by_role(egui::Role::Button)
+                .filter_map(|n| Some((n.accesskit_node().label()?.to_string(), n.rect())))
+                .filter(|(l, r)| {
+                    r.top() > 70.0
+                        && r.top() < 160.0
+                        && r.right() > 110.0
+                        && r.left() < width
+                        && !l.starts_with("Scroll ribbon")
+                })
+                .collect();
+            assert!(!buttons.is_empty());
+            for (i, (a, ra)) in buttons.iter().enumerate() {
+                for (b, rb) in buttons.iter().skip(i + 1) {
+                    let o = ra.intersect(*rb);
+                    assert!(o.width() <= 0.5 || o.height() <= 0.5, "{a} and {b} overlap at {width}, tab {tab}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn the_workspace_switcher_offers_what_exists() {
     let mut h = harness(app());
