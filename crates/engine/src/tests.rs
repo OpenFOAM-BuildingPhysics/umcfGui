@@ -794,6 +794,19 @@ fn a_cut_shows_the_layers_at_a_patch() {
         e.to_string().contains("patch `ground` isn't in the mesh of region air as the case names its patches"),
         "{e}"
     );
+    // What the build is planned to take is of the patch it draws: `floor` is `ground` on disk.
+    let mesh = umcf_foam_mesh::PolyMesh::read(
+        s.fs().unwrap(),
+        &umcf_foam_mesh::mesh_dir("air"),
+        &umcf_foam_mesh::Limits::default(),
+    )
+    .unwrap();
+    let case = s.case().unwrap();
+    let on_disk = crate::cmd::scene::patch_on_disk(case, "air", &mesh, "floor");
+    assert_eq!(on_disk.as_deref(), Some("ground"));
+    assert_eq!(crate::cmd::scene::patch_on_disk(case, "air", &mesh, "ground"), None);
+    let none = crate::cmd::scene::layers_need(&mesh, None, 5);
+    assert!(crate::cmd::scene::layers_need(&mesh, on_disk.as_deref(), 5) > none);
     // Refused.
     for (cut, says) in [
         (json!({ "region": "air", "patch": "roof" }), "patch `roof` isn't in the mesh of region air"),

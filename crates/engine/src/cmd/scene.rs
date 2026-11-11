@@ -305,6 +305,37 @@ fn mesh_need(fs: &dyn umcf_core::CaseFs, region: &str) -> u64 {
 /// About how many bytes of the case's files reading `source` reads: a mesh's `boundary`,
 /// `points` and `faces` (plain or compressed, as on disk), a surface's file unless a command put
 /// it (then it is in memory). 0 where the sizes can't be told.
+/// The name on disk of the patch `patch` the case has in region `region` (renamed by
+/// `patch.set` and not saved yet), when the case's patches are those of `mesh` (the same faces);
+/// `patch` itself when they aren't (the files are the authority then); `None` when the case's
+/// patches are the mesh's and none is called so (a patch renamed has its old name only on disk).
+pub(crate) fn patch_on_disk(case: &umcf_model::Case, region: &str, mesh: &PolyMesh, patch: &str) -> Option<String> {
+    let ours = case.region(region).and_then(|x| x.patches.as_ref()).filter(|ps| {
+        ps.len() == mesh.boundary.len() && ps.iter().zip(&mesh.boundary).all(|(a, b)| a.faces() == b.faces())
+    });
+    match ours {
+        Some(ps) => ps.iter().position(|x| x.name == patch).and_then(|k| mesh.boundary.get(k)).map(|b| b.name.clone()),
+        None => Some(patch.to_string()),
+    }
+}
+
+/// What building the first `layers` layers at patch `patch` (its name on disk; `None` for none
+/// the mesh has) of `mesh` takes: each cell's layer (1 byte) and where its faces start (4), each
+/// face twice in the cells' lists (8), each point's map (4); and the object, about six faces a
+/// cell in a layer (two triangles each, 42 bytes; at most every face) and each point in single
+/// precision.
+pub(crate) fn layers_need(mesh: &PolyMesh, patch: Option<&str>, layers: u32) -> u64 {
+    let (n, faces) = (mesh.n_cells() as u64, mesh.n_faces() as u64);
+    let at = patch
+        .and_then(|name| mesh.boundary.iter().find(|p| p.name == name))
+        .map_or(0, |p| (p.n_faces as u64).saturating_mul(u64::from(layers)));
+    let drawn = at.saturating_mul(6).min(faces);
+    n.saturating_mul(5)
+        .saturating_add(faces.saturating_mul(8))
+        .saturating_add(drawn.saturating_mul(42))
+        .saturating_add((mesh.n_points() as u64).saturating_mul(16))
+}
+
 fn read_bytes(case: &umcf_model::Case, fs: &dyn umcf_core::CaseFs, source: &Source) -> u64 {
     let size = |f: &str| fs.size(f).or_else(|| fs.size(&format!("{f}.gz"))).unwrap_or(0);
     match source {
@@ -747,6 +778,14 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
             .map(|(k, x)| -> (u64, Job<'_, Object>) {
                 let source = k.source.clone();
                 let cells = k.cells.clone();
+                // The layers' patch as it is on disk: resolved once, for what the build is
+                // planned to take and for the build.
+                let on_disk = match (&cells, &x) {
+                    (Some(Cells::Layers { patch, .. }), Read::Whole(m)) => {
+                        Some(patch_on_disk(case, &region_of(&k.source), m, patch))
+                    }
+                    _ => None,
+                };
                 if let Read::Whole(m) = &x {
                     wholes.push(Whole { region: region_of(&k.source), files: k.files.clone(), mesh: Arc::clone(m) });
                 }
@@ -762,25 +801,12 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                         // Three points (12 bytes each), 21 bytes a triangle, and its region
                         // while the object is built.
                         Read::Surface(stl) => (stl.triangles.len() as u64).saturating_mul(61),
-                        // Layers: each cell's layer (1 byte) and where its faces start (4), each
-                        // face twice in the cells' lists (8), each point's map (4); and the
-                        // object, about six faces a cell in a layer (two triangles each, 42
-                        // bytes; at most every face) and each point in single precision.
                         Read::Whole(m) if matches!(cells, Some(Cells::Layers { .. })) => {
-                            let (n, faces) = (m.n_cells() as u64, m.n_faces() as u64);
-                            let patch = match &cells {
-                                Some(Cells::Layers { patch, layers }) => m
-                                    .boundary
-                                    .iter()
-                                    .find(|p| p.name == *patch)
-                                    .map_or(0, |p| (p.n_faces as u64).saturating_mul(u64::from(*layers))),
+                            let layers = match &cells {
+                                Some(Cells::Layers { layers, .. }) => *layers,
                                 _ => 0,
                             };
-                            let drawn = patch.saturating_mul(6).min(faces);
-                            n.saturating_mul(5)
-                                .saturating_add(faces.saturating_mul(8))
-                                .saturating_add(drawn.saturating_mul(42))
-                                .saturating_add((m.n_points() as u64).saturating_mul(16))
+                            layers_need(m, on_disk.as_ref().and_then(|n| n.as_deref()), layers)
                         }
                         // Each cell's reach (16 bytes), zone (4) and whether it is cut (1),
                         // each point's distance (8) and map (4); the cut object itself is a
@@ -811,26 +837,9 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                                     Object::from_found(&region, &m, &found, origin)
                                 }
                                 Some(Cells::Layers { patch, layers }) => {
-                                    // The patch as the case names it (renamed and not saved yet),
-                                    // when its patches are the mesh's faces.
-                                    let named = case
-                                        .region(&region)
-                                        .and_then(|x| x.patches.as_ref())
-                                        .filter(|ps| {
-                                            ps.len() == m.boundary.len()
-                                                && ps.iter().zip(&m.boundary).all(|(a, b)| a.faces() == b.faces())
-                                        })
-                                        .map(|ps| ps.iter().position(|x| x.name == patch));
                                     let which =
                                         if region.is_empty() { String::new() } else { format!(" of region {region}") };
-                                    let on_disk = match named {
-                                        Some(Some(k)) => m.boundary.get(k).map(|b| b.name.clone()),
-                                        // Not a patch the case has (one renamed has it by another
-                                        // name on disk, which isn't asked for).
-                                        Some(None) => None,
-                                        None => Some(patch.clone()),
-                                    };
-                                    let Some(on_disk) = on_disk else {
+                                    let Some(Some(on_disk)) = on_disk else {
                                         return Err(Error::Failed(format!(
                                             "{id}: patch `{patch}` isn't in the mesh{which} as the case names its patches (renamed and not saved?)"
                                         )));
