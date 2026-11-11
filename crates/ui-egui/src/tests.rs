@@ -273,14 +273,19 @@ fn the_search_folds_to_its_icon_rather_than_squeeze() {
     assert!(h.query_by_role_and_label(egui::Role::Button, "Search commands").is_none());
     assert!(h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect().width() >= 139.0);
     drop(h);
-    // At 380 the chosen "Boundary conditions" leaves no room: the icon.
-    let mut h = narrow(380.0);
+    // Somewhat narrower, the chosen "Boundary conditions" leaves no room for the field: the icon.
+    let width = (380..=700)
+        .step_by(10)
+        .map(|w| w as f32)
+        .find(|&w| narrow(w).query_by_role_and_label(egui::Role::Button, "Search commands").is_some())
+        .expect("a width with the search folded to its icon");
+    let mut h = narrow(width);
     assert!(h.query_by_role_and_label(egui::Role::TextInput, "Search commands").is_none());
     h.get_by_role_and_label(egui::Role::Button, "Search commands").click();
     h.run();
     // Open, the field has its width, clear of the tabs (all in »), and it has the focus.
     let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
-    assert!(field.width() >= 139.0 && field.right() <= 380.5, "{field:?}");
+    assert!(field.width() >= 139.0 && field.right() <= width + 0.5, "{field:?}");
     assert!(h.query_all_by_role(egui::Role::Tab).all(|t| !t.rect().intersects(field)));
     h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("mesh");
     h.run();
@@ -291,6 +296,37 @@ fn the_search_folds_to_its_icon_rather_than_squeeze() {
     h.run();
     h.get_by_role_and_label(egui::Role::Button, "Search commands");
     h.get_by_role_and_label(egui::Role::Tab, "Boundary conditions");
+}
+
+/// The narrowest window (200 points): tabs stay reachable through », the open search takes
+/// the tab row, and its results stay inside the window.
+#[test]
+fn the_narrowest_window_keeps_tabs_and_search_usable() {
+    let mut a = app();
+    a.tab = 3;
+    let mut h = harness_wide(a, 200.0);
+    let more = h.get_by_label("More tabs").rect();
+    assert!(more.right() <= 200.5, "» at {more:?}");
+    h.get_by_label("More tabs").click();
+    h.run();
+    h.get_by_label("Mesh").click();
+    h.run();
+    assert_eq!(h.state().tab, 2);
+    h.get_by_role_and_label(egui::Role::Button, "Search commands").click();
+    h.run();
+    let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+    // The ribbon is about 80 points wide there: the field takes most of it.
+    assert!(field.right() <= 200.5 && field.width() >= 40.0, "{field:?}");
+    assert!(h.query_by_label("More tabs").is_none(), "» gives the field its room");
+    // The results, under the field, inside the window.
+    // (The Mesh tab, now chosen, has a Check mesh button too: the result is the one under
+    // the field.)
+    let row = h
+        .query_all_by_label_contains("Check mesh")
+        .map(|n| n.rect())
+        .find(|r| r.top() > field.bottom())
+        .expect("Check mesh in the results");
+    assert!(row.left() >= -0.5 && row.right() <= 200.5, "{row:?}");
 }
 
 /// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in

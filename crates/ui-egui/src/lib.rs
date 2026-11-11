@@ -984,12 +984,22 @@ impl App {
         };
         let searching = self.search_open || self.focus_search;
         let mut room = full - used(&fits) - 2.0 * gap;
+        // Not even the chosen tab, », and the search's icon fit (the narrowest windows): the
+        // chosen tab goes into » too, so tabs stay reachable.
+        if room < SEARCH_ICON_W && fits.iter().any(|f| *f) {
+            fits = vec![false; specs.len()];
+            room = full - used(&fits) - 2.0 * gap;
+        }
         if searching && room < SEARCH_MIN {
             fits = vec![false; specs.len()];
             room = full - used(&fits) - 2.0 * gap;
         }
+        // Open with less than its least width even beside », the field takes the whole row (the
+        // tabs and » come back when it closes).
+        let whole_row = searching && room < SEARCH_MIN;
         let folded = !searching && room < SEARCH_MIN;
-        let field = room.clamp(SEARCH_MIN, search.max(SEARCH_MIN));
+        let field =
+            if whole_row { (full - 2.0 * gap).max(0.0) } else { room.clamp(SEARCH_MIN, search.max(SEARCH_MIN)) };
         ui.horizontal(|ui| {
             ui.set_height(26.0);
             for ((k, tab), (w, _)) in tabs.iter().enumerate().zip(&specs) {
@@ -1012,6 +1022,7 @@ impl App {
                 }
             }
             let left_out: Vec<(usize, &str)> = (0..tabs.len())
+                .filter(|_| !whole_row)
                 .filter(|&k| !fits.get(k).copied().unwrap_or(true))
                 .filter_map(|k| tabs.get(k).map(|tab| (k, tab.name)))
                 .collect();
@@ -1305,7 +1316,7 @@ impl App {
     /// the field (as Ctrl+P does).
     fn search_icon(&mut self, ui: &mut Ui) {
         let t = &self.tokens;
-        let (rect, r) = ui.allocate_exact_size(vec2(26.0, 25.0), Sense::click());
+        let (rect, r) = ui.allocate_exact_size(vec2(SEARCH_ICON_W, 25.0), Sense::click());
         if r.hovered() {
             ui.painter().rect_filled(rect, t.radius, t.hover);
         }
@@ -1367,10 +1378,15 @@ impl App {
             .order(egui::Order::Foreground)
             .pivot(Align2::RIGHT_TOP)
             .fixed_pos(r.rect.right_bottom() + vec2(0.0, 6.0))
+            .constrain(true)
             .show(ui.ctx(), |ui| {
                 t.card_frame().show(ui, |ui| {
-                    ui.set_width(420.0);
-                    egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                    // As wide as the window allows (its frame and a margin left out).
+                    ui.set_width(RESULTS_W.min(ui.ctx().content_rect().width() - 40.0).max(120.0));
+                    // No taller than the room under the field: on a short window, a popup moved up into it
+                    // would cover what is typed.
+                    let below = ui.ctx().content_rect().bottom() - r.rect.bottom() - 40.0;
+                    egui::ScrollArea::vertical().max_height(380.0_f32.min(below).max(60.0)).show(ui, |ui| {
                         for c in matches {
                             let enabled = self.session.enabled(c.id);
                             let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -2699,6 +2715,10 @@ const BRUSH_TIP: &str = "Paint over what to select: what is seen under the strok
 /// The search field's full width (its margins included), and the least that is still usable.
 const SEARCH_W: f32 = 240.0;
 const SEARCH_MIN: f32 = 140.0;
+/// The search results' width, where the window allows it.
+const RESULTS_W: f32 = 420.0;
+/// The search folded to its icon.
+const SEARCH_ICON_W: f32 = 26.0;
 /// The » button of the tabs that don't fit.
 const MORE_TABS_W: f32 = 28.0;
 /// Between two buttons of a group; on each side of a group's divider.
