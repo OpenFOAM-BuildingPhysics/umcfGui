@@ -155,7 +155,8 @@ region's boundary stays hidden, and the browser notes the cut beside the region 
 or `cut` without a mode or opacity of its own). Closing the card takes that with the cut. While
 the card has nothing to show, a mode set for the region, or a reset of it, ends the card's hiding
 instead (and drops a mode set for the cut): the region is drawn so, and stays so once the card
-closes; once the card shows a cut again, the boundary is hidden again and the menu is the cut's.
+closes; once the card shows a cut again (another *Show*, or the check's findings coming), the
+boundary is hidden again and the menu is the cut's.
 A mode set for one of its patches shows once the card closes or the region is shown. The view
 draws the plane, a translucent rectangle a little past the region with a frame and a solid arrow
 along its normal, as ParaView's plane widget: take the frame or the arrow (the pointer turns into

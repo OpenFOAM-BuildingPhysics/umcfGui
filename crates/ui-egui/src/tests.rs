@@ -2342,6 +2342,33 @@ fn the_browser_notes_the_cut_beside_its_region() {
     assert_eq!(app.region_note(""), "points");
 }
 
+/// The browser ended the cut card's hiding while it showed nothing (no check yet); then the check
+/// runs and its findings show, with no change of the card: the region is hidden again and its
+/// menu is the cut's.
+#[test]
+fn findings_that_come_hide_the_region_again() {
+    use umcf_engine::Layer;
+    use umcf_render::raster::Mode;
+    let mut h = harness(app());
+    h.state_mut().toggle_cut();
+    h.run();
+    let mut form = h.state().cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    h.state_mut().set_cut(form);
+    h.run();
+    let region = Layer::Region(String::new());
+    h.state_mut().set_display(region.clone(), crate::display::Change::Mode(Mode::Surface));
+    h.run();
+    let hidden = |app: &App| app.display.iter().any(|e| e.mode == Some(Mode::Hidden));
+    assert!(!hidden(h.state()) && h.state().cut.as_ref().unwrap().released);
+    // The check's findings come (here straight through the session: no change of the card).
+    h.state_mut().session.execute("mesh.check", &serde_json::json!({ "region": "" })).unwrap();
+    assert!(h.state().cut_shown().is_some());
+    h.run();
+    assert!(hidden(h.state()) && !h.state().cut.as_ref().unwrap().released, "{:?}", h.state().display);
+    assert_eq!(h.state().cut_takes(&region), Some(Layer::Cut(String::new())));
+}
+
 #[test]
 fn the_cut_card_shows_what_check_mesh_found() {
     let mut h = harness(app());

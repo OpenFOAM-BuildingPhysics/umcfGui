@@ -717,6 +717,8 @@ impl App {
         }
         self.poll(std::time::Duration::ZERO);
         self.launch();
+        // A cut that shows again (what a check found came) hides its region again.
+        self.hide_again();
         if self.modal_busy() {
             self.busy_screen(ui);
             return;

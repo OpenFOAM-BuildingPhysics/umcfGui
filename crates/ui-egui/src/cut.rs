@@ -349,6 +349,22 @@ impl App {
         self.look += 1;
     }
 
+    /// Puts the card's hiding back where the browser ended it while the card showed nothing and
+    /// the card shows a cut now: after a change of the card, and on each frame (what a check
+    /// found, a patch or a surface may come with no change of the card). The region's own
+    /// entries stay, for when the card closes.
+    pub(crate) fn hide_again(&mut self) {
+        let Some(region) = self.cut.as_ref().filter(|f| f.released).and_then(|f| f.hid.clone()) else { return };
+        if self.cut.as_ref().is_none_or(|f| f.region != region) || self.cut_shown().is_none() {
+            return;
+        }
+        self.display.push(Self::hiding(&region));
+        if let Some(f) = &mut self.cut {
+            f.released = false;
+        }
+        self.look += 1;
+    }
+
     /// Hides the boundary of the cut region (and shows again one hidden before for another). On
     /// the same region, a hiding the browser ended while the card showed nothing comes back once
     /// the card shows a cut again (the region's own entries stay, for when the card closes), so
@@ -357,13 +373,7 @@ impl App {
         let Some(form) = &self.cut else { return };
         let (region, before, released) = (form.region.clone(), form.hid.clone(), form.released);
         if before.as_deref() == Some(region.as_str()) {
-            if released && self.cut_shown().is_some() {
-                self.display.push(Self::hiding(&region));
-                if let Some(f) = &mut self.cut {
-                    f.released = false;
-                }
-                self.look += 1;
-            }
+            self.hide_again();
             return;
         }
         if let Some(r) = before.filter(|_| !released) {
