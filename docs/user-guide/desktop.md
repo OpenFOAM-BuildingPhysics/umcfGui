@@ -145,17 +145,25 @@ shows the cells it crosses, whole ([a cut](scene.md#a-cut-through-the-mesh)): th
 mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider over the region's
 extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
 layer on the plane's other side where it lies on faces between cells. While the card is open the
-region's boundary is hidden (its layer in the browser says so), as it would hide the cut, except
-while the card has nothing to show (no check, patch or surface yet), when it shows; closing the
-card takes the cut away and shows the boundary again. A mode set for the region in the browser
-while the card is open (*Wireframe*, say), or a reset of it, ends the card's hiding: the region is
-drawn so, and stays so once the card closes. A mode set for one of its patches shows once the card
-closes or the region is shown. The view draws the plane, a translucent rectangle a little past the
-region with a frame and a solid arrow along its normal, as ParaView's plane widget: take the frame
-or the arrow (the pointer turns into a hand, the plane brightens) and drag, and the plane moves
-along its normal with the pointer, within the slider's range, the slider following; let go, it
-stays. A drag that starts on the frame or the arrow moves the plane whatever a drag otherwise does
-(also in *Box select* and *Brush*); elsewhere a drag does as before. *Edges* draws the cells'
+region's boundary is hidden (its layer in the browser says `cut`), as it would hide the cut, except
+while the card has nothing to show (no check, patch or surface yet, or a check that found
+nothing), when it shows; closing the card takes the cut away and shows the boundary again. While the card shows a cut (a plane, the
+findings, the layers or the cells near a surface), the region's menu in the browser (*Cut of air*)
+sets how the cut is drawn: *Wireframe* or *Points* draw the cut's cells by their edges or points,
+*Hidden* hides it, an opacity makes them translucent, and a reset puts them back as surfaces; the
+region's boundary stays hidden, and the browser notes the cut beside the region (`cut wireframe`,
+or `cut` without a mode or opacity of its own). Closing the card takes that with the cut. While
+the card has nothing to show, a mode set for the region, or a reset of it, ends the card's hiding
+instead (and drops a mode set for the cut): the region is drawn so, and stays so once the card
+closes; once the card shows a cut again (another *Show*, or the check's findings coming), the
+boundary is hidden again and the menu is the cut's.
+A mode set for one of its patches shows once the card closes or the region is shown. The view
+draws the plane, a translucent rectangle a little past the region with a frame and a solid arrow
+along its normal, as ParaView's plane widget: take the frame or the arrow (the pointer turns into
+a hand, the plane brightens) and drag, and the plane moves along its normal with the pointer,
+within the slider's range, the slider following; let go, it stays. A drag that starts on the
+frame or the arrow moves the plane whatever a drag otherwise does (also in *Box select* and
+*Brush*); elsewhere a drag does as before. *Edges* draws the cells'
 edges. The first cut of a region reads its whole mesh; moving the plane after reads nothing. Where
 no region has a mesh, *Cut* is greyed out. With nothing turned on in the browser, the cut shows on
 its own. `umcf-gui <case> --open cut` opens the card at the start.

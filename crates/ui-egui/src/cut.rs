@@ -145,6 +145,17 @@ impl App {
         Some(form.cut())
     }
 
+    /// Whether the card shows something in the view: a cut it asks the scene for, but for a check
+    /// that found nothing (its entry stays in the scene, empty). While it shows nothing, the
+    /// region's boundary is drawn as the browser sets it and its menu is the region's.
+    pub(crate) fn cut_visible(&self) -> bool {
+        let Some(form) = self.cut.as_ref() else { return false };
+        if self.cut_shown().is_none() {
+            return false;
+        }
+        !(form.show == Show::Found && self.session.found(&form.region).is_some_and(|f| f.classes.is_empty()))
+    }
+
     /// The patches of region `region`'s mesh, the walls first (where layers are grown).
     pub(crate) fn patches(&self, region: &str) -> Vec<String> {
         let Some(patches) = self
@@ -201,7 +212,7 @@ impl App {
     /// Where in `display` the card's hiding of its region is while the card has nothing to show
     /// (and so the view draws without its mode); `None` else.
     pub(crate) fn idle_hiding(&self) -> Option<usize> {
-        if self.cut_shown().is_some() {
+        if self.cut_visible() {
             return None;
         }
         let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
@@ -220,8 +231,48 @@ impl App {
         }
     }
 
+    /// The cut's own layer, where what the browser sets for `layer` goes to the cut: `layer` is
+    /// the region the card hides while it shows something (a mode or opacity set there draws the
+    /// cut's cells so, the region's boundary staying hidden). `None` else.
+    pub(crate) fn cut_takes(&self, layer: &Layer) -> Option<Layer> {
+        let form = self.cut.as_ref().filter(|f| !f.released)?;
+        let r = form.hid.as_ref().filter(|r| *layer == Layer::Region((*r).clone()))?;
+        if !self.cut_visible() {
+            return None;
+        }
+        Some(Layer::Cut(r.clone()))
+    }
+
+    /// Sets the cut's own mode or opacity (`layer`: [`App::cut_takes`]), or takes them out with a
+    /// reset: the card's hiding of the region stays.
+    pub(crate) fn set_cut_display(&mut self, layer: Layer, change: &crate::display::Change) {
+        use crate::display::Change;
+        let at = self.display.iter().position(|e| e.layer == layer);
+        match (change, at) {
+            (Change::Reset, Some(k)) => {
+                self.display.remove(k);
+            }
+            (Change::Reset, None) => return,
+            (c, at) => {
+                let k = at.unwrap_or_else(|| {
+                    self.display.push(DisplayEntry { layer, mode: None, opacity: None });
+                    self.display.len() - 1
+                });
+                if let Some(e) = self.display.get_mut(k) {
+                    match c {
+                        Change::Mode(m) => e.mode = Some(*m),
+                        Change::Opacity(a) => e.opacity = Some(*a),
+                        Change::Reset => {}
+                    }
+                }
+            }
+        }
+        self.look += 1;
+    }
+
     /// The browser sets the mode of `layer` (or resets it): where that is the region the card
-    /// hides, the card's hiding goes first, so that what the browser set is what shows, with or
+    /// hides (while it shows nothing: else the mode goes to the cut, [`App::cut_takes`]), the
+    /// card's hiding goes first, so that what the browser set is what shows, with or
     /// without an entry of the region's own from before; closing the card then leaves it.
     pub(crate) fn release_hiding(&mut self, layer: &Layer, change: &crate::display::Change) {
         use crate::display::Change;
@@ -233,6 +284,9 @@ impl App {
             return;
         }
         self.unhide(&r);
+        // The region drawn as the browser set it: a mode set for the cut before goes too (no
+        // menu would reach it while the card stays on the region).
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         if let Some(f) = &mut self.cut {
             f.released = true;
         }
@@ -280,6 +334,8 @@ impl App {
         if let Some(r) = self.cut.take().filter(|f| !f.released).and_then(|f| f.hid) {
             self.unhide(&r);
         }
+        // The cut's own modes go with it.
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         // The view drawn again without the cut, whether or not a hiding was left to take out.
         self.look += 1;
     }
@@ -306,16 +362,38 @@ impl App {
         self.look += 1;
     }
 
-    /// Hides the boundary of the cut region (and shows again one hidden before for another).
+    /// Puts the card's hiding back where the browser ended it while the card showed nothing and
+    /// the card shows a cut now: after a change of the card, and on each frame (what a check
+    /// found, a patch or a surface may come with no change of the card). The region's own
+    /// entries stay, for when the card closes.
+    pub(crate) fn hide_again(&mut self) {
+        let Some(region) = self.cut.as_ref().filter(|f| f.released).and_then(|f| f.hid.clone()) else { return };
+        if self.cut.as_ref().is_none_or(|f| f.region != region) || !self.cut_visible() {
+            return;
+        }
+        self.display.push(Self::hiding(&region));
+        if let Some(f) = &mut self.cut {
+            f.released = false;
+        }
+        self.look += 1;
+    }
+
+    /// Hides the boundary of the cut region (and shows again one hidden before for another). On
+    /// the same region, a hiding the browser ended while the card showed nothing comes back once
+    /// the card shows a cut again (the region's own entries stay, for when the card closes), so
+    /// that the cut is seen and the region's menu acts on it again.
     fn hide_boundary(&mut self) {
         let Some(form) = &self.cut else { return };
         let (region, before, released) = (form.region.clone(), form.hid.clone(), form.released);
         if before.as_deref() == Some(region.as_str()) {
+            self.hide_again();
             return;
         }
         if let Some(r) = before.filter(|_| !released) {
             self.unhide(&r);
         }
+        // A mode set for the cut of the region before goes with it.
+        self.display.retain(|e| !matches!(e.layer, Layer::Cut(_)));
         self.display.push(Self::hiding(&region));
         if let Some(f) = &mut self.cut {
             f.hid = Some(region);

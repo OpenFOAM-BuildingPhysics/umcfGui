@@ -717,6 +717,8 @@ impl App {
         }
         self.poll(std::time::Duration::ZERO);
         self.launch();
+        // A cut that shows again (what a check found came) hides its region again.
+        self.hide_again();
         if self.modal_busy() {
             self.busy_screen(ui);
             return;
@@ -1550,7 +1552,7 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && self.cut_shown().is_none() {
+        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && !self.cut_visible() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
@@ -1816,8 +1818,10 @@ impl App {
                                 let shown = r.patches.as_ref().map(|_| self.shown_regions.contains(&r.name));
                                 let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
                                 let layer = Layer::Region(r.name.clone());
-                                let entry = self.layer_entry(&layer);
-                                let note = Some(self.layer_note(&layer)).filter(|n| !n.is_empty());
+                                // While the cut card shows a cut of it, its menu sets the cut's mode.
+                                let cut = self.cut_takes(&layer);
+                                let entry = self.layer_entry(cut.as_ref().unwrap_or(&layer));
+                                let note = Some(self.region_note(&r.name)).filter(|n| !n.is_empty());
                                 let detail = match (&r.patches, note) {
                                     (Some(p), None) => format!("{} patches", p.len()),
                                     (Some(p), Some(n)) => format!("{} patches · {n}", p.len()),
@@ -1827,10 +1831,14 @@ impl App {
                                 let (row, c, e, resp) =
                                     self.tree_row(ui, 1, chevron, shown, Icon::Region, label, &detail, false);
                                 if r.patches.is_some() {
-                                    let current = self.layer_display(&layer, &[]);
+                                    let current = self.layer_display(cut.as_ref().unwrap_or(&layer), &[]);
                                     let set = entry.is_some();
                                     resp.context_menu(|ui| {
-                                        let title = format!("Region {label}");
+                                        let title = if cut.is_some() {
+                                            format!("Cut of {label}")
+                                        } else {
+                                            format!("Region {label}")
+                                        };
                                         if let Some(c) = display::menu(ui, &title, current, set) {
                                             change = Some((layer.clone(), c));
                                         }

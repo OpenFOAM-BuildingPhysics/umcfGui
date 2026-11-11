@@ -110,6 +110,21 @@ impl App {
         if any { note(&own) } else { String::new() }
     }
 
+    /// The note beside region `region` in the browser: while the cut card shows a cut of it, the
+    /// cut's (`cut`, or `cut wireframe` with a mode of its own) in place of the card's hiding (the
+    /// card says that), short so that the region's name keeps its room; else the region's own
+    /// ([`App::layer_note`]). Empty without one.
+    pub(crate) fn region_note(&self, region: &str) -> String {
+        let layer = Layer::Region(region.to_string());
+        match self.cut_takes(&layer) {
+            Some(cut) => match self.layer_entry(&cut).map(note).filter(|n| !n.is_empty()) {
+                Some(n) => format!("cut {n}"),
+                None => "cut".to_string(),
+            },
+            None => self.layer_note(&layer),
+        }
+    }
+
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
     /// cut card's hiding only while it shows something), as for one of its classes (`groups`: a
     /// patch's groups).
@@ -138,6 +153,11 @@ impl App {
     /// same again. Two groups of one patch hold neither the other: the one changed last wins,
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
+        // For the region the cut card hides while it shows a cut: the cut's.
+        if let Some(cut) = self.cut_takes(&layer) {
+            self.set_cut_display(cut, &change);
+            return;
+        }
         self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
             // Only a group needs its patches' groups.

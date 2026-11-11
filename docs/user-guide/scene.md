@@ -127,7 +127,8 @@ cut: no cell is cut in two, so the cells are seen as the mesh has them), one pla
 - **It is an object of its own** (`{"cut": "air"}` in the snapshot's `objects`), drawn as a patch
   is, by the GPU and the CPU. The region's boundary, which hides it, is hidden with
   `{"region": "air", "mode": "hidden"}` (a region's entry doesn't reach its cut); a cut has
-  entries of its own, `{"cut": "air", "mode": "wireframe", "opacity": 0.5}`. Picks and selections
+  entries of its own, `{"cut": "air", "mode": "wireframe", "opacity": 0.5}` (in the desktop app,
+  the region's menu in the browser sets them while the cut card shows a cut). Picks and selections
   pass through it (its faces are inside the mesh: no patch to set).
 - **Reading**: the region's whole mesh (`points`, `faces`, `owner`, `neighbour`, `cellZones`) is
   read the first time it is cut and kept while it is: moving the plane builds the cut again,
