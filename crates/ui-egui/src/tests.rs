@@ -2034,6 +2034,9 @@ fn the_cut_card_shows_the_cells_near_a_surface() {
     let hidden = |d: &[umcf_engine::DisplayEntry]| d.iter().any(|e| e.mode == Some(umcf_render::raster::Mode::Hidden));
     assert!(hidden(&h.state().display));
     assert!(!hidden(&h.state().view_display()));
+    // The browser says as the view draws it.
+    let region = umcf_engine::Layer::Region(String::new());
+    assert_ne!(h.state().layer_display(&region, &[]).mode, umcf_render::raster::Mode::Hidden);
     h.get_by_label("Plane").click();
     h.run();
     assert!(hidden(&h.state().view_display()));

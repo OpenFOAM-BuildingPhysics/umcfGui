@@ -91,11 +91,12 @@ impl App {
         self.display.iter().find(|e| e.layer == *layer)
     }
 
-    /// How `layer` is drawn: after every entry, as for one of its classes (`groups`: a patch's
-    /// groups).
+    /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
+    /// cut card's hiding only while it shows something), as for one of its classes (`groups`: a
+    /// patch's groups).
     pub(crate) fn layer_display(&self, layer: &Layer, groups: &[String]) -> Display {
         let mut d = Display::default();
-        for e in self.display.iter().filter(|e| e.layer == *layer || holds(&e.layer, layer, groups)) {
+        for e in self.view_display().iter().filter(|e| e.layer == *layer || holds(&e.layer, layer, groups)) {
             if let Some(m) = e.mode {
                 d.mode = m;
             }

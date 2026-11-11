@@ -134,7 +134,8 @@ shows the cells it crosses, whole ([a cut](scene.md#a-cut-through-the-mesh)): th
 mesh; `air` first), across *x*, *y* or *z*, *At* a position along it (a slider over the region's
 extent, also for a region turned off in the browser; it starts in the middle), and *Flip* for the
 layer on the plane's other side where it lies on faces between cells. While the card is open the
-region's boundary is hidden (its layer in the browser says so), as it would hide the cut; closing
+region's boundary is hidden (its layer in the browser says so), as it would hide the cut, except while
+the card has nothing to show (no check, patch or surface yet), when it shows; closing
 the card takes the cut away and shows the boundary again. A mode set for the region in the browser
 while the card is open (*Wireframe*, say), or a reset of it, ends the card's hiding: the region is
 drawn so, and stays so once the card closes. A mode set for one of its patches shows once the card
@@ -174,7 +175,8 @@ surface](scene.md#the-cells-near-a-surface)): *Surface* (the case's surfaces, th
 with) and *Within* (the distance in metres; 1 m to start with). Each size of cell is listed in its
 colour with its count, the largest first, so snappyHexMesh's refinement levels near the surface
 show each in its own. *Fit cells* frames the view on the cells shown (also for the *Wall
-layers*); where the case has no surface, the card says so, and the region's boundary shows (as it does whenever the card has nothing to show). `umcf-gui <case> --open near` opens
+layers*); where the case has no surface, the card says so, and the region's boundary shows
+(as it does whenever the card has nothing to show). `umcf-gui <case> --open near` opens
 the card on them at the start, framed.
 
 ## The GPU view
