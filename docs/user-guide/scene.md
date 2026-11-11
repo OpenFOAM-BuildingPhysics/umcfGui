@@ -158,9 +158,11 @@ it last:
   `shortEdges`) are not drawn.
 - **Before a check** of the region the cut is refused (*no check of region `air` to show*), and
   so it is after a check that couldn't read the region's mesh. A check of the region again
-  replaces what was found; opening the case again or reading its meshes again (`reload`, once
-  the scene is built: a reload that fails leaves it) drops it, as the labels may no longer be of
-  the same faces and cells. After OpenFOAM rewrote a mesh, reload first, then check.
+  replaces what was found; opening the case again or reading its meshes again (`reload`; a call
+  refused for its parameters or a file that can't be read leaves it) drops it, as the labels may
+  no longer be of the same faces and cells. After OpenFOAM rewrote a mesh, reload first, then
+  check, then show it. A mesh read again from disk for the cut (one the check couldn't hand over)
+  that hasn't the size of the one checked is refused: *check it again*.
 - **Reading**: `mesh.check` reads the whole mesh to check it and hands it to the scene, kept
   while it fits in what the budget for hidden objects leaves ([memory](#memory); the mesh kept
   of the region before doesn't count, as the new one replaces it): showing what it found then

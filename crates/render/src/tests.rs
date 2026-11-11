@@ -784,6 +784,7 @@ fn what_a_check_found_is_drawn_where_it_is() {
             class("open cells", true, &[2, 2]),
             class("concave cells", true, &[1, 2]),
         ],
+        mesh: [mesh.n_cells(), mesh.n_faces(), mesh.n_points()],
     };
     let o = Object::from_found("air", &mesh, &found, Vec3::ZERO);
     assert_eq!(o.source, Source::Cut { region: "air".into() });

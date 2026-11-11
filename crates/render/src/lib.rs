@@ -79,6 +79,8 @@ impl PartialEq for Cells {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found {
     pub classes: Vec<FoundClass>,
+    /// The cells, faces and points of the mesh it was found on: its labels are of that mesh.
+    pub mesh: [usize; 3],
 }
 
 /// One thing a mesh check found: the faces or cells where it is.

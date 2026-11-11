@@ -11,6 +11,10 @@
 //! what was kept of hidden ones too. Points are single precision, relative to the scene's origin
 //! (the middle of what is shown); an object is never moved to another origin: when the middle
 //! moves more than 10 km, what is shown is read again around it and the kept ones are dropped.
+//!
+//! A region's cut shows the cells a plane crosses or what `mesh.check` found there; both come
+//! from the region's whole mesh, read on request and kept, or handed over by `mesh.check`
+//! (which then makes the scene drop what it kept of the region before).
 
 use std::sync::Arc;
 
@@ -436,7 +440,7 @@ fn cuts(
             let Some((_, f)) = found.iter().find(|(r, _)| r == region) else {
                 let which = if region.is_empty() { "the mesh".to_string() } else { format!("region `{region}`") };
                 let reloaded = if p.bool("reload")?.unwrap_or(false) {
-                    " (after reload: what was found before was of the meshes before)"
+                    " (a reload drops what was found, which was of the meshes before: reload first, then check, then show it without reload)"
                 } else {
                     ""
                 };
@@ -467,7 +471,8 @@ fn cuts(
 
 /// Builds the scene the parameters ask for into the cache, unless it is there already. With
 /// `reload` (OpenFOAM rewrote the meshes), what `mesh.check` found and read goes, as it may be of
-/// the meshes before; a build that fails leaves it.
+/// the meshes before; a build refused (its parameters, a read that fails) leaves it, one
+/// cancelled once it built doesn't.
 fn build(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
     if !p.bool("reload")?.unwrap_or(false) {
         return build_now(s, id, p);
@@ -543,8 +548,12 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
         .collect();
     let versions: Vec<(String, Option<Arc<Vec<u8>>>)> =
         surfaces.iter().chain(&boundaries).map(|f| (f.clone(), case.put_bytes(f).cloned())).collect();
-    let same =
-        |c: &Cached| c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions) && c.cuts == cuts;
+    // A mesh a check handed over, or one it made outdated, is taken into the cache by a build
+    // (reusing what it has), so that the mesh it replaces goes now.
+    let pending = !s.handed.is_empty() || !s.outdated.is_empty();
+    let same = |c: &Cached| {
+        !pending && c.opens == s.opens && c.regions == regions && same_files(&c.surfaces, &versions) && c.cuts == cuts
+    };
     if reload || !s.scene.as_deref().is_some_and(same) {
         // What each object is built from. Objects of this case built before (shown or spare)
         // are taken as they are, unless `reload`; the others are read, in parallel.
@@ -737,7 +746,20 @@ fn build_now(s: &mut Session, id: &str, p: &Params) -> Result<(), Error> {
                             (Source::Cut { region }, Read::Whole(m)) => match cells {
                                 Some(Cells::Plane(plane)) => Object::from_cut(&region, &m, plane, origin)
                                     .ok_or_else(|| Error::Failed(format!("{id}: a cut's normal of zero length")))?,
-                                Some(Cells::Found(found)) => Object::from_found(&region, &m, &found, origin),
+                                Some(Cells::Found(found)) => {
+                                    // Its labels are of the mesh the check read.
+                                    if found.mesh != [m.n_cells(), m.n_faces(), m.n_points()] {
+                                        let which = if region.is_empty() {
+                                            "the mesh".to_string()
+                                        } else {
+                                            format!("region {region}'s mesh")
+                                        };
+                                        return Err(Error::Failed(format!(
+                                            "{id}: {which} changed since mesh.check found what it shows: check it again"
+                                        )));
+                                    }
+                                    Object::from_found(&region, &m, &found, origin)
+                                }
                                 None => return Err(Error::Failed(format!("{id}: a cut without what it shows"))),
                             },
                             _ => return Err(Error::Failed(format!("{id}: a scene object was read as the wrong kind"))),
@@ -964,7 +986,7 @@ pub(super) const SNAPSHOT: CommandSpec = CommandSpec {
     label: "Snapshot",
     menu: "View/Snapshot",
     shortcut: None,
-    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], or {\"region\", \"found\": true}, one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; or the faces and cells mesh.check found there last (the first 1000 of each problem, and of checkMesh's sets of faces and cells), each problem in its colour, a cell by its faces (an error before a check); its whole mesh is read once (or taken from mesh.check) and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones and what mesh.check found; faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
+    params: "Draws the case in 3D with the CPU renderer and returns a PNG image (`png`, base64). What: regions (mesh regions, their boundary patches; \"\" in a single-region case) and surfaces (STL files in constant/triSurface); by default every region with a mesh, or every surface when there is none. cuts: [{\"region\", \"point\": [x, y, z], \"normal\": [x, y, z]}, …], or {\"region\", \"found\": true}, one a region: the cells of its mesh the plane crosses, whole (those with points behind it and on it or past it), drawn by their skin, by cell zone; or the faces and cells mesh.check found there last (the first 1000 of each problem, and of checkMesh's sets of faces and cells), each problem in its colour, a cell by its faces (an error before a check, after one that couldn't read the mesh, and when the mesh read for it isn't the size the check read); its whole mesh is read once (or taken from mesh.check) and kept while it is cut; picks pass through. Each mesh (only its boundary) and surface is read once and kept, also while hidden, within the session's memory budget (UMCF_MEMORY or the memory free: the readers running at once fit half of it, the hidden objects a quarter, the ones shown least recently dropped first and read again when shown); when what is shown is more than 10 km from the scene's middle so far, it is read again around its own middle and what was kept of hidden ones is dropped (single precision). reload: true reads the files again (after OpenFOAM rewrote a mesh), and drops what was kept of hidden ones and what mesh.check found (unless the call is refused: reload first, then check); faces picked on the meshes read again are taken out of the selection, as their labels may have changed. Camera: view (iso, top, bottom, front, back, left, right; default iso), azimuth and elevation (degrees, override the view's), zoom (default 1: the whole scene), or camera ({\"target\": [x, y, z], \"distance\", \"azimuth\", \"elevation\", \"fov\"} as this returns it; fov may be left out) in place of those four, width and height (pixels, default 1280 × 800; each at most 8192, together at most 4096 × 4096). Style: edges (true: the faces' edges), colour_by (patch, default, or object), display (a list of {\"region\"[, \"patch\" or \"group\"]}, {\"surface\"[, \"solid\"]} or {\"cut\": region} entries with mode: surface, wireframe, points or hidden, and/or opacity from 0 to 1; later entries win), grid (default true: a grid on the ground, z = 0, its spacing following the zoom, under the scene), origin (default true: the origin's xy, xz and yz planes and its axes, sized with the view), dark (default true: a dark background; false: a light one). The selection is drawn in orange.",
     enabled: needs_case,
     run: snapshot,
     journal: false,
