@@ -963,7 +963,7 @@ impl App {
         let full = ui.available_width();
         // The search field gives way first, down to a third of the row; then tabs leave for the
         // » menu ([`ribbon_fit::fit_tabs`]).
-        let search = (full / 3.0).clamp(140.0, SEARCH_W);
+        let search = (full / 3.0).clamp(SEARCH_MIN, SEARCH_W);
         let font = |on: bool| if on { theme::strong(13.5) } else { egui::FontId::proportional(13.5) };
         let gap = ui.spacing().item_spacing.x;
         let specs: Vec<(f32, bool)> = tabs
@@ -974,7 +974,22 @@ impl App {
                 (w + 22.0 + gap, k == self.tab)
             })
             .collect();
-        let fits = ribbon_fit::fit_tabs(&specs, full - search - 2.0 * gap, MORE_TABS_W + gap);
+        let mut fits = ribbon_fit::fit_tabs(&specs, full - search - 2.0 * gap, MORE_TABS_W + gap);
+        // The chosen tab always stays, so a wide one can leave less than a usable field: then the
+        // search shows as its icon (a click or Ctrl+P opens the field), and while it is open every
+        // tab is in the » menu.
+        let used = |fits: &[bool]| {
+            specs.iter().zip(fits).filter(|(_, f)| **f).map(|((w, _), _)| w).sum::<f32>()
+                + if fits.iter().all(|f| *f) { 0.0 } else { MORE_TABS_W + gap }
+        };
+        let searching = self.search_open || self.focus_search;
+        let mut room = full - used(&fits) - 2.0 * gap;
+        if searching && room < SEARCH_MIN {
+            fits = vec![false; specs.len()];
+            room = full - used(&fits) - 2.0 * gap;
+        }
+        let folded = !searching && room < SEARCH_MIN;
+        let field = room.clamp(SEARCH_MIN, search.max(SEARCH_MIN));
         ui.horizontal(|ui| {
             ui.set_height(26.0);
             for ((k, tab), (w, _)) in tabs.iter().enumerate().zip(&specs) {
@@ -1007,7 +1022,13 @@ impl App {
             if tabs.is_empty() {
                 ui.label(RichText::new(self.workspace.name()).font(theme::strong(13.5)).color(t.accent));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.search_field(ui, search));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if folded {
+                    self.search_icon(ui);
+                } else {
+                    self.search_field(ui, field);
+                }
+            });
         });
         let line = ui.cursor().top() + 2.0;
         ui.painter().hline(ui.max_rect().x_range(), line, Stroke::new(1.0, t.card_border));
@@ -1280,6 +1301,22 @@ impl App {
         true
     }
 
+    /// The search as its icon alone, where the tab row has no room for the field: a click opens
+    /// the field (as Ctrl+P does).
+    fn search_icon(&mut self, ui: &mut Ui) {
+        let t = &self.tokens;
+        let (rect, r) = ui.allocate_exact_size(vec2(26.0, 25.0), Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, t.radius, t.hover);
+        }
+        let at = Rect::from_center_size(rect.center(), vec2(14.0, 14.0));
+        icons::paint(ui.painter(), at, Icon::Search, Ink { line: t.text_muted, fill: t.accent });
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Search commands"));
+        if r.on_hover_text("Search commands (Ctrl+P)").clicked() {
+            self.focus_search = true;
+        }
+    }
+
     /// The command search: every command of the registry, filtered as you type (Ctrl+P).
     fn search_field(&mut self, ui: &mut Ui, width: f32) {
         let t = self.tokens.clone();
@@ -1299,6 +1336,10 @@ impl App {
         let entered = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
         if r.has_focus() {
             self.search_open = true;
+        } else if r.lost_focus() && self.search.is_empty() && ui.input(|i| i.key_pressed(Key::Tab)) {
+            // Left empty by Tab: it closes (back to its icon on a narrow window), as a press
+            // elsewhere closes it; a press on a result keeps it open to take the click.
+            self.search_open = false;
         }
         if !self.search_open {
             return;
@@ -2655,8 +2696,9 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
 
 /// The view's guides' and background's tooltips.
 const BRUSH_TIP: &str = "Paint over what to select: what is seen under the stroke (Shift adds, Ctrl takes away; [ and ] change its size); a right or middle drag moves the view";
-/// The search field's full width (its margins included).
+/// The search field's full width (its margins included), and the least that is still usable.
 const SEARCH_W: f32 = 240.0;
+const SEARCH_MIN: f32 = 140.0;
 /// The » button of the tabs that don't fit.
 const MORE_TABS_W: f32 = 28.0;
 /// Between two buttons of a group; on each side of a group's divider.

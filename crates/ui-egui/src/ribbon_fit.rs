@@ -113,7 +113,10 @@ pub fn more_tabs(
     if left_out.is_empty() {
         return None;
     }
-    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 25.0), egui::Sense::click());
+    // A fixed id: the button moves when the tabs come back as the search closes, and a press on
+    // it must still complete its click.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 25.0), egui::Sense::hover());
+    let r = ui.interact(rect, egui::Id::unique("ribbon-more-tabs"), egui::Sense::click());
     if r.hovered() {
         ui.painter().rect_filled(rect, radius, ink.back);
     }
@@ -147,6 +150,11 @@ pub fn row<R>(
         let mut area = egui::ScrollArea::horizontal()
             .id_salt(salt)
             .auto_shrink([false, true])
+            // A mouse drag scrolls it too, not only a touch.
+            .scroll_source(egui::scroll_area::ScrollSource {
+                drag: egui::scroll_area::DragScroll::Always,
+                ..Default::default()
+            })
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
         if let Some(x) = offset {
             area = area.horizontal_scroll_offset(x);

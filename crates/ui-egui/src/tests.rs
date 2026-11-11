@@ -180,7 +180,9 @@ fn the_ribbon_comes_from_the_registry() {
 }
 
 /// A window of this width, 800 high.
-fn harness_wide(app: App, width: f32) -> Harness<'static, App> {
+fn harness_wide(mut app: App, width: f32) -> Harness<'static, App> {
+    // Jobs are waited for, as in `harness`.
+    app.job_wait = std::time::Duration::from_secs(120);
     let mut h = Harness::builder()
         .with_size(vec2(width, 800.0))
         .with_max_steps(16)
@@ -255,6 +257,40 @@ fn a_narrow_ribbon_gives_way_and_drops_nothing() {
     h.run();
     assert_eq!(h.state().tab, 4);
     h.get_by_role_and_label(egui::Role::Tab, "View");
+}
+
+/// A wide chosen tab on a narrow window leaves no room for a usable search field: it shows as
+/// its icon, which opens a field of usable width.
+#[test]
+fn the_search_folds_to_its_icon_rather_than_squeeze() {
+    let narrow = |width: f32| {
+        let mut a = app();
+        a.tab = 3;
+        harness_wide(a, width)
+    };
+    // Wide enough: the field, at its full width.
+    let h = narrow(1000.0);
+    assert!(h.query_by_role_and_label(egui::Role::Button, "Search commands").is_none());
+    assert!(h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect().width() >= 139.0);
+    drop(h);
+    // At 380 the chosen "Boundary conditions" leaves no room: the icon.
+    let mut h = narrow(380.0);
+    assert!(h.query_by_role_and_label(egui::Role::TextInput, "Search commands").is_none());
+    h.get_by_role_and_label(egui::Role::Button, "Search commands").click();
+    h.run();
+    // Open, the field has its width, clear of the tabs (all in »), and it has the focus.
+    let field = h.get_by_role_and_label(egui::Role::TextInput, "Search commands").rect();
+    assert!(field.width() >= 139.0 && field.right() <= 380.5, "{field:?}");
+    assert!(h.query_all_by_role(egui::Role::Tab).all(|t| !t.rect().intersects(field)));
+    h.get_by_role_and_label(egui::Role::TextInput, "Search commands").type_text("mesh");
+    h.run();
+    assert_eq!(h.state().search, "mesh");
+    // Escape closes it, back to the icon and the tabs.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    h.get_by_role_and_label(egui::Role::Button, "Search commands");
+    h.get_by_role_and_label(egui::Role::Tab, "Boundary conditions");
 }
 
 /// At every width the ribbon's buttons in sight never sit on one another, and the tabs stay in

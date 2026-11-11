@@ -39,8 +39,9 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   with only the generic command icon keeps its label), then fold
   into one drop-down button named for the group that holds the whole group; room this frees
   goes back from the left. If even folded groups don't fit, the ribbon scrolls sideways: **‹**
-  and **›** at its edges, the mouse wheel or a drag. Tabs that don't fit go into a **»** menu,
-  from the end (the chosen one stays), and the search field gets narrower. A command that can't
+  and **›** at its edges, the mouse wheel or a drag with the mouse. Tabs that don't fit go into a **»** menu,
+  from the end (the chosen one stays), and the search field gets narrower, down to its icon
+  (a click or Ctrl+P opens it; while it is open on such a window, every tab is in **»**). A command that can't
   run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right: what it takes, and its parameters as JSON
   (`{"endTime": 7200}`); *OK* runs it. The checks, *Summary* and *Read fields* run at once.
