@@ -1983,6 +1983,83 @@ fn the_cut_card_shows_the_layers_at_a_wall() {
 }
 
 #[test]
+fn the_cut_card_shows_the_cells_near_a_surface() {
+    let mut fs = case();
+    fs.insert(
+        "constant/triSurface/floor.stl",
+        "solid floor\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid floor\n",
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs.clone()), "mem", OpenOptions::default(), false).unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().toggle_cut();
+    h.run();
+    h.get_by_label("Near a surface").click();
+    h.run();
+    // The case's surface, within 1 m; no plane to drag.
+    let form = h.state().cut.clone().unwrap();
+    assert_eq!(
+        (form.show, form.surface.as_str(), form.distance),
+        (crate::cut::Show::Near, "constant/triSurface/floor.stl", 1.0)
+    );
+    assert!(form.plane().is_none());
+    assert_eq!(
+        h.state().shown()["cuts"],
+        json!([{ "region": "", "surface": "constant/triSurface/floor.stl", "distance": 1.0 }])
+    );
+    h.state_mut().wait_for_job();
+    h.run_steps(3);
+    let _ = h.get_by_label("cells about 1 m across: 1");
+    // Fit cells frames them: the one cell.
+    h.get_by_label("Fit cells").click();
+    h.run();
+    let target = h.state().viewport.camera.unwrap().target;
+    assert!((target.x - 0.5).abs() < 1e-9 && (target.z - 0.5).abs() < 1e-9, "{target:?}");
+    // `--open near`.
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    let mut app = App::new(s);
+    app.start_up(Some("near")).unwrap();
+    assert_eq!(app.cut.as_ref().unwrap().show, crate::cut::Show::Near);
+    // A case without a surface: nothing to show, and the card says so.
+    let mut h = harness(self::app());
+    h.state_mut().toggle_cut();
+    h.run();
+    h.get_by_label("Near a surface").click();
+    h.run();
+    assert!(h.state().shown().get("cuts").is_none());
+    let _ = h.get_by_label_contains("no STL surface");
+    // Nothing to show: the region's boundary isn't hidden from the view (the card keeps its
+    // hiding, which comes back once there is something to show).
+    let hidden = |d: &[umcf_engine::DisplayEntry]| d.iter().any(|e| e.mode == Some(umcf_render::raster::Mode::Hidden));
+    assert!(hidden(&h.state().display));
+    assert!(!hidden(&h.state().view_display()));
+    // The browser says as the view draws it.
+    let region = umcf_engine::Layer::Region(String::new());
+    assert_ne!(h.state().layer_display(&region, &[]).mode, umcf_render::raster::Mode::Hidden);
+    // The region's row paints its note (`layer_note`) after its patches: not hidden.
+    assert!(!h.state().layer_note(&region).contains("hidden"));
+    // A mode of the region's own, then the card showing something: its row says what the view
+    // draws, the card's hiding.
+    h.state_mut().display.insert(
+        0,
+        umcf_engine::DisplayEntry {
+            layer: region.clone(),
+            mode: Some(umcf_render::raster::Mode::Wireframe),
+            opacity: None,
+        },
+    );
+    // Idle: the region's own mode.
+    assert_eq!(h.state().layer_note(&region), "wireframe");
+    h.get_by_label("Plane").click();
+    h.run();
+    assert_eq!(h.state().layer_note(&region), "hidden");
+    h.get_by_label("Plane").click();
+    h.run();
+    assert!(hidden(&h.state().view_display()));
+}
+
+#[test]
 fn the_view_frames_what_was_found() {
     // checkMesh's set: the bottom face (z = 0) of the one cell.
     let mut fs = case();

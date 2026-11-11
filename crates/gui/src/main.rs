@@ -22,8 +22,9 @@ usage: umcf-gui [<case>] [--cmd '<id>=<json>']... [--show <name>]... [--open <id
                 or cut: the cut card, or found: the cut card showing what Check mesh found (on
                 the first region it found something in; check with --cmd mesh.check), or layers:
                 the cut card showing the layers of cells at a patch (its region's first wall,
-                else its first patch); umcf-gui stops with an error where no case is open or no
-                region has a mesh
+                else its first patch), or near: the cut card showing the cells near an STL surface
+                (the case's first, within 1 m); umcf-gui stops with an error where no case is
+                open or no region has a mesh
   --dark        the dark theme
   --size        the window's size in points (default 1440x900)
   --renderer    what draws the 3D view at the start: without it, the CPU, with the window on a

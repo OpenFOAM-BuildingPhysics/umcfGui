@@ -69,7 +69,10 @@ the one handed over are both held.
 The layers snappyHexMesh added at a wall are seen as a region's cut too: the first layers of
 cells at a patch, each in its colour, and the patch faces where they stop short marked ([the
 layers at a wall](scene.md#the-layers-at-a-wall); the cut card's *Wall layers*,
-`umcf-cli render --layers air/buildings=3`).
+`umcf-cli render --layers air/buildings=3`). So is the refinement near a surface: the cells with a point within a distance
+of an STL surface of the case (take a distance about the size of the cells there), each size in its colour ([the cells near a
+surface](scene.md#the-cells-near-a-surface); the cut card's *Near a surface*,
+`umcf-cli render --near air/buildings.stl=2`).
 
 ### With `-allGeometry`
 

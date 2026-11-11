@@ -822,6 +822,34 @@ fn a_cut_shows_the_layers_at_a_patch() {
     }
 }
 
+#[test]
+fn a_cut_shows_the_cells_near_a_surface() {
+    let mut s = scene_session();
+    let near = |p: Value| json!({ "regions": [], "cuts": [p], "width": 8, "height": 8 });
+    // The box on the one cell: its six faces, one size.
+    let out =
+        s.execute("scene.snapshot", &near(json!({ "region": "air", "surface": "box.stl", "distance": 0.1 }))).unwrap();
+    assert_eq!(
+        out.data["objects"],
+        json!([{ "cut": "air", "triangles": 12, "classes": ["cells about 1 m across: 1"] }])
+    );
+    // Refused.
+    for (cut, says) in [
+        (
+            json!({ "region": "air", "surface": "none.stl", "distance": 1 }),
+            "there is no surface constant/triSurface/none.stl",
+        ),
+        (json!({ "region": "air", "surface": "../box.stl", "distance": 1 }), "not a surface of the case"),
+        (json!({ "region": "air", "surface": "box.stl" }), "`distance` is a positive number"),
+        (json!({ "region": "air", "surface": "box.stl", "distance": 0 }), "`distance` is a positive number"),
+        (json!({ "region": "air", "distance": 1 }), "`surface` names an STL file"),
+        (json!({ "region": "air", "surface": "box.stl", "distance": 1, "patch": "ground" }), "without a point"),
+    ] {
+        let e = s.execute("scene.snapshot", &near(cut.clone())).unwrap_err().to_string();
+        assert!(e.contains(says), "{cut}: {e}");
+    }
+}
+
 /// A case on `MemFs` that counts the reads of one file.
 struct Counting {
     fs: MemFs,
@@ -870,8 +898,13 @@ fn a_region_s_whole_mesh_is_read_once_for_its_cuts() {
     s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("scene.snapshot", &at(0.6)).unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
-    // A patch renamed: the cut and its mesh as they were.
+    // The layers at a patch shown, then put aside; a patch renamed: the mesh kept aside is the
+    // same mesh (a patch list put says what the layers were drawn at, not what the mesh is).
+    let layers = json!({ "width": 8, "height": 8, "cuts": [{ "region": "air", "patch": "inlet", "layers": 2 }] });
+    s.execute("scene.snapshot", &layers).unwrap();
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("patch.set", &json!({ "name": "west", "patches": [{ "region": "air", "patch": "inlet" }] })).unwrap();
+    s.execute("scene.snapshot", &json!({ "width": 8, "height": 8 })).unwrap();
     s.execute("scene.snapshot", &at(0.4)).unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
     // A rectangle selects through the cut.

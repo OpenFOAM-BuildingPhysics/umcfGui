@@ -632,7 +632,8 @@ impl App {
         self.fit(view);
     }
 
-    /// Frames what *Check mesh* found, shown in the cut card (the whole scene where nothing is).
+    /// Frames what the cut card shows other than a plane's cells: what *Check mesh* found, the
+    /// layers at a wall, the cells near a surface (the whole scene where nothing is).
     pub(crate) fn fit_findings(&mut self) {
         self.fit_found = true;
         self.fit(None);
@@ -661,9 +662,10 @@ impl App {
             Some(v) => v.angles(),
             None => self.viewport.camera.map_or(View::Iso.angles(), |c| (c.azimuth, c.elevation)),
         };
-        // What the check found, when the card asked for it (else, or when it is empty, the scene).
+        // What the cut card shows (what the check found, the layers at a wall or the cells near a
+        // surface), when the card asked for it (else, or when it is empty, the scene).
         let found = std::mem::take(&mut self.fit_found)
-            .then(|| self.cut.as_ref().filter(|f| f.show == crate::cut::Show::Found).map(|f| f.region.clone()))
+            .then(|| self.cut.as_ref().filter(|f| f.show != crate::cut::Show::Plane).map(|f| f.region.clone()))
             .flatten();
         match self.session.scene(&params) {
             Ok(scene) => {
@@ -1344,7 +1346,7 @@ impl App {
             let params = self.shown();
             let selection = self.session.selection().to_vec();
             let revision = self.revision;
-            let entries = self.display.clone();
+            let entries = self.view_display();
             let failed = self.scene_error.as_ref().filter(|(r, _)| *r == revision).map(|(_, e)| e.clone());
             // A scene not built for this revision is built as a job; one that is taken from the
             // cache here.
@@ -1604,7 +1606,8 @@ impl App {
                                 let label = if r.name.is_empty() { "(single region)" } else { r.name.as_str() };
                                 let layer = Layer::Region(r.name.clone());
                                 let entry = self.layer_entry(&layer);
-                                let detail = match (&r.patches, entry.map(display::note).filter(|n| !n.is_empty())) {
+                                let note = Some(self.layer_note(&layer)).filter(|n| !n.is_empty());
+                                let detail = match (&r.patches, note) {
                                     (Some(p), None) => format!("{} patches", p.len()),
                                     (Some(p), Some(n)) => format!("{} patches · {n}", p.len()),
                                     (None, _) => "no mesh".to_string(),
@@ -2595,8 +2598,8 @@ impl App {
     /// other work would drop a scene already waiting.
     pub(crate) fn start_up(&mut self, open: Option<&str>) -> Result<(), String> {
         // The cut card, which is no command's: with `found`, showing what Check mesh found; with
-        // `layers`, the layers at a patch.
-        if let Some(which @ ("cut" | "found" | "layers")) = open {
+        // `layers`, the layers at a patch; with `near`, the cells near a surface.
+        if let Some(which @ ("cut" | "found" | "layers" | "near")) = open {
             if let Some(tab) = self
                 .workspace
                 .tabs()
@@ -2619,6 +2622,10 @@ impl App {
             }
             if which == "layers" {
                 self.show_layers();
+            }
+            if which == "near" {
+                self.show_near();
+                self.fit_findings();
             }
         } else if let Some(id) = open {
             let spec = Session::command(id).ok_or_else(|| format!("--open: there is no command `{id}`"))?;

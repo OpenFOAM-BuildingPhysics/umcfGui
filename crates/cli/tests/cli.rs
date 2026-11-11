@@ -570,3 +570,44 @@ fn render_draws_the_layers_at_a_patch() {
     assert_eq!(o.status.code(), Some(2), "{o:?}");
     assert!(String::from_utf8_lossy(&o.stderr).contains("--layers is <region>/<patch>"), "{o:?}");
 }
+
+#[test]
+fn render_draws_the_cells_near_a_surface() {
+    let dir = cube("render-near", false);
+    std::fs::create_dir_all(dir.join("constant/triSurface")).unwrap();
+    // One triangle on the cube's floor.
+    std::fs::write(
+        dir.join("constant/triSurface/floor.stl"),
+        "solid floor\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid floor\n",
+    )
+    .unwrap();
+    let out = dir.join("shot.png");
+    let args = |near: &str| -> std::process::Output {
+        cli(&[
+            "render",
+            "--near",
+            near,
+            "--size",
+            "32x24",
+            "--json",
+            "--out",
+            out.to_str().unwrap(),
+            dir.to_str().unwrap(),
+        ])
+    };
+    let o = args("air/floor.stl=0.1");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let cut =
+        v["objects"].as_array().unwrap().iter().find(|x| x.get("cut") == Some(&serde_json::json!("air"))).cloned();
+    let cut = cut.unwrap_or_else(|| panic!("no cut: {v}"));
+    assert_eq!(cut["classes"], serde_json::json!(["cells about 1 m across: 1"]), "{v}");
+    assert_eq!(cut["triangles"], 12, "{v}");
+    // Refused: no distance, a surface the case doesn't have.
+    let o = args("air/floor.stl");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--near is <region>/<surface>=<distance>"), "{o:?}");
+    let o = args("air/none.stl=1");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("there is no surface"), "{o:?}");
+}

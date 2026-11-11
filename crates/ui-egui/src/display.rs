@@ -91,12 +91,35 @@ impl App {
         self.display.iter().find(|e| e.layer == *layer)
     }
 
-    /// How `layer` is drawn: after every entry, as for one of its classes (`groups`: a patch's
-    /// groups).
+    /// A short note of how `layer`'s own entries draw it, for the browser, as the view draws it:
+    /// the last mode and the last opacity set (a region's own entry and the cut card's hiding,
+    /// the hiding left out while the card shows nothing); empty without one.
+    pub(crate) fn layer_note(&self, layer: &Layer) -> String {
+        let idle = self.idle_hiding();
+        let mut own = DisplayEntry { layer: layer.clone(), mode: None, opacity: None };
+        let mut any = false;
+        for (k, e) in self.display.iter().enumerate().filter(|(_, e)| e.layer == *layer) {
+            any = true;
+            if let Some(m) = e.mode.filter(|_| idle != Some(k)) {
+                own.mode = Some(m);
+            }
+            if let Some(a) = e.opacity {
+                own.opacity = Some(a);
+            }
+        }
+        if any { note(&own) } else { String::new() }
+    }
+
+    /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
+    /// cut card's hiding only while it shows something), as for one of its classes (`groups`: a
+    /// patch's groups).
     pub(crate) fn layer_display(&self, layer: &Layer, groups: &[String]) -> Display {
         let mut d = Display::default();
-        for e in self.display.iter().filter(|e| e.layer == *layer || holds(&e.layer, layer, groups)) {
-            if let Some(m) = e.mode {
+        let idle = self.idle_hiding();
+        for (k, e) in
+            self.display.iter().enumerate().filter(|(_, e)| e.layer == *layer || holds(&e.layer, layer, groups))
+        {
+            if let Some(m) = e.mode.filter(|_| idle != Some(k)) {
                 d.mode = m;
             }
             if let Some(a) = e.opacity {
@@ -180,6 +203,7 @@ impl App {
     /// region gone from its file, say, would have the command refused).
     pub(crate) fn display_json(&mut self) -> Value {
         let params = self.shown();
+        let entries = self.view_display();
         let Ok(scene) = self.session.scene(&params) else { return Value::Array(Vec::new()) };
         let shown = |layer: &Layer| {
             scene.objects.iter().any(|o| match (layer, &o.source) {
@@ -195,7 +219,7 @@ impl App {
                 _ => false,
             })
         };
-        self.display.iter().filter(|e| shown(&e.layer)).map(DisplayEntry::to_json).collect()
+        entries.iter().filter(|e| shown(&e.layer)).map(DisplayEntry::to_json).collect()
     }
 
     /// Drops the entries of what the case no longer has (a patch renamed, a surface an undo

@@ -944,3 +944,64 @@ fn a_cell_at_a_corner_starts_a_column_from_each_of_its_patch_faces() {
     let o = Object::from_layers("air", &corner_block(), "corner", 3, Vec3::ZERO).unwrap();
     assert_eq!(o.classes, ["layer 1: 1 cell", "layer 2: 2 cells"]);
 }
+
+#[test]
+fn the_cells_near_a_surface_are_drawn_by_their_size() {
+    use umcf_geom::Vec3 as V;
+    // A plane across the row at x = 0 (two triangles).
+    let plane = |x: f64| {
+        let (a, b, c, d) = (V::new(x, -5.0, -5.0), V::new(x, 5.0, -5.0), V::new(x, 5.0, 5.0), V::new(x, -5.0, 5.0));
+        vec![[a, b, c], [a, c, d]]
+    };
+    let mesh = row(5, &[]);
+    // Within half a cell of x = 0: the first cell, its six faces.
+    let o = Object::from_near("air", &mesh, &plane(0.0), 0.5, Vec3::ZERO);
+    assert_eq!(o.source, Source::Cut { region: "air".into() });
+    assert_eq!(o.classes, ["cells about 1 m across: 1"]);
+    assert_eq!(o.kinds, ["cells"]);
+    assert_eq!(o.triangles.len(), 12);
+    // Within 1.5: the first two (the face between them inside, not drawn).
+    let o = Object::from_near("air", &mesh, &plane(0.0), 1.5, Vec3::ZERO);
+    assert_eq!(o.classes, ["cells about 1 m across: 2"]);
+    assert_eq!(o.triangles.len(), 20);
+    // The last cell half the size (x from 4 to 4.5, y and z to 0.5): two sizes, the face
+    // between them drawn in the smaller's class.
+    let mut refined = row(5, &[]);
+    for (i, p) in refined.points.iter_mut().enumerate() {
+        let x = i / 4;
+        if x >= 4 {
+            p[1] *= 0.5;
+            p[2] *= 0.5;
+        }
+        if x == 5 {
+            p[0] = 4.5;
+        }
+    }
+    let o = Object::from_near("air", &refined, &plane(0.0), 100.0, Vec3::ZERO);
+    assert_eq!(o.classes, ["cells about 1 m across: 4", "cells about 0.5 m across: 1"]);
+    // The skin (2 ends, 20 sides) and the face between the two sizes: 23 faces.
+    assert_eq!(o.triangles.len(), 46);
+    let between: Vec<u32> = o.origin_index.iter().zip(&o.class).filter(|(f, _)| **f == 3).map(|(_, c)| *c).collect();
+    assert_eq!(between, [1, 1]);
+    // A point far off makes its cell the largest by far: the others are many halvings finer,
+    // each size told as it is (not one label for all past 32 halvings).
+    let mut far = row(5, &[]);
+    far.points[23][0] = 1e12;
+    let o = Object::from_near("air", &far, &plane(0.0), 1e13, Vec3::ZERO);
+    // 1e12 m over 2^40 halvings: 0.909 m, told as it is.
+    assert_eq!(o.classes, ["cells about 1000000000 km across: 1", "cells about 0.909 m across: 4"]);
+    // Nothing near, a negative distance, no triangles: nothing.
+    assert!(Object::from_near("air", &mesh, &plane(50.0), 1.0, Vec3::ZERO).classes.is_empty());
+    assert!(Object::from_near("air", &mesh, &plane(0.0), -1.0, Vec3::ZERO).triangles.is_empty());
+    assert!(Object::from_near("air", &mesh, &[], 1.0, Vec3::ZERO).triangles.is_empty());
+}
+
+#[test]
+fn lengths_are_told_to_three_figures() {
+    assert_eq!(crate::metres(2.0), "2 m");
+    assert_eq!(crate::metres(0.25), "0.25 m");
+    assert_eq!(crate::metres(0.125), "0.125 m");
+    assert_eq!(crate::metres(12.34), "12.3 m");
+    assert_eq!(crate::metres(1500.0), "1.5 km");
+    assert_eq!(crate::metres(f64::NAN), "? m");
+}
