@@ -116,7 +116,7 @@ The workflow the GUI supports end to end:
    - dropping degenerate triangles;
    - making normals consistent;
    - scaling.
-2. **Set up the mesh** (`mesh.setup`, `mesh.block`, `mesh.box`, `mesh.refine`, `mesh.layers`): typed views
+2. **Set up the mesh** (`mesh.setup`, `mesh.block`, `mesh.box`, `mesh.split`, `mesh.refine`, `mesh.layers`): typed views
    in `model` over `blockMeshDict`, `snappyHexMeshDict` and `surfaceFeaturesDict`, edited
    losslessly like every other dictionary. The keyword set differs per OpenFOAM version
    (`insidePoint` vs `locationInMesh`), so `schema` profiles decide which ones are used. Before

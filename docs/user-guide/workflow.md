@@ -75,6 +75,12 @@ Also, in both versions:
   directory that is a symbolic link out of the case is not caught: the scripts' `rm` and `mv`
   would follow it.
 
+A region [split](#split) from another's mesh by a cell zone is made with `-overwrite`, which
+writes the parts into `constant/` in both versions, not into a time directory that depends on
+the time step. OpenFOAM-8 reads a `-dict` given with `-region` below the region's own directory
+(`system/air/topoSetDict` as `system/<r>/air/topoSetDict`), so its path goes up one there
+(`system/../air/topoSetDict`).
+
 A mesh built in `constant/polyMesh` keeps its steps in the order the case's script ran them
 (`createPatch` before or after `snappyHexMesh`); a variant copied into `system/` or passed
 with `-dict` is the same dictionary. A region step with its own
@@ -169,7 +175,7 @@ settings
 | `version` | `8` or `12`: the OpenFOAM version the scripts are for |
 | `profile` | written by an earlier `case.new`: read and left out (there is [one configuration](new-case.md#the-configuration)) |
 | `kind` | `fluid`, `solid` or `vegetation` |
-| `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
+| `mesh` | `blocks` (`blockMesh -region`), the steps that build it in `constant/polyMesh` before it is moved to the region (`blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one), or `{ from split; of air; zone trees; }`: [split](#split) from another region's mesh by a cell zone |
 | `blocks` | the grid of blocks the region's `blockMeshDict` is written from ([below](#blocks)) |
 | `box` | the box around the STL surfaces its blocks are made from ([below](#box)) |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
@@ -194,8 +200,8 @@ and `sides` from their names; the vegetation region's patches
 take their air twin's role, the open sides and the top becoming `sky`. What it can't tell is
 listed and left without a role. Each region's [blocks](#blocks) are read from the
 `blockMeshDict` its mesh reads, when that is a grid of blocks; the import writes nothing but the
-description. On the 3×3 test case every patch gets its role. A region split
-from another (the street canyon's vegetation) is not described yet: its steps are listed.
+description. On the 3×3 test case every patch gets its role. A region
+[split](#split) from another (the street canyon's vegetation) is read with its zone.
 
 `workflow.show` returns the description, read from the file or, when the case has none, as the
 import would write it; it also says when a file is there that doesn't load (not a dictionary, a
@@ -538,6 +544,111 @@ have, a surface that doesn't read) is said there instead. The surfaces' bounds a
 background (the status bar shows it, *Cancel* stops it), again only after a geometry command,
 an undo or redo, or another case.
 Patches, types and the other options go through *Edit as JSON*.
+
+### Split
+
+A region whose mesh is another region's split by a cell zone: the copy's cells outside the zone.
+The street canyon's vegetation is made this way, the air without the trees. Its `mesh` entry
+names the region copied, the zone and, when it isn't the copied region's own
+(`system/<of>/topoSetDict`), the `topoSetDict` that makes the zone:
+
+```c++
+vegetation
+{
+    kind        vegetation;
+    mesh        { from split; of air; zone trees; }
+    steps       ( createPatch changeDictionary );
+}
+```
+
+`workflow.scripts` writes it into `Allprepare` after the region copied (listed before it), then
+the region's own steps (OpenFOAM-12):
+
+```sh
+rm -rf constant/vegetation/polyMesh
+mkdir -p constant/vegetation
+cp -r constant/air/polyMesh constant/vegetation/polyMesh
+rm -rf constant/vegetation/polyMesh/cellZones constant/vegetation/polyMesh/cellZones.gz constant/vegetation/polyMesh/sets
+rm -rf constant/region1/polyMesh constant/region2/polyMesh
+runApplication -o -s vegetation topoSet -region vegetation -dict system/air/topoSetDict
+runApplication -o -s vegetation splitMeshRegions -region vegetation -cellZones -overwrite -noFields
+if [ ! -d constant/region1/polyMesh ] || [ -d constant/region2/polyMesh ]
+then
+    echo 'region vegetation: the split of air by the cell zone trees left no single part outside it: …' >&2
+    exit 1
+fi
+rm -rf constant/vegetation/polyMesh
+mv constant/region1/polyMesh constant/vegetation/polyMesh
+rm -rf constant/trees/polyMesh
+rmdir constant/region1 constant/trees || true
+rm -f constant/vegetation/cellToRegion constant/vegetation/cellToRegion.gz 0/vegetation/cellToRegion 0/vegetation/cellToRegion.gz
+```
+
+- The copy loses the cell zones and sets it had (made by the air's own `topoSet`, say):
+  `-cellZones` splits by every zone of the mesh, and the tutorial copies the air before its
+  zones are made.
+- `-overwrite` writes the parts into `constant/` in both versions, not into a time directory that
+  depends on the time step; `-noFields` writes none of the region's fields into them (without
+  it, the split reads every field of `0/<r>` on the copy).
+- `splitMeshRegions -cellZones` names a part after the zone it matches and the cells outside
+  every zone `region1` when they are one connected part. That part is the region's mesh, and its
+  patch facing the zone is `region1_to_<zone>` (the street canyon's `createPatchDict` makes
+  `air_to_vegetation` from it). A zone with no cells, or one that cuts the rest in pieces
+  (`region1`, `region2`, …), stops the script with a message, the copy in place of the region's
+  mesh. The meshes of parts an earlier split left that it looks at (`constant/region1/polyMesh`,
+  `constant/region2/polyMesh`) are removed before the split, so that the check sees only this one's; no region of the case may be named
+  `region` and a number.
+- Only what the split made is removed: the zone's mesh, the parts' directories when they are
+  empty (a directory with anything else in it stays), the `cellToRegion` maps, and in
+  OpenFOAM-8 the `fvSchemes` and `fvSolution` it writes for each part in `system/<r>/<part>/`.
+  OpenFOAM-8 also reads a `-dict` given with `-region` below the region's own directory, so the
+  path goes up one there (`system/../air/topoSetDict`).
+
+Run on the street canyon (OpenFOAM-8 and -12, by hand: the tests don't run OpenFOAM), the
+scripts written from the imported description make the same vegetation mesh as the tutorial's
+own (its `boundary`, `points`, `faces`, `owner` and `neighbour`). No script is written when the
+zone isn't known, when the zone or `region1` is the name of a region of the case (described or
+not: the clean-up works in their directories), when a region is named `region` and a number, or when the region copied isn't built before it.
+The fields the tutorial copies into the region after the split (`cp 0/vegetation.bckp/*
+0/vegetation/`) are listed by the import and not yet written ([gaps](../gaps.md), row 8).
+
+`workflow.import` reads the split from the scripts: the copy of the mesh into the region (with
+the `mkdir` before it), the zones taken out of the copy and the parts an earlier split left, a `topoSet -region <r>` on it (its
+`-dict`, OpenFOAM-8's `system/../air/topoSetDict` read as `system/air/topoSetDict`; without one,
+the region's own; another option doesn't fit), `splitMeshRegions -region <r> -cellZones` (with or
+without `-overwrite` and `-noFields`; another option doesn't fit), the part outside the zone put
+in (`cp -r 3600/region1/polyMesh constant/vegetation/`, or the `mv` above), and what the split
+leaves removed: the parts (`region1`, the zone, `region*`) in `constant/` and `0/` or their
+meshes, their `fvSchemes` and `fvSolution` in `system/<r>/`, the maps, and the time directory
+when the split wrote one. Anything else is listed, as are a copy no split follows and a `mkdir`
+no copy follows. The zone is the one the clean-up names (`system/vegetation/trees`,
+`constant/trees/polyMesh`; not a dictionary's or a region's name), else the one cell zone the dictionary makes
+(its `cellZoneSet` action).
+
+`mesh.split` sets it: `region`, `of` (the region copied), `zone` and `dict` (default:
+`system/<of>/topoSetDict`), in place of the mesh the region had, or `remove: true` to take it
+out. It is refused, nothing changed, while the region has blocks or a box (take them out first),
+for a zone named as the parts outside it (`region1`, `region2`, …) or as a region (the region
+itself too), while a region is named
+`region` and a number, a zone of the name of a
+directory the case has (`constant/<zone>`, `0/<zone>`, `system/<region>/<zone>`: the split
+writes its parts there), a region split from itself, and names that aren't plain OpenFOAM
+words. It says when the dictionary doesn't make the zone or isn't there, and
+returns the zones it makes (`zones`).
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'mesh.split={"region":"vegetation","of":"air","zone":"trees"}' --cmd 'case.save={}'
+```
+
+The case check (`workflow.split`) names a split from a region that isn't described, that comes
+after it or whose mesh isn't built, a zone that isn't named or that the dictionary doesn't make
+(or a dictionary the case doesn't have), and a zone or `region1` named as a region. In the
+desktop app it is *Split mesh* in the *More* group of the *Mesh* tab: a
+[form](desktop.md#forms) with the region, the region it is split from (those listed before it
+offered), the cell zone (those the dictionary makes offered), the dictionary (left empty for
+the copied region's own, so it follows *Split from*) and *Take the split out*, starting on the first split region (else the first vegetation region) and filled from
+the region's split when it has one.
 
 ### Settings
 

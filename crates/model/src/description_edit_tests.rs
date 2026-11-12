@@ -435,3 +435,47 @@ fn a_box_changes_key_by_key() {
     assert!(!c.undescribe_box(&region).unwrap());
     assert!(read(&c).region(&region).unwrap().mesh_box.is_none());
 }
+
+/// A region's mesh is split from another's by a cell zone, and taken out again.
+#[test]
+fn a_region_is_split_from_another_and_the_split_taken_out() {
+    use crate::workflow::{MeshBuild, Split};
+    let (_, mut c) = described();
+    c.describe_region("canopy", RegionKind::Vegetation).unwrap();
+    let before = text(&c);
+    let sp = |zone: &str, dict: &str| Split { of: "air".into(), zone: Some(zone.into()), dict: dict.into() };
+    assert!(c.describe_split("canopy", &sp("trees", "system/air/topoSetDict")).unwrap().added);
+    assert_eq!(changed_lines(&before, &text(&c)), ["        mesh            { from split; of air; zone trees; }"]);
+    assert_eq!(read(&c).region("canopy").unwrap().mesh, Some(MeshBuild::Split(sp("trees", "system/air/topoSetDict"))));
+    // Another dictionary is named; the comment by hand stays.
+    assert!(!c.describe_split("canopy", &sp("canopy", "system/vegetation/topoSetDict")).unwrap().added);
+    assert_eq!(
+        read(&c).region("canopy").unwrap().mesh,
+        Some(MeshBuild::Split(sp("canopy", "system/vegetation/topoSetDict")))
+    );
+    assert!(text(&c).contains("// kept by every edit"));
+    // What can't be split is refused, nothing changed.
+    let now = text(&c);
+    for (region, split) in [
+        ("canopy", sp("region1", "system/air/topoSetDict")),
+        ("canopy", sp("trees", "../topoSetDict")),
+        ("canopy", sp("trees", "topoSetDict")),
+        ("canopy", sp("tr ees", "system/air/topoSetDict")),
+        ("canopy", Split { of: "canopy".into(), zone: Some("trees".into()), dict: "system/a/b".into() }),
+        ("canopy", Split { of: "air".into(), zone: None, dict: "system/a/b".into() }),
+        ("roofs", sp("trees", "system/air/topoSetDict")),
+    ] {
+        assert!(c.describe_split(region, &split).is_err(), "{region} {split:?}");
+        assert_eq!(text(&c), now);
+    }
+    c.undescribe_split("canopy").unwrap();
+    assert_eq!(read(&c).region("canopy").unwrap().mesh, None);
+    assert!(c.undescribe_split("canopy").is_err());
+    // Another mesh isn't taken out by it.
+    assert!(c.undescribe_split("street").is_err());
+    // A region with blocks: a split mesh wouldn't read them.
+    c.set_inline(PATH, &["regions", "canopy", "blocks"], "{ x ( 0 ( 1 1 ) 1 ); }").unwrap();
+    let now = text(&c);
+    assert!(c.describe_split("canopy", &sp("trees", "system/air/topoSetDict")).is_err());
+    assert_eq!(text(&c), now);
+}

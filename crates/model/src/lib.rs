@@ -1027,6 +1027,7 @@ impl Case {
     pub fn workflow(&self) -> workflow::Workflow {
         let regions: Vec<String> = self.regions.iter().map(|r| r.name.clone()).filter(|n| !n.is_empty()).collect();
         let mut wf = workflow::Workflow::import(&regions, self.controls.application.as_deref(), &self.scripts);
+        wf.case_regions = regions.clone();
         for r in &regions {
             let dir = format!("constant/{r}/");
             let files: Vec<String> = self
@@ -1037,6 +1038,16 @@ impl Case {
                 .map(String::from)
                 .collect();
             wf.constant_files.push((r.clone(), files));
+        }
+        // A split whose clean-up didn't name its zone: the one zone its topoSetDict makes.
+        for m in &mut wf.meshes {
+            if let workflow::MeshBuild::Split(sp) = &mut m.build
+                && sp.zone.is_none()
+                && let Some(doc) = self.dict(&sp.dict)
+                && let [zone] = workflow::zones_made(doc).as_slice()
+            {
+                sp.zone = Some(zone.clone());
+            }
         }
         wf
     }

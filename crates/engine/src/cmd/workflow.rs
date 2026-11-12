@@ -96,7 +96,7 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     o.insert("scripts".into(), Value::Array(texts));
                 }
                 Err(e) => {
-                    o.insert("scriptsError".into(), json!(format!("`{}` isn't safe in a script", e.0)));
+                    o.insert("scriptsError".into(), json!(e.to_string()));
                 }
             },
         }
@@ -703,9 +703,8 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "{PATH} names no OpenFOAM version, and the case's can't be told: set version 8 or 12"
         )));
     };
-    let written = d.scripts(&o.case, version).map_err(|e| {
-        Error::Failed(format!("{}: `{}` isn't safe in a script: no script is written", SCRIPTS.id, e.0))
-    })?;
+    let written =
+        d.scripts(&o.case, version).map_err(|e| Error::Failed(format!("{}: {e}: no script is written", SCRIPTS.id)))?;
     let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
     // What is there now, put by a command or on disk.
     let mut changed = Vec::new();
@@ -748,7 +747,7 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
 }
 
 /// The outcome of an edit: the message, and the description as it is now.
-fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
+pub(crate) fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
     let (d, problems) = s.case().and_then(umcf_model::Case::description).unwrap_or_default();
     // What the file has the reader can't read, the edit's or not: shown with it.
     let problems: Vec<Value> = problems.iter().map(|p| json!({ "at": p.at, "message": p.message })).collect();
@@ -814,6 +813,7 @@ pub(crate) fn to_json(d: &Description) -> Value {
                         RootStep::SnappyHexMesh(d) => json!({ "step": "snappyHexMesh", "dict": d }),
                     })
                     .collect(),
+                Some(MeshBuild::Split(sp)) => json!({ "from": "split", "of": sp.of, "zone": sp.zone, "dict": sp.dict }),
             };
             let steps: Vec<Value> = r
                 .steps

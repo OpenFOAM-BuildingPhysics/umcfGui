@@ -48,7 +48,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   parameters opens its card on the right; *OK* runs it. Each card is a [form](#forms) of the
   command's parameters: *Box mesh* with [a preview of the box](workflow.md#box), *Block mesh*
   with [a preview of the grid](workflow.md#blocks), the workflow description's cards
-  [filled from the description](workflow.md#editing-the-description), *New case…* with a table
+  [filled from the description](workflow.md#editing-the-description) (and *Split mesh* from
+  [the region's split](workflow.md#split)), *New case…* with a table
   of its regions ([a new case](new-case.md)), *Set a material's coefficients* filled from the
   case, *Choose settings* with the case's settings (only those changed set). What a form
   doesn't ask for is given in *Edit as JSON*. The checks, *Summary* and *Read fields* run at once.
@@ -57,7 +58,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   fields*,
   *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
   *Describe a material*, *Choose settings* (its card starts with the case's settings) and
-  *Write the scripts* on *Case*, *Tree crowns* on *Geometry*.
+  *Write the scripts* on *Case*, *Tree crowns* on *Geometry*, *Box mesh* and *Split mesh* on
+  *Mesh*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
   that can run, or opens its card when it asks for parameters, as its ribbon button does.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and

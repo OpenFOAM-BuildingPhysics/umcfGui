@@ -570,6 +570,76 @@ impl Case {
         Ok(true)
     }
 
+    /// Gives `region` the mesh `sp`: split from another region's mesh by a cell zone
+    /// (`mesh { from split; of …; zone …; }`), in place of the mesh it had. Refused while the
+    /// region has blocks or a box (they would be left to no mesh): take them out first. What
+    /// the split names isn't checked against the case here (the case check does it).
+    pub fn describe_split(&mut self, region: &str, sp: &crate::workflow::Split) -> Result<EditReport> {
+        name("region", region)?;
+        name("region split from", &sp.of)?;
+        let zone = sp.zone.as_deref().ok_or_else(|| refuse("the split needs its cell zone".into()))?;
+        name("cell zone", zone)?;
+        if sp.of == region {
+            return Err(refuse(format!("region {region} can't be split from its own mesh")));
+        }
+        if crate::workflow::part_name(zone) {
+            return Err(refuse(format!(
+                "the cell zone can't be named {zone}: splitMeshRegions names the parts outside it so (region and a number)"
+            )));
+        }
+        let path_ok = !sp.dict.starts_with('/')
+            && sp.dict.contains('/')
+            && !sp.dict.split('/').any(|c| c == ".." || c == "." || c.is_empty())
+            && sp.dict.split('/').all(plain_name);
+        if !path_ok {
+            return Err(refuse(format!(
+                "dict `{}` is not a path in the case's directories of plain names (system/<region>/topoSetDict)",
+                sp.dict
+            )));
+        }
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        once(doc, &["regions", region, "mesh"])?;
+        for (key, what) in [("blocks", "blocks"), ("box", "a box")] {
+            if once(doc, &["regions", region, key])? {
+                return Err(refuse(format!(
+                    "region {region} has {what} in {PATH}, which a split mesh doesn't read: take them out first (mesh.block remove: true)"
+                )));
+            }
+        }
+        let added = doc.get(&["regions", region, "mesh"]).is_none();
+        let mut value = format!("{{ from split; of {}; zone {};", sp.of, zone);
+        if sp.dict != crate::workflow::Split::default_dict(&sp.of) {
+            value.push_str(&format!(" dict \"{}\";", sp.dict));
+        }
+        value.push_str(" }");
+        self.set_inline(PATH, &["regions", region, "mesh"], &value)?;
+        Ok(EditReport { added, ..EditReport::default() })
+    }
+
+    /// Takes `region`'s split mesh out of the description (it is then built by no step).
+    /// Refused when its mesh is not a split.
+    pub fn undescribe_split(&mut self, region: &str) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region, "mesh"])? {
+            return Err(refuse(format!("region {region} has no mesh in {PATH}")));
+        }
+        let split = doc
+            .get(&["regions", region, "mesh"])
+            .and_then(|e| e.dict())
+            .and_then(|d| d.get("from"))
+            .and_then(|e| e.words())
+            .is_some_and(|w| w.len() == 1 && w.first().is_some_and(|x| unquote(x) == "split"));
+        if !split {
+            return Err(refuse(format!("the mesh of region {region} in {PATH} is not split from another region")));
+        }
+        self.remove(PATH, &["regions", region, "mesh"])?;
+        Ok(EditReport::default())
+    }
+
     /// Gives the description's entry at `path` the key `to`; an error when it isn't there.
     fn rename_described(&mut self, path: &[&str], to: &str) -> Result<()> {
         let doc = self.dict_mut(PATH)?;
