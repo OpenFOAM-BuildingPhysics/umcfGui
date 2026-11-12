@@ -2874,11 +2874,30 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("3"));
     h.state_mut().dialog = None;
     h.run();
-    // Opened again: filled from the region's box.
+    // Opened again: filled from the region's box; untouched, it follows the case (the box
+    // undone: emptied), ticked surfaces count as typed.
     h.state_mut().invoke("mesh.box");
     h.run();
     assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
     assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
     assert!(h.state().viewport.blocks.is_some());
+    assert!(!form(&h).typed());
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some(""), "refilled: the box undone");
+    assert!(h.state().viewport.blocks.is_none());
+    h.state_mut()
+        .dialog
+        .as_mut()
+        .unwrap()
+        .form
+        .as_mut()
+        .unwrap()
+        .lists
+        .entry("surfaces")
+        .or_default()
+        .insert("trees.stl".into());
+    assert!(form(&h).typed());
     let _ = std::fs::remove_dir_all(&dir);
 }

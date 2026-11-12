@@ -75,6 +75,7 @@ impl App {
         f.values.insert("cellSize", size);
         f.values.insert("cells", cells);
         f.initial = f.values.clone();
+        f.initial_lists = f.lists.clone();
     }
 
     /// The box the form makes: the preview of its grid and a line saying its size and cells;
@@ -156,7 +157,7 @@ impl App {
             ground.name()
         );
         let line = if thinned > 1 {
-            format!("{line} (the view draws a line every {thinned} cells along the longest axis)")
+            format!("{line} (the view draws a line every {thinned} cells along the axis with the most)")
         } else {
             line
         };

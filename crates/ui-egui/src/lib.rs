@@ -659,7 +659,7 @@ impl App {
         f.workflow_regions = workflow_regions;
         // The box card fills its fields again from the region's box (another case, a box
         // made since), unless something was typed in them: that stays.
-        if f.values == f.initial {
+        if !f.typed() {
             f.filled_for = None;
         }
     }

@@ -234,6 +234,8 @@ pub struct FormState {
     /// The labels of the form's fields a refusal names to go on (`replace`: *Replace a surface
     /// of that name*).
     pub(crate) pointed: Vec<&'static str>,
+    /// The lists as the form was filled (to tell what was ticked since).
+    pub(crate) initial_lists: BTreeMap<&'static str, BTreeSet<String>>,
     /// Keys of the JSON the form has no field for: sent as they are.
     pub(crate) extra: Map<String, Value>,
     /// Shown as JSON text (the card's `params`) instead of the fields.
@@ -258,6 +260,20 @@ fn as_text(v: &Value) -> String {
 }
 
 impl FormState {
+    /// Whether something was typed or ticked since the form was filled: a field's text other
+    /// than it was (empty parts counted as empty), a list other than it was.
+    pub(crate) fn typed(&self) -> bool {
+        let empty = |t: &str| t.chars().all(|c| c == PARTS || c.is_whitespace());
+        let differs = |k: &&'static str, v: &String| {
+            let was = self.initial.get(k).map(String::as_str).unwrap_or("");
+            v != was && !(empty(v) && empty(was))
+        };
+        let lists = |m: &BTreeMap<&'static str, BTreeSet<String>>| -> BTreeMap<&'static str, BTreeSet<String>> {
+            m.iter().filter(|(_, s)| !s.is_empty()).map(|(k, s)| (*k, s.clone())).collect()
+        };
+        self.values.iter().any(|(k, v)| differs(k, v)) || lists(&self.lists) != lists(&self.initial_lists)
+    }
+
     /// A form with `values` as its fields' text, and these as what it was filled with.
     pub(crate) fn filled(values: BTreeMap<&'static str, String>) -> Self {
         FormState { initial: values.clone(), values, ..FormState::default() }
