@@ -52,6 +52,7 @@ pub mod ribbon;
 pub mod ribbon_fit;
 pub mod theme;
 pub mod viewport;
+mod workflowcard;
 
 #[cfg(test)]
 mod tests;
@@ -600,6 +601,21 @@ impl App {
             if id == "mesh.box" && f.values.get("region").is_none_or(String::is_empty) {
                 f.values.insert("region", self.box_region());
             }
+            // The patch card on the first region of the description, the material card on its
+            // first solid.
+            if f.values.get("region").is_none_or(String::is_empty) {
+                let first = self.session.case().and_then(|c| c.description()).and_then(|(d, _)| {
+                    let solid = |r: &&umcf_model::description::RegionDesc| r.kind == umcf_model::RegionKind::Solid;
+                    match id {
+                        "workflow.patch" => d.regions.first().map(|r| r.name.clone()),
+                        "workflow.material" => d.regions.iter().find(solid).map(|r| r.name.clone()),
+                        _ => None,
+                    }
+                });
+                if let Some(r) = first {
+                    f.values.insert("region", r);
+                }
+            }
             // The block card on the first region with blocks.
             if id == "mesh.block" && f.values.get("region").is_none_or(String::is_empty) {
                 f.values.insert("region", self.blocks_region());
@@ -674,6 +690,9 @@ impl App {
             // The block card, typed in: its untouched fields follow the region's grid as it
             // is now (another command may have changed it), so OK doesn't put back the old.
             self.blocks_rebase();
+        } else {
+            // The patch and material cards likewise, for what the description says.
+            self.workflow_rebase();
         }
     }
 
@@ -2301,8 +2320,15 @@ impl App {
                                             // card's grid is filled from that region's, the
                                             // JSON laid over it (what it leaves out is the
                                             // region's).
-                                            let region = f.values.get("region").cloned();
-                                            if d.id == "mesh.block" && f.filled_for != region {
+                                            // The workflow cards likewise for the region,
+                                            // patch or material they describe.
+                                            let region = if workflowcard::CARDS.contains(&d.id) {
+                                                Some(workflowcard::fill_key(d.id, f))
+                                            } else {
+                                                f.values.get("region").cloned()
+                                            };
+                                            let refills = d.id == "mesh.block" || workflowcard::CARDS.contains(&d.id);
+                                            if refills && f.filled_for != region {
                                                 f.filled_for = None;
                                                 f.refill = Some(v.clone());
                                             } else {

@@ -613,8 +613,10 @@ umcf-cli run --case path/to/case \
   --cmd 'case.save={}'
 ```
 
-In the desktop app it is *Switch a component* in the *More* group of the *Case* tab: its card
-starts with the temperature limit switched on.
+In the desktop app it is *Switch a component* in the *More* group of the *Case* tab: a
+[form](desktop.md#forms) of the component, *On* (ticked to start with) and, for the grass, the
+patches of air to tick (its mesh's and those the description gives it); its card starts with
+the temperature limit.
 
 ### Editing the description
 
@@ -648,3 +650,18 @@ that ends without its `;` (a key set after it would be read as part of it), are 
 the file is mended by hand,
 and a case without a description gets one from `workflow.import` first. An edit's outcome lists
 the problems the file still has. Each edit is one step in the history (Ctrl+Z) and the journal.
+
+In the desktop app they are *Describe a region*, *Describe a patch* and *Describe a material*
+in the *More* group of the *Case* tab, each a [form](desktop.md#forms) whose names can be typed
+or picked from those the description has (*▾*): its regions, the chosen region's patches and
+materials, the partner region's patches, the solver's material models for the case's version
+(the patch card starts on the description's first region, the material card on its first
+solid).
+Choosing what it describes fills in what the description says of it (a region's kind, a patch's
+role and partner, a material's model; a name the description doesn't have keeps what was
+typed for it, and clears what another's filled in), and only what is changed from that is sent: a role, partner or model emptied is taken
+away (`null`). A region's kind is sent as chosen. After another command or an undo, what wasn't
+typed follows the description. A patch is added with a role or a partner (a patch without either
+goes through *Edit as JSON*: `"role": null`). *Edit as JSON* naming another region, patch or
+material fills the form from that one's, with the JSON over it. *Write workflow description*
+and *Write the scripts* are forms of their *replace* checkbox.

@@ -11,13 +11,14 @@ umcf-engine.workspace = true
 umcf-render.workspace = true
 umcf-geom.workspace = true
 umcf-model.workspace = true
+umcf-schema.workspace = true
+umcf-core.workspace = true
 serde_json.workspace = true
 # Waits for the GPU adapter the GPU view probes for at start (wgpu is asynchronous).
 pollster = "1"
 eframe = { version = "0.37", default-features = false, features = ["glow", "wgpu", "x11", "wayland", "accesskit", "clipboard"] }
 
 [dev-dependencies]
-umcf-core.workspace = true
 umcf-foam-mesh.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 

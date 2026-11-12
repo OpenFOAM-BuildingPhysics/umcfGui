@@ -17,15 +17,18 @@ pub(crate) type Bounds = (Vec<String>, u64, Result<BBox, String>);
 impl App {
     /// Each frame: while the box card shows its form, its fields follow the region chosen (the
     /// region's box, when it has one), and the view previews the box; the block card's grid
-    /// likewise ([`App::block_card_frame`]); else nothing previewed.
+    /// likewise ([`App::block_card_frame`]); else nothing previewed. The workflow cards' choices
+    /// and fill-ins are set here too ([`App::workflow_card_frame`]).
     pub(crate) fn box_card_frame(&mut self) {
         let open =
             |id: &str| self.dialog.as_ref().is_some_and(|d| d.id == id && d.form.as_ref().is_some_and(|f| !f.json));
-        if open("mesh.block") {
+        let (block, boxed) = (open("mesh.block"), open("mesh.box"));
+        if block {
             self.block_card_frame();
             return;
         }
-        if !open("mesh.box") {
+        self.workflow_card_frame();
+        if !boxed {
             self.viewport.blocks = None;
             self.preview_summary = None;
             // A read that failed or was cancelled is tried again when the card opens again.
