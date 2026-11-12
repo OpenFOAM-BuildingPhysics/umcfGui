@@ -2315,24 +2315,17 @@ impl App {
                                 match serde_json::from_str::<Value>(&d.params) {
                                     Ok(v) => match f.fill(fs, &v) {
                                         Ok(()) => {
-                                            // What the JSON gives stays: a region it names
-                                            // doesn't fill the box card from its box. The block
-                                            // card's grid is filled from that region's, the
-                                            // JSON laid over it (what it leaves out is the
-                                            // region's).
-                                            // The workflow cards likewise for the region,
-                                            // patch or material they describe.
-                                            let region = if workflowcard::CARDS.contains(&d.id) {
-                                                Some(workflowcard::fill_key(d.id, f))
-                                            } else {
-                                                f.values.get("region").cloned()
-                                            };
-                                            let refills = d.id == "mesh.block" || workflowcard::CARDS.contains(&d.id);
-                                            if refills && f.filled_for != region {
+                                            // The block and workflow cards: filled again
+                                            // from the case as it is now (for what the JSON
+                                            // names, a command may have run meanwhile), the
+                                            // JSON laid over it. The box card: what the JSON
+                                            // gives stays, its region not filling it from its
+                                            // box.
+                                            if d.id == "mesh.block" || workflowcard::CARDS.contains(&d.id) {
                                                 f.filled_for = None;
                                                 f.refill = Some(v.clone());
                                             } else {
-                                                f.filled_for = region;
+                                                f.filled_for = f.values.get("region").cloned();
                                             }
                                             f.json = false;
                                             d.error = None;

@@ -672,9 +672,39 @@ impl FormState {
 
     /// The parameters the form makes; an error naming a field whose text isn't what it takes.
     pub(crate) fn params(&self, spec: &Spec) -> Result<Value, String> {
+        // *Take … out* ticked: only what names what is taken out goes with it (the commands
+        // refuse anything else with remove), whatever the other fields hold, unread.
+        if spec.fields.iter().any(|f| f.key == "remove")
+            && self.values.get("remove").map(String::as_str) == Some("true")
+        {
+            let mut out: Map<String, Value> = self
+                .extra
+                .iter()
+                .filter(|(k, _)| NAMES_WHAT.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for k in NAMES_WHAT {
+                let text = self.values.get(k).map(|t| t.trim()).unwrap_or("");
+                if !text.is_empty() && spec.fields.iter().any(|f| f.key == k) {
+                    out.insert(k.to_string(), json!(text));
+                }
+            }
+            out.insert("remove".to_string(), Value::Bool(true));
+            return Ok(Value::Object(out));
+        }
         let mut out = self.extra.clone();
         for f in spec.fields {
-            if let Kind::Surfaces | Kind::Regions | Kind::Names = f.kind {
+            if f.kind == Kind::Names {
+                // Sent when changed from what the card was filled with (the patches the case
+                // has), all unticked as `[]`.
+                let now = self.lists.get(f.key).cloned().unwrap_or_default();
+                let was = self.initial_lists.get(f.key).cloned().unwrap_or_default();
+                if now != was && !self.extra.contains_key(f.key) {
+                    out.insert(f.key.to_string(), json!(now.iter().collect::<Vec<_>>()));
+                }
+                continue;
+            }
+            if let Kind::Surfaces | Kind::Regions = f.kind {
                 let list: Vec<&String> = self.lists.get(f.key).map(|s| s.iter().collect()).unwrap_or_default();
                 // None ticked: left out (or what the JSON had that a list can't hold, kept).
                 if !list.is_empty() {
@@ -763,10 +793,13 @@ impl FormState {
         for p in &self.passed {
             out.insert(p.clone(), Value::Bool(true));
         }
-        // *Take … out* ticked: only what names what is taken out goes with it (the commands
-        // refuse anything else with remove), whatever the other fields were filled with.
-        if out.get("remove") == Some(&Value::Bool(true)) {
-            out.retain(|k, _| NAMES_WHAT.contains(&k.as_str()) || k == "remove");
+        // The grass's patches go only with the grass switched on (the command refuses them
+        // otherwise).
+        if spec.id == "workflow.component"
+            && (out.get("component") != Some(&json!("grass")) || out.get("on") == Some(&Value::Bool(false)))
+            && !self.extra.contains_key("patches")
+        {
+            out.remove("patches");
         }
         Ok(Value::Object(out))
     }
@@ -789,6 +822,11 @@ impl FormState {
             match f.kind {
                 Kind::Surfaces | Kind::Regions | Kind::Names => {
                     let names: Option<BTreeSet<String>> = match &v {
+                        // Names the JSON leaves out: as the card was filled (unchanged, so not
+                        // sent); the others none.
+                        None if f.kind == Kind::Names => {
+                            Some(self.initial_lists.get(f.key).cloned().unwrap_or_default())
+                        }
                         None => Some(BTreeSet::new()),
                         Some(Value::Array(a)) => a
                             .iter()
@@ -812,6 +850,13 @@ impl FormState {
                 k if sent_when_changed(k) => {
                     // Left out: as the form was filled (unchanged).
                     let was = self.initial.get(f.key).cloned().unwrap_or_default();
+                    // An explicit `null` where there is nothing to take away (a new patch's
+                    // role): kept and sent as it is.
+                    if v == Some(Value::Null) && was.trim().is_empty() {
+                        extra.insert(f.key.to_string(), Value::Null);
+                        self.values.insert(f.key, String::new());
+                        continue;
+                    }
                     let text = match &v {
                         None => Some(was.clone()),
                         Some(v) => grid_text(f.kind, v, &was),
@@ -880,6 +925,24 @@ impl FormState {
                 _ => {
                     let text = match &v {
                         Some(v @ (Value::Array(_) | Value::Object(_) | Value::Null)) => {
+                            keep(&mut extra, v);
+                            String::new()
+                        }
+                        // A name or a word the field takes as text only (not `true`, not 7).
+                        Some(v)
+                            if !v.is_string()
+                                && match f.kind {
+                                    Kind::Pick(_)
+                                    | Kind::WorkflowRegion
+                                    | Kind::Surface
+                                    | Kind::Text(_)
+                                    | Kind::File(_) => true,
+                                    // The run controls' words read `true` or 7 as their text,
+                                    // as the file has them.
+                                    Kind::Choice(_) => !spec.changed_only,
+                                    _ => false,
+                                } =>
+                        {
                             keep(&mut extra, v);
                             String::new()
                         }
@@ -1668,15 +1731,49 @@ mod tests {
         let mut c = FormState::default();
         c.fill(spec, &json!({"component": "grass"})).unwrap();
         assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": true}));
-        c.values.insert("on", "false".into());
         c.lists.entry("patches").or_default().insert("ground".into());
-        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": false, "patches": ["ground"]}));
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": true, "patches": ["ground"]}));
+        // Left out of the JSON: as the card was filled, not emptied.
+        c.initial_lists.insert("patches", c.lists["patches"].clone());
+        c.fill(spec, &json!({"component": "grass", "on": true})).unwrap();
+        assert!(c.params(spec).unwrap().get("patches").is_none());
+        c.lists.entry("patches").or_default().insert("ground".into());
+        // Off, or another component: the grass's patches aren't sent.
+        c.values.insert("on", "false".into());
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": false}));
+        c.values.insert("on", "true".into());
+        c.values.insert("component", "blending".into());
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "blending", "on": true}));
+        // All unticked from those the case had: `[]`, so the file's are taken away.
+        c.values.insert("component", "grass".into());
+        c.initial_lists.insert("patches", c.lists["patches"].clone());
+        assert!(c.params(spec).unwrap().get("patches").is_none(), "unchanged: left out");
+        c.lists.insert("patches", BTreeSet::new());
+        assert_eq!(c.params(spec).unwrap()["patches"], json!([]));
+        c.values.insert("component", "grass".into());
         // A bad `on` from the JSON is sent as it is, for the command to refuse; ticked, the box wins.
         c.fill(spec, &json!({"component": "grass", "on": "off"})).unwrap();
         assert_eq!(c.params(spec).unwrap()["on"], json!("off"));
         c.values.insert("on", "false".into());
         assert_eq!(c.params(spec).unwrap()["on"], json!(false));
-        // Taking out sends only what names it, whatever else the form was filled with.
+        // An explicit null for a new patch's role (nothing to take away) is sent as it is; a
+        // name that isn't text (`true`) is kept for the command to refuse.
+        let spec = super::spec("workflow.patch").unwrap();
+        let mut n = FormState::default();
+        n.fill(spec, &json!({"region": "air", "patch": "new", "role": null})).unwrap();
+        assert_eq!(n.params(spec).unwrap(), json!({"region": "air", "patch": "new", "role": null}));
+        let spec = super::spec("workflow.region").unwrap();
+        let mut b = FormState::default();
+        b.fill(spec, &json!({"region": true, "kind": "fluid"})).unwrap();
+        assert_eq!(b.params(spec).unwrap()["region"], json!(true));
+        // Taking out sends only what names it, whatever else the form was filled with, and
+        // what it doesn't send isn't read (a bad station).
+        let blocks = super::spec("mesh.block").unwrap();
+        let mut g = FormState::default();
+        g.values.insert("region", "air".into());
+        g.values.insert("x", "0|1|1\nfar".into());
+        g.values.insert("remove", "true".into());
+        assert_eq!(g.params(blocks).unwrap(), json!({"region": "air", "remove": true}));
         let spec = super::spec("workflow.region").unwrap();
         let mut r = FormState::default();
         r.fill(spec, &json!({"region": "street", "kind": "solid"})).unwrap();

@@ -19,6 +19,7 @@ pub(crate) fn fill_key(id: &str, f: &FormState) -> String {
     match id {
         "workflow.patch" => format!("{}/{}", v("region"), v("patch")),
         "workflow.material" => format!("{}/{}", v("region"), v("material")),
+        "workflow.component" => v("component"),
         _ => v("region"),
     }
 }
@@ -44,6 +45,7 @@ fn described(id: &str, d: Option<&Description>, region: &str, f: &FormState) -> 
     let value = |k: &str| f.values.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
     let r = d?.region(region)?;
     match id {
+        "workflow.region" => Some(vec![("kind", kind_name(r.kind).to_string())]),
         "workflow.patch" => {
             let p = r.patches.iter().find(|p| p.name == value("patch"))?;
             let role = p.role.map(|x| x.name().to_string()).unwrap_or_default();
@@ -66,16 +68,58 @@ fn described(id: &str, d: Option<&Description>, region: &str, f: &FormState) -> 
 
 /// The fields a patch or material card fills from the description.
 fn card_fields(id: &str) -> &'static [&'static str] {
-    if id == "workflow.patch" { &["role", "partner"] } else { &["model"] }
+    match id {
+        "workflow.region" => &["kind"],
+        "workflow.patch" => &["role", "partner"],
+        _ => &["model"],
+    }
+}
+
+/// The patches the air's grass grows on, as `constant/air/grassProperties` names them (its
+/// model's coefficients, `grassPatches`); none without the file.
+fn grass_patches(case: Option<&umcf_model::Case>) -> std::collections::BTreeSet<String> {
+    let Some(doc) = case.and_then(|c| c.dict("constant/air/grassProperties")) else { return Default::default() };
+    // As the command takes the model: the file's, else the first of the solver's whose
+    // coefficients it has (for the case's version, or either when it isn't known).
+    let cat = umcf_schema::catalog::catalog();
+    let models: Vec<&str> = match case.and_then(|c| c.layout.version) {
+        Some(v) => cat.choices("grassModel", v),
+        None => umcf_core::OfVersion::ALL.iter().flat_map(|v| cat.choices("grassModel", *v)).collect(),
+    };
+    let model = match doc.value(&["grassModel"]) {
+        Some(m) if m != "none" => Some(m),
+        _ => doc.root.entries().find_map(|e| {
+            e.key().strip_suffix("Coeffs").filter(|m| e.dict().is_some() && models.contains(m)).map(str::to_string)
+        }),
+    };
+    let Some(model) = model else { return Default::default() };
+    let list = [model.as_str(), "Coeffs"].concat();
+    doc.get(&[list.as_str(), "grassPatches"])
+        .and_then(|e| e.value_text())
+        .map(|t| t.replace(['(', ')'], " ").split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 impl App {
-    /// After a command, on a patch or material card typed in: the fields not typed in follow
+    /// After a command, on a region, patch or material card typed in: the fields not typed in follow
     /// what the description says now, and what they were filled with moves to it, so OK
     /// doesn't put back the old (an undo, a command run elsewhere).
     pub(crate) fn workflow_rebase(&mut self) {
         let Some(id) = self.dialog.as_ref().map(|d| d.id) else { return };
-        if !matches!(id, "workflow.patch" | "workflow.material") {
+        if id == "workflow.component" {
+            // The grass's ticks not changed follow the case's file; what they were filled with
+            // moves to it.
+            let now = grass_patches(self.session.case());
+            let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()).filter(|f| !f.json) else { return };
+            if f.values.get("component").map(|c| c.trim()) == Some("grass") {
+                if f.lists.get("patches") == f.initial_lists.get("patches") {
+                    f.lists.insert("patches", now.clone());
+                }
+                f.initial_lists.insert("patches", now);
+            }
+            return;
+        }
+        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material") {
             return;
         }
         let description = self.session.case().and_then(|c| c.description()).map(|(d, _)| d);
@@ -83,7 +127,11 @@ impl App {
         let region = f.values.get("region").map(|v| v.trim().to_string()).unwrap_or_default();
         // Gone from the description (an undo of adding it): what the form holds is all new.
         let Some(now) = described(id, description.as_ref(), &region, f) else {
+            // What was filled in from it and not changed since goes with it.
             for k in card_fields(id) {
+                if !f.extra.contains_key(*k) && f.values.get(k) == f.initial.get(k) {
+                    f.values.insert(k, String::new());
+                }
                 f.initial.insert(k, String::new());
             }
             return;
@@ -176,19 +224,18 @@ impl App {
         }
         f.filled_for = Some(key);
         let region = value(f, "region");
-        let r = description.as_ref().and_then(|d| d.region(&region));
         match id {
-            "workflow.region" => {
-                if let Some(r) = r {
-                    f.values.insert("kind", kind_name(r.kind).to_string());
-                }
-                // Sent as chosen (the command needs a kind or remove), not only when changed.
-                f.initial.insert("kind", f.values.get("kind").cloned().unwrap_or_default());
+            "workflow.component" => {
+                // The grass's patches as the case has them (what OK replaces), ticked.
+                let ticked: std::collections::BTreeSet<String> =
+                    if value(f, "component") == "grass" { grass_patches(case) } else { Default::default() };
+                f.lists.insert("patches", ticked.clone());
+                f.initial_lists.insert("patches", ticked);
             }
             _ => {
-                // What the description says of the patch or material: shown when it has it; a
-                // name it doesn't have (a new one, or one being typed) keeps what was typed,
-                // all of it new.
+                // What the description says of the region, patch or material: shown when it
+                // has it; a name it doesn't have (a new one, or one being typed) keeps what was
+                // typed, and loses what another's filled in.
                 let found = described(id, description.as_ref(), &region, f);
                 for k in card_fields(id) {
                     match found.as_ref().and_then(|v| v.iter().find(|(x, _)| x == k)) {
@@ -198,8 +245,6 @@ impl App {
                             f.initial.insert(k, v.clone());
                         }
                         None => {
-                            // Left as it was filled from another (not changed since): cleared,
-                            // not carried over to this one.
                             if f.values.get(k) == f.initial.get(k) {
                                 f.values.insert(k, String::new());
                             }

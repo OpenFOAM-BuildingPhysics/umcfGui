@@ -379,7 +379,8 @@ blocks (ticked on a layer of the grid, x across and y up, for grids of up to 40 
 and y; and listed, a block `i j k` a line), each side's patch (empty: none), *Write over a
 blockMeshDict edited by hand* and *Take the blocks out of the description*. It is filled from
 the region's blocks (choosing another region fills it from that one's, what was typed going;
-*Edit as JSON* naming another region fills it from that one's, with the JSON over it; after
+*Back to the form* from *Edit as JSON* fills it again from the blocks of the region the JSON
+names, as they are then, with the JSON over it; after
 another command, the fields not typed in follow the region's grid as it is then); what is
 left as it was filled is left out of the parameters (the region
 keeps it), so *OK* sends only the axes, missing blocks and sides changed (a side emptied as
@@ -615,8 +616,11 @@ umcf-cli run --case path/to/case \
 
 In the desktop app it is *Switch a component* in the *More* group of the *Case* tab: a
 [form](desktop.md#forms) of the component, *On* (ticked to start with) and, for the grass, the
-patches of air to tick (its mesh's and those the description gives it); its card starts with
-the temperature limit.
+patches of air to tick (its mesh's and those the description gives it), those the case's
+`grassProperties` names ticked to start with; the patches are sent only when changed (all
+unticked: `[]`, the file's taken away), and only with the grass switched on; after another
+command or an undo, ticks not changed follow the file. Its card starts
+with the temperature limit.
 
 ### Editing the description
 
@@ -662,6 +666,8 @@ role and partner, a material's model; a name the description doesn't have keeps 
 typed for it, and clears what another's filled in), and only what is changed from that is sent: a role, partner or model emptied is taken
 away (`null`). A region's kind is sent as chosen. After another command or an undo, what wasn't
 typed follows the description. A patch is added with a role or a partner (a patch without either
-goes through *Edit as JSON*: `"role": null`). *Edit as JSON* naming another region, patch or
-material fills the form from that one's, with the JSON over it. *Write workflow description*
+goes through *Edit as JSON*: `"role": null`, sent as given). *Back to the form* fills the form
+again from what the JSON names, as the description has it then, with the JSON over it; a value
+a field can't hold (a name that isn't text) is kept and sent as it is, for the command to
+refuse. *Write workflow description*
 and *Write the scripts* are forms of their *replace* checkbox.
