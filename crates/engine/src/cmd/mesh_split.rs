@@ -15,7 +15,7 @@ pub(super) const SPLIT: CommandSpec = CommandSpec {
     label: "Split mesh",
     menu: "Mesh/Split from another region",
     shortcut: None,
-    params: "region: a region of system/umcfWorkflow, whose mesh becomes the cells of another region's mesh outside a cell zone (the street canyon's vegetation: the air without the trees). of: the region whose mesh is copied, built before it (listed before it in the description). zone: the cell zone taken out, made in the copy by a topoSetDict (its cellZoneSet action of that name); not region and a number (region1, region2: what splitMeshRegions names the parts outside it), neither it nor region1 a region's name (also the region split), and no directory of the case named constant/<zone>, 0/<zone> or system/<region>/<zone> (the split writes its parts there, and the scripts remove them); refused while a region of the case or the description is named region and a number (region2: splitMeshRegions names the parts outside the zone so). dict: that topoSetDict, a path in the case (default: system/<of>/topoSetDict, the copied region's own). The region's mesh entry becomes { from split; of <of>; zone <zone>; [dict \"<dict>\";] }, in place of the mesh it had; refused while the region has blocks or a box (take them out first, mesh.block remove: true). remove: true takes the split mesh out (the region is then built by no step). workflow.scripts writes the steps into Allprepare: the copy of the mesh without its cell zones and sets, the meshes of parts an earlier split left (constant/region1/polyMesh, constant/region2/polyMesh) removed, topoSet -region <region> -dict <dict> (OpenFOAM-8: the path from the region's directory, system/../<of>/topoSetDict), splitMeshRegions -region <region> -cellZones -overwrite -noFields, a stop when the part outside the zone isn't region1 alone, the part outside the zone (constant/region1/polyMesh) moved in, and only what the split made removed (the zone's mesh, OpenFOAM-8's fvSchemes and fvSolution of each part, the cellToRegion maps; the parts' directories when empty); then the region's own steps. The outcome is workflow.region's, with the zones the dictionary makes (zones; null when the case doesn't have it) and a note when it doesn't make the zone, makes others too (splitMeshRegions -cellZones would split those off as well), isn't there, or the zones it makes can't all be told; no script splits the region then. case.save writes the description; edit.undo takes it back. The case check (workflow.split) names a split from a region not built before it, a zone not named or not made by the dictionary, and a zone or region1 that is a region's name.",
+    params: "region: a region of system/umcfWorkflow, whose mesh becomes the cells of another region's mesh outside a cell zone (the street canyon's vegetation: the air without the trees). of: the region whose mesh is copied, built before it (listed before it in the description). zone: the cell zone taken out, made in the copy by a topoSetDict (its cellZoneSet action of that name); not region and a number (region1, region2: what splitMeshRegions names the parts outside it), neither it nor region1 a region's name (also the region split), and no directory of the case named constant/<zone>, 0/<zone> or system/<region>/<zone> (the split writes its parts there, and the scripts remove them); refused while a region of the case or the description is named region and a number, and workflow.scripts writes none while the case has constant/<zone> or system/<region>/<zone> (not a region's) or a time directory with <region>/polyMesh (region2: splitMeshRegions names the parts outside the zone so). dict: that topoSetDict, a path in the case (default: system/<of>/topoSetDict, the copied region's own). The region's mesh entry becomes { from split; of <of>; zone <zone>; [dict \"<dict>\";] }, in place of the mesh it had; refused while the region has blocks or a box (take them out first, mesh.block remove: true). remove: true takes the split mesh out (the region is then built by no step). workflow.scripts writes the steps into Allprepare: the copy of the mesh without its cell zones and sets, the meshes of parts an earlier split left (constant/region1/polyMesh, constant/region2/polyMesh) removed, topoSet -region <region> -dict <dict> (OpenFOAM-8: the path from the region's directory, system/../<of>/topoSetDict), splitMeshRegions -region <region> -cellZones -overwrite -noFields, a stop when the part outside the zone isn't region1 alone, the part outside the zone (constant/region1/polyMesh) moved in, and only what the split made removed (the zone's mesh, OpenFOAM-8's fvSchemes and fvSolution of each part, the cellToRegion maps; the parts' directories when empty); then the region's own steps. The outcome is workflow.region's, with the zones the dictionary makes (zones; null when the case doesn't have it) and a note when it doesn't make the zone, makes others too (splitMeshRegions -cellZones would split those off as well), isn't there, or the zones it makes can't all be told; no script splits the region then. case.save writes the description; edit.undo takes it back. The case check (workflow.split) names a split from a region not built before it, a zone not named or not made by the dictionary, and a zone or region1 that is a region's name.",
     enabled: needs_case,
     run: split,
     journal: true,
@@ -103,4 +103,43 @@ fn split(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
 /// Whether the description lists `name` as a region.
 fn described(case: &umcf_model::Case, name: &str) -> bool {
     case.description().is_some_and(|(d, _)| d.region(name).is_some())
+}
+
+/// What on disk keeps the scripts from splitting a region of `d` (the case's directories, which
+/// the description doesn't tell): a directory of the zone's name in `constant/` or
+/// `system/<region>/` that isn't a region's (the split writes its part there and the clean-up
+/// takes its mesh), or a time directory with a mesh of the region (`topoSet` and
+/// `splitMeshRegions` read the mesh of the time they start at, which may be that one and not
+/// the copy in `constant/`). `None`: nothing.
+pub(crate) fn conflicts(d: &umcf_model::description::Description, fs: &dyn umcf_core::CaseFs) -> Option<String> {
+    let splits = d.regions.iter().any(|r| matches!(r.mesh, Some(umcf_model::workflow::MeshBuild::Split(_))));
+    if !splits {
+        return None;
+    }
+    let times: Vec<String> = match fs.list("") {
+        Ok(names) => names.into_iter().filter(|t| t.parse::<f64>().is_ok_and(f64::is_finite) && fs.is_dir(t)).collect(),
+        // Its time directories can't be told: the split may read a mesh of one.
+        Err(e) => return Some(format!("the case directory can't be listed for its time directories ({e})")),
+    };
+    for r in &d.regions {
+        let Some(umcf_model::workflow::MeshBuild::Split(sp)) = &r.mesh else { continue };
+        let name = &r.name;
+        if let Some(zone) = sp.zone.as_deref()
+            && d.region(zone).is_none()
+        {
+            for dir in [format!("constant/{zone}"), format!("system/{name}/{zone}")] {
+                if fs.is_dir(&dir) {
+                    return Some(format!(
+                        "region {name}, split by the cell zone {zone}: the case has {dir}, where the split writes its part and the scripts remove it; name another zone"
+                    ));
+                }
+            }
+        }
+        if let Some(t) = times.iter().find(|t| fs.is_dir(&format!("{t}/{name}/polyMesh"))) {
+            return Some(format!(
+                "region {name}, split by a cell zone: the case has {t}/{name}/polyMesh, which topoSet and splitMeshRegions may read instead of the copy in constant/; remove it"
+            ));
+        }
+    }
+    None
 }

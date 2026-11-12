@@ -1073,7 +1073,8 @@ pub fn zones_made(doc: &umcf_foam_dict::Document) -> Vec<String> {
 }
 
 /// The cell zones a `topoSetDict` makes, when they can be told (its `cellZoneSet` actions in
-/// order: a `remove` takes a zone away): `None` when the file has a directive or macro, a key
+/// order: `new` and `clear` make a zone, a `remove` takes it away): `None` when an action other
+/// than those is on a zone not made yet (topoSet would stop: the copy has no zones), or when the file has a directive or macro, a key
 /// given twice (at its top or in an action), a `cellZoneSet` action without one plain `action`,
 /// or `actions` isn't a list of plain dictionaries whose `name` and `type`
 /// are single words (an `#include`, a `$macro`: what OpenFOAM reads may make others).
@@ -1102,8 +1103,13 @@ pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
         };
         let (Some(kind), Some(name)) = (word("type"), word("name")) else { return None };
         if kind == "cellZoneSet" {
-            // In order: `remove` takes the zone away, any other action leaves it made.
+            // In order: `new` and `clear` make the zone, `remove` takes it away; the others
+            // (`add`, `subset`, `delete`, `invert`, …) read a zone there already, and topoSet
+            // stops on one that isn't (the copy's zones are taken out first).
             let action = word("action")?;
+            if !matches!(action.as_str(), "new" | "clear" | "remove") && !out.contains(&name) {
+                return None;
+            }
             apply(&mut out, name, &action);
         }
     }
@@ -1111,7 +1117,8 @@ pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
 }
 
 /// A `cellZoneSet` action on the zones made so far: `remove` takes `name` away, any other
-/// leaves it made (`new`, `add`, `subset`, `clear`, …: the zone is there, even empty).
+/// leaves it made (`new`, `clear`, and those on a zone there: `add`, `subset`, …; the zone
+/// is there, even empty).
 fn apply(out: &mut Vec<String>, name: String, action: &str) {
     if action == "remove" {
         out.retain(|z| *z != name);

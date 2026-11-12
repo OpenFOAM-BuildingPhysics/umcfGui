@@ -529,6 +529,8 @@ fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
         format!("{plain}\nactions ( );"),
         "actions ( { name a; name trees; type cellZoneSet; } );".to_string(),
         "actions ( { name trees; type cellZoneSet; } );".to_string(),
+        // add on a zone not made yet: topoSet would stop.
+        "actions ( { name trees; type cellZoneSet; action add; source setToCellZone; } );".to_string(),
     ] {
         assert_eq!(told(&unclear), None, "{unclear}");
     }

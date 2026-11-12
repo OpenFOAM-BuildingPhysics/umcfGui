@@ -612,7 +612,13 @@ not: the clean-up works in their directories), when a region is named `region` a
 when the dictionary makes other cell zones too (`splitMeshRegions -cellZones` would split those
 off as well, writing their meshes to `constant/<zone>`), makes zones that can't be told (it
 doesn't read, or its actions use `#include` or a macro), doesn't make the zone, or isn't there
-(the script would replace the region's mesh by the copy before `topoSet` stopped it), or when the region copied isn't built before it.
+(the script would replace the region's mesh by the copy before `topoSet` stopped it), when the
+case has a directory of the zone's name in `constant/` or `system/<region>/` that isn't a
+region's (the split writes its part there, and the clean-up takes its mesh), or a time
+directory with a mesh of the region (`topoSet` and `splitMeshRegions` read the mesh of the time
+they start at, which may be that one and not the copy: the street canyon starts from its latest
+time; with results there, the split's `cellToRegion` field is also written into that time's
+region directory and stays), or when the region copied isn't built before it.
 The fields the tutorial copies into the region after the split (`cp 0/vegetation.bckp/*
 0/vegetation/`) are listed by the import and not yet written ([gaps](../gaps.md), row 8).
 
@@ -627,8 +633,9 @@ meshes, their `fvSchemes` and `fvSolution` in `system/<r>/`, the maps, and the t
 when the split wrote one. Anything else is listed, as are a copy no split follows and a `mkdir`
 no copy follows. The zone is the one the clean-up names (`system/vegetation/trees`,
 `constant/trees/polyMesh`; not a dictionary's or a region's name) when the dictionary makes it,
-else the one cell zone the dictionary makes (its `cellZoneSet` actions, in order: a `remove`
-takes a zone away).
+else the one cell zone the dictionary makes (its `cellZoneSet` actions, in order: `new` and
+`clear` make a zone, `remove` takes it away, and another action on a zone not made yet, which
+would stop `topoSet` on the copy, leaves the zones untold).
 
 `mesh.split` sets it: `region`, `of` (the region copied), `zone` and `dict` (default:
 `system/<of>/topoSetDict`), in place of the mesh the region had, or `remove: true` to take it

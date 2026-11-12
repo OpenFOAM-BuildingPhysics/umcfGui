@@ -89,15 +89,21 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     json!("no OpenFOAM version: the description names none, and the case's can't be told"),
                 );
             }
-            Some(v) => match d.scripts(case, v) {
-                Ok(written) => {
-                    o.insert("version".into(), json!(v.to_string()));
-                    let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
-                    o.insert("scripts".into(), Value::Array(texts));
+            // What on disk keeps a split from being written, then the scripts.
+            Some(v) => match super::mesh_split::conflicts(&d, fs) {
+                Some(why) => {
+                    o.insert("scriptsError".into(), json!(why));
                 }
-                Err(e) => {
-                    o.insert("scriptsError".into(), json!(e.to_string()));
-                }
+                None => match d.scripts(case, v) {
+                    Ok(written) => {
+                        o.insert("version".into(), json!(v.to_string()));
+                        let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
+                        o.insert("scripts".into(), Value::Array(texts));
+                    }
+                    Err(e) => {
+                        o.insert("scriptsError".into(), json!(e.to_string()));
+                    }
+                },
             },
         }
     }
@@ -703,6 +709,9 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "{PATH} names no OpenFOAM version, and the case's can't be told: set version 8 or 12"
         )));
     };
+    if let Some(why) = super::mesh_split::conflicts(&d, o.fs.as_ref()) {
+        return Err(Error::Failed(format!("{}: {why}: no script is written", SCRIPTS.id)));
+    }
     let written =
         d.scripts(&o.case, version).map_err(|e| Error::Failed(format!("{}: {e}: no script is written", SCRIPTS.id)))?;
     let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();

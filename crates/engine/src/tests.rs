@@ -4242,3 +4242,24 @@ fn a_splits_dictionary_makes_its_zone_alone() {
     let said = out.data["diagnostics"].to_string();
     assert!(said.contains("makes others too (brick)"), "{said}");
 }
+
+/// What on disk keeps the scripts from splitting: a directory of the zone's name that isn't a
+/// region's, and a later time with a mesh of the region (topoSet and splitMeshRegions may read
+/// it instead of the copy).
+#[test]
+fn a_split_isnt_written_over_what_the_case_has() {
+    for (extra, says) in [
+        ("constant/trees/polyMesh/faces", "the case has constant/trees"),
+        ("3600/vegetation/polyMesh/faces", "the case has 3600/vegetation/polyMesh"),
+    ] {
+        let mut fs = example("of12/streetCanyon_CFDHAM_veg");
+        fs.insert(extra, b"x".to_vec());
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+        s.execute("workflow.import", &Value::Null).unwrap();
+        let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+        assert!(e.contains(says), "{extra}: {e}");
+        let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+        assert!(out.data["scriptsError"].as_str().unwrap().contains(says), "{extra}: {}", out.data["scriptsError"]);
+    }
+}
