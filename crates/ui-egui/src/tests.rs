@@ -520,17 +520,8 @@ fn commands_with_parameters_open_a_dialog_and_undo_has_its_shortcut() {
     assert!(h.state().dialog.as_ref().unwrap().error.as_deref().unwrap().starts_with("not JSON"));
     // Back to the form, the end time typed there.
     h.state_mut().dialog.as_mut().unwrap().params = "{}".into();
-    // The card settles (its scroll area grows to its height over frames) before its link is
-    // clicked.
-    let mut last = None;
-    for _ in 0..200 {
-        h.run();
-        let now = h.get_by_label("Back to the form").rect();
-        if last == Some(now) {
-            break;
-        }
-        last = Some(now);
-    }
+    h.run();
+    h.run();
     h.get_by_label("Back to the form").click();
     h.run();
     assert!(!h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().json);
@@ -2948,28 +2939,13 @@ fn the_block_card_previews_the_grid_and_makes_it() {
         let d = h.state_mut().dialog.as_mut().unwrap();
         d.form.as_mut().unwrap().values.insert("remove", String::new());
     }
-    // The card settles over frames (its lines change height) before the link is clicked.
-    let mut last = None;
-    for _ in 0..200 {
-        h.run();
-        let now = h.get_by_label("Edit as JSON").rect();
-        if last == Some(now) {
-            break;
-        }
-        last = Some(now);
-    }
+    h.run();
+    h.run();
     h.get_by_label("Edit as JSON").click();
     h.run();
     h.state_mut().dialog.as_mut().unwrap().params = r#"{"region": "solid", "z": [0, [2, 1], 4]}"#.into();
-    let mut last = None;
-    for _ in 0..200 {
-        h.run();
-        let now = h.get_by_label("Back to the form").rect();
-        if last == Some(now) {
-            break;
-        }
-        last = Some(now);
-    }
+    h.run();
+    h.run();
     h.get_by_label("Back to the form").click();
     h.run();
     h.run();
@@ -3037,15 +3013,8 @@ fn the_box_card_previews_the_box_and_makes_it() {
     h.run();
     h.state_mut().dialog.as_mut().unwrap().params =
         r#"{"region": "street", "margin": [1, 1, 1, 1, 0, 1], "cellSize": 3}"#.into();
-    let mut last = None;
-    for _ in 0..200 {
-        h.run();
-        let now = h.get_by_label("Back to the form").rect();
-        if last == Some(now) {
-            break;
-        }
-        last = Some(now);
-    }
+    h.run();
+    h.run();
     h.get_by_label("Back to the form").click();
     h.run();
     h.run();
@@ -3128,5 +3097,47 @@ fn the_box_card_previews_the_box_and_makes_it() {
         .or_default()
         .insert("trees.stl".into());
     assert!(form(&h).typed());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A command's card sits still once open: its *OK* row doesn't move frame after frame (a
+/// right-to-left layout straight in the card took last frame's height, and the card went up and
+/// down without end), for every card with a form and one that takes JSON.
+#[test]
+fn a_command_card_stays_put_once_open() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-stays-put", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+    )
+    .unwrap();
+    let mut h = harness(App::new(s));
+    let ids = [
+        "control.set",
+        "geometry.import",
+        "geometry.trees",
+        "geometry.repair",
+        "geometry.scale",
+        "mesh.box",
+        "mesh.block",
+        "scene.snapshot",
+        "workflow.region",
+    ];
+    for id in ids {
+        h.state_mut().dialog = None;
+        h.run();
+        h.state_mut().invoke(id);
+        // Its first frames lay it out.
+        for _ in 0..3 {
+            h.run();
+        }
+        let at = h.get_by_label("OK").rect();
+        for frame in 0..30 {
+            h.run();
+            assert_eq!(h.get_by_label("OK").rect(), at, "{id}: OK moved at frame {frame}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
