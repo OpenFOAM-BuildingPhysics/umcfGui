@@ -2325,12 +2325,16 @@ impl App {
                         forms::show_offered(ui, f);
                     }
                     ui.add_space(4.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let ok = egui::Button::new(RichText::new("OK").color(Color32::WHITE).strong())
-                            .fill(t.accent)
-                            .min_size(vec2(64.0, 26.0));
-                        run = ui.add(ok).clicked();
-                        close_dialog |= ui.add(egui::Button::new("Cancel").min_size(vec2(64.0, 26.0))).clicked();
+                    // In a row of its own: a right-to-left layout straight in the card would take
+                    // the card's height as it was last frame, and the card would never settle.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let ok = egui::Button::new(RichText::new("OK").color(Color32::WHITE).strong())
+                                .fill(t.accent)
+                                .min_size(vec2(64.0, 26.0));
+                            run = ui.add(ok).clicked();
+                            close_dialog |= ui.add(egui::Button::new("Cancel").min_size(vec2(64.0, 26.0))).clicked();
+                        });
                     });
                 });
                 ui.add_space(t.gap);
