@@ -3355,6 +3355,7 @@ dependencies = [
  "umcf-geom",
  "umcf-model",
  "umcf-render",
+ "umcf-schema",
 ]
 
 [[package]]

@@ -2911,7 +2911,7 @@ fn the_block_card_previews_the_grid_and_makes_it() {
         "{:?}",
         h.state().preview_summary
     );
-    // Remove with a change, or with replace: refused, as the command refuses it.
+    // Remove with a change: only the region goes with it (the change isn't sent).
     {
         let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
         f.values = f.initial.clone();
@@ -2919,11 +2919,8 @@ fn the_block_card_previews_the_grid_and_makes_it() {
         f.values.insert("remove", "true".into());
     }
     h.run();
-    assert!(
-        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("give nothing else but the region")),
-        "{:?}",
-        h.state().preview_summary
-    );
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air", "remove": true}));
+    assert!(matches!(&h.state().preview_summary, Some(Ok(l)) if l.contains("takes the blocks")));
     // Remove alone: said, nothing previewed.
     {
         let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
@@ -3097,6 +3094,187 @@ fn the_box_card_previews_the_box_and_makes_it() {
         .or_default()
         .insert("trees.stl".into());
     assert!(form(&h).typed());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The workflow cards: what they describe filled in from the description when chosen (a
+/// region's kind, a patch's role and partner, a material's model), the names they offer, and
+/// only what changed sent.
+#[test]
+fn the_workflow_cards_fill_from_the_description() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-workflow-cards", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid"}], "radiation": "air"}),
+    )
+    .unwrap();
+    s.execute("workflow.patch", &json!({"region": "air", "patch": "ground", "role": "ground"})).unwrap();
+    s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "role": "coupled", "partner": {"region": "air", "patch": "ground"}})).unwrap();
+    let mut h = harness(App::new(s));
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    let set = |h: &mut Harness<'_, App>, k: &'static str, v: &str| {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert(k, v.to_string());
+    };
+    // A patch: its role and partner filled in when it is chosen; only what changed sent.
+    h.state_mut().invoke("workflow.patch");
+    h.run();
+    set(&mut h, "region", "street");
+    h.run();
+    assert!(form(&h).options["patch"].contains(&"street_to_air".to_string()), "{:?}", form(&h).options);
+    set(&mut h, "patch", "street_to_air");
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["role"], "coupled");
+    assert_eq!(form(&h).values["partner"], "air|ground");
+    assert_eq!(form(&h).options[crate::forms::PARTNER_PATCHES], vec!["ground".to_string()]);
+    let spec = crate::forms::spec("workflow.patch").unwrap();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "street", "patch": "street_to_air"}));
+    set(&mut h, "role", "");
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["role"], json!(null));
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    let d = h.state().session().case().unwrap().description().unwrap().0;
+    let p = d.region("street").unwrap().patches.iter().find(|p| p.name == "street_to_air").cloned().unwrap();
+    assert_eq!(p.role, None);
+    assert_eq!(p.partner, Some(("air".to_string(), "ground".to_string())));
+    // Typed in, the card follows a command run meanwhile for what wasn't typed: the role set
+    // elsewhere shows, the typed partner stays, and OK doesn't put the old role back.
+    h.state_mut().invoke("workflow.patch");
+    h.run();
+    set(&mut h, "region", "street");
+    h.run();
+    set(&mut h, "patch", "street_to_air");
+    h.run();
+    h.run();
+    set(&mut h, "partner", "air|top");
+    h.state_mut().act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "role": "side"}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["role"], "side");
+    assert_eq!(form(&h).values["partner"], "air|top");
+    assert_eq!(
+        form(&h).params(spec).unwrap(),
+        json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "top"}})
+    );
+    // Leaving a patch the description has for a name it doesn't: what was filled in from it is
+    // cleared, not carried over; what was typed (the partner) stays.
+    set(&mut h, "patch", "street_to_air2");
+    h.run();
+    assert_eq!(form(&h).values["role"], "");
+    assert_eq!(form(&h).values["partner"], "air|top");
+    // A new patch's name being typed keeps the role chosen for it.
+    set(&mut h, "patch", "new");
+    h.run();
+    set(&mut h, "role", "inlet");
+    h.run();
+    set(&mut h, "patch", "newer");
+    h.run();
+    assert_eq!(form(&h).values["role"], "inlet");
+    assert_eq!(form(&h).params(spec).unwrap()["role"], json!("inlet"));
+    h.state_mut().dialog = None;
+    // A region: its kind filled in; the description's regions offered.
+    h.state_mut().invoke("workflow.region");
+    h.run();
+    assert_eq!(form(&h).options["region"], vec!["air".to_string(), "street".to_string()]);
+    set(&mut h, "region", "street");
+    h.run();
+    assert_eq!(form(&h).values["kind"], "solid");
+    // A new name: the kind filled in from street goes; one chosen for it stays.
+    set(&mut h, "region", "trees");
+    h.run();
+    assert_eq!(form(&h).values["kind"], "");
+    set(&mut h, "kind", "vegetation");
+    h.run();
+    set(&mut h, "region", "trees2");
+    h.run();
+    assert_eq!(form(&h).values["kind"], "vegetation");
+    // Typed in, the region card follows a command run meanwhile for a kind not chosen.
+    set(&mut h, "region", "street");
+    h.run();
+    h.state_mut().act("workflow.region", json!({"region": "street", "kind": "fluid"}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["kind"], "fluid");
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    h.run();
+    // A material: the solid regions and the solver's models offered; its model filled in.
+    h.state_mut().dialog = None;
+    h.state_mut().invoke("workflow.material");
+    h.run();
+    assert_eq!(form(&h).options["region"], vec!["street".to_string()]);
+    assert!(form(&h).options["model"].iter().any(|m| m == "HamstadBrick"), "{:?}", form(&h).options["model"]);
+    set(&mut h, "region", "street");
+    set(&mut h, "material", "brick");
+    h.run();
+    set(&mut h, "model", "HamstadBrick");
+    h.run();
+    let spec = crate::forms::spec("workflow.material").unwrap();
+    assert_eq!(
+        form(&h).params(spec).unwrap(),
+        json!({"region": "street", "material": "brick", "model": "HamstadBrick"})
+    );
+    // A component: on, unless unticked; the air's patches offered.
+    h.state_mut().dialog = None;
+    h.state_mut().invoke("workflow.component");
+    h.run();
+    let spec = crate::forms::spec("workflow.component").unwrap();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "temperatureLimit", "on": true}));
+    assert!(form(&h).options["patches"].contains(&"ground".to_string()));
+    // The grass: the patches the case has it on start ticked, and only a change is sent.
+    h.state_mut().act("workflow.component", json!({"component": "grass", "on": true, "patches": ["ground"]}));
+    h.run();
+    h.run();
+    set(&mut h, "component", "grass");
+    h.run();
+    assert_eq!(form(&h).lists["patches"].iter().cloned().collect::<Vec<_>>(), vec!["ground".to_string()]);
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "grass", "on": true}));
+    // Through *Edit as JSON* and back, the ticks stay as the case has them: nothing sent.
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.run();
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).lists["patches"].iter().cloned().collect::<Vec<_>>(), vec!["ground".to_string()]);
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "grass", "on": true}));
+    // A list the JSON gave that the field can't hold is sent as it is, until a tick replaces it.
+    h.state_mut()
+        .dialog
+        .as_mut()
+        .unwrap()
+        .form
+        .as_mut()
+        .unwrap()
+        .fill(spec, &json!({"component": "grass", "on": true, "patches": null}))
+        .unwrap();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["patches"], json!(null));
+    h.get_by_label("ground").click();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "grass", "on": true}));
+    // A bad `on` from the JSON stays through the frames the form is drawn: sent as it is.
+    h.state_mut()
+        .dialog
+        .as_mut()
+        .unwrap()
+        .form
+        .as_mut()
+        .unwrap()
+        .fill(spec, &json!({"component": "grass", "on": "off"}))
+        .unwrap();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["on"], json!("off"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

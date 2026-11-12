@@ -52,14 +52,36 @@ pub(crate) enum Kind {
     /// A patch name for each of these sides (`{"west": "inlet", …}`): only those changed are
     /// sent, one emptied as `null` (taken away).
     Sides(&'static [&'static str]),
+    /// A name typed, or picked from those the card offers ([`FormState::options`] under the
+    /// field's key): a region, a patch, a material of the description.
+    Pick(&'static str),
+    /// A checkbox sent either way (`"on": true` or `false`), on to start with.
+    Switch,
+    /// Several names the card offers (the patches of a region): a list, none ticked left out.
+    Names,
+    /// One of these words, sent only when changed from what the form was filled with; emptied:
+    /// `null` (taken away). A patch's role.
+    Role(&'static [&'static str]),
+    /// A name typed or picked (as [`Kind::Pick`]), sent as [`Kind::Role`] is: a material's model.
+    Model,
+    /// The region and patch a patch is coupled to (`{"region", "patch"}`), each typed or picked:
+    /// sent only when changed, both emptied: `null`.
+    Partner,
 }
+
+/// The parameters that name what a command acts on, kept with `remove: true`.
+const NAMES_WHAT: [&str; 3] = ["region", "patch", "material"];
+
+/// Where a [`Kind::Partner`] field's patches are offered, in [`FormState::options`] (its
+/// regions under the field's key).
+pub(crate) const PARTNER_PATCHES: &str = "partner/patch";
 
 /// The rows of a [`Kind::Axis`] or [`Kind::Missing`] field's text.
 const ROWS: char = '\n';
 
 /// Whether a field is sent only when changed from what the form was filled with.
 fn sent_when_changed(kind: Kind) -> bool {
-    matches!(kind, Kind::Axis | Kind::Missing(_) | Kind::Sides(_))
+    matches!(kind, Kind::Axis | Kind::Missing(_) | Kind::Sides(_) | Kind::Role(_) | Kind::Model | Kind::Partner)
 }
 
 /// A grading as JSON: a number, or sections `a b c; a b c` as `[[a, b, c], …]`; blank: 1.
@@ -160,6 +182,19 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
             }
             Some(p.join(&PARTS.to_string()))
         }
+        Kind::Role(_) | Kind::Model => match v {
+            Value::Null => Some(String::new()),
+            Value::String(t) => Some(t.clone()),
+            _ => None,
+        },
+        Kind::Partner => match v {
+            Value::Null => Some(String::new()),
+            Value::Object(m) => {
+                let (r, p) = (m.get("region")?.as_str()?, m.get("patch")?.as_str()?);
+                (m.len() == 2 && !r.contains(PARTS) && !p.contains(PARTS)).then(|| format!("{r}{PARTS}{p}"))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -247,6 +282,26 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
                 m.insert(name.to_string(), if n.is_empty() { Value::Null } else { json!(n) });
             }
             Ok((!m.is_empty()).then_some(Value::Object(m)))
+        }
+        Kind::Role(_) | Kind::Model => {
+            let (now, then) = (text.trim(), was.trim());
+            if now == then {
+                return Ok(None);
+            }
+            Ok(Some(if now.is_empty() { Value::Null } else { json!(now) }))
+        }
+        Kind::Partner => {
+            let (now, then) = (parts(text, 2), parts(was, 2));
+            let trim = |v: &[String]| v.iter().map(|x| x.trim().to_string()).collect::<Vec<_>>();
+            let (now, then) = (trim(&now), trim(&then));
+            if now == then {
+                return Ok(None);
+            }
+            match (now.first().map(String::as_str), now.get(1).map(String::as_str)) {
+                (Some(""), Some("")) => Ok(Some(Value::Null)),
+                (Some(r), Some(p)) if !r.is_empty() && !p.is_empty() => Ok(Some(json!({"region": r, "patch": p}))),
+                _ => Err(format!("{}: give the region and the patch (or neither, to take it away)", f.label)),
+            }
         }
         _ => Ok(None),
     }
@@ -440,6 +495,93 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "workflow.import",
+        intro: "Writes system/umcfWorkflow from the case: its scripts, regions, patches, materials, components, settings and grids of blocks (Save writes it).",
+        fields: &[field(
+            "replace",
+            "Write over the case's system/umcfWorkflow",
+            Kind::Flag,
+            "Its comments and hand edits are not kept",
+        )],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.region",
+        intro: "A region of system/umcfWorkflow: added with its kind, given another kind, or taken out.",
+        fields: &[
+            field(
+                "region",
+                "Region",
+                Kind::Pick("a name"),
+                "A new region, or one of the description; one plain OpenFOAM word",
+            ),
+            field("kind", "Kind", Kind::Choice(&["fluid", "solid", "vegetation"]), "A solid with materials stays one"),
+            field(
+                "remove",
+                "Take the region out",
+                Kind::Flag,
+                "What still names it (coupled patches, the radiation) is listed",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.patch",
+        intro: "A patch of a region of system/umcfWorkflow: its role, its partner, or a new name (a patch the region doesn't list is added).",
+        fields: &[
+            field("region", "Region", Kind::WorkflowRegion, "A region of system/umcfWorkflow"),
+            field("patch", "Patch", Kind::Pick("a patch, or a new one"), "A patch of the region, or a new one"),
+            field(
+                "role",
+                "Role",
+                Kind::Role(&[
+                    "inlet", "outlet", "side", "top", "ground", "coupled", "canopy", "interior", "bottom", "sky",
+                ]),
+                "none: taken away",
+            ),
+            field("partner", "Coupled to", Kind::Partner, "The region and patch it is coupled to; neither: taken away"),
+            field(
+                "name",
+                "New name",
+                Kind::Text("as it is"),
+                "The partners and the region's blocks follow; patch.set renames it in the case",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.material",
+        intro: "A material of a solid region of system/umcfWorkflow: the cell zone built of it and its model.",
+        fields: &[
+            field("region", "Region", Kind::Pick("a solid region"), "A solid region of system/umcfWorkflow"),
+            field("material", "Material", Kind::Pick("its cell zone"), "Added when the region doesn't list it"),
+            field("model", "Model", Kind::Model, "Its buildingMaterialModel; empty: taken away"),
+            field("remove", "Take the material out", Kind::Flag, ""),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.component",
+        intro: "Switches a component in the case's files and in system/umcfWorkflow.",
+        fields: &[
+            field("component", "Component", Kind::Choice(&["grass", "temperatureLimit", "blending"]), ""),
+            field("on", "On", Kind::Switch, "Off keeps the coefficients"),
+            field("patches", "Grass on", Kind::Names, "The patches of air the grass grows on (grass, on only)"),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.scripts",
+        intro: "Writes Allprepare, Allrun and Allclean from system/umcfWorkflow (Save writes them, executable).",
+        fields: &[field(
+            "replace",
+            "Write over scripts that are there and differ",
+            Kind::Flag,
+            "Save keeps a backup of each",
+        )],
+        changed_only: false,
+    },
+    Spec {
         id: "scene.snapshot",
         intro: "A PNG of the case in 3D, drawn by the CPU renderer.",
         fields: &[
@@ -494,6 +636,9 @@ pub struct FormState {
     /// Parameters from *Edit as JSON* naming another region than the form was filled for:
     /// laid over that region's grid once it is filled from it (the block card).
     pub(crate) refill: Option<Value>,
+    /// The names a card offers its [`Kind::Pick`], [`Kind::Model`], [`Kind::Partner`] and
+    /// [`Kind::Names`] fields, by key (set each frame from the case).
+    pub(crate) options: BTreeMap<&'static str, Vec<String>>,
 }
 
 fn as_text(v: &Value) -> String {
@@ -527,8 +672,38 @@ impl FormState {
 
     /// The parameters the form makes; an error naming a field whose text isn't what it takes.
     pub(crate) fn params(&self, spec: &Spec) -> Result<Value, String> {
+        // *Take … out* ticked: only what names what is taken out goes with it (the commands
+        // refuse anything else with remove), whatever the other fields hold, unread.
+        if spec.fields.iter().any(|f| f.key == "remove")
+            && self.values.get("remove").map(String::as_str) == Some("true")
+        {
+            let mut out: Map<String, Value> = self
+                .extra
+                .iter()
+                .filter(|(k, _)| NAMES_WHAT.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for k in NAMES_WHAT {
+                let text = self.values.get(k).map(|t| t.trim()).unwrap_or("");
+                if !text.is_empty() && spec.fields.iter().any(|f| f.key == k) {
+                    out.insert(k.to_string(), json!(text));
+                }
+            }
+            out.insert("remove".to_string(), Value::Bool(true));
+            return Ok(Value::Object(out));
+        }
         let mut out = self.extra.clone();
         for f in spec.fields {
+            if f.kind == Kind::Names {
+                // Sent when changed from what the card was filled with (the patches the case
+                // has), all unticked as `[]`.
+                let now = self.lists.get(f.key).cloned().unwrap_or_default();
+                let was = self.initial_lists.get(f.key).cloned().unwrap_or_default();
+                if now != was && !self.extra.contains_key(f.key) {
+                    out.insert(f.key.to_string(), json!(now.iter().collect::<Vec<_>>()));
+                }
+                continue;
+            }
             if let Kind::Surfaces | Kind::Regions = f.kind {
                 let list: Vec<&String> = self.lists.get(f.key).map(|s| s.iter().collect()).unwrap_or_default();
                 // None ticked: left out (or what the JSON had that a list can't hold, kept).
@@ -592,6 +767,7 @@ impl FormState {
             // OpenFOAM text where a number goes (controlDict): a macro or a directive only.
             let foam_text = spec.changed_only && text.starts_with(['$', '#']);
             let value = match f.kind {
+                Kind::Switch => Some(Value::Bool(text != "false")),
                 Kind::Flag => (text == "true").then_some(Value::Bool(true)),
                 Kind::FlagOn => (text == "false").then_some(Value::Bool(false)),
                 _ if text.is_empty() => None,
@@ -617,6 +793,14 @@ impl FormState {
         for p in &self.passed {
             out.insert(p.clone(), Value::Bool(true));
         }
+        // The grass's patches go only with the grass switched on (the command refuses them
+        // otherwise).
+        if spec.id == "workflow.component"
+            && (out.get("component") != Some(&json!("grass")) || out.get("on") == Some(&Value::Bool(false)))
+            && !self.extra.contains_key("patches")
+        {
+            out.remove("patches");
+        }
         Ok(Value::Object(out))
     }
 
@@ -636,8 +820,13 @@ impl FormState {
                 extra.insert(f.key.to_string(), v.clone());
             };
             match f.kind {
-                Kind::Surfaces | Kind::Regions => {
+                Kind::Surfaces | Kind::Regions | Kind::Names => {
                     let names: Option<BTreeSet<String>> = match &v {
+                        // Names the JSON leaves out: as the card was filled (unchanged, so not
+                        // sent); the others none.
+                        None if f.kind == Kind::Names => {
+                            Some(self.initial_lists.get(f.key).cloned().unwrap_or_default())
+                        }
                         None => Some(BTreeSet::new()),
                         Some(Value::Array(a)) => a
                             .iter()
@@ -658,9 +847,16 @@ impl FormState {
                         (None, None) => {}
                     }
                 }
-                Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
+                k if sent_when_changed(k) => {
                     // Left out: as the form was filled (unchanged).
                     let was = self.initial.get(f.key).cloned().unwrap_or_default();
+                    // An explicit `null` where there is nothing to take away (a new patch's
+                    // role): kept and sent as it is.
+                    if v == Some(Value::Null) && was.trim().is_empty() {
+                        extra.insert(f.key.to_string(), Value::Null);
+                        self.values.insert(f.key, String::new());
+                        continue;
+                    }
                     let text = match &v {
                         None => Some(was.clone()),
                         Some(v) => grid_text(f.kind, v, &was),
@@ -696,6 +892,20 @@ impl FormState {
                         }
                     }
                 }
+                Kind::Switch => {
+                    let on = match &v {
+                        None => true,
+                        Some(Value::Bool(b)) => *b,
+                        Some(other) => {
+                            // Kept and sent as it is (the field left empty), for the command
+                            // to refuse by name.
+                            keep(&mut extra, other);
+                            self.values.insert(f.key, String::new());
+                            continue;
+                        }
+                    };
+                    self.values.insert(f.key, on.to_string());
+                }
                 Kind::FlagOn | Kind::Flag => {
                     let on = match &v {
                         None => f.kind == Kind::FlagOn,
@@ -715,6 +925,24 @@ impl FormState {
                 _ => {
                     let text = match &v {
                         Some(v @ (Value::Array(_) | Value::Object(_) | Value::Null)) => {
+                            keep(&mut extra, v);
+                            String::new()
+                        }
+                        // A name or a word the field takes as text only (not `true`, not 7).
+                        Some(v)
+                            if !v.is_string()
+                                && match f.kind {
+                                    Kind::Pick(_)
+                                    | Kind::WorkflowRegion
+                                    | Kind::Surface
+                                    | Kind::Text(_)
+                                    | Kind::File(_) => true,
+                                    // The run controls' words read `true` or 7 as their text,
+                                    // as the file has them.
+                                    Kind::Choice(_) => !spec.changed_only,
+                                    _ => false,
+                                } =>
+                        {
                             keep(&mut extra, v);
                             String::new()
                         }
@@ -809,6 +1037,107 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                         form.values.insert(f.key, String::new());
                     }
                 }
+                Kind::Switch => {
+                    ui.label("");
+                    let mut on = form.values.get(f.key).is_none_or(|v| v != "false");
+                    let r = ui.checkbox(&mut on, f.label);
+                    // Set only when clicked: left alone, a value from the JSON it can't hold
+                    // (kept aside, the field empty) is sent as it is.
+                    if r.changed() {
+                        form.values.insert(f.key, on.to_string());
+                    }
+                    if !f.tip.is_empty() {
+                        r.on_hover_text(f.tip);
+                    }
+                }
+                Kind::Pick(_) | Kind::Model | Kind::Role(_) | Kind::Partner | Kind::Names => {
+                    let label = ui.label(f.label);
+                    if !f.tip.is_empty() {
+                        label.clone().on_hover_text(f.tip);
+                    }
+                    let offered = form.options.get(f.key).cloned().unwrap_or_default();
+                    match f.kind {
+                        Kind::Pick(hint) => {
+                            let text = form.values.entry(f.key).or_default();
+                            pick(ui, (spec.id, f.key), text, &offered, hint, wide, label.id);
+                        }
+                        Kind::Model => {
+                            let text = form.values.entry(f.key).or_default();
+                            pick(ui, (spec.id, f.key), text, &offered, "none", wide, label.id);
+                        }
+                        Kind::Role(options) => {
+                            let text = form.values.entry(f.key).or_default();
+                            let shown = if text.is_empty() { "none".to_string() } else { text.clone() };
+                            egui::ComboBox::from_id_salt(("role", spec.id, f.key))
+                                .selected_text(shown)
+                                .width(wide)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(text, String::new(), "none");
+                                    for o in options {
+                                        ui.selectable_value(text, o.to_string(), *o);
+                                    }
+                                })
+                                .response
+                                .labelled_by(label.id);
+                        }
+                        Kind::Partner => {
+                            let patches = form.options.get(PARTNER_PATCHES).cloned().unwrap_or_default();
+                            let text = form.values.entry(f.key).or_default();
+                            let mut v = parts(text, 2);
+                            ui.vertical(|ui| {
+                                if let [region, patch] = v.as_mut_slice() {
+                                    let half = (wide - 4.0).max(80.0);
+                                    pick(ui, (spec.id, "partner-region"), region, &offered, "region", half, label.id);
+                                    pick(ui, (spec.id, "partner-patch"), patch, &patches, "patch", half, label.id);
+                                }
+                            });
+                            for p in &mut v {
+                                if p.contains(PARTS) {
+                                    *p = p.replace(PARTS, "");
+                                }
+                            }
+                            *text =
+                                if v.iter().all(String::is_empty) { String::new() } else { v.join(&PARTS.to_string()) };
+                        }
+                        _ => {
+                            // Names: those the card offers, and those ticked it doesn't (from the
+                            // JSON), to untick.
+                            let set = form.lists.entry(f.key).or_default();
+                            let mut all = offered;
+                            for n in set.iter() {
+                                if !all.contains(n) {
+                                    all.push(n.clone());
+                                }
+                            }
+                            let mut clicked = false;
+                            ui.vertical(|ui| {
+                                if all.is_empty() {
+                                    ui.label(RichText::new("none").weak());
+                                }
+                                egui::ScrollArea::vertical().id_salt(("names", f.key)).max_height(110.0).show(
+                                    ui,
+                                    |ui| {
+                                        for name in &all {
+                                            let mut on = set.contains(name);
+                                            if ui.checkbox(&mut on, name.as_str()).changed() {
+                                                clicked = true;
+                                                if on {
+                                                    set.insert(name.clone());
+                                                } else {
+                                                    set.remove(name);
+                                                }
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                            // A tick replaces what the JSON gave that the list couldn't hold.
+                            if clicked {
+                                form.extra.remove(f.key);
+                            }
+                        }
+                    }
+                }
                 Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
                     let label = ui.label(f.label);
                     if !f.tip.is_empty() {
@@ -868,7 +1197,9 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                     let text = form.values.entry(f.key).or_default();
                     match f.kind {
                         Kind::Choice(options) => {
-                            let shown = if text.is_empty() { "default".to_string() } else { text.clone() };
+                            // The first empty: the command's default; else one must be chosen.
+                            let empty = if options.first() == Some(&"") { "default" } else { "choose…" };
+                            let shown = if text.is_empty() { empty.to_string() } else { text.clone() };
                             egui::ComboBox::from_id_salt(("choice", spec.id, f.key))
                                 .selected_text(shown)
                                 .width(wide)
@@ -947,7 +1278,13 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                         | Kind::Regions
                         | Kind::Axis
                         | Kind::Missing(_)
-                        | Kind::Sides(_) => {}
+                        | Kind::Sides(_)
+                        | Kind::Pick(_)
+                        | Kind::Switch
+                        | Kind::Names
+                        | Kind::Role(_)
+                        | Kind::Model
+                        | Kind::Partner => {}
                     }
                 }
             }
@@ -955,6 +1292,29 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
         }
     });
     ask
+}
+
+/// A name typed, or picked from `offered` in the menu beside it (*▾*).
+fn pick(ui: &mut Ui, id: (&str, &str), text: &mut String, offered: &[String], hint: &str, width: f32, label: egui::Id) {
+    ui.horizontal(|ui| {
+        let edit = egui::TextEdit::singleline(text).desired_width((width - 30.0).max(60.0)).hint_text(hint);
+        ui.add(edit).labelled_by(label);
+        ui.add_enabled_ui(!offered.is_empty(), |ui| {
+            egui::ComboBox::from_id_salt(("pick", id.0, id.1))
+                .selected_text("")
+                .width(16.0)
+                .show_ui(ui, |ui| {
+                    for o in offered {
+                        if ui.selectable_label(o == text, o).clicked() {
+                            text.clone_from(o);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Choose one the case has")
+                .labelled_by(label);
+        });
+    });
 }
 
 /// The parts of a missing block's row (`1 1 0`, `1,1,0`).
@@ -1342,5 +1702,93 @@ mod tests {
             f.params(spec).unwrap(),
             json!({"region": "air", "patches": {"top": "sky"}, "y": "bad", "types": {"sky": "patch"}})
         );
+    }
+
+    #[test]
+    fn a_role_a_model_and_a_partner_are_sent_when_changed_and_taken_away_when_emptied() {
+        let spec = spec("workflow.patch").unwrap();
+        let mut f = FormState::default();
+        for (k, v) in [("region", "air"), ("patch", "ground"), ("role", "ground"), ("partner", "")] {
+            f.values.insert(k, v.to_string());
+        }
+        f.initial = f.values.clone();
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "patch": "ground"}));
+        f.values.insert("role", "coupled".into());
+        f.values.insert("partner", "street|street_to_air".into());
+        assert_eq!(
+            f.params(spec).unwrap(),
+            json!({"region": "air", "patch": "ground", "role": "coupled", "partner": {"region": "street", "patch": "street_to_air"}})
+        );
+        // Emptied: taken away; half a partner: said.
+        f.initial = f.values.clone();
+        f.values.insert("role", String::new());
+        f.values.insert("partner", String::new());
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "patch": "ground", "role": null, "partner": null}));
+        f.values.insert("partner", "street|".into());
+        assert!(f.params(spec).unwrap_err().contains("give the region and the patch"));
+        // Back from JSON: null and an object go in; a partner of another shape is kept as it is.
+        f.fill(spec, &json!({"region": "air", "patch": "ground", "partner": null, "role": "top"})).unwrap();
+        assert_eq!(f.values["partner"], "");
+        assert_eq!(f.values["role"], "top");
+        f.fill(spec, &json!({"region": "air", "patch": "ground", "partner": ["street"]})).unwrap();
+        assert_eq!(f.params(spec).unwrap()["partner"], json!(["street"]));
+        // A switch is sent either way; names ticked as a list.
+        let spec = super::spec("workflow.component").unwrap();
+        let mut c = FormState::default();
+        c.fill(spec, &json!({"component": "grass"})).unwrap();
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": true}));
+        c.lists.entry("patches").or_default().insert("ground".into());
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": true, "patches": ["ground"]}));
+        // Left out of the JSON: as the card was filled, not emptied.
+        c.initial_lists.insert("patches", c.lists["patches"].clone());
+        c.fill(spec, &json!({"component": "grass", "on": true})).unwrap();
+        assert!(c.params(spec).unwrap().get("patches").is_none());
+        c.lists.entry("patches").or_default().insert("ground".into());
+        // Off, or another component: the grass's patches aren't sent.
+        c.values.insert("on", "false".into());
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "grass", "on": false}));
+        c.values.insert("on", "true".into());
+        c.values.insert("component", "blending".into());
+        assert_eq!(c.params(spec).unwrap(), json!({"component": "blending", "on": true}));
+        // All unticked from those the case had: `[]`, so the file's are taken away.
+        c.values.insert("component", "grass".into());
+        c.initial_lists.insert("patches", c.lists["patches"].clone());
+        assert!(c.params(spec).unwrap().get("patches").is_none(), "unchanged: left out");
+        c.lists.insert("patches", BTreeSet::new());
+        assert_eq!(c.params(spec).unwrap()["patches"], json!([]));
+        c.values.insert("component", "grass".into());
+        // A bad `on` from the JSON is sent as it is, for the command to refuse; ticked, the box wins.
+        c.fill(spec, &json!({"component": "grass", "on": "off"})).unwrap();
+        assert_eq!(c.params(spec).unwrap()["on"], json!("off"));
+        c.values.insert("on", "false".into());
+        assert_eq!(c.params(spec).unwrap()["on"], json!(false));
+        // An explicit null for a new patch's role (nothing to take away) is sent as it is; a
+        // name that isn't text (`true`) is kept for the command to refuse.
+        let spec = super::spec("workflow.patch").unwrap();
+        let mut n = FormState::default();
+        n.fill(spec, &json!({"region": "air", "patch": "new", "role": null})).unwrap();
+        assert_eq!(n.params(spec).unwrap(), json!({"region": "air", "patch": "new", "role": null}));
+        let spec = super::spec("workflow.region").unwrap();
+        let mut b = FormState::default();
+        b.fill(spec, &json!({"region": true, "kind": "fluid"})).unwrap();
+        assert_eq!(b.params(spec).unwrap()["region"], json!(true));
+        // Taking out sends only what names it, whatever else the form was filled with, and
+        // what it doesn't send isn't read (a bad station).
+        let blocks = super::spec("mesh.block").unwrap();
+        let mut g = FormState::default();
+        g.values.insert("region", "air".into());
+        g.values.insert("x", "0|1|1\nfar".into());
+        g.values.insert("remove", "true".into());
+        assert_eq!(g.params(blocks).unwrap(), json!({"region": "air", "remove": true}));
+        let spec = super::spec("workflow.region").unwrap();
+        let mut r = FormState::default();
+        r.fill(spec, &json!({"region": "street", "kind": "solid"})).unwrap();
+        r.values.insert("remove", "true".into());
+        assert_eq!(r.params(spec).unwrap(), json!({"region": "street", "remove": true}));
+        let spec = super::spec("workflow.material").unwrap();
+        let mut m = FormState::default();
+        m.fill(spec, &json!({"region": "street", "material": "brick", "model": "HamstadBrick", "remove": true}))
+            .unwrap();
+        assert_eq!(m.params(spec).unwrap(), json!({"region": "street", "material": "brick", "remove": true}));
     }
 }
