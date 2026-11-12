@@ -39,6 +39,7 @@ use umcf_render::camera::{Camera, View};
 pub mod bc;
 pub mod cut;
 pub mod display;
+pub mod forms;
 mod gpu;
 pub mod icons;
 mod jobs;
@@ -78,6 +79,9 @@ pub struct Dialog {
     pub id: &'static str,
     pub params: String,
     pub error: Option<String>,
+    /// The command's form ([`forms`]), for one that has one; `params` is then the JSON shown by
+    /// *Edit as JSON*.
+    pub form: Option<forms::FormState>,
 }
 
 /// The interface's state around a [`Session`].
@@ -102,6 +106,10 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// The folder dialog *Open* uses (see [`Options::pick_folder`]).
     pub pick_folder: Option<PickFolder>,
+    /// The file dialog the forms' *Browse…* use (see [`Options::pick_file`]).
+    pub pick_file: Option<PickFile>,
+    /// A form's *Browse…* pressed: the window asks for the file once the frame is drawn.
+    pub file_requested: Option<forms::FileAsk>,
     /// *Open* asked for the folder dialog: the window shows it after this frame, over itself
     /// (see [`App::folder_picked`]).
     pub folder_requested: bool,
@@ -270,6 +278,8 @@ impl App {
             search_open: false,
             dialog: None,
             pick_folder: None,
+            pick_file: None,
+            file_requested: None,
             folder_requested: false,
             bc: None,
             patch_form: None,
@@ -487,6 +497,10 @@ impl App {
             self.prune_shown();
             self.prune_display();
         }
+        // An open card's form follows what the case has now.
+        if result.is_ok() {
+            self.refresh_form();
+        }
         result.map_err(|e| e.to_string())
     }
 
@@ -542,8 +556,85 @@ impl App {
                 "workflow.settings" => self.settings_params(),
                 _ => "{}".to_string(),
             };
-            self.dialog = Some(Dialog { id, params, error: None });
+            self.dialog = Some(self.new_dialog(id, params));
         }
+    }
+
+    /// The card of command `id`, its parameters `params` (JSON) to start with: with its form,
+    /// filled from them (and, for the run controls, from the case's controlDict), when it has
+    /// one.
+    pub(crate) fn new_dialog(&self, id: &'static str, params: String) -> Dialog {
+        let form = forms::spec(id).map(|spec| {
+            let mut f = forms::FormState::filled(self.form_start(id));
+            f.surfaces = self
+                .session
+                .surfaces()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.strip_prefix("constant/triSurface/").map(str::to_string).unwrap_or(p))
+                .collect();
+            f.regions = self
+                .session
+                .case()
+                .map(|c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect())
+                .unwrap_or_default();
+            // Parameters that aren't an object (none here are): the form empty.
+            if f.fill(spec, &serde_json::from_str(&params).unwrap_or_else(|_| json!({}))).is_err() {
+                let _ = f.fill(spec, &json!({}));
+            }
+            f.initial = f.values.clone();
+            f
+        });
+        Dialog { id, params, error: None, form }
+    }
+
+    /// The open card's form after the case changed (another case opened, a command or an undo
+    /// done): its surfaces and regions listed again, and its fields that weren't changed set to
+    /// what the case has now (the run controls).
+    pub(crate) fn refresh_form(&mut self) {
+        let Some(id) = self.dialog.as_ref().filter(|d| d.form.is_some()).map(|d| d.id) else { return };
+        let Some(spec) = forms::spec(id) else { return };
+        let start = self.form_start(id);
+        let surfaces: Vec<String> = self
+            .session
+            .surfaces()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.strip_prefix("constant/triSurface/").map(str::to_string).unwrap_or(p))
+            .collect();
+        let regions: Vec<String> = self
+            .session
+            .case()
+            .map(|c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect())
+            .unwrap_or_default();
+        let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()) else { return };
+        if spec.changed_only {
+            for field in spec.fields {
+                let now = start.get(field.key).cloned().unwrap_or_default();
+                let was = f.initial.get(field.key).cloned().unwrap_or_default();
+                if f.values.get(field.key).cloned().unwrap_or_default() == was {
+                    f.values.insert(field.key, now.clone());
+                }
+                f.initial.insert(field.key, now);
+            }
+        }
+        f.surfaces = surfaces;
+        f.regions = regions;
+    }
+
+    /// What a form's fields hold before anything is typed: the run controls as the case's
+    /// controlDict has them (each entry's value as its text); nothing for the others.
+    fn form_start(&self, id: &str) -> std::collections::BTreeMap<&'static str, String> {
+        let mut out = std::collections::BTreeMap::new();
+        let (Some(spec), "control.set") = (forms::spec(id), id) else { return out };
+        let Some(doc) = self.session.case().and_then(|c| c.dict(umcf_model::CONTROL_DICT)) else { return out };
+        for f in spec.fields {
+            if let Some(e) = doc.get(&[f.key]) {
+                let text: Vec<String> = e.value.iter().map(|n| n.compact()).collect();
+                out.insert(f.key, text.join(" "));
+            }
+        }
+        out
     }
 
     /// The *Choose settings* card's parameters to start with: the case's settings, as its files
@@ -601,6 +692,7 @@ impl App {
                     id: "case.open",
                     params: "{\n  \"path\": \"\"\n}".to_string(),
                     error: Some(error.to_string()),
+                    form: None,
                 });
             }
         }
@@ -627,7 +719,7 @@ impl App {
         if let Err(e) = result {
             self.close_idle_cards();
             let params = serde_json::to_string_pretty(&json!({ "path": path })).unwrap_or_default();
-            self.dialog = Some(Dialog { id: "case.open", params, error: Some(e) });
+            self.dialog = Some(Dialog { id: "case.open", params, error: Some(e), form: None });
         }
     }
 
@@ -2003,6 +2095,8 @@ impl App {
         let mut close_dialog = false;
         let mut clear = false;
         let mut close_results = false;
+        let browse = self.pick_file.is_some();
+        let mut ask_file: Option<forms::FileAsk> = None;
         let muted = Ink { line: t.text_muted, fill: t.accent };
         // The height a card has below the triad, down to the bottom of the view.
         let room = canvas.bottom() - (canvas.top() + t.gap + 112.0) - t.gap;
@@ -2045,19 +2139,76 @@ impl App {
                         });
                     });
                     ui.separator();
-                    ui.label(RichText::new(spec.id).monospace().size(11.5).color(t.text_muted));
-                    egui::ScrollArea::vertical().id_salt("params-doc").max_height(170.0).show(ui, |ui| {
-                        ui.label(RichText::new(spec.params).size(12.5));
-                    });
-                    ui.add_space(4.0);
-                    let label = ui.label(RichText::new("Parameters (JSON)").size(12.0).color(t.text_muted));
-                    let edit = egui::TextEdit::multiline(&mut d.params)
-                        .code_editor()
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY);
-                    ui.add(edit).labelled_by(label.id);
+                    let form_spec = forms::spec(d.id);
+                    match (&mut d.form, form_spec) {
+                        // The command's form.
+                        (Some(f), Some(fs)) if !f.json => {
+                            ui.label(RichText::new(fs.intro).color(t.text_muted));
+                            ui.add_space(2.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt("form-body")
+                                .max_height((room - 190.0).max(160.0))
+                                .show(ui, |ui| {
+                                    ask_file = forms::show(ui, fs, f, width, browse);
+                                });
+                            ui.horizontal(|ui| {
+                                egui::CollapsingHeader::new(RichText::new("All parameters").size(12.0))
+                                    .id_salt("form-params-doc")
+                                    .show(ui, |ui| {
+                                        ui.label(RichText::new(spec.id).monospace().size(11.5).color(t.text_muted));
+                                        egui::ScrollArea::vertical().max_height(170.0).show(ui, |ui| {
+                                            ui.label(RichText::new(spec.params).size(12.5));
+                                        });
+                                    });
+                            });
+                            if ui
+                                .link("Edit as JSON")
+                                .on_hover_text("The parameters as text, for what the form doesn't cover")
+                                .clicked()
+                            {
+                                match f.params(fs) {
+                                    Ok(v) => {
+                                        d.params = serde_json::to_string_pretty(&v).unwrap_or_default();
+                                        f.json = true;
+                                        d.error = None;
+                                    }
+                                    Err(e) => d.error = Some(e),
+                                }
+                            }
+                        }
+                        (form, _) => {
+                            ui.label(RichText::new(spec.id).monospace().size(11.5).color(t.text_muted));
+                            egui::ScrollArea::vertical().id_salt("params-doc").max_height(170.0).show(ui, |ui| {
+                                ui.label(RichText::new(spec.params).size(12.5));
+                            });
+                            ui.add_space(4.0);
+                            let label = ui.label(RichText::new("Parameters (JSON)").size(12.0).color(t.text_muted));
+                            let edit = egui::TextEdit::multiline(&mut d.params)
+                                .code_editor()
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY);
+                            ui.add(edit).labelled_by(label.id);
+                            if let (Some(f), Some(fs)) = (form, form_spec)
+                                && ui.link("Back to the form").clicked()
+                            {
+                                match serde_json::from_str::<Value>(&d.params) {
+                                    Ok(v) => match f.fill(fs, &v) {
+                                        Ok(()) => {
+                                            f.json = false;
+                                            d.error = None;
+                                        }
+                                        Err(e) => d.error = Some(e),
+                                    },
+                                    Err(e) => d.error = Some(format!("not JSON: {e}")),
+                                }
+                            }
+                        }
+                    }
                     if let Some(e) = &d.error {
                         ui.label(RichText::new(e).color(t.error));
+                    }
+                    if let Some(f) = d.form.as_mut().filter(|f| !f.json) {
+                        forms::show_offered(ui, f);
                     }
                     ui.add_space(4.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2192,11 +2343,30 @@ impl App {
         if clear {
             self.act("select.clear", json!({}));
         }
+        if let Some(ask) = ask_file {
+            self.file_requested = Some(ask);
+        }
         if run && let Some(mut d) = self.dialog.take() {
+            // From the form, unless it shows its JSON.
+            let from_form = match (&d.form, forms::spec(d.id)) {
+                (Some(f), Some(fs)) if !f.json => {
+                    Some(f.params(fs).map(|v| serde_json::to_string(&v).unwrap_or_default()))
+                }
+                _ => None,
+            };
+            match from_form {
+                Some(Ok(text)) => d.params = text,
+                Some(Err(e)) => {
+                    d.error = Some(e);
+                    self.dialog = Some(d);
+                    return;
+                }
+                None => {}
+            }
             match serde_json::from_str::<Value>(&d.params) {
                 Ok(params) => {
                     let id = d.id.to_string();
-                    self.start(jobs::Work::Command { id, params, then: jobs::Then::Dialog(d) });
+                    self.start(jobs::Work::Command { id, params, then: jobs::Then::Dialog(Box::new(d)) });
                     return;
                 }
                 Err(e) => d.error = Some(format!("not JSON: {e}")),
@@ -2617,11 +2787,17 @@ pub use eframe::Frame;
 /// Asks for a folder in the system's own dialog, over `parent`, starting in `start`.
 pub type PickFolder = fn(start: Option<&str>, parent: &Frame) -> Picked;
 
+/// Asks for a file in the system's own dialog, over `parent`, starting in `start`, offering
+/// files with `extensions`; [`Picked::Folder`] holds the file's path.
+pub type PickFile = fn(start: Option<&str>, extensions: &[&str], parent: &Frame) -> Picked;
+
 /// Where the desktop app starts.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// The folder dialog *Open* uses; without one, *Open* asks for the path in its card.
     pub pick_folder: Option<PickFolder>,
+    /// The file dialog of the forms' *Browse…*; without one, the path is typed.
+    pub pick_file: Option<PickFile>,
     /// A case directory to open.
     pub case: Option<String>,
     /// Commands to run after opening it: `(id, params)`.
@@ -2832,6 +3008,25 @@ impl eframe::App for Desktop {
             self.app.folder_picked(picked);
             ui.ctx().request_repaint();
         }
+        // A form's *Browse…*: the file goes into its field.
+        if let Some(ask) = self.app.file_requested.take()
+            && let Some(pick) = self.app.pick_file
+        {
+            let start = self.app.session.location().map(String::from);
+            match (pick(start.as_deref(), ask.extensions, frame), self.app.dialog.as_mut()) {
+                (Picked::Folder(path), Some(d)) => {
+                    if let Some(f) = d.form.as_mut() {
+                        f.values.insert(ask.key, path);
+                    }
+                }
+                (Picked::Unavailable, Some(d)) => {
+                    d.error =
+                        Some("No file dialog on this system (a desktop portal or zenity): type the path.".to_string());
+                }
+                _ => {}
+            }
+            ui.ctx().request_repaint();
+        }
         // A save (work that can't be cancelled) runs to its end: the window stays till then.
         if self.app.writing() && ui.ctx().input(|i| i.viewport().close_requested()) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -2939,6 +3134,7 @@ pub fn run(options: Options) -> Result<(), String> {
     startup.extend(options.commands.iter().cloned());
     let mut app = App::new(Session::new());
     app.pick_folder = options.pick_folder;
+    app.pick_file = options.pick_file;
     if options.light {
         app.tokens = Tokens::light();
     }

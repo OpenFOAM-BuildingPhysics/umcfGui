@@ -57,6 +57,36 @@ fn pick_folder(start: Option<&str>, parent: &Frame) -> Picked {
     }
 }
 
+/// The system's own file dialog, for a form's *Browse…*: as the folder dialog, offering files
+/// with `extensions` first (all files too).
+fn pick_file(start: Option<&str>, extensions: &[&str], parent: &Frame) -> Picked {
+    if !dialog_available() {
+        return Picked::Unavailable;
+    }
+    let mut dialog = rfd::FileDialog::new().set_title("Choose a file").set_parent(parent);
+    if !extensions.is_empty() {
+        // Named once each (`stl, stlb, gz`); both cases matched (`STL`).
+        let mut shown: Vec<String> = Vec::new();
+        for e in extensions.iter().map(|e| e.to_ascii_lowercase()) {
+            if !shown.contains(&e) {
+                shown.push(e);
+            }
+        }
+        dialog = dialog.add_filter(shown.join(", "), extensions).add_filter("All files", &["*"]);
+    }
+    if let Some(dir) = start.filter(|d| std::path::Path::new(d).is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(path) = dialog.pick_file() else { return Picked::Cancelled };
+    match path.into_os_string().into_string() {
+        Ok(p) => Picked::Folder(p),
+        Err(p) => {
+            eprintln!("umcf-gui: {} is not UTF-8 text: it can't be used", p.to_string_lossy());
+            Picked::Cancelled
+        }
+    }
+}
+
 /// Whether there is a folder dialog to show. Windows and macOS always have theirs. On Linux the
 /// portal runs with a desktop (`XDG_CURRENT_DESKTOP` set, and a D-Bus session), and `zenity`
 /// (the fallback) must be on the PATH: without either, the dialog would come back as if
@@ -81,7 +111,7 @@ fn dialog_available() -> bool {
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
-    let mut o = Options { pick_folder: Some(pick_folder), ..Options::default() };
+    let mut o = Options { pick_folder: Some(pick_folder), pick_file: Some(pick_file), ..Options::default() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
