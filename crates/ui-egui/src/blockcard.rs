@@ -80,6 +80,45 @@ impl App {
         }
     }
 
+    /// After a command, on a block card typed in: each grid field set to the region's grid as
+    /// it is now where it wasn't changed, and what it was filled with (what OK leaves out
+    /// unchanged) set to it, edited or not.
+    pub(crate) fn blocks_rebase(&mut self) {
+        let Some(spec) = crate::forms::spec("mesh.block") else { return };
+        // Not while the card shows its JSON: back on the form, what the JSON leaves out is as
+        // filled.
+        let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()).filter(|f| !f.json) else { return };
+        let Some(region) = f.filled_for.clone() else { return };
+        let json = self
+            .session
+            .case()
+            .and_then(|c| c.description())
+            .and_then(|(d, _)| d.region(&region).and_then(|r| r.blocks.clone()))
+            .map(|g| umcf_engine::blocks_json(&g));
+        for field in spec.fields {
+            if !matches!(field.kind, Kind::Axis | Kind::Missing(_) | Kind::Sides(_)) {
+                continue;
+            }
+            let now = json
+                .as_ref()
+                .and_then(|j| j.get(field.key))
+                .and_then(|v| grid_text(field.kind, v, ""))
+                .unwrap_or_default();
+            let was = f.initial.get(field.key).cloned().unwrap_or_default();
+            let value = f.values.get(field.key).cloned().unwrap_or_default();
+            if value == was {
+                f.values.insert(field.key, now.clone());
+                // What the JSON had for it that the field couldn't hold goes with it.
+                f.extra.remove(field.key);
+            } else if let Kind::Sides(names) = field.kind {
+                // Sides are sent one by one: those not typed in follow the grid too.
+                let merged = crate::forms::merge_sides(&value, &was, &now, names.len());
+                f.values.insert(field.key, merged);
+            }
+            f.initial.insert(field.key, now);
+        }
+    }
+
     /// The grid the form makes, from the parameters OK sends over the region's blocks (as the
     /// command puts them together, [`umcf_engine::planned_blocks`]): its preview and a line
     /// saying its blocks and cells; none and a line for *remove*; or what keeps it from being

@@ -164,6 +164,15 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
     }
 }
 
+/// A [`Kind::Sides`] text typed in (`value`), filled from `was`, put over the grid as it is
+/// `now`: each side not typed in (as it was filled) takes the grid's, the others stay.
+pub(crate) fn merge_sides(value: &str, was: &str, now: &str, n: usize) -> String {
+    let (v, w, m) = (parts(value, n), parts(was, n), parts(now, n));
+    let out: Vec<String> =
+        v.iter().zip(&w).zip(&m).map(|((v, w), m)| if v.trim() == w.trim() { m.clone() } else { v.clone() }).collect();
+    out.join(&PARTS.to_string())
+}
+
 /// The JSON of a [`Kind::Axis`], [`Kind::Missing`] or [`Kind::Sides`] field's text (`was`:
 /// what the form was filled with); `None` to leave it out; an error naming the field.
 fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> {
@@ -964,19 +973,18 @@ const TABLE_ROWS: usize = 200;
 /// An axis as a table: a row per station, with the cells and grading to the next; rows added
 /// and taken away. A longer one as text, a row a line (`station|cells|grading`).
 fn axis_table(ui: &mut Ui, id: (&str, &str), text: &mut String) {
-    let mut rows: Vec<[String; 3]> = text.split(ROWS).map(axis_row).collect();
-    if text.is_empty() {
-        rows.clear();
-    }
-    if rows.len() > TABLE_ROWS {
-        let l =
-            ui.label(RichText::new(format!("{} stations, a row a line: station|cells|grading", rows.len())).size(12.0));
+    // Counted before any row is made: a long axis is edited as text.
+    let lines = if text.is_empty() { 0 } else { text.matches(ROWS).count() + 1 };
+    if lines > TABLE_ROWS {
+        let l = ui.label(RichText::new(format!("{lines} stations, a row a line: station|cells|grading")).size(12.0));
         egui::ScrollArea::vertical().id_salt(("axis-text", id)).max_height(140.0).show(ui, |ui| {
             ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(6).desired_width(f32::INFINITY))
                 .labelled_by(l.id);
         });
         return;
     }
+    let mut rows: Vec<[String; 3]> =
+        if text.is_empty() { Vec::new() } else { text.split(ROWS).map(axis_row).collect() };
     let mut remove = None;
     let last = rows.len().saturating_sub(1);
     egui::ScrollArea::vertical().id_salt(("axis", id)).max_height(150.0).show(ui, |ui| {

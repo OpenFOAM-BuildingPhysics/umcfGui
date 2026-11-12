@@ -379,7 +379,8 @@ blocks (ticked on a layer of the grid, x across and y up, for grids of up to 40 
 and y; and listed, a block `i j k` a line), each side's patch (empty: none), *Write over a
 blockMeshDict edited by hand* and *Take the blocks out of the description*. It is filled from
 the region's blocks (choosing another region fills it from that one's, what was typed going;
-*Edit as JSON* naming another region fills it from that one's, with the JSON over it); what is
+*Edit as JSON* naming another region fills it from that one's, with the JSON over it; after
+another command, the fields not typed in follow the region's grid as it is then); what is
 left as it was filled is left out of the parameters (the region
 keeps it), so *OK* sends only the axes, missing blocks and sides changed (a side emptied as
 `null`). Single faces, patches without faces and types are kept from *Edit as JSON*. While it

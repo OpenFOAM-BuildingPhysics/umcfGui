@@ -670,6 +670,10 @@ impl App {
         // made since), unless something was typed in them: that stays.
         if !f.typed() {
             f.filled_for = None;
+        } else if id == "mesh.block" {
+            // The block card, typed in: its untouched fields follow the region's grid as it
+            // is now (another command may have changed it), so OK doesn't put back the old.
+            self.blocks_rebase();
         }
     }
 

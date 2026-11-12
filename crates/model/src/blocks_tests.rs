@@ -1004,6 +1004,13 @@ fn a_spans_cells_are_spread_by_its_grading() {
         spans: vec![Span { cells: 2, grading: Grading::Ratio(1.0) }, Span { cells: 2, grading: Grading::Ratio(1.0) }],
     };
     assert!(close(&a.cell_lines(1), &[0.0, 5.0, 10.0, 20.0, 30.0]));
+    // A step past a span's cells: each span starts at its own first cell, so every station is
+    // there.
+    let three = Axis {
+        stations: vec![0.0, 10.0, 30.0],
+        spans: vec![Span { cells: 3, grading: Grading::Ratio(1.0) }, Span { cells: 3, grading: Grading::Ratio(1.0) }],
+    };
+    assert!(close(&three.cell_lines(2), &[0.0, 20.0 / 3.0, 10.0, 70.0 / 3.0, 30.0]), "{:?}", three.cell_lines(2));
     assert_eq!(a.cells(), Some(4));
     assert!(Axis { stations: vec![0.0], spans: a.spans.clone() }.cell_lines(1).is_empty());
 }

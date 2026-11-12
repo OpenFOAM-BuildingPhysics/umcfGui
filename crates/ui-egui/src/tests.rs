@@ -2878,6 +2878,25 @@ fn the_block_card_previews_the_grid_and_makes_it() {
     h.run();
     assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air", "y": [0, [5, 1], 25]}));
     assert_eq!(h.state().viewport.blocks.as_ref().unwrap().stations[1], vec![0.0, 25.0]);
+    // Another command changes x meanwhile: the untouched x follows it, the typed y stays, and
+    // OK would send y only (not the old x back).
+    h.state_mut().act("mesh.block", json!({"region": "air", "x": [0, [4, 1], 10, [6, 2], 40]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("x").map(String::as_str), Some("0|4|1\n10|6|2\n40"));
+    assert_eq!(form(&h).values.get("y").map(String::as_str), Some("0|5|1\n25"));
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air", "y": [0, [5, 1], 25]}));
+    assert_eq!(h.state().viewport.blocks.as_ref().unwrap().stations[0], vec![0.0, 10.0, 40.0]);
+    // Sides: one typed in stays, one changed by another command follows it (not sent back).
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("patches", "inflow|outlet|side|side|ground|top|buildings".into());
+    }
+    h.state_mut().act("mesh.block", json!({"region": "air", "patches": {"east": "exit"}}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("patches").map(String::as_str), Some("inflow|exit|side|side|ground|top|buildings"));
+    assert_eq!(form(&h).params(spec).unwrap()["patches"], json!({"west": "inflow"}));
     // A grid with problems: no preview, the card says why.
     h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("missing", "5 0 0".into());
     h.run();
@@ -2915,7 +2934,16 @@ fn the_block_card_previews_the_grid_and_makes_it() {
         let d = h.state_mut().dialog.as_mut().unwrap();
         d.form.as_mut().unwrap().values.insert("remove", String::new());
     }
-    h.run();
+    // The card settles over frames (its lines change height) before the link is clicked.
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Edit as JSON").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
     h.get_by_label("Edit as JSON").click();
     h.run();
     h.state_mut().dialog.as_mut().unwrap().params = r#"{"region": "solid", "z": [0, [2, 1], 4]}"#.into();
