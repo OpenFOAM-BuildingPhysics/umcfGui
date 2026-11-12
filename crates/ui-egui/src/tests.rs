@@ -2897,6 +2897,20 @@ fn the_block_card_previews_the_grid_and_makes_it() {
     h.run();
     assert_eq!(form(&h).values.get("patches").map(String::as_str), Some("inflow|exit|side|side|ground|top|buildings"));
     assert_eq!(form(&h).params(spec).unwrap()["patches"], json!({"west": "inflow"}));
+    // A value from the JSON the field can't hold stays through another command: sent, for the
+    // command to refuse by name.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.fill(spec, &json!({"region": "air", "missing": "bad", "y": [0, [5, 1], 25]})).unwrap();
+    }
+    h.state_mut().act("mesh.block", json!({"region": "air", "patches": {"top": "sky"}}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["missing"], json!("bad"));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.extra.remove("missing");
+    }
     // A grid with problems: no preview, the card says why.
     h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("missing", "5 0 0".into());
     h.run();

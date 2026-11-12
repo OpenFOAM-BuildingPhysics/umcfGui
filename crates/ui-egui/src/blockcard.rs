@@ -104,12 +104,17 @@ impl App {
                 .and_then(|j| j.get(field.key))
                 .and_then(|v| grid_text(field.kind, v, ""))
                 .unwrap_or_default();
+            // A value from the JSON the field can't hold (sent as it is, for the command to
+            // refuse by name) stays as given; what is typed over it later is told from the grid
+            // as it is now.
+            if f.extra.contains_key(field.key) {
+                f.initial.insert(field.key, now);
+                continue;
+            }
             let was = f.initial.get(field.key).cloned().unwrap_or_default();
             let value = f.values.get(field.key).cloned().unwrap_or_default();
             if value == was {
                 f.values.insert(field.key, now.clone());
-                // What the JSON had for it that the field couldn't hold goes with it.
-                f.extra.remove(field.key);
             } else if let Kind::Sides(names) = field.kind {
                 // Sides are sent one by one: those not typed in follow the grid too.
                 let merged = crate::forms::merge_sides(&value, &was, &now, names.len());
