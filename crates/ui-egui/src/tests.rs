@@ -3400,6 +3400,55 @@ fn a_case_is_made_and_set_up_from_forms() {
         Some("0.4"),
         "{shown}"
     );
+    // OK sends it: the case keeps both.
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("4")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.4")), "{case}");
+    // The JSON unreadable while a command changes an entry, mended after with another edit:
+    // OK keeps the command's change (the baseline didn't move while it couldn't be read).
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut text: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    h.state_mut().dialog.as_mut().unwrap().params = "{ not yet".into();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.35}}}}}));
+    h.run();
+    h.run();
+    text["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("5");
+    h.state_mut().dialog.as_mut().unwrap().params = text.to_string();
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("5")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.35")), "{case}");
+    // The same through *Back to the form* and OK there: the command's change kept too.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut text: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    h.state_mut().dialog.as_mut().unwrap().params = "{ not yet".into();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.3}}}}}));
+    h.run();
+    h.run();
+    text["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("6");
+    h.state_mut().dialog.as_mut().unwrap().params = text.to_string();
+    h.run();
+    h.run();
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("6")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.3")), "{case}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -682,16 +682,13 @@ impl App {
             .unwrap_or_default();
         // The settings' keys the form has no field for (the material library, the numerics), as
         // the case has them now.
-        let start_extra = (id == "workflow.settings").then(|| {
-            let mut g = forms::FormState::default();
-            if let (Some(spec), Ok(v)) = (forms::spec(id), serde_json::from_str::<Value>(&self.settings_params())) {
-                let _ = g.fill(spec, &v);
-            }
-            g.extra
-        });
+        let start_extra = (id == "workflow.settings").then(|| self.settings_extras());
         let Some(d) = self.dialog.as_mut() else { return };
         let Some(f) = d.form.as_mut() else { return };
-        if let Some(now) = start_extra {
+        // Shown as JSON that doesn't read (being typed): nothing to put the case over; what it
+        // was filled with stays the baseline, and OK puts the case over it then.
+        let unreadable = f.json && serde_json::from_str::<Value>(&d.params).is_err();
+        if let Some(now) = start_extra.filter(|_| !unreadable) {
             // Shown as JSON: its entries left as the case had them follow it too, in the text
             // OK sends (those edited there stay).
             if f.json
@@ -778,6 +775,18 @@ impl App {
             }
         }
         out
+    }
+
+    /// The settings the *Choose settings* form has no field for (the material library, the
+    /// numerics), as the case's files have them.
+    fn settings_extras(&self) -> serde_json::Map<String, Value> {
+        let mut g = forms::FormState::default();
+        if let (Some(spec), Ok(v)) =
+            (forms::spec("workflow.settings"), serde_json::from_str::<Value>(&self.settings_params()))
+        {
+            let _ = g.fill(spec, &v);
+        }
+        g.extra
     }
 
     /// The *Choose settings* card's parameters to start with: the case's settings, as its files
@@ -2572,13 +2581,24 @@ impl App {
             }
             match serde_json::from_str::<Value>(&d.params) {
                 Ok(mut params) => {
-                    // From the JSON of a card that sends only what changed (the settings): what
-                    // the form has no field for, left as the case has it, isn't sent.
+                    // A card that sends only what changed (the settings), from its form or its
+                    // JSON: what the form has no field for is put over the case as it is now,
+                    // entry by entry (a command may have run since it was filled), and what
+                    // that leaves as the case has it isn't sent.
+                    let now = (d.id == "workflow.settings").then(|| self.settings_extras());
                     if let (Some(f), Some(fs), Some(o)) = (&d.form, forms::spec(d.id), params.as_object_mut())
-                        && f.json
                         && fs.changed_only
                     {
-                        o.retain(|k, v| f.initial_extra.get(k) != Some(v));
+                        let now = now.unwrap_or_default();
+                        let keys: std::collections::BTreeSet<String> =
+                            f.initial_extra.keys().chain(now.keys()).cloned().collect();
+                        for k in keys {
+                            let Some(given) = o.get(&k).cloned() else { continue };
+                            match forms::merge_json(Some(&given), f.initial_extra.get(&k), now.get(&k)) {
+                                Some(v) if now.get(&k) != Some(&v) => o.insert(k, v),
+                                _ => o.remove(&k),
+                            };
+                        }
                     }
                     let id = d.id.to_string();
                     self.start(jobs::Work::Command { id, params, then: jobs::Then::Dialog(Box::new(d)) });
