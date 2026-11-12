@@ -3537,6 +3537,12 @@ fn a_regions_split_is_filled_offered_and_sent_from_its_card() {
     assert_eq!(f.values["dict"], "");
     assert_eq!(f.options["of"], ["air", "leeward", "street", "windward"].map(String::from).to_vec());
     assert_eq!(f.options["zone"], vec!["trees".to_string()]);
+    // The first region has none listed before it to be split from.
+    set(&mut h, "region", "air");
+    h.run();
+    assert_eq!(form(&h).options["of"], Vec::<String>::new());
+    set(&mut h, "region", "vegetation");
+    h.run();
     // Another region to split from: the zones its own dictionary makes.
     set(&mut h, "of", "street");
     h.run();

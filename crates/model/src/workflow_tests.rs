@@ -456,6 +456,13 @@ fn a_split_whose_clean_up_would_remove_a_region_is_refused() {
     // The region copied must be built first.
     refused(with(&|wf, _| wf.meshes.swap(0, 1)), "isn't built before it");
     refused(with(&|_, sp| sp.dict = "topoSetDict".into()), "not in a directory");
+    // A dictionary that makes other zones too, or whose zones can't be told.
+    refused(
+        with(&|wf, _| wf.split_zones.push(("vegetation".into(), Some(vec!["trees".into(), "street".into()])))),
+        "other cell zones too (street)",
+    );
+    refused(with(&|wf, _| wf.split_zones.push(("vegetation".into(), None))), "can't be told");
+    assert!(with(&|wf, _| wf.split_zones.push(("vegetation".into(), Some(vec!["trees".into()])))).is_ok());
     // A region named as splitMeshRegions names the parts outside the zone.
     refused(with(&|wf, _| wf.case_regions.push("region2".into())), "region named region2");
     // Unsafe words are refused as everywhere.
@@ -486,4 +493,30 @@ fn a_regions_name_is_not_taken_for_the_zone() {
     let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &prepare)]);
     let MeshBuild::Split(sp) = &wf.meshes[1].build else { panic!() };
     assert_eq!(sp.zone, None);
+}
+
+/// The zones a topoSetDict makes are told only from plain actions.
+#[test]
+fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
+    let told = |text: &str| zones_told(&umcf_foam_dict::Document::parse(text).unwrap());
+    let action = |name: &str, kind: &str| format!("{{ name {name}; type {kind}; action new; source setToCellZone; }}");
+    let plain = format!(
+        "actions ( {} {} {} );",
+        action("trees", "cellSet"),
+        action("trees", "cellZoneSet"),
+        action("bushes", "cellZoneSet")
+    );
+    assert_eq!(told(&plain), Some(vec!["trees".to_string(), "bushes".to_string()]));
+    assert_eq!(told("other 1;"), Some(Vec::new()));
+    for unclear in [
+        format!("#include \"more\"\n{plain}"),
+        format!("actions ( {} $more );", action("trees", "cellZoneSet")),
+        "actions ( { #include \"a\" } );".to_string(),
+        "actions ( { name $zone; type cellZoneSet; } );".to_string(),
+        "actions $list;".to_string(),
+        format!("{plain}\nactions ( );"),
+        "actions ( { name a; name trees; type cellZoneSet; } );".to_string(),
+    ] {
+        assert_eq!(told(&unclear), None, "{unclear}");
+    }
 }

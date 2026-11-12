@@ -48,6 +48,13 @@ pub struct Workflow {
     /// directories (a split's clean-up names its zone's). Filled by [`crate::Case::workflow`]
     /// and [`crate::description::Description::scripts`].
     pub case_regions: Vec<String>,
+    /// The cell zones each split region's `topoSetDict` makes, where it was read: no split is
+    /// written for one that makes others than the split's zone (`splitMeshRegions -cellZones`
+    /// would split those off too, writing their meshes over `constant/<zone>`). Filled by
+    /// [`crate::Case::workflow`] and [`crate::description::Description::scripts`].
+    /// `None`: the dictionary is there but which zones it makes can't be told (it doesn't
+    /// read, or uses `#include` or macros): no split is written then either.
+    pub split_zones: Vec<(String, Option<Vec<String>>)>,
     serial_agglomerate: Vec<Unmatched>,
     parallel_agglomerate: bool,
 }
@@ -622,6 +629,22 @@ impl Workflow {
                 "the case has a region named {n}, as splitMeshRegions names the parts outside the zone: rename it"
             ));
         }
+        if let Some((_, None)) = self.split_zones.iter().find(|(r, _)| r == region) {
+            return Err(format!(
+                "which cell zones {} makes can't be told (it doesn't read, or uses #include or a macro): splitMeshRegions would split off every one; write its actions out",
+                sp.dict
+            ));
+        }
+        if let Some((_, Some(made))) = self.split_zones.iter().find(|(r, _)| r == region) {
+            let others: Vec<&str> = made.iter().map(String::as_str).filter(|z| *z != zone).collect();
+            if !others.is_empty() {
+                return Err(format!(
+                    "{} makes other cell zones too ({}): splitMeshRegions would split them off as well (their meshes written to constant/<zone>); make only {zone} there",
+                    sp.dict,
+                    others.join(", ")
+                ));
+            }
+        }
         if part_name(zone) {
             return Err(format!("the zone is named {zone}, as splitMeshRegions names the parts outside it"));
         }
@@ -1023,6 +1046,45 @@ impl PendingSplit {
 
 /// The cell zones a `topoSetDict` makes: the names of its `cellZoneSet` actions.
 pub fn zones_made(doc: &umcf_foam_dict::Document) -> Vec<String> {
+    zones_told(doc).unwrap_or_else(|| zones_seen(doc))
+}
+
+/// The cell zones a `topoSetDict` makes, when they can be told: `None` when the file has a
+/// directive or macro, a key given twice (at its top or in an action), or `actions` isn't a list of plain dictionaries whose `name` and `type`
+/// are single words (an `#include`, a `$macro`: what OpenFOAM reads may make others).
+pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
+    use umcf_foam_dict::{Item, Node};
+    // Entries only, each key once (OpenFOAM takes the last of a key given twice, the reader the
+    // first).
+    let plain = |d: &umcf_foam_dict::Dict| {
+        let mut keys = std::collections::HashSet::new();
+        d.items.iter().all(|i| matches!(i, Item::Entry(_))) && d.keys().all(|k| keys.insert(k))
+    };
+    if !plain(&doc.root) {
+        return None;
+    }
+    let Some(entry) = doc.get(&["actions"]) else { return Some(Vec::new()) };
+    let [Node::List { items, .. }] = entry.value.as_slice() else { return None };
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let Node::Dict { body, .. } = item else { return None };
+        if !plain(body) {
+            return None;
+        }
+        let word = |k: &str| match body.get(k).and_then(|e| e.words()).as_deref() {
+            Some([w]) if !w.starts_with('$') && !w.starts_with('#') => Some(crate::description::unescaped(w)),
+            _ => None,
+        };
+        let (Some(kind), Some(name)) = (word("type"), word("name")) else { return None };
+        if kind == "cellZoneSet" && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Some(out)
+}
+
+/// The cell zones a `topoSetDict` names in its plain `cellZoneSet` actions, what can be read.
+fn zones_seen(doc: &umcf_foam_dict::Document) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let Some(entry) = doc.get(&["actions"]) else { return out };
     let [umcf_foam_dict::Node::List { items, .. }] = entry.value.as_slice() else { return out };

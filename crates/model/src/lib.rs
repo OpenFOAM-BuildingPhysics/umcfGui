@@ -1039,14 +1039,27 @@ impl Case {
                 .collect();
             wf.constant_files.push((r.clone(), files));
         }
-        // A split whose clean-up didn't name its zone: the one zone its topoSetDict makes.
+        // A split's zone as its topoSetDict makes them: a zone the clean-up named is kept only
+        // when the dictionary makes it; else the one zone it makes, if one. The zones it makes
+        // go to the workflow, which writes no split for a dictionary that makes others too.
         for m in &mut wf.meshes {
-            if let workflow::MeshBuild::Split(sp) = &mut m.build
-                && sp.zone.is_none()
-                && let Some(doc) = self.dict(&sp.dict)
-                && let [zone] = workflow::zones_made(doc).as_slice()
-            {
-                sp.zone = Some(zone.clone());
+            let workflow::MeshBuild::Split(sp) = &mut m.build else { continue };
+            match self.dict(&sp.dict).map(workflow::zones_told) {
+                Some(Some(made)) => {
+                    if !sp.zone.as_ref().is_some_and(|z| made.contains(z)) {
+                        sp.zone = match made.as_slice() {
+                            [zone] => Some(zone.clone()),
+                            _ => None,
+                        };
+                    }
+                    wf.split_zones.push((m.region.clone(), Some(made)));
+                }
+                // There, but what it makes can't be told.
+                Some(None) => wf.split_zones.push((m.region.clone(), None)),
+                // Unless known not to be there (topoSet stops the script then): it may be one
+                // the case doesn't list (below a mesh or a later time).
+                None if self.exists(&sp.dict) != Some(false) => wf.split_zones.push((m.region.clone(), None)),
+                None => {}
             }
         }
         wf

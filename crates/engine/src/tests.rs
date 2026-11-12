@@ -4202,3 +4202,34 @@ fn a_region_split_from_the_air_by_the_trees() {
         assert!(matches!(d.region("vegetation").unwrap().mesh, Some(umcf_model::workflow::MeshBuild::Split(_))));
     }
 }
+
+/// A split's zone and dictionary against each other: a zone the clean-up names that the
+/// dictionary doesn't make gives way to the one it makes, and a dictionary that makes other
+/// zones too is refused by the scripts and named by the command and the check.
+#[test]
+fn a_splits_dictionary_makes_its_zone_alone() {
+    let mut fs = example("of12/streetCanyon_CFDHAM_veg");
+    let prepare = String::from_utf8(fs.read("Allprepare", 1 << 20).unwrap().unwrap()).unwrap();
+    let prepare =
+        prepare.replace("rm -rf system/vegetation/trees system/vegetation/region*", "rm -rf system/vegetation/oldSets");
+    fs.insert("Allprepare", prepare.into_bytes());
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let d = s.case().unwrap().description().unwrap().0;
+    let Some(umcf_model::workflow::MeshBuild::Split(sp)) = &d.region("vegetation").unwrap().mesh else { panic!() };
+    assert_eq!(sp.zone.as_deref(), Some("trees"));
+    // The street's dictionary makes soil and brick.
+    let out = s
+        .execute(
+            "mesh.split",
+            &json!({ "region": "vegetation", "of": "air", "zone": "soil", "dict": "system/street/topoSetDict" }),
+        )
+        .unwrap();
+    assert!(out.message.contains("makes other cell zones too (brick)"), "{}", out.message);
+    let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+    assert!(e.contains("other cell zones too (brick)"), "{e}");
+    let out = s.execute("case.check", &Value::Null).unwrap();
+    let said = out.data["diagnostics"].to_string();
+    assert!(said.contains("makes others too (brick)"), "{said}");
+}

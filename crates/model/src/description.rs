@@ -380,6 +380,19 @@ impl Description {
         wf.constant_files =
             case.workflow().constant_files.into_iter().filter(|(r, _)| self.region(r).is_some()).collect();
         wf.case_regions = case.regions.iter().map(|r| r.name.clone()).collect();
+        wf.split_zones = self
+            .regions
+            .iter()
+            .filter_map(|r| match &r.mesh {
+                Some(MeshBuild::Split(sp)) => match case.dict(&sp.dict) {
+                    Some(doc) => Some((r.name.clone(), crate::workflow::zones_told(doc))),
+                    // There, or not known not to be, but not read: what it makes can't be told.
+                    None if case.exists(&sp.dict) != Some(false) => Some((r.name.clone(), None)),
+                    None => None,
+                },
+                _ => None,
+            })
+            .collect();
         wf.generate(version)
     }
 

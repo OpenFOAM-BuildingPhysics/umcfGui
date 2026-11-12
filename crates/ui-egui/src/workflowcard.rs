@@ -228,7 +228,7 @@ impl App {
                     options.insert("partner", regions);
                 }
                 "mesh.split" => {
-                    // The regions listed before it (their meshes are built first), and the
+                    // Only the regions listed before it (their meshes are built first), and the
                     // zones the dictionary makes (the one typed, else the copied region's).
                     let before: Vec<String> =
                         d.regions.iter().take_while(|r| r.name != region).map(|r| r.name.clone()).collect();
@@ -238,8 +238,8 @@ impl App {
                         d => d,
                     };
                     let zones = case.and_then(|c| c.dict(&dict)).map(umcf_model::workflow::zones_made);
-                    let others = || regions.iter().filter(|r| **r != region).cloned().collect();
-                    options.insert("of", if before.is_empty() { others() } else { before });
+                    // None for the first region: the field's hint says why.
+                    options.insert("of", before);
                     options.insert("zone", zones.unwrap_or_default());
                 }
                 "workflow.material" => {

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use umcf_model::blocks::{self, DEFAULT_FACES, DictState, Side};
 use umcf_model::description::{CaseMaterial, Description, PATH, RegionDesc, Role, case_materials, materials_file};
-use umcf_model::workflow::{MeshBuild, SPLIT_REST, part_name, zones_made};
+use umcf_model::workflow::{MeshBuild, SPLIT_REST, part_name, zones_made, zones_told};
 use umcf_model::{Case, RegionKind};
 
 use crate::{Diagnostic, Level};
@@ -347,7 +347,20 @@ fn split(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>
     }
     match case.dict(&sp.dict) {
         Some(doc) => {
+            if zones_told(doc).is_none() {
+                out.push(warn(
+                    &sp.dict,
+                    format!("region {name}: which cell zones this topoSetDict makes can't be told (#include or a macro): no script splits it; write its actions out"),
+                ));
+            }
             let made = zones_made(doc);
+            let others: Vec<&str> = made.iter().map(String::as_str).filter(|z| *z != zone).collect();
+            if !others.is_empty() {
+                out.push(warn(
+                    &sp.dict,
+                    format!("region {name} is split by the cell zone {zone}, but this topoSetDict makes others too ({}): splitMeshRegions would split them off as well, writing their meshes to constant/<zone>, so no script splits it", others.join(", ")),
+                ));
+            }
             if !made.iter().any(|z| z == zone) {
                 let has = if made.is_empty() { "none".to_string() } else { made.join(", ") };
                 out.push(warn(
