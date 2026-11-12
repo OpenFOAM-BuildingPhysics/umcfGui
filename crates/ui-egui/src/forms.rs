@@ -591,6 +591,10 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                     for (k, (p, name)) in v.iter_mut().zip(labels.iter()).enumerate() {
                                         let l = ui.label(RichText::new(*name).size(12.0));
                                         ui.add(egui::TextEdit::singleline(p).desired_width(56.0)).labelled_by(l.id);
+                                        // The parts' separator isn't part of a number.
+                                        if p.contains(PARTS) {
+                                            *p = p.replace(PARTS, "");
+                                        }
                                         if k % 2 == 1 {
                                             ui.end_row();
                                         }

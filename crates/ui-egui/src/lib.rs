@@ -145,6 +145,9 @@ pub struct App {
     pub(crate) box_summary: Option<Result<String, String>>,
     /// The surfaces' bounds the box card's preview is around, kept while they don't change.
     box_bounds: Option<boxcard::Bounds>,
+    /// Goes up when a command may have changed the case's surfaces (geometry, undo, redo,
+    /// another case): the box card's bounds are read again then, not at every view change.
+    pub(crate) geometry_revision: u64,
     /// Names [`App::show_only`] was asked for while the surfaces couldn't be listed: the first
     /// listing that works shows those that are surfaces.
     waiting: Vec<String>,
@@ -301,6 +304,7 @@ impl App {
             listing_error: None,
             box_summary: None,
             box_bounds: None,
+            geometry_revision: 0,
             waiting: Vec::new(),
             scene_error: None,
             scene_built: None,
@@ -493,6 +497,9 @@ impl App {
     fn after(&mut self, id: &str, result: Result<Outcome, umcf_engine::Error>) -> Result<Outcome, String> {
         let opens = matches!(id, "case.open" | "case.new");
         self.revision += 1;
+        if opens || id.starts_with("geometry.") || matches!(id, "edit.undo" | "edit.redo") {
+            self.geometry_revision += 1;
+        }
         let entry = match &result {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
             Err(e) => Entry { command: id.to_string(), ok: false, message: e.to_string(), data: Value::Null },
@@ -2242,6 +2249,9 @@ impl App {
                                 match serde_json::from_str::<Value>(&d.params) {
                                     Ok(v) => match f.fill(fs, &v) {
                                         Ok(()) => {
+                                            // What the JSON gives stays: a region it names
+                                            // doesn't fill the box card from its box.
+                                            f.filled_for = f.values.get("region").cloned();
                                             f.json = false;
                                             d.error = None;
                                         }

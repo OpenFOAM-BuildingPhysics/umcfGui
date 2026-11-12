@@ -101,11 +101,13 @@ fn surface_name(name: &str) -> Result<String, Error> {
 
 /// The bounds of the surfaces `names`, each read as OpenFOAM would; an error naming one that
 /// isn't there, doesn't read, or has no finite point.
-fn bounds(s: &Session, names: &[String]) -> Result<BBox, Error> {
+/// `cancellable`: a cancel stops it between surfaces (the command's run; not a preview's,
+/// which a cancel left over from a job would stop).
+fn bounds(s: &Session, names: &[String], cancellable: bool) -> Result<BBox, Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let mut all: Option<BBox> = None;
     for n in names {
-        if s.cancel.is_cancelled() {
+        if cancellable && s.cancel.is_cancelled() {
             return Err(Error::Cancelled { id: BOX.id.to_string() });
         }
         let rel = format!("{SURFACE_DIR}/{n}");
@@ -139,8 +141,11 @@ impl Session {
     /// as OpenFOAM would and as `mesh.box` reads them: for a preview of a box around them. An
     /// error names one that isn't there, doesn't read, or has no finite point.
     pub fn surface_bounds(&self, names: &[String]) -> Result<BBox, Error> {
+        if names.len() > MAX_SURFACES {
+            return Err(bad(format!("{} surfaces, {MAX_SURFACES} at most", names.len())));
+        }
         let names = names.iter().map(|n| surface_name(n)).collect::<Result<Vec<_>, _>>()?;
-        bounds(self, &names)
+        bounds(self, &names, false)
     }
 }
 
@@ -263,7 +268,7 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if let Some((k, m)) = b.problems().first() {
         return Err(bad(format!("{k} {m}")));
     }
-    let bbox = bounds(s, &b.surfaces)?;
+    let bbox = bounds(s, &b.surfaces, true)?;
     let at = |v: umcf_geom::Vec3| [v.x, v.y, v.z];
     let axes = b.axes(at(bbox.min), at(bbox.max), ground).map_err(bad)?;
     let made = umcf_model::blocks::BlockGrid { axes: axes.clone(), ..Default::default() };

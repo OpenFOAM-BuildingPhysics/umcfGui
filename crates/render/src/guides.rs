@@ -293,7 +293,8 @@ fn block_lines(out: &mut Drawn, b: &BlockPreview, dark: bool, rel: &dyn Fn(Vec3)
             }
         };
         let cells = b.cells.get(a).map(Vec::as_slice).unwrap_or_default();
-        let every = cells.len().div_ceil(PREVIEW_LINES).max(1);
+        // At most PREVIEW_LINES cells between lines drawn (the positions are one more).
+        let every = cells.len().saturating_sub(1).div_ceil(PREVIEW_LINES).max(1);
         for (k, at) in cells.iter().enumerate() {
             if k % every == 0 {
                 lines(*at, 0.35);

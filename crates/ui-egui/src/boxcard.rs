@@ -8,12 +8,18 @@ use umcf_render::guides::{BlockPreview, PREVIEW_LINES};
 
 use crate::App;
 
-/// The bounds of a set of surfaces, kept while neither they nor the case change.
+/// The bounds of a set of surfaces, kept while they and the case's geometry don't change
+/// ([`App::geometry_revision`]).
 pub(crate) type Bounds = (Vec<String>, u64, Result<BBox, String>);
+
+/// A number as the form reads one (JSON's syntax: what OK sends).
+fn number(text: &str) -> Option<f64> {
+    serde_json::from_str::<f64>(text.trim()).ok().filter(|x| x.is_finite())
+}
 
 /// The parts of a [`crate::forms::Kind::Numbers`] field's text.
 fn numbers(text: &str) -> Vec<Option<f64>> {
-    text.split('|').map(|p| p.trim().parse::<f64>().ok().filter(|x| x.is_finite())).collect()
+    text.split('|').map(number).collect()
 }
 
 impl App {
@@ -103,7 +109,7 @@ impl App {
         };
         // The cells' field holds its three parts (`||` when none is given).
         let counted = cells.split('|').any(|p| !p.trim().is_empty());
-        let cells = match (size.trim().parse::<f64>().ok(), if counted { cells.trim() } else { "" }) {
+        let cells = match (number(&size), if counted { cells.trim() } else { "" }) {
             (Some(h), "") => BoxCells::Size(h),
             (None, c) if !c.is_empty() => {
                 let n: Vec<Option<u32>> = c.split('|').map(|p| p.trim().parse::<u32>().ok()).collect();
@@ -123,6 +129,7 @@ impl App {
         let mut preview = BlockPreview::default();
         let mut sizes = Vec::new();
         let mut counts = Vec::new();
+        let mut thinned = 1usize;
         for (k, a) in axes.iter().enumerate() {
             let (Some(lo), Some(hi), Some(span)) = (a.stations.first(), a.stations.last(), a.spans.first()) else {
                 continue;
@@ -130,6 +137,7 @@ impl App {
             let n = span.cells.max(1);
             // At most about PREVIEW_LINES positions made, whatever the cells.
             let step = (n as usize).div_ceil(PREVIEW_LINES).max(1);
+            thinned = thinned.max(step);
             let at: Vec<f64> =
                 (0..=n as usize).step_by(step).map(|i| lo + (hi - lo) * i as f64 / f64::from(n)).collect();
             if let (Some(c), Some(s)) = (preview.cells.get_mut(k), preview.stations.get_mut(k)) {
@@ -147,12 +155,18 @@ impl App {
             total,
             ground.name()
         );
+        let line = if thinned > 1 {
+            format!("{line} (the view draws a line every {thinned} cells along the longest axis)")
+        } else {
+            line
+        };
         Ok((preview, line))
     }
 
-    /// The bounds of `surfaces`, read once while neither they nor the case change.
+    /// The bounds of `surfaces`, read again only when they or the case's geometry changed
+    /// (a geometry command, an undo or redo, another case): not as the view changes.
     fn box_bounds_of(&mut self, surfaces: &[String]) -> Result<BBox, String> {
-        let revision = self.revision;
+        let revision = self.geometry_revision;
         if let Some((s, r, b)) = &self.box_bounds
             && s.as_slice() == surfaces
             && *r == revision

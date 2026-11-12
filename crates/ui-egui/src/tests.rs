@@ -2850,6 +2850,30 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert!(h.state().viewport.blocks.is_none());
     let d = h.state().session().case().unwrap().description().unwrap().0;
     assert!(d.region("air").unwrap().mesh_box.is_some());
+    // Edited as JSON, a region named there keeps the JSON's margins and cells.
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.state_mut().dialog.as_mut().unwrap().params =
+        r#"{"region": "street", "margin": [1, 1, 1, 1, 0, 1], "cellSize": 3}"#.into();
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Back to the form").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("region").map(String::as_str), Some("street"));
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("1|1|1|1|0|1"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("3"));
+    h.state_mut().dialog = None;
+    h.run();
     // Opened again: filled from the region's box.
     h.state_mut().invoke("mesh.box");
     h.run();
