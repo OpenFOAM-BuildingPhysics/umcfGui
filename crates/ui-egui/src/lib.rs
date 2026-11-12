@@ -650,8 +650,11 @@ impl App {
         f.surfaces = surfaces;
         f.regions = regions;
         f.workflow_regions = workflow_regions;
-        // The box card fills its fields again from the region's box.
-        f.filled_for = None;
+        // The box card fills its fields again from the region's box (another case, a box
+        // made since), unless something was typed in them: that stays.
+        if f.values == f.initial {
+            f.filled_for = None;
+        }
     }
 
     /// What a form's fields hold before anything is typed: the run controls as the case's

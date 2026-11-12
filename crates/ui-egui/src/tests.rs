@@ -2827,6 +2827,11 @@ fn the_box_card_previews_the_box_and_makes_it() {
         f.values.insert("cellSize", "2".into());
     }
     h.run();
+    // Another command (a selection) keeps what was typed.
+    h.state_mut().act("select.clear", json!({}));
+    h.run();
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
     let blocks = h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().box_summary));
     // 8 .. 12 in x with 10 m around: -2 .. 22, 12 cells of 2.
     assert_eq!(blocks.stations[0].len(), 2);
