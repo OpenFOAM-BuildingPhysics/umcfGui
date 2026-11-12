@@ -2801,6 +2801,184 @@ fn a_form_follows_the_case() {
     assert_eq!(p.unwrap(), json!({"deltaT": 5}));
 }
 
+/// The block card: an empty form for a region without blocks, the grid typed previewed (its
+/// stations, cells and missing blocks), made by OK, and filled from the region's grid again.
+#[test]
+fn the_block_card_previews_the_grid_and_makes_it() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-blockcard", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}, {"name": "solid", "kind": "solid"}]}),
+    )
+    .unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().invoke("mesh.block");
+    h.run();
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    assert_eq!(form(&h).values.get("region").map(String::as_str), Some("air"));
+    assert!(h.state().viewport.blocks.is_none());
+    assert!(
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("give x, y and z")),
+        "{:?}",
+        h.state().preview_summary
+    );
+    // *+ Station* on an empty axis gives a row to type in.
+    h.get_all_by_label("+ Station").next().unwrap().click();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("x").map(String::as_str), Some("||"));
+    assert_eq!(h.get_all_by_label("−").count(), 1, "a row to type in, with its −");
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("x", "0|4|1\n10|6|2\n30".into());
+        f.values.insert("y", "0|5|1\n20".into());
+        f.values.insert("z", "0|4|1\n8|2|1\n20".into());
+        f.values.insert("missing", "1 0 0".into());
+        f.values.insert("patches", "inlet|outlet|side|side|ground|top|buildings".into());
+    }
+    h.run();
+    let blocks =
+        h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().preview_summary));
+    assert_eq!(blocks.stations[0], vec![0.0, 10.0, 30.0]);
+    // 4 even cells, then 6 graded: the last of the second span 2 times its first.
+    assert_eq!(blocks.cells[0].len(), 11, "{:?}", blocks.cells[0]);
+    let (first, last) = (blocks.cells[0][5] - blocks.cells[0][4], blocks.cells[0][10] - blocks.cells[0][9]);
+    assert!((last / first - 2.0).abs() < 1e-9, "{first} {last}");
+    assert_eq!(blocks.missing, vec![[[10.0, 0.0, 0.0], [30.0, 20.0, 8.0]]]);
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
+    // 10 × 5 × 6 cells, less the 6 × 5 × 4 of the missing block.
+    assert!(summary.contains("2 × 1 × 2 blocks, 1 missing · 10 × 5 × 6 cells along x, y, z: 180 cells"), "{summary}");
+    // The card draws the axis' table and the layer to tick.
+    assert_eq!(h.get_all_by_label("+ Station").count(), 3);
+    // OK: the grid made, the card closed, the preview gone.
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    assert!(h.state().viewport.blocks.is_none());
+    let d = h.state().session().case().unwrap().description().unwrap().0;
+    let g = d.region("air").unwrap().blocks.clone().unwrap();
+    assert_eq!(g.missing, vec![[1, 0, 0]]);
+    assert_eq!(g.side(umcf_model::blocks::Side::Missing), Some("buildings"));
+    // Opened again: filled from the grid, nothing typed, nothing but the region sent; a
+    // station changed sends that axis only.
+    h.state_mut().invoke("mesh.block");
+    h.run();
+    assert!(!form(&h).typed());
+    assert_eq!(form(&h).values.get("x").map(String::as_str), Some("0|4|1\n10|6|2\n30"));
+    let spec = crate::forms::spec("mesh.block").unwrap();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air"}));
+    h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("y", "0|5|1\n25".into());
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air", "y": [0, [5, 1], 25]}));
+    assert_eq!(h.state().viewport.blocks.as_ref().unwrap().stations[1], vec![0.0, 25.0]);
+    // Another command changes x meanwhile: the untouched x follows it, the typed y stays, and
+    // OK would send y only (not the old x back).
+    h.state_mut().act("mesh.block", json!({"region": "air", "x": [0, [4, 1], 10, [6, 2], 40]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("x").map(String::as_str), Some("0|4|1\n10|6|2\n40"));
+    assert_eq!(form(&h).values.get("y").map(String::as_str), Some("0|5|1\n25"));
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "air", "y": [0, [5, 1], 25]}));
+    assert_eq!(h.state().viewport.blocks.as_ref().unwrap().stations[0], vec![0.0, 10.0, 40.0]);
+    // Sides: one typed in stays, one changed by another command follows it (not sent back).
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("patches", "inflow|outlet|side|side|ground|top|buildings".into());
+    }
+    h.state_mut().act("mesh.block", json!({"region": "air", "patches": {"east": "exit"}}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("patches").map(String::as_str), Some("inflow|exit|side|side|ground|top|buildings"));
+    assert_eq!(form(&h).params(spec).unwrap()["patches"], json!({"west": "inflow"}));
+    // A value from the JSON the field can't hold stays through another command: sent, for the
+    // command to refuse by name.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.fill(spec, &json!({"region": "air", "missing": "bad", "y": [0, [5, 1], 25]})).unwrap();
+    }
+    h.state_mut().act("mesh.block", json!({"region": "air", "patches": {"top": "sky"}}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["missing"], json!("bad"));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.extra.remove("missing");
+    }
+    // A grid with problems: no preview, the card says why.
+    h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("missing", "5 0 0".into());
+    h.run();
+    assert!(h.state().viewport.blocks.is_none());
+    assert!(
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("missing")),
+        "{:?}",
+        h.state().preview_summary
+    );
+    // Remove with a change, or with replace: refused, as the command refuses it.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values = f.initial.clone();
+        f.values.insert("y", "0|5|1\n25".into());
+        f.values.insert("remove", "true".into());
+    }
+    h.run();
+    assert!(
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("give nothing else but the region")),
+        "{:?}",
+        h.state().preview_summary
+    );
+    // Remove alone: said, nothing previewed.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values = f.initial.clone();
+        f.values.insert("remove", "true".into());
+    }
+    h.run();
+    assert!(h.state().viewport.blocks.is_none());
+    assert!(matches!(&h.state().preview_summary, Some(Ok(l)) if l.contains("takes the blocks")));
+    // Back from JSON naming another region: filled from that region's grid (none here), the
+    // JSON over it; nothing of air's kept.
+    {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.form.as_mut().unwrap().values.insert("remove", String::new());
+    }
+    // The card settles over frames (its lines change height) before the link is clicked.
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Edit as JSON").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.state_mut().dialog.as_mut().unwrap().params = r#"{"region": "solid", "z": [0, [2, 1], 4]}"#.into();
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Back to the form").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("x").map(String::as_str), Some(""), "not air's");
+    assert_eq!(form(&h).values.get("z").map(String::as_str), Some("0|2|1\n4"));
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "solid", "z": [0, [2, 1], 4]}));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The box card: filled from the region's box, the box previewed in the view (both renderers
 /// draw it from `viewport.blocks`) with its size and cells said, then made by OK.
 #[test]
@@ -2821,7 +2999,7 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert_eq!(form(&h).values.get("region").map(String::as_str), Some("air"));
     // Without margins: no preview, and the card says what it needs.
     assert!(h.state().viewport.blocks.is_none());
-    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("six margins")));
+    assert!(matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("six margins")));
     {
         let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
         f.values.insert("margin", "10|10|10|10|0|10".into());
@@ -2833,11 +3011,12 @@ fn the_box_card_previews_the_box_and_makes_it() {
     h.run();
     assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
     assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
-    let blocks = h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().box_summary));
+    let blocks =
+        h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().preview_summary));
     // 8 .. 12 in x with 10 m around: -2 .. 22, 12 cells of 2.
     assert_eq!(blocks.stations[0].len(), 2);
     assert_eq!(blocks.cells[0].len(), 13, "{:?}", blocks.cells[0]);
-    let summary = h.state().box_summary.clone().unwrap().unwrap();
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
     assert!(summary.contains("cells; the ground: ground"), "{summary}");
     // OK: the box made, the card closed, the preview gone.
     h.get_by_label("OK").click();
@@ -2884,19 +3063,27 @@ fn the_box_card_previews_the_box_and_makes_it() {
     };
     set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": 1}));
     h.run();
-    assert!(h.state().viewport.blocks.is_some(), "{:?}", h.state().box_summary);
+    assert!(h.state().viewport.blocks.is_some(), "{:?}", h.state().preview_summary);
     set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": "two", "cells": null}));
     h.run();
     assert!(h.state().viewport.blocks.is_none());
     set_json(&mut h, json!({"region": "air", "margin": [1, 1, 1, 1, 0, 1, "bad"], "cellSize": 1}));
     h.run();
-    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Margins")), "{:?}", h.state().box_summary);
+    assert!(
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("Margins")),
+        "{:?}",
+        h.state().preview_summary
+    );
     set_json(&mut h, json!({"region": "air", "margin": -1, "cellSize": 1}));
     h.run();
-    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("margin")), "{:?}", h.state().box_summary);
+    assert!(
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("margin")),
+        "{:?}",
+        h.state().preview_summary
+    );
     set_json(&mut h, json!({"region": "nowhere", "margin": 5, "cellSize": 1}));
     h.run();
-    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
+    assert!(matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
     h.state_mut().dialog = None;
     h.run();
     // A read cancelled is read again when the card opens again.
@@ -2917,9 +3104,9 @@ fn the_box_card_previews_the_box_and_makes_it() {
     h.run();
     h.run();
     assert!(
-        matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Replace blocks not made from the box")),
+        matches!(&h.state().preview_summary, Some(Err(e)) if e.contains("Replace blocks not made from the box")),
         "{:?}",
-        h.state().box_summary
+        h.state().preview_summary
     );
     h.state_mut().act("edit.undo", json!({}));
     h.run();

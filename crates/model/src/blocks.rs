@@ -352,6 +352,54 @@ impl Grading {
         }
     }
 
+    /// Where the cells of a span of `cells` cells graded so end, as fractions of the span from
+    /// its start (0 and 1 its ends): at every `step`-th cell, and the span's end. The usual
+    /// geometric spread (each cell the one before times the ratio to the next; a ratio over the
+    /// span, or one per section, the sections' cells shared out as [`line_divide_counts`]
+    /// does), for a preview: the mesh blockMesh writes is the one to measure. A grading that
+    /// isn't positive numbers, or that spreads past what a float holds, gives even cells.
+    pub fn fractions(&self, cells: u32, step: usize) -> Vec<f64> {
+        let step = step.max(1);
+        let n = cells.max(1) as usize;
+        // Within `m` cells expanding by `e` from the first to the last: where cell `i` ends.
+        let spread = |i: usize, m: usize, e: f64| -> f64 {
+            let even = i as f64 / m as f64;
+            if m <= 1 || !(e.is_finite() && e > 0.0) || (e - 1.0).abs() < 1e-12 {
+                return even;
+            }
+            let r = e.powf(1.0 / (m as f64 - 1.0));
+            let f = (1.0 - r.powf(i as f64)) / (1.0 - r.powf(m as f64));
+            if f.is_finite() { f } else { even }
+        };
+        // (cells, share of the length, expansion) of each part.
+        let parts: Vec<(usize, f64, f64)> = match self {
+            Grading::Ratio(r) => vec![(n, 1.0, *r)],
+            Grading::Sections(s) => {
+                let total: f64 = s.iter().map(|x| x[0]).sum();
+                match line_divide_counts(s, cells) {
+                    Some(counts) if total.is_finite() && total > 0.0 => s
+                        .iter()
+                        .zip(counts)
+                        .map(|(x, c)| (usize::try_from(c).unwrap_or(0), x[0] / total, x[2]))
+                        .collect(),
+                    _ => vec![(n, 1.0, 1.0)],
+                }
+            }
+        };
+        let mut out = Vec::with_capacity(n / step + 2);
+        let (mut at, mut start) = (0usize, 0.0f64);
+        for (m, share, e) in parts {
+            // Only the cells drawn are visited, whatever the number of cells.
+            for i in ((step - at % step) % step..m).step_by(step) {
+                out.push(start + share * spread(i, m, e));
+            }
+            at = at.saturating_add(m);
+            start += share;
+        }
+        out.push(1.0);
+        out
+    }
+
     /// An upper bound of the length of its text.
     fn text_len(&self) -> usize {
         match self {
@@ -457,6 +505,30 @@ impl Axis {
 
     fn blocks(&self) -> usize {
         self.stations.len().saturating_sub(1)
+    }
+
+    /// The number of cells along the axis; `None` past `u64`.
+    pub fn cells(&self) -> Option<u64> {
+        self.spans.iter().try_fold(0u64, |t, s| t.checked_add(u64::from(s.cells)))
+    }
+
+    /// Where the cells' lines are along the axis (a preview, [`Grading::fractions`]): at every
+    /// `step`-th cell of each span, and every station. Empty when the stations and the spans
+    /// don't match.
+    pub fn cell_lines(&self, step: usize) -> Vec<f64> {
+        if self.spans.len() + 1 != self.stations.len() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (i, span) in self.spans.iter().enumerate() {
+            let (Some(lo), Some(hi)) = (self.stations.get(i), self.stations.get(i + 1)) else { continue };
+            let mut f = span.grading.fractions(span.cells, step);
+            // Each span's end is the next one's start.
+            f.pop();
+            out.extend(f.into_iter().map(|x| lo + (hi - lo) * x));
+        }
+        out.extend(self.stations.last());
+        out
     }
 }
 

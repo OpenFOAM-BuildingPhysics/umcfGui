@@ -371,7 +371,25 @@ description, the parameters and the import take as many), 10 000 names in each o
 grading, and a dictionary that reads back: 48 MB and 3 000 000 tokens (as the dictionary
 parser counts them, whitespace included: about 20 000 plain blocks), and no larger than the
 case reads a dictionary (4 MB by default). In the desktop app it is *Block mesh* in the *More*
-group of the *Mesh* tab, a card of its JSON parameters for now.
+group of the *Mesh* tab: a [form](desktop.md#forms) of the region (starting on the first with
+blocks), a table for each axis (a row per station, with the cells and the grading to the next:
+a ratio, or sections `fraction cells-fraction expansion; …`; *+ Station* and *−* add and take
+rows away; an axis of more than 200 stations is edited as text, a row a line), the missing
+blocks (ticked on a layer of the grid, x across and y up, for grids of up to 40 blocks along x
+and y; and listed, a block `i j k` a line), each side's patch (empty: none), *Write over a
+blockMeshDict edited by hand* and *Take the blocks out of the description*. It is filled from
+the region's blocks (choosing another region fills it from that one's, what was typed going;
+*Edit as JSON* naming another region fills it from that one's, with the JSON over it; after
+another command, the fields not typed in follow the region's grid as it is then); what is
+left as it was filled is left out of the parameters (the region
+keeps it), so *OK* sends only the axes, missing blocks and sides changed (a side emptied as
+`null`). Single faces, patches without faces and types are kept from *Edit as JSON*. While it
+is open, the 3D view previews the grid the form makes (its stations strong, its cells' lines
+faint where the grading puts them, at most about 120 along an axis, and the missing blocks by
+their edges, the first 2000; on the GPU and the CPU alike), on its own when the browser shows
+nothing (a case without a mesh or surfaces), and the card says its blocks and cells, and when
+*OK* takes the region's box out; what keeps it from being made (a value the command refuses, a
+problem of the grid) is said there instead.
 
 `workflow.import` reads a region's blocks from its `blockMeshDict` when that is a grid: its
 blocks' vertices on stations along x, y and z, each block one cell of that grid (its vertices

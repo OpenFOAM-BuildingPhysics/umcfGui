@@ -2641,6 +2641,8 @@ mod tests {
         let preview = umcf_render::guides::BlockPreview {
             cells: [span(lo.x, hi.x, 12), span(lo.y, hi.y, 8), span(lo.z, hi.z, 6)],
             stations: [vec![lo.x, hi.x], vec![lo.y, hi.y], vec![lo.z, hi.z]],
+            // A missing block, drawn by its edges.
+            missing: vec![[[lo.x, lo.y, lo.z], [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, (lo.z + hi.z) / 2.0]]],
         };
         // Many thin lines: the pixels each view adds for them (on a line's border either may
         // or may not take a pixel), as for the faces' edges.

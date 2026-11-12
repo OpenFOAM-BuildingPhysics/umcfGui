@@ -77,10 +77,30 @@ pub struct CutPlane {
 pub struct BlockPreview {
     pub cells: [Vec<f64>; 3],
     pub stations: [Vec<f64>; 3],
+    /// Blocks left out (the buildings), each by its two corners: drawn by their edges, the
+    /// first [`PREVIEW_BOXES`].
+    pub missing: Vec<[[f64; 3]; 2]>,
+}
+
+impl BlockPreview {
+    /// The box the grid spans (its first and last stations along each axis); `None` without
+    /// two finite stations, in order, along each.
+    pub fn bbox(&self) -> Option<BBox> {
+        let end = |k: usize| -> Option<(f64, f64)> {
+            let s = self.stations.get(k)?;
+            let (lo, hi) = (*s.first()?, *s.last()?);
+            (lo.is_finite() && hi.is_finite() && lo < hi).then_some((lo, hi))
+        };
+        let ((x0, x1), (y0, y1), (z0, z1)) = (end(0)?, end(1)?, end(2)?);
+        Some(BBox { min: Vec3::new(x0, y0, z0), max: Vec3::new(x1, y1, z1) })
+    }
 }
 
 /// The most lines of cells drawn along an axis: past it, every n-th (the stations always).
 pub const PREVIEW_LINES: usize = 120;
+
+/// The most missing blocks drawn.
+pub const PREVIEW_BOXES: usize = 2000;
 
 /// The grid of blocks' colours: light over a dark background, dark over a light one.
 const BLOCKS_DARK: [u8; 3] = [120, 200, 255];
@@ -302,6 +322,24 @@ fn block_lines(out: &mut Drawn, b: &BlockPreview, dark: bool, rel: &dyn Fn(Vec3)
         }
         for at in b.stations.get(a).map(Vec::as_slice).unwrap_or_default() {
             lines(*at, 1.0);
+        }
+    }
+    // Each missing block's twelve edges, inside the box.
+    for [p, q] in b.missing.iter().take(PREVIEW_BOXES) {
+        if !(p.iter().chain(q).all(|x| x.is_finite())) {
+            continue;
+        }
+        for a in 0..3 {
+            let (b1, b2) = ((a + 1) % 3, (a + 2) % 3);
+            for (u, v) in [(p[b1], p[b2]), (p[b1], q[b2]), (q[b1], p[b2]), (q[b1], q[b2])] {
+                let mut from = [0.0; 3];
+                from[a] = p[a];
+                from[b1] = u;
+                from[b2] = v;
+                let mut to = from;
+                to[a] = q[a];
+                out.lines.push(Line { a: rel(point(from)), b: rel(point(to)), colour, alpha: 1.0 });
+            }
         }
     }
 }
@@ -537,10 +575,21 @@ mod tests {
         let b = BlockPreview {
             cells: [vec![0.0, 5.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
             stations: [vec![0.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
+            missing: vec![],
         };
         let d = build(&scene, &camera, Guides::default(), true, None, Some(&b));
         // Per axis and position: 4 lines; x has 3 cells' lines and 2 stations, y and z 2 + 2.
         assert_eq!(d.lines.len(), 4 * (3 + 2) + 4 * (2 + 2) * 2);
+        // A missing block: its 12 edges more, strong; one not finite left out; at most
+        // PREVIEW_BOXES drawn.
+        let block = [[0.0, 0.0, 0.0], [5.0, 10.0, 5.0]];
+        let with = BlockPreview { missing: vec![block, [[f64::NAN, 0.0, 0.0], [1.0, 1.0, 1.0]]], ..b.clone() };
+        let e = build(&scene, &camera, Guides::default(), true, None, Some(&with));
+        assert_eq!(e.lines.len(), d.lines.len() + 12);
+        assert!(e.lines[d.lines.len()..].iter().all(|l| l.alpha == 1.0));
+        let lots = BlockPreview { missing: vec![block; PREVIEW_BOXES + 5], ..b.clone() };
+        let e = build(&scene, &camera, Guides::default(), true, None, Some(&lots));
+        assert_eq!(e.lines.len(), d.lines.len() + 12 * PREVIEW_BOXES);
         assert!(d.lines.iter().all(|l| l.a.iter().chain(&l.b).all(|v| (0.0..=10.0).contains(v))));
         // Many cells: thinned to PREVIEW_LINES along an axis.
         let many: Vec<f64> = (0..=1000).map(|k| f64::from(k) / 100.0).collect();

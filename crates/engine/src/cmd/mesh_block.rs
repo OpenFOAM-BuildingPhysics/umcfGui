@@ -258,7 +258,7 @@ fn number(x: f64) -> Value {
 }
 
 /// A grid as JSON, as `mesh.block` takes it.
-pub(crate) fn grid_json(g: &BlockGrid) -> Value {
+pub fn grid_json(g: &BlockGrid) -> Value {
     let axis = |a: &Axis| -> Value {
         let mut out = Vec::new();
         for (i, x) in a.stations.iter().enumerate() {
@@ -295,6 +295,43 @@ pub(crate) fn grid_json(g: &BlockGrid) -> Value {
         "noFaces": g.no_faces,
         "types": g.types.iter().map(|(n, t)| (n.clone(), json!(t))).collect::<Map<String, Value>>(),
     })
+}
+
+/// The grid a `mesh.block` call with `params` makes of a region's blocks `had` (for a card's
+/// preview): the parts given put over them, refused as the command refuses them (the shape of
+/// the parameters, a region without blocks given no x, y and z, the grid's problems); `None`
+/// for `remove: true`. The rest of what the command checks (the dictionary there, the region's
+/// mesh) is the command's to say.
+pub fn planned(had: Option<&BlockGrid>, params: &Value) -> Result<Option<BlockGrid>, String> {
+    let allowed: Vec<&str> =
+        ["region", "remove", "replace", "dropPatches", "dropEntries", "unreadPatches", "dropSettings"]
+            .into_iter()
+            .chain(KEYS)
+            .collect();
+    let said = |e: Error| e.to_string();
+    let p = Params::new(BLOCK.id, params, &allowed).map_err(said)?;
+    if p.bool("remove").map_err(said)?.unwrap_or(false) {
+        // As the command: nothing else but the region with it.
+        if KEYS.iter().any(|k| p.value(k).is_some()) || p.bool("replace").map_err(said)?.unwrap_or(false) {
+            return Err(said(bad(BLOCK.id, "remove: true takes the blocks out: give nothing else but the region")));
+        }
+        return Ok(None);
+    }
+    let mut grid = had.cloned().unwrap_or_default();
+    apply(BLOCK.id, &mut grid, &p).map_err(said)?;
+    if had.is_none() {
+        let lacking: Vec<&str> = ["x", "y", "z"].into_iter().filter(|k| p.value(k).is_none()).collect();
+        if !lacking.is_empty() {
+            return Err(format!("the region has no blocks yet: give x, y and z ({} missing)", lacking.join(", ")));
+        }
+    }
+    let problems = grid.problems();
+    if !problems.is_empty() {
+        let list: Vec<String> =
+            problems.iter().map(|(at, m)| if at.is_empty() { m.clone() } else { format!("{at}: {m}") }).collect();
+        return Err(list.join("; "));
+    }
+    Ok(Some(grid))
 }
 
 /// `mesh.block`: a region's blocks, and its `blockMeshDict` written from them.

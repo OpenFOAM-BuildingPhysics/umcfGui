@@ -16,12 +16,18 @@ pub(crate) type Bounds = (Vec<String>, u64, Result<BBox, String>);
 
 impl App {
     /// Each frame: while the box card shows its form, its fields follow the region chosen (the
-    /// region's box, when it has one), and the view previews the box; else nothing previewed.
+    /// region's box, when it has one), and the view previews the box; the block card's grid
+    /// likewise ([`App::block_card_frame`]); else nothing previewed.
     pub(crate) fn box_card_frame(&mut self) {
-        let open = self.dialog.as_ref().is_some_and(|d| d.id == "mesh.box" && d.form.as_ref().is_some_and(|f| !f.json));
-        if !open {
+        let open =
+            |id: &str| self.dialog.as_ref().is_some_and(|d| d.id == id && d.form.as_ref().is_some_and(|f| !f.json));
+        if open("mesh.block") {
+            self.block_card_frame();
+            return;
+        }
+        if !open("mesh.box") {
             self.viewport.blocks = None;
-            self.box_summary = None;
+            self.preview_summary = None;
             // A read that failed or was cancelled is tried again when the card opens again.
             if self.box_bounds.as_ref().is_some_and(|(_, _, b)| b.is_err()) {
                 self.box_bounds = None;
@@ -36,7 +42,7 @@ impl App {
         if self.viewport.blocks != preview {
             self.viewport.blocks = preview;
         }
-        self.box_summary = Some(summary);
+        self.preview_summary = Some(summary);
     }
 
     /// Fills the form from the region's box when the region chosen changed: its surfaces,

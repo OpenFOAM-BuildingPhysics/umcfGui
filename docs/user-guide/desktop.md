@@ -46,8 +46,9 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   goes into **»** too. A command that can't
   run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right; *OK* runs it. [Forms](#forms) ask for the parameters of
-  *Run controls*, *Import STL…*, *Tree crowns…*, *Repair…*, *Scale…*, *Snapshot* and *Box mesh*
-  (with [a preview of the box](workflow.md#box)); the others
+  *Run controls*, *Import STL…*, *Tree crowns…*, *Repair…*, *Scale…*, *Snapshot*, *Box mesh*
+  (with [a preview of the box](workflow.md#box)) and *Block mesh* (with
+  [a preview of the grid](workflow.md#blocks)); the others
   show what they take, and their parameters as JSON (`{"endTime": 7200}`). The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *New case…* (its
   card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Add a region…*
