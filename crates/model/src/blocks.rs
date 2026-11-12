@@ -33,6 +33,38 @@ use crate::description::{RegionDesc, Role, atom, entry_name, list, single, twice
 use crate::workflow::{MeshBuild, RootStep};
 use crate::{Case, RegionKind};
 
+/// The sides on the ground and on top: those across the axis the gravity is along (the region's
+/// `constant/<region>/g`, else `constant/g`; z down without either), the ground the one it
+/// points to.
+/// The third value: whether a `g` was read (else z is taken as up).
+pub fn ground_and_top(case: &Case, region: &str) -> (Side, Side, bool) {
+    let g = [format!("constant/{region}/g"), "constant/g".to_string()].iter().find_map(|rel| {
+        let e = case.dict(rel)?.get(&["value"])?;
+        let [umcf_foam_dict::Node::List { items, .. }] = e.value.as_slice() else { return None };
+        // Three items, or no gravity: counted before anything is read of them.
+        if items.len() != 3 {
+            return None;
+        }
+        // Exactly three numbers, all finite, one at least not 0: else no gravity is read.
+        let v: Option<Vec<f64>> = items
+            .iter()
+            .map(|n| match n {
+                umcf_foam_dict::Node::Atom(t) => t.text.parse::<f64>().ok().filter(|x| x.is_finite()),
+                _ => None,
+            })
+            .collect();
+        match v?.as_slice() {
+            [x, y, z] if [x, y, z].iter().any(|c| **c != 0.0) => Some([*x, *y, *z]),
+            _ => None,
+        }
+    });
+    let read = g.is_some();
+    let g = g.unwrap_or([0.0, 0.0, -1.0]);
+    let axis = (0..3).max_by(|a, b| g[*a].abs().total_cmp(&g[*b].abs())).unwrap_or(2);
+    let [low, high] = [[Side::West, Side::East], [Side::South, Side::North], [Side::Ground, Side::Top]][axis];
+    if g[axis] < 0.0 { (low, high, read) } else { (high, low, read) }
+}
+
 /// The line every file umcfGui generates from the workflow carries.
 pub const GENERATED: &str = "Written by umcfGui from the case workflow; edit the workflow, not this file.";
 
@@ -108,7 +140,7 @@ impl Side {
 
     /// The axis a face of this side is across, and whether it faces the axis' end; `None` for
     /// `Missing`.
-    fn axis(self) -> Option<(usize, bool)> {
+    pub fn axis(self) -> Option<(usize, bool)> {
         match self {
             Side::West => Some((0, false)),
             Side::East => Some((0, true)),
@@ -252,11 +284,11 @@ fn parse_number(t: &str) -> Option<f64> {
     t.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x + 0.0)
 }
 
-fn node_number(n: &Node) -> Option<f64> {
+pub(crate) fn node_number(n: &Node) -> Option<f64> {
     atom(n).and_then(parse_number)
 }
 
-fn node_count(n: &Node) -> Option<u64> {
+pub(crate) fn node_count(n: &Node) -> Option<u64> {
     atom(n).and_then(|t| t.parse::<u64>().ok())
 }
 
@@ -1262,6 +1294,18 @@ impl BlockGrid {
 /// The header line that carries a generated file's checksum.
 const CHECKSUM: &str = "// checksum ";
 
+/// A checksum of a grid's shape: its stations, cells and gradings, missing blocks and single
+/// faces, as the description writes them (not its patches or types).
+pub fn shape_checksum(g: &BlockGrid) -> u64 {
+    let mut text = String::new();
+    for (k, v) in g.parts() {
+        if matches!(k, "x" | "y" | "z" | "missing" | "faces") {
+            let _ = writeln!(text, "{k} {}", v.unwrap_or_default());
+        }
+    }
+    checksum(text.as_bytes())
+}
+
 /// FNV-1a, 64 bits: the same on every platform and version, unlike the standard library's
 /// hashers.
 fn checksum(bytes: &[u8]) -> u64 {
@@ -1311,7 +1355,7 @@ fn station_index(stations: &[Vec<f64>; 3], p: [f64; 3]) -> Option<[usize; 3]> {
 
 /// Every item of `body` that isn't an entry (an `#include`, a `$macro`, a value without a key)
 /// is a problem at `at`: the grid can't hold it, and writing the key again would lose it.
-fn non_entries(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) {
+pub(crate) fn non_entries(body: &Dict, at: &str, problem: &mut impl FnMut(&str, String)) {
     for item in &body.items {
         match item {
             Item::Entry(_) => {}

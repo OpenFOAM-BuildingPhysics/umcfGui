@@ -171,6 +171,7 @@ settings
 | `kind` | `fluid`, `solid` or `vegetation` |
 | `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
 | `blocks` | the grid of blocks the region's `blockMeshDict` is written from ([below](#blocks)) |
+| `box` | the box around the STL surfaces its blocks are made from ([below](#box)) |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
@@ -287,7 +288,11 @@ umcf-cli run --case path/to/case \
 | `replace` | `true` to write over a `blockMeshDict` umcfGui didn't write, or one edited since |
 | `remove` | `true` takes the blocks out of the description; the dictionary stays, the case's own |
 
-With only `region`, the dictionary is written again from the blocks there. A grid with problems
+With only `region`, the dictionary is written again from the blocks there. A region without a
+`mesh` (as [`case.new`](new-case.md) makes them) gets `mesh blocks;`, its dictionary
+`system/<region>/blockMeshDict`, and the outcome says so. A call that changes the grid (its
+stations, cells, gradings, missing blocks or single faces) of a region made from a [box](#box)
+takes the box out of the description, and says so; `remove` takes the box out with the blocks. A grid with problems
 (stations that don't increase, a span without cells or with a section blockMesh would give none, a
 missing block outside the grid or listed twice, a `cyclic`, `nonConformal`, `mapped` or `processor`
 type, a whole layer of missing blocks, a face without a patch, a single face inside the mesh, more
@@ -415,6 +420,93 @@ the description doesn't list, and the patches where a role doesn't fit, 20 of ea
 patches without faces, types), and refuses a new name the blocks already use for another
 patch. While the region has blocks it renames no patch to or from `defaultFaces`, the faces left
 to blockMesh (that would join or split them): change the blocks with `mesh.block` instead.
+
+### Box
+
+A box around the case's STL surfaces is the simplest block mesh: one block from the surfaces'
+bounds plus a margin on each side, as a background for snappyHexMesh or a mesh of its own. A
+region's `box` says what its [blocks](#blocks) are made from:
+
+```c++
+air
+{
+    kind        fluid;
+    mesh        blocks;
+    blocks      { … }                       // made from the box
+    box
+    {
+        surfaces ( buildings.stl trees.stl );   // in constant/triSurface
+        margin   ( 100 200 50 50 0 60 );        // west east south north ground top
+        cellSize 2;                             // or cells ( 200 75 40 );
+    }
+}
+```
+
+| Key | What |
+|---|---|
+| `surfaces` | the STL surfaces of `constant/triSurface` whose bounds the box is around: file names ending `.stl`, `.stlb`, `.stl.gz` or `.stlb.gz` |
+| `margin` | how far the box reaches past the bounds on each side: `west`/`east` along x, `south`/`north` along y, `ground`/`top` along z, as the blocks name the sides |
+| `cellSize` | the cells' size: cubes, the box grown by less than a cell so that each axis is a whole number of cells: at the far end of each axis (east, north, top), except along the gravity, where it grows away from the ground (at `ground` with the gravity along +z, where `top` is the ground); a length within rounding of whole cells keeps its end, so the box never falls short of the bounds plus margins |
+| `cells` | instead of `cellSize`, the cells along x, y and z: the box is as the bounds and margins make it |
+| `made` | written by `mesh.box`: a checksum of the blocks it made (their stations, cells, gradings, missing blocks and single faces), so that blocks edited since are told from a box or surfaces that changed |
+
+`mesh.box` reads the surfaces (each as OpenFOAM reads it: ASCII or binary, compressed or not),
+makes the region's blocks from their bounds and the box, one block with one span along each axis
+and a grading of 1, and writes the `blockMeshDict` from them as [`mesh.block`](#blocks) does:
+generated, refused over one edited by hand without `replace`, nothing of the dictionary there
+lost unsaid. The outcome is `mesh.block`'s, with the box (`box`), the surfaces' bounds
+(`bounds`) and whether the box changed (`boxChanged`).
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'mesh.box={"region":"air","margin":[200,400,200,200,0,150],"cellSize":17.5}' \
+  --cmd 'case.save={}'
+```
+
+| Parameter | What |
+|---|---|
+| `region` | the region of `system/umcfWorkflow` (required) |
+| `surfaces` | `["buildings.stl", …]`; default: the region's box's, else every STL surface in `constant/triSurface` |
+| `margin` | `50` (every side but the ground, which is 0, so the box stands on the surfaces' bottom), or six `[west, east, south, north, ground, top]`, each 0 or more |
+| `cellSize`, `cells` | one of the two: `2`, or `[200, 75, 40]` |
+| `patches`, `types`, `noFaces` | as `mesh.block` takes them |
+| `reshape` | `true` to replace blocks that weren't made from the region's box, or aren't what it made (edited since) |
+| `replace`, `dropPatches`, `dropEntries`, `unreadPatches`, `dropSettings` | as `mesh.block` takes them, for the `blockMeshDict` there |
+| `remove` | `true` takes the box out of the description; the blocks stay as they are |
+
+Each part defaults to the region's box, so with only `region` the blocks are made again from the
+box there (after a surface was moved or replaced, say). A region without a box needs `margin` and
+`cellSize` or `cells`. The ground is the side the gravity points to, as the case check takes it
+(`constant/<region>/g`, else `constant/g`, else z down): with the gravity along z it is
+`ground`, in the OpenFOAM-8 street canyon (y up) `south`; the outcome names it (`ground`), and
+says so when no `g` was read and z was taken as up. One `margin` leaves it 0, and a
+`cellSize` grows the box away from it. A region without blocks gets the sides' patches `ground`
+and `top` across the gravity, `inlet` and `outlet` at the low and high ends of the first other
+axis and `side` on the two ends of the last (along z: `inlet` west, `outlet` east, `side` south
+and north; with y up: `inlet` west, `outlet` east, `ground` south, `top` north, `side` on
+`ground` and `top`), which `patches` changes; in a fluid
+region, those of them the description doesn't list yet are added with their roles of the same
+names, on whichever side `patches` puts them, so the ground is a `wall` and the others `patch`. A region without a `mesh` gets
+`mesh blocks;`. Blocks that weren't made from the region's box (given by `mesh.block`, read by
+`workflow.import`, or kept when `remove` took the box out: its checksum went with it), or edited since the box made them (their checksum isn't its `made`: other
+stations, cells or gradings, even of one span; an edit of the box entry or of the surfaces
+isn't one of the blocks) are replaced only with `reshape`:
+their stations, missing blocks and single faces give way to the box's, and the patch around
+the missing blocks goes, with the `types` of the patches the box no longer has (as any patch the dictionary drops: a wall only when `dropPatches`
+names it); the rest stays (`edit.undo` takes it back). The surfaces are read one after the
+other, and the command can be cancelled between them. The call is refused,
+nothing changed, for a surface that isn't there, doesn't read or has no point with finite
+coordinates, a negative margin, a cell size not above 0, an axis without cells, a box without
+length along an axis (flat surfaces with margins of 0 along it), or a box of more than
+1 000 000 000 cells (a cell size in millimetres for a case in metres, say); as by `mesh.block`
+for the dictionary. The box goes into the description key by key, only those that change.
+A later `mesh.block` that changes the grid's stations, cells, gradings, missing blocks or single
+faces takes the box out, since the blocks are no longer what it makes; one that changes only
+patches or types leaves it. The case check (`workflow.blocks`) names a box without blocks, one with a
+problem of its own, and surfaces it names that the case doesn't have; it doesn't read the
+surfaces, so a surface changed since is found by `mesh.box` with only `region`. In the desktop
+app it is *Box mesh* in the *More* group of the *Mesh* tab, a card of its JSON parameters for
+now.
 
 ### Settings
 

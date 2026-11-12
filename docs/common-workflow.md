@@ -69,13 +69,14 @@ regions
         kind        fluid;
         // `mesh` says how the mesh is built (`blocks`: blockMesh -region air; or the steps in
         // constant/polyMesh), `blocks` what the blockMeshDict it reads holds: the 3×3 cases and
-        // the street canyon, the buildings as missing blocks (there since M0.83).
+        // the street canyon, the buildings as missing blocks (`mesh.block`).
         mesh        blocks;
         blocks      { x ( 0 (5 1) 50 (3 1) 60 (3 1) 70 ); y ( 0 (6 1) 100 (5 1) 150 );
                       z ( 0 (3 1) 10 ); missing ( (1 1 0) ); patches { west inlet; east outlet;
                       south side; north side; ground ground; top top; missing ground; } }
-        // Planned: the box from the surfaces' bounds (the STL cases).
-        box         { margin (50 50 0 60); cellSize 2; }
+        // Or a box around the STL surfaces its blocks are made from (`mesh.box`):
+        // margins west, east, south, north, ground, top.
+        box         { surfaces ( buildings.stl ); margin ( 50 50 50 50 0 60 ); cellSize 2; }
         surfaces    { buildings { level (3 5); layers 3; role coupled; partner buildings; } }
         patches     { west inlet; east outlet; north side; south side; ground ground; top top; }
     }
