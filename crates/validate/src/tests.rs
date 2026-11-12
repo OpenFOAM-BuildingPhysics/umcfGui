@@ -2263,3 +2263,165 @@ fn the_blending_layer_needs_its_coefficients_and_the_air_s_four_sides() {
     edit(&mut fs, "system/controlDict", "blending true;", "blending false;");
     assert!(!codes(&fs).contains(&(Level::Error, "control.blending")));
 }
+
+#[test]
+fn a_regions_blocks_against_its_patches_and_its_dictionary() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    let messages = |fs: &MemFs| -> Vec<String> {
+        let c = Case::open(&complete(fs)).unwrap();
+        check(&c)
+            .into_iter()
+            .filter(|d| d.code == "workflow.blocks")
+            .map(|d| format!("{}: {}", d.path, d.message))
+            .collect()
+    };
+    let with = |blocks: &str| {
+        d.write().replacen(
+            "        kind        fluid;\n",
+            &format!("        kind        fluid;\n        mesh        blocks;\n{blocks}"),
+            1,
+        )
+    };
+    let grid = "        blocks
+        {
+            x       ( 0 (2 1) 1 );
+            y       ( 0 (2 1) 1 );
+            z       ( 0 (2 1) 1 );
+            patches { west inlet; east inlet; south inlet; north inlet; ground ground; top inlet; }
+        }
+";
+    fs.insert(PATH, with(grid));
+    let m = messages(&fs);
+    let has = |m: &[String], s: &str| m.iter().any(|x| x.contains(s));
+    // No dictionary yet, and an inlet on top.
+    assert!(has(&m, "system/air/blockMeshDict: not there: mesh.block writes it"), "{m:#?}");
+    assert!(has(&m, "patch inlet is on the top side, where its role (outlet) doesn't fit"), "{m:#?}");
+    assert_eq!(m.len(), 2, "{m:#?}");
+    // Written from the blocks: nothing to say of it.
+    let c = Case::open(&complete(&fs)).unwrap();
+    let (desc, _) = c.description().unwrap();
+    let (path, text) = umcf_model::blocks::generate(desc.region("air").unwrap()).unwrap();
+    fs.insert(&path, text.clone());
+    let m = messages(&fs);
+    assert!(!has(&m, "blockMeshDict"), "{m:#?}");
+    // Only a type given since: said as such, not as other blocks.
+    fs.insert(PATH, with(&grid.replace("        }\n", "            types   { ground patch; }\n        }\n")));
+    let m = messages(&fs);
+    assert!(has(&m, "from region air's blocks as they are, but a patch's type changed since"), "{m:#?}");
+    fs.insert(PATH, with(grid));
+    // Edited by hand, it is.
+    fs.insert(&path, text.replace("(2 2 2)", "(2 2 3)"));
+    let m = messages(&fs);
+    assert!(has(&m, "system/air/blockMeshDict: not what the blocks of region air make"), "{m:#?}");
+    // A grid with problems, and a patch the region doesn't have.
+    fs.insert(
+        PATH,
+        with(
+            &grid
+                .replace("top inlet;", "top sky;")
+                .replace("        }\n", "            missing ( (9 0 0) );\n        }\n"),
+        ),
+    );
+    let m = messages(&fs);
+    assert!(has(&m, "region air, blocks/missing: (9 0 0) is outside the grid of 1×1×1 blocks"), "{m:#?}");
+    assert!(has(&m, "patch sky is not one of the region's patches"), "{m:#?}");
+    // With problems, the dictionary isn't compared.
+    assert!(!has(&m, "blockMeshDict"), "{m:#?}");
+}
+
+#[test]
+fn the_ground_and_top_of_blocks_follow_the_gravity() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    // The height along y, as the OpenFOAM-8 street canyon has it: the ground on south.
+    let grid = "        mesh        blocks;
+        blocks
+        {
+            x       ( 0 (2 1) 1 );
+            y       ( 0 (2 1) 1 );
+            z       ( 0 (2 1) 1 );
+            patches { west inlet; east inlet; south ground; north inlet; ground inlet; top inlet; }
+        }
+";
+    fs.insert(
+        PATH,
+        d.write().replacen("        kind        fluid;\n", &format!("        kind        fluid;\n{grid}"), 1),
+    );
+    let fits = |fs: &MemFs| -> Vec<String> {
+        let c = Case::open(&complete(fs)).unwrap();
+        check(&c)
+            .into_iter()
+            .filter(|d| d.code == "workflow.blocks" && d.message.contains("doesn't fit"))
+            .map(|d| d.message)
+            .collect()
+    };
+    fs.insert("constant/air/g", format!("{}value (0 -9.81 0);\n", header("uniformDimensionedVectorField")));
+    let m = fits(&fs);
+    // inlet (an outlet by its velocity) on north, the top: doesn't fit; ground on south fits.
+    assert!(m.iter().any(|x| x.contains("on the north side, the top (by the gravity)")), "{m:#?}");
+    assert!(!m.iter().any(|x| x.contains("patch ground")), "{m:#?}");
+    // With z up, the ground is on south: around, where it doesn't fit.
+    fs.insert("constant/air/g", format!("{}value (0 0 -9.81);\n", header("uniformDimensionedVectorField")));
+    let m = fits(&fs);
+    assert!(m.iter().any(|x| x.contains("patch ground is on the south side")), "{m:#?}");
+    assert!(!m.iter().any(|x| x.contains("no g")), "{m:#?}");
+    // No usable g: z taken as up, and said.
+    fs.insert("constant/air/g", format!("{}value (0 0 0);\n", header("uniformDimensionedVectorField")));
+    let m = fits(&fs);
+    assert!(
+        m.iter().any(|x| x.contains("patch ground is on the south side") && x.ends_with("(no g: z taken as up)")),
+        "{m:#?}"
+    );
+    // Nor a g with a component that isn't a finite number, or not three of them.
+    for bad in ["(NaN -9.81 0)", "(0 0 -9.81 foo)", "(0 -9.81)", "(inf 0 0)"] {
+        fs.insert("constant/air/g", format!("{}value {bad};\n", header("uniformDimensionedVectorField")));
+        let m = fits(&fs);
+        assert!(
+            m.iter().any(|x| x.contains("patch ground is on the south side") && x.ends_with("(no g: z taken as up)")),
+            "{bad}: {m:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_side_whose_faces_all_went_elsewhere_has_no_patch_there() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    let grid = "        mesh        blocks;
+        blocks
+        {
+            x       ( 0 (2 1) 1 );
+            y       ( 0 (2 1) 1 );
+            z       ( 0 (2 1) 1 );
+            patches { west ground; east ground; south ground; north ground; ground ground; top inlet; }
+            faces   { roof ( (0 0 0 top) ); }
+        }
+";
+    fs.insert(
+        PATH,
+        d.write().replacen("        kind        fluid;\n", &format!("        kind        fluid;\n{grid}"), 1),
+    );
+    let c = Case::open(&complete(&fs)).unwrap();
+    let m: Vec<String> = check(&c).into_iter().filter(|d| d.code == "workflow.blocks").map(|d| d.message).collect();
+    // inlet has no face on top (roof took the only one): nothing said of it there.
+    assert!(!m.iter().any(|x| x.contains("patch inlet is on the top side")), "{m:#?}");
+    // Without the single face, it is.
+    fs.insert(
+        PATH,
+        d.write().replacen(
+            "        kind        fluid;\n",
+            &format!(
+                "        kind        fluid;\n{}",
+                grid.replace("            faces   { roof ( (0 0 0 top) ); }\n", "")
+            ),
+            1,
+        ),
+    );
+    let c = Case::open(&complete(&fs)).unwrap();
+    let m: Vec<String> = check(&c).into_iter().filter(|d| d.code == "workflow.blocks").map(|d| d.message).collect();
+    assert!(m.iter().any(|x| x.contains("patch inlet is on the top side")), "{m:#?}");
+}

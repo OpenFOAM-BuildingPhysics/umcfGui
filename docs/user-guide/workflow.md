@@ -170,6 +170,7 @@ settings
 | `profile` | written by an earlier `case.new`: read and left out (there is [one configuration](new-case.md#the-configuration)) |
 | `kind` | `fluid`, `solid` or `vegetation` |
 | `mesh` | `blocks` (`blockMesh -region`), or the steps that build it in `constant/polyMesh` before it is moved to the region: `blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one |
+| `blocks` | the grid of blocks the region's `blockMeshDict` is written from ([below](#blocks)) |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
@@ -190,7 +191,9 @@ from the patch's own velocity condition, not one given by a group or a pattern
 (`atmBoundaryLayerInletVelocity`, `inletOutlet`, `slip`); `top`, `ground`, `interior`, `bottom`
 and `sides` from their names; the vegetation region's patches
 take their air twin's role, the open sides and the top becoming `sky`. What it can't tell is
-listed and left without a role. On the 3×3 test case every patch gets its role. A region split
+listed and left without a role. Each region's [blocks](#blocks) are read from the
+`blockMeshDict` its mesh reads, when that is a grid of blocks; the import writes nothing but the
+description. On the 3×3 test case every patch gets its role. A region split
 from another (the street canyon's vegetation) is not described yet: its steps are listed.
 
 `workflow.show` returns the description, read from the file or, when the case has none, as the
@@ -208,6 +211,210 @@ solid's materials the case doesn't list (or lists with another model), a model t
 doesn't have for the case's version (one the case's file has too is the case check's to say),
 materials of the case it leaves out, and another OpenFOAM version.
 
+
+### Blocks
+
+A region's `blocks` say what its `blockMeshDict` holds, and `mesh` still says how the mesh is
+built: with `mesh blocks;` the blocks are written to `system/<region>/blockMeshDict`, and with
+steps in `constant/polyMesh` to the dictionary its `blockMesh` step names
+(`system/blockMeshDict.air` above; `system/blockMeshDict` by default). A plain box is the same
+with one span along each axis.
+
+```c++
+air
+{
+    kind        fluid;
+    mesh        blocks;
+    blocks
+    {
+        x       ( 0 (5 1) 50 (3 1) 60 (3 1) 70 (3 1) 80 (6 1) 230 );
+        y       ( 0 (6 1) 100 (5 1) 150 (6 ((0.5 0.5 13.9) (0.5 0.5 0.072))) 250 );
+        z       ( 0 (3 1) 10 (5 1) 60 );
+        missing ( (1 1 0) (3 1 0) );
+        patches { west inlet; east outlet; south side1; north side2; ground ground; top top; missing defaultFaces; }
+        faces   { air_to_street ( (2 1 0 ground) ); air_to_windward ( (2 1 0 east) ); }
+        noFaces ( street );
+        types   { side1 slip; side2 slip; }
+    }
+    …
+}
+```
+
+| Key | What |
+|---|---|
+| `x`, `y`, `z` | the stations along the axis, and between each two `(cells grading)`: the grading is the ratio of the last cell to the first, or blockMesh's sections `((fraction cells-fraction expansion) …)`. Every span has its cells and grading; numbers are written back with the same value (`0.00739296596393882` stays so; `60.00` becomes `60`, and one whose plain text would be longer than 24 characters is written with an exponent, `1e-300`), which OpenFOAM reads as the same number |
+| `missing` | the blocks `(i j k)` left out, counted from 0 along x, y and z: the buildings of the street canyon and the 3×3 cases |
+| `patches` | each side's patch: `west`/`east` are x min and max, `south`/`north` y min and max, `ground`/`top` z min and max, whatever the case's gravity (the OpenFOAM-8 street canyon, whose height is along y, has its ground at `south`); `missing` the faces around the missing blocks. `defaultFaces` leaves faces to blockMesh's own patch, of type `empty` unless `types` gives it another (the 3×3 cases leave their buildings' faces so, for a `createPatch` to rename) |
+| `faces` | single faces of blocks in another patch than their side's, `(i j k side)`: the canyon's floor and walls |
+| `noFaces` | patches the dictionary declares without faces, for later steps to fill |
+| `types` | patch types given explicitly (`slip`, `symmetryPlane`, …), over what the roles give |
+
+A patch's blockMesh type is the one `types` gives it; else the one its role in the region's
+`patches` gives: `wall` for `ground`, `coupled`, `interior` and `bottom` in a fluid or vegetation
+region, `patch` for the others, and `patch` for every patch of a solid (as the reference cases
+have them; `changeDictionary` makes the coupled ones `mappedWall`); else (no role) `patch`. The
+import fills `types` for every patch whose type in the dictionary isn't the one its role (or no
+role) gives, so a dictionary is written again with the types it had: the OpenFOAM-8 street
+canyon's `slip` sides and top, a `symmetryPlane`, the examples' walls (they carry no mesh, so
+their patches have no role).
+
+`mesh.block` sets a region's blocks and writes its `blockMeshDict` from them. Its parameters are
+the region, and any part of the grid as JSON (a region without blocks needs `x`, `y` and `z`).
+The axes, `missing` and `noFaces` replace the region's; the maps `patches`, `faces` and `types`
+merge into them: a key given replaces its entry, `null` takes it away, and the others stay (so
+giving one type keeps the others). A new entry goes after the others, in the order of its name
+(a JSON object's order isn't kept).
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'mesh.block={"region":"air","x":[0,[5,1],50,[3,1],60,[3,1],70,[3,1],80,[12,0.5],230],"replace":true}' \
+  --cmd 'case.save={}'
+```
+
+| Parameter | What |
+|---|---|
+| `region` | the region of `system/umcfWorkflow` (required) |
+| `x`, `y`, `z` | `[0, [5, 1], 50, [10, [[0.5, 0.5, 13.9], [0.5, 0.5, 0.072]]], 230]`: stations, with `[cells, grading]` between |
+| `missing` | `[[1, 1, 0], [3, 1, 0]]` |
+| `patches` | `{"west": "inlet", …, "missing": "defaultFaces"}` |
+| `faces` | `{"air_to_street": [[2, 1, 0, "ground"]]}` |
+| `noFaces` | `["street"]` |
+| `types` | `{"side1": "symmetryPlane", "top": null}` |
+| `dropPatches` | `["air_to_street"]`: patches of the dictionary there, of type `wall` or a constraint type, that the blocks may drop |
+| `dropEntries` | `["side1"]`: patches of the dictionary there whose entries besides `type` and `faces` (`neighbourPatch`, `inGroups`, …) may be lost |
+| `unreadPatches` | `true` to write over a dictionary whose patches can't all be read (an `#include`, a macro) |
+| `dropSettings` | `true` to lose what the dictionary there holds besides its patches (cell zones, curved edges, a scale, other keys) |
+| `replace` | `true` to write over a `blockMeshDict` umcfGui didn't write, or one edited since |
+| `remove` | `true` takes the blocks out of the description; the dictionary stays, the case's own |
+
+With only `region`, the dictionary is written again from the blocks there. A grid with problems
+(stations that don't increase, a span without cells or with a section blockMesh would give none, a
+missing block outside the grid or listed twice, a `cyclic`, `nonConformal`, `mapped` or `processor`
+type, a whole layer of missing blocks, a face without a patch, a single face inside the mesh, more
+than 20 000 blocks, more than 10 000 names in `faces`, `noFaces` or `types` (or in `dropPatches`,
+`dropEntries`), more than 40 000 missing blocks or 120 000 single faces, a dictionary too large to
+read back) is refused and nothing changes. The blocks go into the
+description key by key, only those that change, so the comments around them stay (those inside a
+key that changes are not kept: the key is written again on one line). The dictionary is written
+whole, generated: its header says so (`Written by umcfGui from the case workflow; edit the
+workflow, not this file.`) with a checksum of the rest. One without that header, or whose
+checksum no longer matches (edited by hand), is written over only with `replace`, and
+`case.save` keeps it in the backup (`.umcfgui/backup/`); the outcome says so. `edit.undo` takes
+the blocks and the dictionary back together. The vertices are those of the whole grid, x first,
+then y, then z; each block is a hex of one cell of it, its vertices in blockMesh's order
+(right-handed), and each boundary face is listed pointing out of its block. Faces left to
+`defaultFaces` get a `defaultPatch { name defaultFaces; type empty; }` (its type from `types`
+when given), which is blockMesh's
+default said out loud.
+
+The patches are listed in the dictionary in the grid's order: the sides' (west, east, south,
+north, ground, top, missing, as `patches` has them), then those of single faces (in the order of
+`faces`), then those without faces (`noFaces`).
+
+What the dictionary it replaces makes is read before it is written over, and nothing of it is
+lost unsaid but its comments, layout and banner (that file is in the backup once the case is
+saved). Its patches are read whole: those of `boundary`, or of the older `patches ( type name
+( faces ) … )` (which blockMesh reads instead when both are there; a note says so), and its
+default patch when blockMesh leaves faces to it: the faces of its hexes no other hex shares (by
+their vertex labels, as blockMesh's topology matches them) that no patch lists, whether the
+dictionary is a grid or not (the 3×3 cases' `buildings`, say). That patch is its
+`defaultPatch`, `defaultFaces` of type `empty` unless it names or types it otherwise (without a
+type, `empty`, as OpenFOAM-8 takes it; OpenFOAM-12 asks for one; a note says so). Besides its
+patches, it is read for what the blocks don't hold: cell zones named by blocks (a solid's
+materials are such zones), curved `edges`, projected `faces` and `geometry`,
+`mergePatchPairs`, a `convertToMeters` or `scale` other than 1, and any other key at its top
+(`fastMerge`, `checkBlockFaceOrientation`, `namedVertices`, a variable of its own), a key given
+twice, expressions in its vertices or blocks (`$macros`, `#calc`); blocks that can't all be read
+for their cell zones are said so. The outcome lists each patch
+whose type changes (`inlet patch → wall`, after a role was given, say; `typesChanged` in its
+data), each patch the blocks drop or add (`patchesRemoved`, `patchesAdded`), the entries besides
+`type` and `faces` that are lost (`entriesLost`) and the rest it held (`settingsLost`). The call
+is refused, and nothing changes, when:
+
+- a `wall` (the fields' wall functions need one) or a constraint type (`symmetryPlane`,
+  `symmetry`, `empty`, `wedge`, `cyclic…`, `processor…`, and OpenFOAM-12's `nonConformalCyclic`,
+  `nonConformalError` and `nonConformalProcessorCyclic`, which the fields' conditions are of)
+  would change, unless this call's `types` gives the patch its new type;
+- a patch of such a type would be dropped, unless `dropPatches` names it (a patch renamed in the
+  description reads as one dropped and one added, and the refusal says so);
+- a patch's other entries (`neighbourPatch`, `inGroups`, `sampleMode`, …), which the blocks
+  don't hold, would be lost, unless `dropEntries` names the patch;
+- it holds cell zones, curved edges, projections, merged patches, a scale or other keys, unless
+  `dropSettings` is `true`;
+- the region's `blocks` entry in the description doesn't read whole (a value it can't read, or an
+  `#include`, a `$macro` or a value without a key in it or in its `patches`, `faces` or `types`:
+  the parts not read would be taken for absent and lost): it is mended by hand first, or taken
+  out with `remove`; `workflow.patch` renaming a patch of the region is refused then too;
+- another region's mesh reads the same dictionary (it would change that region's mesh too; the
+  import notes such a dictionary);
+- the dictionary's patches can't all be read (an `#include` or a macro at its top or in a patch,
+  a type given by a macro, a list of another shape, a name given twice, a block that isn't a
+  hex, one point under two vertex labels, so that the faces left to its default patch can't be
+  told), unless `unreadPatches` is `true`.
+
+The default patch is typed like the others: `types { defaultFaces patch; }` writes
+`defaultPatch { name defaultFaces; type patch; }` (a snappyHexMesh background's open sides, say),
+and the import fills it from the dictionary's `defaultPatch`. A `defaultPatch` named otherwise
+(`floor`) is read as a patch of that name, its faces the sides' or single faces like any other's,
+and written so: the same faces in the same patch, listed in `boundary`.
+
+A `cyclic…`, `nonConformal…`, `mapped…` or `processor…` type in `types` is a problem of the grid:
+it needs entries the blocks don't hold, so it is given after blockMesh (`changeDictionary`, `createPatch`). The grid's size is bounded
+before anything is written: 20 000 blocks, 10 000 stations along an axis (9 999 spans; the
+description, the parameters and the import take as many), 10 000 names in each of `faces`,
+`noFaces` and `types`, 1 000 sections in a
+grading, and a dictionary that reads back: 48 MB and 3 000 000 tokens (as the dictionary
+parser counts them, whitespace included: about 20 000 plain blocks), and no larger than the
+case reads a dictionary (4 MB by default). In the desktop app it is *Block mesh* in the *More*
+group of the *Mesh* tab, a card of its JSON parameters for now.
+
+`workflow.import` reads a region's blocks from its `blockMeshDict` when that is a grid: its
+blocks' vertices on stations along x, y and z, each block one cell of that grid (its vertices
+in any of blockMesh's right-handed orders), each span with the same cells and grading in every
+block (an `edgeGrading` the same along each direction counts as a `simpleGrading`), a face of a
+patch on the boundary of the blocks, `convertToMeters` 1 and no curved edges, `#include`,
+`$macro` or key the blocks don't hold, and no point under two vertex labels in its blocks
+(blockMesh joins blocks by their labels, so it keeps a baffle there the grid wouldn't). A block
+numbered against an axis has its grading turned
+round: a ratio inverted, sections in the other order with their expansions inverted. Sections
+are turned round only when blockMesh shares the span's cells among them alike from either end
+(OpenFOAM's `lineDivide` rounds each section's share and gives what is lacking to the first of
+the largest share, so tied sections would get their cells otherwise; umcfGui follows the same
+rule, checked against blockMesh's own points by the opt-in test), and only when they are
+positive numbers; else the dictionary isn't read as a grid, and the note says why. A grid whose
+sections blockMesh would share so that one gets no cells (0.9, 0.05 and 0.05 of 3 cells) is a
+problem: more cells, or fewer sections. Each side's patch is
+the one most of its faces are in, the others' faces listed in `faces`; the types go into
+`types` as above. A region without a mesh gets the patches its blocks name, without a role, in
+its `patches`. A dictionary that isn't such a grid is left as it is and named in the import's
+notes, with why. The examples' dictionaries and the 3×3 cases' fluid, vegetation and street
+regions are grids; the 3×3 cases' `buildings` (blocks spanning several stations) and `roofs`
+(separate boxes) are not. Written again from the grid, each makes the same mesh in blockMesh, on
+OpenFOAM-12 and -8 (an opt-in test, `UMCF_SOLVER=1`, on the examples, the 3×3 cases' meshes of
+up to a million cells and a block numbered against its axes with sections): the same numbers of
+points, faces and cells, the same points within a relative 1e-9 of the domain's size (a grading
+turned round is computed from the other end, so its points can differ by rounding), and the
+same patches with their types and sizes. The written
+dictionary isn't the same text: its patches are listed in the grid's order (the sides', then
+the single faces', then those without faces), so the faces are numbered otherwise (other
+`startFace`s, owners and neighbours), and the comments and banner of the dictionary it replaces
+are not kept (that one is in the backup once the case is saved).
+
+The case check (`workflow.blocks`) reads each region's blocks: the grid's problems, a patch the
+region's `patches` don't list, a patch on a side its role doesn't fit (an inlet on top, say; a
+side's patch counts there only where it still has a face once `faces` took theirs; the ground
+and top are the sides across the gravity of `constant/<region>/g`, else `constant/g`; without
+either, or with one that isn't three finite numbers not all 0, z is taken as up and the warning
+says so), a `blockMeshDict` that isn't there, doesn't load, or isn't what the blocks make
+(edited by hand, written from other blocks, or a patch's type the blocks' `types` or its role
+give otherwise now). The grid's
+problems are listed together, the first 20 of them and then how many more; so are the patches
+the description doesn't list, and the patches where a role doesn't fit, 20 of each.
+
+`workflow.patch` renaming a patch renames it in the region's blocks too (sides, single faces,
+patches without faces, types), and refuses a new name the blocks already use for another
+patch. While the region has blocks it renames no patch to or from `defaultFaces`, the faces left
+to blockMesh (that would join or split them): change the blocks with `mesh.block` instead.
 
 ### Settings
 
@@ -300,7 +507,7 @@ its comments kept.
 | Command | What |
 |---|---|
 | `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, the radiation) is listed. A solid with materials stays one |
-| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`) and `name`. `null` takes a role or partner away; a patch the region doesn't list is added. A new name is followed by the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
+| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`) and `name`. `null` takes a role or partner away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
 | `workflow.material` | `region` (a solid), `material` (the name of its cell zone) and `model` (its `buildingMaterialModel`, or `null`), or `remove: true` |
 
 ```sh

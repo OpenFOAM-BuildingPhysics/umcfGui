@@ -43,6 +43,7 @@ use umcf_foam_field::{Field, Value};
 pub use umcf_foam_mesh::Patch;
 use umcf_schema::{CaseKind, Layout, Note, Severity};
 
+pub mod blocks;
 pub mod components;
 mod controls;
 pub mod description;
@@ -1076,6 +1077,32 @@ impl Case {
         let mut disk = lock(&self.disk);
         disk.description_puts += 1;
         self.description_put = disk.description_puts;
+        Ok(())
+    }
+
+    /// Puts `text` as the whole dictionary `rel` (a generated one, such as a `blockMeshDict`
+    /// written from the workflow), new or replacing the one the case has; [`Case::save`]
+    /// writes it, keeping a backup of the file it replaces. Refused for a path that is a link
+    /// or the same file as another dictionary, a path outside the case, and a file on disk
+    /// that didn't load as a dictionary.
+    pub fn put_dict(&mut self, fs: &dyn CaseFs, rel: &str, text: &str) -> Result<()> {
+        let bad = rel.is_empty()
+            || rel.starts_with('/')
+            || rel.contains('\\')
+            || rel.split('/').any(|c| c.is_empty() || c == "." || c == "..")
+            || rel.starts_with(".umcfgui/");
+        if bad {
+            return Err(Error::BadFile(rel.to_string()));
+        }
+        if self.resolve(rel) != rel || self.aliases.values().any(|p| p == rel) {
+            return Err(Error::IsDict(rel.to_string()));
+        }
+        unlinked(fs, rel)?;
+        if self.dict(rel).is_none() && (self.raw.contains_key(rel) || fs.is_file(rel) || fs.is_dir(rel)) {
+            return Err(Error::NotLoaded { path: rel.to_string() });
+        }
+        let doc = Document::parse(text).map_err(|source| Error::Dict { path: rel.to_string(), source })?;
+        self.files.insert(rel.to_string(), Arc::new(doc));
         Ok(())
     }
 

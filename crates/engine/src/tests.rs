@@ -3393,3 +3393,491 @@ fn the_layers_build_is_planned_by_the_triangles_its_cells_have() {
     // No patch: nothing drawn.
     assert_eq!(crate::cmd::scene::layers_need(&mesh, None, 3), 5 + 10 * 8 + 16 * 16);
 }
+
+/// An example case, read into memory (the files under `examples/`).
+fn example(rel: &str) -> MemFs {
+    fn walk(fs: &mut MemFs, root: &std::path::Path, dir: &std::path::Path) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(fs, root, &p);
+            } else {
+                let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                fs.insert(&rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples").join(rel);
+    let mut fs = MemFs::new();
+    walk(&mut fs, &root, &root);
+    fs
+}
+
+#[test]
+fn a_regions_blocks_write_its_blockmeshdict() {
+    for version in ["of12", "of8"] {
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(example(&format!("{version}/streetCanyon_CFDHAM"))), "mem", OpenOptions::default(), false)
+            .unwrap();
+        let blocks_of =
+            |s: &Session, r: &str| s.case().unwrap().description().unwrap().0.region(r).and_then(|r| r.blocks.clone());
+        let dict = "system/air/blockMeshDict";
+        let original = s.case().unwrap().dict(dict).unwrap().to_string();
+        // The import reads the blocks of every region's dictionary, and writes nothing else.
+        let out = s.execute("workflow.import", &Value::Null).unwrap();
+        assert!(!out.data["description"]["regions"][0]["blocks"].is_null(), "{version}: {}", out.data);
+        assert_eq!(s.case().unwrap().changed(), ["system/umcfWorkflow"], "{version}");
+        for r in ["air", "street", "windward", "leeward"] {
+            assert!(blocks_of(&s, r).is_some(), "{version}: {r}");
+        }
+        // Without a mesh, the description's patches are those the blocks name.
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let unlisted: Vec<&Value> = check.data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "workflow.blocks" && d["message"].as_str().unwrap_or("").contains("not one of"))
+            .collect();
+        assert!(unlisted.is_empty(), "{version}: {unlisted:?}");
+        // The dictionary there is the case's own: not written over without replace.
+        let e = s.execute("mesh.block", &json!({"region": "air"})).unwrap_err().to_string();
+        assert!(e.contains("replace"), "{e}");
+        assert_eq!(s.case().unwrap().dict(dict).unwrap().to_string(), original);
+        let out = s.execute("mesh.block", &json!({"region": "air", "replace": true})).unwrap();
+        assert_eq!(out.data["replaced"], json!(true), "{}", out.message);
+        assert_eq!(out.data["described"], json!(false));
+        let written = s.case().unwrap().dict(dict).unwrap().to_string();
+        assert!(umcf_model::blocks::untouched(&written), "{written}");
+        // The examples carry no mesh, so no patch has a role: each keeps its type.
+        assert!(written.contains("    ground\n    {\n        type wall;"), "{written}");
+        // A change of the blocks: written again without replace (umcfGui wrote the one there).
+        let z = if version == "of12" { "z" } else { "y" };
+        let out = s
+            .execute("mesh.block", &json!({"region": "air", z: [0, [3, 1], 10, [6, 0.00739296596393882], 60]}))
+            .unwrap();
+        assert_eq!((out.data["written"].clone(), out.data["replaced"].clone()), (json!(true), json!(false)));
+        let desc = s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string();
+        assert!(desc.contains(&format!("{z}       ( 0 (3 1) 10 (6 0.00739296596393882) 60 );")), "{desc}");
+        let now = s.case().unwrap().dict(dict).unwrap().to_string();
+        assert!(now.contains(" 0.00739296596393882"), "{now}");
+        assert_eq!(out.data["blocks"][z], json!([0, [3, 1], 10, [6, 0.00739296596393882], 60]));
+        // Again: nothing to write.
+        let again = s.execute("mesh.block", &json!({"region": "air"})).unwrap();
+        assert_eq!(again.data["written"], json!(false), "{}", again.message);
+        // No check says the dictionary is stale.
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let stale: Vec<&Value> = check.data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "workflow.blocks" && d["path"] == dict)
+            .collect();
+        assert!(stale.is_empty(), "{stale:?}");
+        // Undone (the call that changed nothing, then the change): the blocks and the
+        // dictionary go back together.
+        s.execute("edit.undo", &Value::Null).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert_eq!(s.case().unwrap().dict(dict).unwrap().to_string(), written);
+        // Saved: the case's own dictionary is kept in the backup.
+        s.execute("case.save", &Value::Null).unwrap();
+        assert_eq!(text(&s, &format!(".umcfgui/backup/test/{dict}")), original);
+        assert_eq!(text(&s, dict), written);
+        // Refused, nothing changed: problems, a region without blocks given no axes, an
+        // unknown side.
+        let before = s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string();
+        let e = s.execute("mesh.block", &json!({"region": "air", "missing": [[9, 9, 9]]})).unwrap_err().to_string();
+        assert!(e.contains("missing: (9 9 9) is outside the grid"), "{e}");
+        s.execute("mesh.block", &json!({"region": "street", "remove": true})).unwrap();
+        assert!(blocks_of(&s, "street").is_none());
+        let e = s.execute("mesh.block", &json!({"region": "street", "x": [0, [1, 1], 1]})).unwrap_err().to_string();
+        assert!(e.contains("give x, y and z"), "{e}");
+        let e = s.execute("mesh.block", &json!({"region": "air", "patches": {"up": "top"}})).unwrap_err().to_string();
+        assert!(e.contains("patches/up is not a side"), "{e}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert_eq!(s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string(), before);
+    }
+}
+
+/// The OpenFOAM-8 street canyon as if meshed: its air's `boundary` the patches of its
+/// `blockMeshDict` with their types (`slip` sides and top, or `symmetryPlane` ones), so that
+/// the import gives the patches roles.
+fn meshed_canyon(constraint: &str) -> MemFs {
+    let mut fs = example("of8/streetCanyon_CFDHAM");
+    let dict = "system/air/blockMeshDict";
+    let text = String::from_utf8(fs.read(dict, 1 << 20).unwrap().unwrap())
+        .unwrap()
+        .replace("type slip;", &format!("type {constraint};"));
+    fs.insert(dict, text.clone());
+    let imp = umcf_model::blocks::import(&umcf_foam_dict::Document::parse(&text).unwrap()).unwrap();
+    let mut b = format!(
+        "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class polyBoundaryMesh;\n}}\n{}\n(\n",
+        imp.types.len()
+    );
+    for (k, (n, t)) in imp.types.iter().enumerate() {
+        b.push_str(&format!("    {n}\n    {{\n        type {t};\n        nFaces 1;\n        startFace {k};\n    }}\n"));
+    }
+    b.push_str(")\n");
+    fs.insert("constant/air/polyMesh/boundary", b);
+    fs
+}
+
+fn type_in(text: &str, patch: &str) -> String {
+    let doc = umcf_foam_dict::Document::parse(text).unwrap();
+    umcf_model::blocks::listed_types(&doc).get(patch).cloned().unwrap_or_default()
+}
+
+#[test]
+fn patch_types_survive_the_blocks_and_change_only_when_said() {
+    let dict = "system/air/blockMeshDict";
+    for constraint in ["slip", "symmetryPlane"] {
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(meshed_canyon(constraint)), "mem", OpenOptions::default(), false).unwrap();
+        s.execute("workflow.import", &Value::Null).unwrap();
+        let (d, _) = s.case().unwrap().description().unwrap();
+        let air = d.region("air").unwrap();
+        // The roles are there (side, top), and the types the roles wouldn't give are kept.
+        let role = |p: &str| air.patches.iter().find(|x| x.name == p).and_then(|x| x.role);
+        assert_eq!(role("side1"), Some(umcf_model::description::Role::Side), "{:?}", air.patches);
+        assert_eq!(role("top"), Some(umcf_model::description::Role::Top));
+        let g = air.blocks.as_ref().unwrap();
+        for p in ["top", "side1", "side2"] {
+            assert_eq!(g.given_type(p), Some(constraint), "{constraint}: {:?}", g.types);
+        }
+        assert!(
+            s.case()
+                .unwrap()
+                .dict(umcf_model::description::PATH)
+                .unwrap()
+                .to_string()
+                .contains(&format!("side1 {constraint};"))
+        );
+        // Written again: every type as it was.
+        let original = s.case().unwrap().dict(dict).unwrap().clone();
+        let out = s.execute("mesh.block", &json!({"region": "air", "replace": true})).unwrap();
+        assert_eq!(out.data["typesChanged"], json!([]), "{}", out.message);
+        let written = s.case().unwrap().dict(dict).unwrap().to_string();
+        for (p, t) in umcf_model::blocks::listed_types(&original) {
+            assert_eq!(type_in(&written, &p), t, "{constraint}: {p}");
+        }
+        // A role set later changes a type only with the outcome saying so.
+        s.execute("workflow.patch", &json!({"region": "air", "patch": "inlet", "role": "ground"})).unwrap();
+        let out = s.execute("mesh.block", &json!({"region": "air"})).unwrap();
+        assert_eq!(
+            out.data["typesChanged"],
+            json!([{"patch": "inlet", "from": "patch", "to": "wall"}]),
+            "{}",
+            out.message
+        );
+        assert!(out.message.contains("inlet patch → wall"), "{}", out.message);
+        // A wall changes only when the call's types gives the patch its new type.
+        s.execute("workflow.patch", &json!({"region": "air", "patch": "ground", "role": "side"})).unwrap();
+        let e = s.execute("mesh.block", &json!({"region": "air"})).unwrap_err().to_string();
+        assert!(e.contains("ground (wall → patch)"), "{e}");
+        let out = s.execute("mesh.block", &json!({"region": "air", "types": {"ground": "patch"}})).unwrap();
+        assert_eq!(out.data["typesChanged"], json!([{"patch": "ground", "from": "wall", "to": "patch"}]));
+        // The maps merge: the other given types stay.
+        let g = s.case().unwrap().description().unwrap().0.region("air").unwrap().blocks.clone().unwrap();
+        assert_eq!((g.given_type("ground"), g.given_type("side1")), (Some("patch"), Some(constraint)));
+        // The given types taken away (null): a constraint type isn't changed to the role's.
+        let r =
+            s.execute("mesh.block", &json!({"region": "air", "types": {"top": null, "side1": null, "side2": null}}));
+        if constraint == "symmetryPlane" {
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("side1 (symmetryPlane → patch)") && e.contains("types"), "{e}");
+            assert_eq!(type_in(&s.case().unwrap().dict(dict).unwrap().to_string(), "side1"), "symmetryPlane");
+            // Given in types, one changes, and is said; the others stay.
+            let out = s.execute("mesh.block", &json!({"region": "air", "types": {"side2": "patch"}})).unwrap();
+            assert_eq!(out.data["typesChanged"], json!([{"patch": "side2", "from": "symmetryPlane", "to": "patch"}]));
+        } else {
+            // slip is neither wall nor a constraint: the role's patch, said.
+            let out = r.unwrap();
+            let changed = out.data["typesChanged"].as_array().unwrap();
+            assert!(changed.contains(&json!({"patch": "side1", "from": "slip", "to": "patch"})), "{changed:?}");
+        }
+    }
+}
+
+#[test]
+fn a_wall_patch_the_blocks_drop_is_dropped_only_when_named() {
+    let dict = "system/air/blockMeshDict";
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(meshed_canyon("slip")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    // The canyon's floor given back to the ground: air_to_street (a wall) would go.
+    let call =
+        json!({"region": "air", "replace": true, "faces": {"air_to_street": null}, "types": {"air_to_street": null}});
+    let e = s.execute("mesh.block", &call).unwrap_err().to_string();
+    assert!(e.contains("air_to_street (wall)") && e.contains("dropPatches"), "{e}");
+    assert!(s.case().unwrap().dict(dict).unwrap().to_string().contains("air_to_street"));
+    let mut call = call;
+    call["dropPatches"] = json!(["air_to_street"]);
+    let out = s.execute("mesh.block", &call).unwrap();
+    assert_eq!(out.data["patchesRemoved"], json!(["air_to_street"]), "{}", out.message);
+    assert_eq!(out.data["patchesAdded"], json!([]));
+    assert!(out.message.contains("drops: air_to_street (wall)"), "{}", out.message);
+    assert!(!s.case().unwrap().dict(dict).unwrap().to_string().contains("air_to_street"));
+}
+
+#[test]
+// Native only: timed with the clock.
+#[allow(clippy::disallowed_methods)]
+fn the_grid_s_size_is_bounded_before_anything_is_written() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    // Too many sections, too many stations: refused as parameters.
+    let sections: Vec<Value> = (0..2000).map(|_| json!([1, 1, 1])).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "x": [0, [1, sections], 1]})).unwrap_err().to_string();
+    assert!(e.contains("sections at most"), "{e}");
+    let mut x = vec![json!(0)];
+    for i in 1..=20_001 {
+        x.push(json!([1, 1]));
+        x.push(json!(i));
+    }
+    let e = s.execute("mesh.block", &json!({"region": "air", "x": x})).unwrap_err().to_string();
+    assert!(e.contains("stations at most"), "{e}");
+    // As many stations as the description reads: past the parameters' check.
+    let mut x = vec![json!(0)];
+    for i in 1..umcf_model::blocks::MAX_STATIONS {
+        x.push(json!([1, 1]));
+        x.push(json!(i));
+    }
+    let e = s.execute("mesh.block", &json!({"region": "air", "x": x})).unwrap_err().to_string();
+    assert!(!e.contains("stations at most"), "{e}");
+    // Within each cap, but a dictionary too large to write.
+    let sections: Vec<Value> = (0..1000).map(|_| json!([1, 1, 1.5])).collect();
+    let mut x = vec![json!(0)];
+    for i in 1..=50 {
+        x.push(json!([1, sections]));
+        x.push(json!(i));
+    }
+    let axis = |n: i32| -> Value {
+        let mut a = vec![json!(0)];
+        for i in 1..=n {
+            a.push(json!([1, 1]));
+            a.push(json!(i));
+        }
+        Value::Array(a)
+    };
+    let start = std::time::Instant::now();
+    let e = s
+        .execute("mesh.block", &json!({"region": "air", "x": x, "y": axis(20), "z": axis(20)}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("read back"), "{e}");
+    assert!(start.elapsed().as_secs() < 10);
+}
+
+/// The OpenFOAM-12 example with its street's `blockMeshDict` one box of `rest` (and what
+/// `boundary` adds), then described.
+fn street_box(boundary: &str) -> Session {
+    let mut fs = example("of12/streetCanyon_CFDHAM");
+    fs.insert(
+        "system/street/blockMeshDict",
+        format!(
+            "FoamFile {{ version 2.0; format ascii; class dictionary; object blockMeshDict; }}\nvertices ( (0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 1) (1 0 1) (1 1 1) (0 1 1) );\nblocks ( hex (0 1 2 3 4 5 6 7) (2 2 2) simpleGrading (1 1 1) );\n{boundary}\n"
+        ),
+    );
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    s
+}
+
+fn all_rest(extra: Value) -> Value {
+    let mut call = json!({
+        "region": "street", "replace": true,
+        "x": [0, [2, 1], 1], "y": [0, [2, 1], 1], "z": [0, [2, 1], 1],
+        "patches": {"west": "rest", "east": "rest", "south": "rest", "north": "rest", "ground": "rest", "top": "rest"},
+        "faces": {}, "noFaces": [], "missing": [],
+    });
+    if let (Some(c), Some(e)) = (call.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            c.insert(k.clone(), v.clone());
+        }
+    }
+    call
+}
+
+#[test]
+fn nothing_of_the_dictionary_there_is_lost_unsaid() {
+    let dict = "system/street/blockMeshDict";
+    let rest = "( (0 4 7 3) (1 2 6 5) (0 1 5 4) (3 7 6 2) (4 5 6 7) )";
+    // The older `patches` syntax: its wall is seen, and not dropped unsaid.
+    let mut s = street_box(&format!("patches ( wall ground ( (0 3 2 1) ) patch rest {rest} );"));
+    let e = s.execute("mesh.block", &all_rest(json!({}))).unwrap_err().to_string();
+    assert!(e.contains("ground (wall)") && e.contains("dropPatches"), "{e}");
+    // A patch renamed in the description reads as one dropped and one added: said.
+    let mut s2 = street_box(&format!("patches ( wall ground ( (0 3 2 1) ) patch other {rest} );"));
+    let e = s2.execute("mesh.block", &all_rest(json!({}))).unwrap_err().to_string();
+    assert!(e.contains("the blocks name rest instead"), "{e}");
+    let out = s.execute("mesh.block", &all_rest(json!({"dropPatches": ["ground"]}))).unwrap();
+    assert_eq!(out.data["patchesRemoved"], json!(["ground"]), "{}", out.message);
+    assert!(!s.case().unwrap().dict(dict).unwrap().to_string().contains("ground"));
+
+    // A defaultPatch of its own: a wall, not dropped unsaid.
+    let mut s = street_box(&format!(
+        "boundary ( rest {{ type patch; faces {rest}; }} );\ndefaultPatch {{ name floor; type wall; }}"
+    ));
+    // Read as the blocks' patch floor on the ground, a wall; written again, it stays one.
+    let g = s.case().unwrap().description().unwrap().0.region("street").unwrap().blocks.clone().unwrap();
+    assert_eq!((g.side(umcf_model::blocks::Side::Ground), g.given_type("floor")), (Some("floor"), Some("wall")));
+    let out = s.execute("mesh.block", &json!({"region": "street", "replace": true})).unwrap();
+    assert_eq!((out.data["patchesRemoved"].clone(), out.data["typesChanged"].clone()), (json!([]), json!([])));
+    assert!(s.case().unwrap().dict(dict).unwrap().to_string().contains("    floor\n    {\n        type wall;"));
+    let e = s.execute("mesh.block", &all_rest(json!({"types": {"floor": null}}))).unwrap_err().to_string();
+    assert!(e.contains("floor (wall)"), "{e}");
+
+    // A defaultPatch typed patch (a snappyHexMesh background): kept a patch, through types.
+    let mut s =
+        street_box(&format!("boundary ( rest {{ type patch; faces {rest}; }} );\ndefaultPatch {{ type patch; }}"));
+    let g = s.case().unwrap().description().unwrap().0.region("street").unwrap().blocks.clone().unwrap();
+    assert_eq!(g.given_type("defaultFaces"), Some("patch"), "{:?}", g.types);
+    let out = s.execute("mesh.block", &json!({"region": "street", "replace": true})).unwrap();
+    assert_eq!(out.data["typesChanged"], json!([]), "{}", out.message);
+    let text = s.case().unwrap().dict(dict).unwrap().to_string();
+    assert!(text.contains("defaultPatch\n{\n    name defaultFaces;\n    type patch;\n}"), "{text}");
+    // And without a type: empty, as OpenFOAM-8 takes it, said.
+    let mut s = street_box(&format!(
+        "boundary ( rest {{ type patch; faces {rest}; }} );\ndefaultPatch {{ name defaultFaces; }}"
+    ));
+    let out = s.execute("mesh.block", &json!({"region": "street", "replace": true})).unwrap();
+    assert!(out.message.contains("defaultPatch has no type"), "{}", out.message);
+
+    // Cell zones, curved edges, a scale: lost only when said.
+    let mut s = street_box(&format!(
+        "boundary ( rest {{ type patch; faces {rest}; }} ground {{ type wall; faces ( (0 3 2 1) ); }} );\nedges ( arc 0 1 (0.5 -0.1 0) );"
+    ));
+    s.case().unwrap();
+    let call = all_rest(json!({"faces": {"ground": [[0, 0, 0, "ground"]]}, "types": {"ground": "wall"}}));
+    let e = s.execute("mesh.block", &call).unwrap_err().to_string();
+    assert!(e.contains("curved edges") && e.contains("dropSettings"), "{e}");
+    let mut call = call;
+    call["dropSettings"] = json!(true);
+    let out = s.execute("mesh.block", &call).unwrap();
+    assert_eq!(out.data["settingsLost"], json!(["curved edges (edges)"]), "{}", out.message);
+
+    // Patches that can't all be read: written over only when said.
+    let mut s = street_box("#include \"boundaryOfMine\"");
+    let e = s.execute("mesh.block", &all_rest(json!({}))).unwrap_err().to_string();
+    assert!(e.contains("can't all be read") && e.contains("unreadPatches"), "{e}");
+    let out = s.execute("mesh.block", &all_rest(json!({"unreadPatches": true}))).unwrap();
+    assert!(out.data["unreadPatches"].as_str().unwrap().contains("#include"), "{}", out.data);
+    let mut s = street_box(&format!(
+        "boundary ( rest {{ type $kind; faces {rest}; }} ground {{ type wall; faces ( (0 3 2 1) ); }} );"
+    ));
+    let e = s.execute("mesh.block", &all_rest(json!({"dropPatches": ["ground"]}))).unwrap_err().to_string();
+    assert!(e.contains("patch rest has no plain type"), "{e}");
+
+    // Entries the blocks don't hold: lost only when said.
+    let mut s = street_box(&format!(
+        "boundary ( rest {{ type patch; inGroups (outside); faces {rest}; }} ground {{ type wall; faces ( (0 3 2 1) ); }} );"
+    ));
+    let call = all_rest(json!({"faces": {"ground": [[0, 0, 0, "ground"]]}, "types": {"ground": "wall"}}));
+    let e = s.execute("mesh.block", &call).unwrap_err().to_string();
+    assert!(e.contains("rest (inGroups)") && e.contains("dropEntries"), "{e}");
+    let mut call = call;
+    call["dropEntries"] = json!(["rest"]);
+    let out = s.execute("mesh.block", &call).unwrap();
+    assert_eq!(out.data["entriesLost"], json!({"rest": ["inGroups"]}), "{}", out.message);
+
+    // A cyclic or mapped type needs entries the blocks don't hold: refused.
+    let e = s.execute("mesh.block", &json!({"region": "street", "types": {"rest": "cyclic"}})).unwrap_err().to_string();
+    assert!(e.contains("cyclic needs entries of its own"), "{e}");
+}
+
+#[test]
+// Native only: timed with the clock.
+#[allow(clippy::disallowed_methods)]
+fn a_blocks_entry_that_doesnt_read_isnt_written_over_and_many_keys_are_quick() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let path = umcf_model::description::PATH;
+    // The air's x made unreadable by hand: its other keys would be taken for absent.
+    s.execute("dict.set", &json!({"file": path, "path": "regions/air/blocks/x", "value": "( 0 (5 one) 50 (3 1) 60 (3 1) 70 (3 1) 80 (6 1) 230 )"}))
+        .unwrap();
+    let before = s.case().unwrap().dict(path).unwrap().to_string();
+    let e = s.execute("mesh.block", &json!({"region": "air", "x": [0, [5, 1], 230]})).unwrap_err().to_string();
+    assert!(e.contains("don't read") && e.contains("regions/air/blocks/x"), "{e}");
+    assert_eq!(s.case().unwrap().dict(path).unwrap().to_string(), before);
+    // Taking them out is still allowed.
+    s.execute("mesh.block", &json!({"region": "air", "remove": true})).unwrap();
+
+    // A map of many keys: merged in one pass, or refused past the cap.
+    let types: serde_json::Map<String, Value> = (0..10_000).map(|i| (format!("n{i}"), json!(null))).collect();
+    let start = std::time::Instant::now();
+    let e = s.execute("mesh.block", &json!({"region": "street", "types": types})).map(|o| o.message);
+    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    let _ = e;
+    let many: serde_json::Map<String, Value> = (0..10_001).map(|i| (format!("n{i}"), json!("wall"))).collect();
+    let e = s.execute("mesh.block", &json!({"region": "street", "types": many})).unwrap_err().to_string();
+    assert!(e.contains("at most"), "{e}");
+}
+
+#[test]
+fn a_dictionary_larger_than_the_case_reads_isnt_written() {
+    // Just over the example's own dictionary, as checked out (CRLF on Windows: a byte more a
+    // line), so that it is read and imported.
+    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/of12/streetCanyon_CFDHAM/system/air/blockMeshDict");
+    let limit = std::fs::metadata(own).unwrap().len() + 200;
+    let options = OpenOptions { dict_bytes: limit, ..OpenOptions::default() };
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", options, false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    // More stations east of the canyon: a longer dictionary than the case reads.
+    let mut x = vec![
+        json!(0),
+        json!([5, 1]),
+        json!(50),
+        json!([3, 1]),
+        json!(60),
+        json!([3, 1]),
+        json!(70),
+        json!([3, 1]),
+        json!(80),
+    ];
+    for i in 1..=40 {
+        x.push(json!([1, 1]));
+        x.push(json!(80 + 10 * i));
+    }
+    let e = s.execute("mesh.block", &json!({"region": "air", "replace": true, "x": x})).unwrap_err().to_string();
+    assert!(e.contains(&format!("more than the case reads as a dictionary ({limit})")), "{e}");
+}
+
+#[test]
+fn a_dictionary_two_regions_read_isnt_written_for_one() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let path = umcf_model::description::PATH;
+    s.execute(
+        "dict.set",
+        &json!({"file": path, "path": "regions/street/mesh", "value": "( blockMesh \"system/air/blockMeshDict\" )"}),
+    )
+    .unwrap();
+    let e = s.execute("mesh.block", &json!({"region": "air", "replace": true})).unwrap_err().to_string();
+    assert!(e.contains("read by the mesh of region street too"), "{e}");
+}
+
+#[test]
+fn long_parameter_lists_are_counted_before_they_are_read() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let names: Vec<Value> = (0..10_001).map(|i| json!(format!("n{i}"))).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "noFaces": names})).unwrap_err().to_string();
+    assert!(e.contains("noFaces has 10001 names, 10000 at most"), "{e}");
+    let e = s
+        .execute("mesh.block", &json!({"region": "air", "replace": true, "dropPatches": names}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("dropPatches has 10001 names"), "{e}");
+    let missing: Vec<Value> = (0..40_001).map(|_| json!(1)).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "missing": missing})).unwrap_err().to_string();
+    assert!(e.contains("missing lists 40001 blocks, 40000 at most"), "{e}");
+    let faces: Vec<Value> = (0..120_001).map(|_| json!(1)).collect();
+    let e = s.execute("mesh.block", &json!({"region": "air", "faces": {"a": faces}})).unwrap_err().to_string();
+    assert!(e.contains("faces lists more than 120000 faces"), "{e}");
+}

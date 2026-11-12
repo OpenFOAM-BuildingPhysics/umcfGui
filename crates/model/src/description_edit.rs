@@ -280,6 +280,26 @@ impl Case {
             if once(doc, &["regions", region, "patches", to])? {
                 return Err(refuse(format!("region {region} has a patch {to} already")));
             }
+            // Its blocks follow the rename: only from blocks that read whole.
+            if doc.get(&["regions", region, "blocks"]).is_some() {
+                self.blocks_read(region)?;
+                // `defaultFaces` in the blocks is the faces left to blockMesh: a patch renamed to
+                // it would join them, one renamed from it would take them all.
+                if to == crate::blocks::DEFAULT_FACES || patch == crate::blocks::DEFAULT_FACES {
+                    return Err(refuse(format!(
+                        "region {region} has blocks, where {} is the faces left to blockMesh: renaming {patch} to {to} would join or split them; change the blocks with mesh.block",
+                        crate::blocks::DEFAULT_FACES
+                    )));
+                }
+            }
+            // Nor one its blocks name: the two would become one.
+            if let Some(g) = self.description().and_then(|(d, _)| d.region(region).and_then(|r| r.blocks.clone()))
+                && (g.patch_names().contains(&to.as_str()) || g.given_type(to).is_some())
+            {
+                return Err(refuse(format!(
+                    "region {region}'s blocks name a patch {to} already: renaming {patch} to it would make the two one"
+                )));
+            }
             for (r, p, pr, pp) in partners(doc) {
                 // Its own partner, when this call sets it, is the one given.
                 let own = r == region && p == patch;
@@ -316,8 +336,16 @@ impl Case {
                 }
             }
         }
+        // The region's blocks that name the patch, renamed with it.
+        let blocks = edit.rename.as_ref().and_then(|to| {
+            let mut g = self.description()?.0.region(region)?.blocks.clone()?;
+            g.rename_patch(patch, to).then_some(g)
+        });
         if let Some(to) = &edit.rename {
             self.rename_described(&base, to)?;
+            if let Some(g) = &blocks {
+                self.describe_blocks(region, g)?;
+            }
             for (r, p) in naming {
                 // Its own partner is under its new name now.
                 let p = if r == region && p == patch { to.clone() } else { p };
@@ -385,6 +413,79 @@ impl Case {
             return Err(refuse(format!("region {region} has no material {material} in {PATH}")));
         }
         self.remove(PATH, &["regions", region, "materials", material])?;
+        Ok(EditReport::default())
+    }
+
+    /// Gives `region` of the description the grid of blocks `grid` (its `blocks` entry). Each key
+    /// of the entry is set on its own, and only when it changes, so the comments and layout of
+    /// the others stay; a key the grid leaves out (no missing blocks, say) is taken out. The
+    /// grid isn't checked here ([`crate::blocks::BlockGrid::problems`]), only its names.
+    pub fn describe_blocks(&mut self, region: &str, grid: &crate::blocks::BlockGrid) -> Result<EditReport> {
+        name("region", region)?;
+        for n in grid.patch_names() {
+            name("patch", n)?;
+        }
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        // A blocks entry that doesn't read: what isn't read would be taken for absent, and lost.
+        self.blocks_read(region)?;
+        let base = ["regions", region, "blocks"];
+        let there = once(doc, &base)?;
+        let mut current = None;
+        if there {
+            if doc.get(&base).is_some_and(|e| e.dict().is_none()) {
+                return Err(refuse(format!(
+                    "{PATH}: `regions/{region}/blocks` is not a dictionary: mend it by hand first"
+                )));
+            }
+            for (k, _) in grid.parts() {
+                once(doc, &[&base[..], &[k]].concat())?;
+            }
+            unended(doc, &base)?;
+            current = self.description().and_then(|(d, _)| d.region(region).and_then(|r| r.blocks.clone()));
+        }
+        let old: Vec<(&str, Option<String>)> = current.as_ref().map(|g| g.parts()).unwrap_or_default();
+        for (k, v) in grid.parts() {
+            // As it is: left alone, its comments with it.
+            if current.is_some() && old.iter().any(|(ok, ov)| *ok == k && *ov == v) {
+                continue;
+            }
+            let path = [&base[..], &[k]].concat();
+            match v {
+                Some(v) => self.set_inline(PATH, &path, &v)?,
+                None => {
+                    self.remove(PATH, &path)?;
+                }
+            }
+        }
+        Ok(EditReport { added: !there, ..EditReport::default() })
+    }
+
+    /// Refused, naming the first read problem, while `region`'s `blocks` entry in the description
+    /// doesn't read whole: an edit from what was read would lose what wasn't.
+    pub fn blocks_read(&self, region: &str) -> Result<()> {
+        let here = format!("regions/{region}/blocks");
+        let Some((_, problems)) = self.description() else { return Ok(()) };
+        match problems.iter().find(|p| p.at == here || p.at.starts_with(&format!("{here}/"))) {
+            Some(p) => Err(refuse(format!(
+                "the blocks of region {region} in {PATH} don't read ({}: {}): mend them by hand first",
+                p.at, p.message
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Takes the `blocks` entry out of `region` of the description (its `blockMeshDict` stays
+    /// as it is, the case's own again).
+    pub fn undescribe_blocks(&mut self, region: &str) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region, "blocks"])? {
+            return Err(refuse(format!("region {region} has no blocks in {PATH}")));
+        }
+        self.remove(PATH, &["regions", region, "blocks"])?;
         Ok(EditReport::default())
     }
 

@@ -41,6 +41,7 @@ L2  schema      catalog of solver types and keywords (generated in part by xtask
                 one configuration a new case's settings come from (defaults: the tutorials')
     model       typed Case built on foam-dict nodes: regions, materials, BCs, controls, sun/weather;
                 the workflow description, its edits, the settings a case chooses (settings),
+                a region's grid of blocks and its blockMeshDict, written and imported (blocks),
                 a new case's files (new_case), a region added to a case (region_add)
 L3  validate    case diagnostics (missing dicts, region/patch coupling mismatches, unknown types)
     post        probes, time series, slices, residual/log parsing, derived quantities the solver writes

@@ -67,9 +67,15 @@ regions
     air
     {
         kind        fluid;
-        // From a box around the surfaces (the STL cases), or from blocks (the 3×3 cases,
-        // the street canyon: the buildings as missing blocks), per region.
-        mesh        { from box; margin (50 50 0 60); cellSize 2; }
+        // `mesh` says how the mesh is built (`blocks`: blockMesh -region air; or the steps in
+        // constant/polyMesh), `blocks` what the blockMeshDict it reads holds: the 3×3 cases and
+        // the street canyon, the buildings as missing blocks (there since M0.83).
+        mesh        blocks;
+        blocks      { x ( 0 (5 1) 50 (3 1) 60 (3 1) 70 ); y ( 0 (6 1) 100 (5 1) 150 );
+                      z ( 0 (3 1) 10 ); missing ( (1 1 0) ); patches { west inlet; east outlet;
+                      south side; north side; ground ground; top top; missing ground; } }
+        // Planned: the box from the surfaces' bounds (the STL cases).
+        box         { margin (50 50 0 60); cellSize 2; }
         surfaces    { buildings { level (3 5); layers 3; role coupled; partner buildings; } }
         patches     { west inlet; east outlet; north side; south side; ground ground; top top; }
     }
@@ -109,6 +115,7 @@ named by the description too: a solid's materials, the tree zone.
 |---|---|
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
+| A region's `blockMeshDict` (the one its `mesh` reads) | generated from its `blocks` by `mesh.block` ([the workflow](user-guide/workflow.md#blocks)) |
 | `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` |
 | `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 9) or the user |
 | The materials' entries in `buildingMaterials` (`transportProperties` of each solid) | added with the material from a library of materials with their coefficients, then edited by the user |
@@ -118,7 +125,9 @@ named by the description too: a solid's materials, the tree zone.
 A generated file says so in its header, as the scripts umcfGui writes already do (`Written by
 umcfGui from the case workflow; edit the workflow, not this file.`), and is written again
 whenever the description changes. One edited by hand since it was generated is kept in the backup
-before it is replaced, and the change says which. The fields of `0.orig` are not generated files:
+before it is replaced, and the change says which. A `blockMeshDict` carries a checksum in its
+header too: one edited since (or not written by umcfGui) is written over only when asked
+(`replace`). The fields of `0.orig` are not generated files:
 they are edited in place (below).
 
 ## The fields
@@ -160,8 +169,9 @@ zone without an entry, or an entry without a zone.
 
 An import reads a case into a `umcfWorkflow`:
 
-- the 3×3 pattern's scripts are read already ([the workflow](user-guide/workflow.md)); the
-  import also reads its blocks and patches into block settings;
+- the 3×3 pattern's scripts are read already ([the workflow](user-guide/workflow.md)), and each
+  region's blocks from its `blockMeshDict` when that is a grid of blocks (the fluid, vegetation
+  and street regions of the 3×3 cases, every region of the street canyon);
 - the STL chain and the split vegetation need the reading extended: the kept background,
   `extrudeMesh`, `splitMeshRegions`, the moves between `constant/polyMesh` and the regions;
 - what doesn't fit is listed (as today), and the case keeps its own scripts until the user
