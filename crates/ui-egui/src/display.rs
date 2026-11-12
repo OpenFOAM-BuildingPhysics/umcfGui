@@ -117,12 +117,29 @@ impl App {
     pub(crate) fn region_note(&self, region: &str) -> String {
         let layer = Layer::Region(region.to_string());
         match self.cut_takes(&layer) {
-            Some(cut) => match self.layer_entry(&cut).map(note).filter(|n| !n.is_empty()) {
+            Some(_) => match self.shared_cut_entry().as_ref().map(note).filter(|n| !n.is_empty()) {
                 Some(n) => format!("cut {n}"),
                 None => "cut".to_string(),
             },
             None => self.layer_note(&layer),
         }
+    }
+
+    /// What the browser's menu of region layer `layer` shows, and whether it has something to
+    /// reset: while the cut card shows a cut of it (`cut`), the cut's mode and the opacity the
+    /// cut and the region share (the region's whenever it has one, else a cut's own `display`
+    /// entry);
+    /// else the region's own.
+    pub(crate) fn menu_display(&self, layer: &Layer, cut: Option<&Layer>) -> (Display, bool) {
+        let Some(cut) = cut else {
+            return (self.layer_display(layer, &[]), self.layer_entry(layer).is_some());
+        };
+        let mut d = self.layer_display(cut, &[]);
+        if let Some(a) = self.shared_cut_entry().and_then(|e| e.opacity) {
+            d.opacity = a;
+        }
+        let region_opacity = self.display.iter().any(|e| e.layer == *layer && e.opacity.is_some());
+        (d, self.layer_entry(cut).is_some() || region_opacity)
     }
 
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
@@ -153,10 +170,39 @@ impl App {
     /// same again. Two groups of one patch hold neither the other: the one changed last wins,
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
-        // For the region the cut card hides while it shows a cut: the cut's.
+        // For the region the cut card hides while it shows a cut: a mode is the cut's; an opacity
+        // the region's alone (one value: the cut is drawn with it, App::shared_cut_entry, and the
+        // region keeps it once the card closes); a reset takes out the cut's entry and the
+        // region's opacity, the card's hiding staying.
         if let Some(cut) = self.cut_takes(&layer) {
-            self.set_cut_display(cut, &change);
-            return;
+            match change {
+                Change::Mode(_) => {
+                    self.set_cut_display(cut, &change);
+                    return;
+                }
+                Change::Reset => {
+                    self.set_cut_display(cut, &change);
+                    for e in self.display.iter_mut().filter(|e| e.layer == layer) {
+                        e.opacity = None;
+                    }
+                    self.display.retain(|e| e.layer != layer || e.mode.is_some());
+                    self.look += 1;
+                    return;
+                }
+                // An opacity of the cut's own from before gives way to the region's.
+                Change::Opacity(_) => {
+                    for e in self.display.iter_mut().filter(|e| e.layer == cut) {
+                        e.opacity = None;
+                    }
+                    self.display.retain(|e| e.layer != cut || e.mode.is_some());
+                }
+            }
+        }
+        // The region's opacity in an entry of its own, never the card's hiding: that one stays
+        // last (over the patches) and goes when the card closes, so what it held would stay
+        // over the patches set after.
+        if let Change::Opacity(_) = change {
+            self.own_entry_before_hiding(&layer);
         }
         self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
@@ -190,7 +236,13 @@ impl App {
                     Change::Opacity(a) => e.opacity = Some(a),
                     Change::Reset => {}
                 }
-                self.display.push(e);
+                // Last, but before the cut card's hiding of the region (the last of its entries
+                // that hides it): that one stays the card's, also when the region's own hides
+                // it too.
+                match self.card_hiding(&layer) {
+                    Some(h) => self.display.insert(h, e),
+                    None => self.display.push(e),
+                }
             }
             (c, None) => {
                 let (mode, opacity) = match c {

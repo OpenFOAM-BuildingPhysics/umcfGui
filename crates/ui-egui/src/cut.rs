@@ -198,6 +198,14 @@ impl App {
     /// boundary shows then rather than an empty view.
     pub(crate) fn view_display(&self) -> Vec<DisplayEntry> {
         let mut out = self.display.clone();
+        // The cut drawn with the opacity it shares with its region (the region's whenever it has
+        // one, else the cut's own), as the browser's menu shows it.
+        if let Some(entry) = self.shared_cut_entry() {
+            match out.iter_mut().find(|e| e.layer == entry.layer) {
+                Some(e) => e.opacity = entry.opacity,
+                None => out.push(entry),
+            }
+        }
         if let Some(k) = self.idle_hiding() {
             match out.get_mut(k) {
                 Some(e) if e.opacity.is_some() => e.mode = None,
@@ -207,6 +215,44 @@ impl App {
             }
         }
         out
+    }
+
+    /// The cut's display entry as it is drawn while the card shows a cut: its own, with the
+    /// opacity it shares with its region (the region's, else its own: only a `display` entry put
+    /// in from outside the menu gives the cut one); `None` without a cut
+    /// shown or anything to draw it with.
+    pub(crate) fn shared_cut_entry(&self) -> Option<DisplayEntry> {
+        let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
+        let region = Layer::Region(r.clone());
+        let cut = self.cut_takes(&region)?;
+        let own = self.display.iter().find(|e| e.layer == cut).cloned();
+        let shared = self.display.iter().filter(|e| e.layer == region).filter_map(|e| e.opacity).next_back();
+        let mut e = own.unwrap_or(DisplayEntry { layer: cut, mode: None, opacity: None });
+        // The region's opacity is the one value (set in its menu while the card showed the cut
+        // or not); an opacity of the cut's own (a `display` entry) only without one.
+        if shared.is_some() {
+            e.opacity = shared;
+        }
+        (e.mode.is_some() || e.opacity.is_some()).then_some(e)
+    }
+
+    /// Where the cut card's hiding of `layer` is, when the card hides that region: the last of
+    /// the region's entries that hide it (kept last, [`App::keep_hiding_last`]).
+    pub(crate) fn card_hiding(&self, layer: &Layer) -> Option<usize> {
+        let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
+        if *layer != Layer::Region(r) {
+            return None;
+        }
+        self.display.iter().rposition(|e| e.layer == *layer && e.mode == Some(Mode::Hidden))
+    }
+
+    /// Puts an entry of `layer`'s own before the card's hiding of it, when the card hides it and
+    /// it has none, so that what is set for the region goes there, not into the hiding.
+    pub(crate) fn own_entry_before_hiding(&mut self, layer: &Layer) {
+        let Some(h) = self.card_hiding(layer) else { return };
+        if self.display.iter().position(|e| e.layer == *layer) == Some(h) {
+            self.display.insert(h, DisplayEntry { layer: layer.clone(), mode: None, opacity: None });
+        }
     }
 
     /// Where in `display` the card's hiding of its region is while the card has nothing to show
