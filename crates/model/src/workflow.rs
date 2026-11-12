@@ -368,7 +368,7 @@ impl Workflow {
                 // The split's part outside the zone put in place:
                 // `cp -r 3600/region1/polyMesh constant/vegetation/`.
                 StepKind::Copy { from, to } | StepKind::Move { from, to }
-                    if split.as_ref().is_some_and(|d| split_take(from, to, &d.region)) =>
+                    if split.as_ref().is_some_and(|d| split_take(from, to, &d.region, d.timed)) =>
                 {
                     if let Some(d) = split.as_mut()
                         && !d.taken
@@ -966,7 +966,8 @@ pub fn part_name(name: &str) -> bool {
 
 /// The directories a split of `region` by `zone` writes to or removes from (as given: quoted
 /// names for the script, raw ones for a message or a check): the region's own, the parts'
-/// (`region1`, `region2`, the zone) in `constant/`, and in OpenFOAM-8 their dictionaries in
+/// (`region1`, `region2`, the zone) in `constant/`, the region's start time (`0/<region>`,
+/// whose `cellToRegion` map is removed), and in OpenFOAM-8 the parts' dictionaries in
 /// `system/<region>/`. None may be a symbolic link.
 pub fn split_dirs(region: &str, zone: &str, version: OfVersion) -> Vec<String> {
     let mut dirs = vec![
@@ -974,6 +975,8 @@ pub fn split_dirs(region: &str, zone: &str, version: OfVersion) -> Vec<String> {
         format!("constant/{SPLIT_REST}"),
         "constant/region2".to_string(),
         format!("constant/{zone}"),
+        // The split's map is removed from it.
+        format!("0/{region}"),
     ];
     if version == OfVersion::V8 {
         dirs.push(format!("system/{region}"));
@@ -1060,13 +1063,15 @@ fn is_time(s: &str) -> bool {
 /// The split's part outside the zone put in as region `reg`'s mesh: `cp -r
 /// 3600/region1/polyMesh constant/vegetation/`, `mv constant/region1/polyMesh
 /// constant/vegetation/polyMesh`.
-fn split_take(from: &[String], to: &str, reg: &str) -> bool {
+fn split_take(from: &[String], to: &str, reg: &str, timed: bool) -> bool {
     let [f] = from else { return false };
     let Some(dir) = f.trim_end_matches('/').strip_suffix(&format!("/{SPLIT_REST}/polyMesh")) else {
         return false;
     };
     let t = to.trim_end_matches('/');
-    (dir == "constant" || is_time(dir)) && (t == format!("constant/{reg}") || t == format!("constant/{reg}/polyMesh"))
+    // Where this split wrote it: a time directory without `-overwrite`, `constant/` with it.
+    let wrote_there = if timed { is_time(dir) } else { dir == "constant" };
+    wrote_there && (t == format!("constant/{reg}") || t == format!("constant/{reg}/polyMesh"))
 }
 
 /// What a split of region `reg` by `zone` leaves that a script may take away: the parts

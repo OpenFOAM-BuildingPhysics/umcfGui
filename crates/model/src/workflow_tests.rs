@@ -336,7 +336,7 @@ fn a_split_region_is_written_for_each_version() {
     let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &split_prepare("system/air/topoSetDict"))]);
     let of12 = wf.generate(OfVersion::V12).unwrap();
     let prep = &of12[0].1;
-    let lines = "if [ -L constant/vegetation ] || [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/vegetation, constant/region1, constant/region2, constant/trees): nothing is removed through it' >&2\n    exit 1\nfi\n\
+    let lines = "if [ -L constant/vegetation ] || [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ] || [ -L 0/vegetation ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/vegetation, constant/region1, constant/region2, constant/trees, 0/vegetation): nothing is removed through it' >&2\n    exit 1\nfi\n\
 rm -rf constant/vegetation/polyMesh\n\
 mkdir -p constant/vegetation\n\
 cp -r constant/air/polyMesh constant/vegetation/polyMesh\n\
@@ -578,4 +578,20 @@ fn a_zone_named_before_the_part_is_put_in_is_kept() {
     assert_eq!(wf.unmatched, []);
     let MeshBuild::Split(sp) = &wf.meshes[1].build else { panic!("{:?}", wf.meshes) };
     assert_eq!(sp.zone.as_deref(), Some("trees"));
+}
+
+/// The part is taken from where the split wrote it: a time directory without `-overwrite`,
+/// constant/ with it; a copy from elsewhere (an older mesh) doesn't take it.
+#[test]
+fn a_split_is_taken_from_where_it_wrote_its_parts() {
+    let overwrite = split_prepare("system/air/topoSetDict").replace("-cellZones\n", "-cellZones -overwrite\n");
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &overwrite)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
+    assert!(wf.unmatched.iter().any(|u| u.what.starts_with("cp 3600/region1/polyMesh")), "{:?}", wf.unmatched);
+    let timed = split_prepare("system/air/topoSetDict").replace(
+        "cp -r 3600/region1/polyMesh constant/vegetation/\n",
+        "mv constant/region1/polyMesh constant/vegetation/polyMesh\n",
+    );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &timed)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
 }
