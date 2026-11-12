@@ -150,9 +150,13 @@ while the card has nothing to show (no check, patch or surface yet, or a check t
 nothing), when it shows; closing the card takes the cut away and shows the boundary again. While the card shows a cut (a plane, the
 findings, the layers or the cells near a surface), the region's menu in the browser (*Cut of air*)
 sets how the cut is drawn: *Wireframe* or *Points* draw the cut's cells by their edges or points,
-*Hidden* hides it, an opacity makes them translucent, and a reset puts them back as surfaces; the
-region's boundary stays hidden, and the browser notes the cut beside the region (`cut wireframe`,
-or `cut` without a mode or opacity of its own). Closing the card takes that with the cut. While
+*Hidden* hides it, and a reset puts them back as surfaces; the region's boundary stays hidden,
+and the browser notes the cut beside the region (`cut wireframe`, or `cut` without a mode or
+opacity of its own). An opacity set there is the region's: it makes the cut's cells translucent
+while the card shows them, and the region's boundary whenever that shows (the card showing
+nothing, or closed); as any opacity set for the region, it takes the place of its patches' own.
+An opacity the region had before the card opened is the cut's too (the view, the menu and the
+note show it), and a reset takes it away from both. Closing the card, or cutting another region, takes the cut's mode with the cut. While
 the card has nothing to show, a mode set for the region, or a reset of it, ends the card's hiding
 instead (and drops a mode set for the cut): the region is drawn so, and stays so once the card
 closes; once the card shows a cut again (another *Show*, or the check's findings coming), the

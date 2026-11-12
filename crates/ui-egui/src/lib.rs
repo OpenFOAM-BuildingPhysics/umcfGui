@@ -1820,7 +1820,6 @@ impl App {
                                 let layer = Layer::Region(r.name.clone());
                                 // While the cut card shows a cut of it, its menu sets the cut's mode.
                                 let cut = self.cut_takes(&layer);
-                                let entry = self.layer_entry(cut.as_ref().unwrap_or(&layer));
                                 let note = Some(self.region_note(&r.name)).filter(|n| !n.is_empty());
                                 let detail = match (&r.patches, note) {
                                     (Some(p), None) => format!("{} patches", p.len()),
@@ -1831,8 +1830,7 @@ impl App {
                                 let (row, c, e, resp) =
                                     self.tree_row(ui, 1, chevron, shown, Icon::Region, label, &detail, false);
                                 if r.patches.is_some() {
-                                    let current = self.layer_display(cut.as_ref().unwrap_or(&layer), &[]);
-                                    let set = entry.is_some();
+                                    let (current, set) = self.menu_display(&layer, cut.as_ref());
                                     resp.context_menu(|ui| {
                                         let title = if cut.is_some() {
                                             format!("Cut of {label}")

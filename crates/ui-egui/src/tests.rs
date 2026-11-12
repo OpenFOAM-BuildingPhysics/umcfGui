@@ -2170,14 +2170,14 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert!(app.cut.is_none());
     assert_eq!(app.display, before);
     assert!(app.shown().get("cuts").is_none());
-    // The region given an opacity while the card shows a cut: the cut's, gone with the card;
-    // the region as before.
+    // The region given an opacity while the card shows a cut: the cut's while it shows, and
+    // the region's, which it keeps once the card closes.
     app.display.clear();
     app.toggle_cut();
     app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.5));
     assert_eq!(app.layer_entry(&Layer::Cut(String::new())).and_then(|e| e.opacity), Some(0.5));
     app.toggle_cut();
-    assert!(app.display.is_empty(), "{:?}", app.display);
+    assert_eq!(app.display, [DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) }]);
     // A region turned off in the browser: the slider's extent from its whole mesh, read for
     // the cut, the plane then in its middle.
     app.display.clear();
@@ -2260,8 +2260,8 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
         app.toggle_cut();
         assert_eq!(app.display, start, "closed: as before");
     }
-    // An opacity goes to the cut too; a reset takes the cut's own display out; the hiding stays
-    // until the card closes.
+    // An opacity goes to the region, and to the cut so that it shows now; a reset takes both
+    // out; the hiding stays until the card closes.
     let hidden = |app: &App| app.display.iter().any(|e| e.mode == Some(Mode::Hidden));
     app.display.clear();
     app.toggle_cut();
@@ -2272,6 +2272,48 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert!(hidden(&app) && app.layer_entry(&cut_layer).is_none(), "{:?}", app.display);
     app.toggle_cut();
     assert!(app.display.is_empty(), "{:?}", app.display);
+    // Closed, the region keeps the opacity set while the cut showed; the cut's goes.
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
+    assert_eq!(app.layer_display(&region, &[]).opacity, 0.4);
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }]);
+    // An opacity the region had before the card opened: the cut's menu shows it and can
+    // reset it; a mode of the region's own from before, and the card's hiding, stay.
+    app.toggle_cut();
+    let cut_now = app.cut_takes(&region).unwrap();
+    let (d, set) = app.menu_display(&region, Some(&cut_now));
+    assert_eq!((d.opacity, set), (0.4, true));
+    // Drawn so too, and noted.
+    assert_eq!(app.region_note(""), "cut 40%");
+    let (entries, shown) = (app.view_display(), app.shown());
+    let scene = app.session.scene(&shown).unwrap();
+    let style = umcf_engine::display_style(scene, &entries);
+    for (k, o) in scene.objects.iter().enumerate() {
+        if matches!(o.source, umcf_render::Source::Cut { .. }) {
+            assert!((0..o.classes.len()).all(|c| style.get(&(k, c as u32)).map(|d| d.opacity) == Some(0.4)));
+        }
+    }
+    app.set_display(region.clone(), crate::display::Change::Reset);
+    let (d, set) = app.menu_display(&region, Some(&cut_now));
+    assert_eq!((d.opacity, set), (1.0, false));
+    app.toggle_cut();
+    app.display = vec![DisplayEntry { layer: region.clone(), mode: Some(Mode::Wireframe), opacity: Some(0.3) }];
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Reset);
+    assert!(hidden(&app), "{:?}", app.display);
+    assert_eq!(
+        app.display.first(),
+        Some(&DisplayEntry { layer: region.clone(), mode: Some(Mode::Wireframe), opacity: None })
+    );
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: Some(Mode::Wireframe), opacity: None }]);
+    app.display = vec![DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }];
+    // The view draws the region so once the card is closed.
+    let (entries, shown) = (app.view_display(), app.shown());
+    let style = umcf_engine::display_style(app.session.scene(&shown).unwrap(), &entries);
+    assert!(style.values().all(|d| d.opacity == 0.4 && d.mode != Mode::Hidden), "{style:?}");
+    app.display.clear();
     // While the card shows nothing (no check to show), a mode is the region's own: the hiding
     // goes, and the region keeps the mode once the card closes.
     app.toggle_cut();
@@ -2336,6 +2378,9 @@ fn the_browser_notes_the_cut_beside_its_region() {
     app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.4));
     assert_eq!(app.region_note(""), "cut wireframe 40%");
     app.toggle_cut();
+    // The opacity is the region's too, and stays.
+    assert_eq!(app.region_note(""), "40%");
+    app.set_display(Layer::Region(String::new()), crate::display::Change::Reset);
     assert_eq!(app.region_note(""), "");
     // The region's own mode, without the card.
     app.set_display(Layer::Region(String::new()), crate::display::Change::Mode(Mode::Points));
