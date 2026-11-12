@@ -45,16 +45,16 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   the narrowest windows the field takes the whole tab row). On the narrowest, the chosen tab
   goes into **»** too. A command that can't
   run now is grey, and its tooltip says why. A command that needs
-  parameters opens its card on the right; *OK* runs it. [Forms](#forms) ask for the parameters of
-  *Run controls*, *Import STL…*, *Tree crowns…*, *Repair…*, *Scale…*, *Snapshot*, *Box mesh*
-  (with [a preview of the box](workflow.md#box)), *Block mesh* (with
-  [a preview of the grid](workflow.md#blocks)), *Write workflow description*, *Describe a
-  region*, *Describe a patch*, *Describe a material*, *Switch a component* and *Write the
-  scripts* ([filled from the description](workflow.md#editing-the-description)); the others
-  show what they take, and their parameters as JSON (`{"endTime": 7200}`). The checks, *Summary* and *Read fields* run at once.
+  parameters opens its card on the right; *OK* runs it. Each card is a [form](#forms) of the
+  command's parameters: *Box mesh* with [a preview of the box](workflow.md#box), *Block mesh*
+  with [a preview of the grid](workflow.md#blocks), the workflow description's cards
+  [filled from the description](workflow.md#editing-the-description), *New case…* with a table
+  of its regions ([a new case](new-case.md)), *Set a material's coefficients* filled from the
+  case, *Choose settings* with the case's settings (only those changed set). What a form
+  doesn't ask for is given in *Edit as JSON*. The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *New case…* (its
-  card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Add a region…*
-  (a solid to name), *Read fields*,
+  card starts with the air alone for OpenFOAM-12), *Add a region…* (a solid to name), *Read
+  fields*,
   *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
   *Describe a material*, *Choose settings* (its card starts with the case's settings) and
   *Write the scripts* on *Case*, *Tree crowns* on *Geometry*.
@@ -130,7 +130,9 @@ checkboxes, a list to choose from (*default* leaves it to the command; *choose�
 command has no default), a name typed or picked from those the case has (*▾*), a role, model or
 partner sent only when changed (emptied: taken away), a switch sent either way (*On*), the case's
 surfaces, mesh regions or a region's patches to tick, the regions of the workflow description to
-choose from, a few numbers
+choose from, a table of rows (*+ Row* and *−*: a new case's regions, a region's materials, a
+material's coefficients), a directory with *Browse…* in the system's folder dialog, numbers by
+name (a blending layer's three: all or none), a few numbers
 side by side (a box's six margins, its cells along x, y and z: all given, or none), and a file's
 path with *Browse…*, which opens the system's own file dialog
 (where there is one; else the card says so, and the path is typed). *All parameters* opens what the command takes, as
@@ -400,8 +402,9 @@ about the new conditions.
 - The 3D view reads regions at once and keeps hidden ones within a share of the memory free when
   the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
   dropped past it is read again when it is shown.
-- The parameters of the commands without a [form](#forms) yet (*New case…*, *Add a region…*, a
-  material's coefficients, *Choose settings*) are typed as JSON; their forms follow.
+- What the forms don't ask for is typed as JSON in *Edit as JSON*: a new case's settings, the
+  material library and the solver numerics of *Choose settings*, a grid's single faces, patches
+  without faces and types, a snapshot's cuts and display.
 - *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,
   but a file read whole (binary meshes, the mesh check's) only once it is read; the mesh check's
   computing stops within 65,536 faces, apart from the checks *all geometry* adds, which stop

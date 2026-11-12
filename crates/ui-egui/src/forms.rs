@@ -67,6 +67,20 @@ pub(crate) enum Kind {
     /// The region and patch a patch is coupled to (`{"region", "patch"}`), each typed or picked:
     /// sent only when changed, both emptied: `null`.
     Partner,
+    /// A directory, its path typed or chosen in the system's folder dialog (*Browse…*).
+    Folder,
+    /// A new case's regions, a row each: name, kind and a solid's materials (`soil Soil;
+    /// brick Hamstad5Brick`): `[{"name", "kind", "materials": [{"name", "model"}]}]`.
+    RegionRows,
+    /// A new region's materials, a row each: the cell zone's name and its model, picked from
+    /// those the card offers: `[{"name", "model"}]`.
+    MaterialRows,
+    /// A material's coefficients, a row each, name and value, filled from the case: only those
+    /// changed are sent (`{"rho": 1700}`), one taken away as `null`.
+    Coefficients,
+    /// Numbers by name, one per key (a blending layer's coefficients): those given, as an
+    /// object.
+    NumberMap(&'static [&'static str]),
 }
 
 /// The parameters that name what a command acts on, kept with `remove: true`.
@@ -81,7 +95,71 @@ const ROWS: char = '\n';
 
 /// Whether a field is sent only when changed from what the form was filled with.
 fn sent_when_changed(kind: Kind) -> bool {
-    matches!(kind, Kind::Axis | Kind::Missing(_) | Kind::Sides(_) | Kind::Role(_) | Kind::Model | Kind::Partner)
+    matches!(
+        kind,
+        Kind::Axis
+            | Kind::Missing(_)
+            | Kind::Sides(_)
+            | Kind::Role(_)
+            | Kind::Model
+            | Kind::Partner
+            | Kind::Coefficients
+    )
+}
+
+/// Whether a JSON value is a number, or text that reads as one (the case's settings come as
+/// their files' text).
+fn numeric(v: &Value) -> bool {
+    v.is_number() || v.as_str().is_some_and(|t| serde_json::from_str::<Value>(t.trim()).is_ok_and(|x| x.is_number()))
+}
+
+/// A cell's text: the separators taken out.
+fn cell(t: &str) -> String {
+    t.replace([PARTS, ROWS], "")
+}
+
+/// The rows of a table field's text (blank ones left out), each its cells.
+fn table_rows(text: &str, n: usize) -> Vec<Vec<String>> {
+    text.split(ROWS)
+        .filter(|r| !r.chars().all(|c| c == PARTS || c.is_whitespace()))
+        .map(|r| {
+            let mut v: Vec<String> = r.split(PARTS).map(|c| c.trim().to_string()).collect();
+            v.resize(n, String::new());
+            v
+        })
+        .collect()
+}
+
+/// A material list's text (`soil Soil; brick Hamstad5Brick`) from its JSON; `None` for one it
+/// can't hold.
+fn materials_text(v: &Value) -> Option<String> {
+    let items: Option<Vec<String>> = v
+        .as_array()?
+        .iter()
+        .map(|m| {
+            let m = m.as_object()?;
+            let name = m.get("name")?.as_str()?;
+            let model = m.get("model").map(|x| x.as_str().map(str::to_string)).unwrap_or(Some(String::new()))?;
+            let ok = |t: &str| !t.contains([PARTS, ROWS, ';']) && !t.contains(char::is_whitespace);
+            (m.keys().all(|k| k == "name" || k == "model") && ok(name) && ok(&model))
+                .then(|| if model.is_empty() { name.to_string() } else { format!("{name} {model}") })
+        })
+        .collect();
+    items.map(|v| v.join("; "))
+}
+
+/// The JSON of a material list's text: `[{"name", "model"}]`; an error naming what isn't
+/// `name model`.
+fn materials_json(label: &str, text: &str) -> Result<Value, String> {
+    let mut out = Vec::new();
+    for m in text.split(';').map(str::trim).filter(|m| !m.is_empty()) {
+        let w: Vec<&str> = m.split_whitespace().collect();
+        match w.as_slice() {
+            [name, model] => out.push(json!({"name": name, "model": model})),
+            _ => return Err(format!("{label}: `{m}` isn't a material `name model`")),
+        }
+    }
+    Ok(Value::Array(out))
 }
 
 /// A grading as JSON: a number, or sections `a b c; a b c` as `[[a, b, c], …]`; blank: 1.
@@ -187,6 +265,71 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
             Value::String(t) => Some(t.clone()),
             _ => None,
         },
+        Kind::RegionRows => {
+            let rows: Option<Vec<String>> = v
+                .as_array()?
+                .iter()
+                .map(|r| {
+                    let r = r.as_object()?;
+                    if !r.keys().all(|k| matches!(k.as_str(), "name" | "kind" | "materials")) {
+                        return None;
+                    }
+                    let name = r.get("name")?.as_str()?;
+                    let kind = r.get("kind").map_or(Some(""), Value::as_str)?;
+                    let materials = r.get("materials").map_or(Some(String::new()), materials_text)?;
+                    let ok = |t: &str| !t.contains([PARTS, ROWS]);
+                    (ok(name) && ok(kind)).then(|| format!("{name}{PARTS}{kind}{PARTS}{materials}"))
+                })
+                .collect();
+            rows.map(|r| r.join(&ROWS.to_string()))
+        }
+        Kind::MaterialRows => {
+            let text = materials_text(v)?;
+            Some(
+                text.split("; ")
+                    .filter(|m| !m.is_empty())
+                    .map(|m| m.replacen(' ', &PARTS.to_string(), 1))
+                    .collect::<Vec<_>>()
+                    .join(&ROWS.to_string()),
+            )
+        }
+        Kind::Coefficients => {
+            // Over what the card was filled with: a key given sets its row, null takes it away.
+            let m = v.as_object()?;
+            let mut rows = table_rows(start, 2);
+            for (k, x) in m {
+                if k.contains([PARTS, ROWS]) {
+                    return None;
+                }
+                let at = rows.iter().position(|r| r.first() == Some(k));
+                match (x, at) {
+                    (Value::Null, Some(i)) => {
+                        rows.remove(i);
+                    }
+                    (Value::Null, None) => {}
+                    (Value::Number(n), Some(i)) => {
+                        if let Some(slot) = rows.get_mut(i).and_then(|r| r.get_mut(1)) {
+                            *slot = n.to_string();
+                        }
+                    }
+                    (Value::Number(n), None) => rows.push(vec![k.clone(), n.to_string()]),
+                    _ => return None,
+                }
+            }
+            Some(rows.iter().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string()))
+        }
+        Kind::NumberMap(keys) => {
+            let m = v.as_object()?;
+            if !m.keys().all(|k| keys.contains(&k.as_str())) || !m.values().all(numeric) {
+                return None;
+            }
+            Some(
+                keys.iter()
+                    .map(|k| m.get(*k).map(as_text).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(&PARTS.to_string()),
+            )
+        }
         Kind::Partner => match v {
             Value::Null => Some(String::new()),
             Value::Object(m) => {
@@ -197,6 +340,62 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// A JSON value as the user has it (`value`), filled from `was`, put over the case as it is
+/// `now`: left as filled, it follows the case (`None`: gone with it); objects entry by entry,
+/// at any depth, so an entry changed keeps its change while the others follow; anything else
+/// changed stays as the user has it (`None`: taken away by the user).
+pub(crate) fn merge_json(value: Option<&Value>, was: Option<&Value>, now: Option<&Value>) -> Option<Value> {
+    if value == was {
+        return now.cloned();
+    }
+    let empty = Map::new();
+    match (value, was.unwrap_or(&Value::Null), now) {
+        (Some(Value::Object(v)), Value::Object(_) | Value::Null, Some(Value::Object(n))) => {
+            let w = was.and_then(Value::as_object).unwrap_or(&empty);
+            let mut out = Map::new();
+            // In the order the case has them, then those only the user has.
+            let keys = n.keys().chain(v.keys().filter(|k| !n.contains_key(*k)));
+            for k in keys {
+                if let Some(x) = merge_json(v.get(k), w.get(k), n.get(k)) {
+                    out.insert(k.clone(), x);
+                }
+            }
+            Some(Value::Object(out))
+        }
+        _ => value.cloned(),
+    }
+}
+
+/// A table's text typed in (`value`), filled from `was`, put over the case as it is `now`, row
+/// by row by its first cell: a row not typed in (as it was filled) takes the case's, one typed
+/// stays, one taken away stays away, one added stays.
+pub(crate) fn merge_rows(value: &str, was: &str, now: &str, n: usize) -> String {
+    let (v, w, m) = (table_rows(value, n), table_rows(was, n), table_rows(now, n));
+    let find = |t: &[Vec<String>], k: &str| t.iter().find(|r| r.first().map(String::as_str) == Some(k)).cloned();
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for row in &m {
+        let k = row.first().map(String::as_str).unwrap_or("");
+        match (find(&v, k), find(&w, k)) {
+            // Taken away by the user.
+            (None, Some(_)) => {}
+            (Some(typed), Some(filled)) if typed != filled => out.push(typed),
+            // Added by the user, the case gaining it meanwhile: the user's.
+            (Some(typed), None) => out.push(typed),
+            _ => out.push(row.clone()),
+        }
+    }
+    for row in &v {
+        let k = row.first().map(String::as_str).unwrap_or("");
+        let added = find(&w, k).is_none();
+        // Typed over a row the case has taken away since: the user's, kept.
+        let edited = find(&w, k).is_some_and(|filled| filled != *row);
+        if (added || edited) && find(&m, k).is_none() {
+            out.push(row.clone());
+        }
+    }
+    out.iter().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string())
 }
 
 /// A [`Kind::Sides`] text typed in (`value`), filled from `was`, put over the grid as it is
@@ -280,6 +479,43 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
                     continue;
                 }
                 m.insert(name.to_string(), if n.is_empty() { Value::Null } else { json!(n) });
+            }
+            Ok((!m.is_empty()).then_some(Value::Object(m)))
+        }
+        Kind::Coefficients => {
+            let (now, then) = (table_rows(text, 2), table_rows(was, 2));
+            let mut m = Map::new();
+            // Every row's name, changed or not: a name twice is refused either way.
+            let mut seen = BTreeSet::new();
+            for r in &now {
+                let (Some(k), Some(x)) = (r.first(), r.get(1)) else { continue };
+                if k.is_empty() {
+                    return Err(format!("{}: a coefficient without its name ({x})", f.label));
+                }
+                if !seen.insert(k.clone()) {
+                    return Err(format!("{}: {k} is given twice", f.label));
+                }
+                let before = then.iter().find(|w| w.first() == Some(k)).and_then(|w| w.get(1));
+                if before == Some(x) {
+                    continue;
+                }
+                let value = if x.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_str::<Value>(x)
+                        .ok()
+                        .filter(Value::is_number)
+                        .ok_or_else(|| format!("{} ({k}): `{x}` isn't a number", f.label))?
+                };
+                m.insert(k.clone(), value);
+            }
+            // A row taken away: the coefficient taken out.
+            for w in &then {
+                if let Some(k) = w.first()
+                    && !now.iter().any(|r| r.first() == Some(k))
+                {
+                    m.insert(k.clone(), Value::Null);
+                }
             }
             Ok((!m.is_empty()).then_some(Value::Object(m)))
         }
@@ -582,6 +818,85 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "case.new",
+        intro: "A new case in a directory of its own, from the urbanMicroclimateFoam tutorials' configuration, opened when written.",
+        fields: &[
+            field("path", "Directory", Kind::Folder, "One that isn't there, or is empty"),
+            field("version", "OpenFOAM", Kind::Choice(&["12", "8"]), ""),
+            field(
+                "regions",
+                "Regions",
+                Kind::RegionRows,
+                "At least one fluid; a solid's materials as `name model; …` (the vegetation region is named vegetation)",
+            ),
+            field(
+                "radiation",
+                "Radiation on",
+                Kind::Pick("none"),
+                "A fluid or the vegetation (it needs a fluid named air)",
+            ),
+            field(
+                "grass",
+                "Grass",
+                Kind::Flag,
+                "Its patches are named once the air is meshed (it needs the radiation)",
+            ),
+            field("temperatureLimit", "Temperature limit", Kind::Flag, ""),
+            field("blending", "Blending layer", Kind::Flag, "It needs z up"),
+            field("up", "Up", Kind::Choice(&["", "x", "y", "z"]), "The axis gravity points down; z by default"),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "region.add",
+        intro: "A region added to the case, with the settings of its kind (it has no mesh yet).",
+        fields: &[
+            field("region", "Name", Kind::Text("a plain name"), "The vegetation region is named vegetation"),
+            field("kind", "Kind", Kind::Choice(&["fluid", "solid", "vegetation"]), ""),
+            field(
+                "materials",
+                "Materials",
+                Kind::MaterialRows,
+                "A solid's: the cell zone built of each, and its model; none: those the workflow description gives it",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "material.set",
+        intro: "A material's coefficients in its solid's transportProperties, filled from the case; only those changed are set.",
+        fields: &[
+            field("region", "Region", Kind::Pick("a solid region"), ""),
+            field("material", "Material", Kind::Pick("one of its materials"), ""),
+            field(
+                "coefficients",
+                "Coefficients",
+                Kind::Coefficients,
+                "A row taken away, or its value emptied, takes it out (not rho, cap, lambda1 or lambda2)",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
+        id: "workflow.settings",
+        intro: "The case's settings, as its files have them; only those changed are set. The material library and the numerics are in Edit as JSON.",
+        fields: &[
+            field("deltaT", "Time step", Kind::Number("s"), ""),
+            field("endTime", "End time", Kind::Number("s"), ""),
+            field("writeInterval", "Write interval", Kind::Number(""), "In the case's write control's unit"),
+            field("turbulence", "Turbulence", Kind::Pick("RAS model"), "The fluids' RAS model"),
+            field("temperatureLimit", "Temperature limit", Kind::Numbers(&["min", "max"]), "In kelvin"),
+            field(
+                "blending",
+                "Blending",
+                Kind::NumberMap(&["dampingThickness", "alphaCoeffU", "alphaCoeffT"]),
+                "The blending layer's coefficients",
+            ),
+            field("from", "From a case", Kind::Folder, "Another case's settings, those given here over them"),
+        ],
+        changed_only: true,
+    },
+    Spec {
         id: "scene.snapshot",
         intro: "A PNG of the case in 3D, drawn by the CPU renderer.",
         fields: &[
@@ -639,6 +954,9 @@ pub struct FormState {
     /// The names a card offers its [`Kind::Pick`], [`Kind::Model`], [`Kind::Partner`] and
     /// [`Kind::Names`] fields, by key (set each frame from the case).
     pub(crate) options: BTreeMap<&'static str, Vec<String>>,
+    /// The keys the form has no field for as it was filled (the case's settings): with
+    /// `changed_only`, only those changed since are sent.
+    pub(crate) initial_extra: Map<String, Value>,
 }
 
 fn as_text(v: &Value) -> String {
@@ -672,6 +990,13 @@ impl FormState {
 
     /// The parameters the form makes; an error naming a field whose text isn't what it takes.
     pub(crate) fn params(&self, spec: &Spec) -> Result<Value, String> {
+        self.params_for(spec, true)
+    }
+
+    /// [`FormState::params`]; `sending`: for OK (a card with nothing to send says so), else for
+    /// the JSON view.
+    fn params_for(&self, spec: &Spec, sending: bool) -> Result<Value, String> {
+        let unchanged = |k: &String, v: &Value| spec.changed_only && self.initial_extra.get(k) == Some(v);
         // *Take … out* ticked: only what names what is taken out goes with it (the commands
         // refuse anything else with remove), whatever the other fields hold, unread.
         if spec.fields.iter().any(|f| f.key == "remove")
@@ -692,7 +1017,9 @@ impl FormState {
             out.insert("remove".to_string(), Value::Bool(true));
             return Ok(Value::Object(out));
         }
-        let mut out = self.extra.clone();
+        // What the form has no field for, as the case had it: not sent when only the changed are.
+        let mut out: Map<String, Value> =
+            self.extra.iter().filter(|(k, v)| !unchanged(k, v)).map(|(k, v)| (k.clone(), v.clone())).collect();
         for f in spec.fields {
             if f.kind == Kind::Names {
                 // Sent when changed from what the card was filled with (the patches the case
@@ -724,9 +1051,61 @@ impl FormState {
                 }
                 continue;
             }
-            if let Kind::Numbers(labels) | Kind::Counts(labels) = f.kind {
+            if let Kind::RegionRows | Kind::MaterialRows = f.kind {
+                let text = self.values.get(f.key).map(String::as_str).unwrap_or("");
+                if text.trim().is_empty() && self.extra.contains_key(f.key) {
+                    continue;
+                }
+                let mut list = Vec::new();
+                for r in table_rows(text, 3) {
+                    let (name, second) =
+                        (r.first().cloned().unwrap_or_default(), r.get(1).cloned().unwrap_or_default());
+                    if name.is_empty() {
+                        return Err(format!("{}: a row without its name", f.label));
+                    }
+                    if f.kind == Kind::MaterialRows {
+                        if second.is_empty() {
+                            return Err(format!("{} ({name}): give its model", f.label));
+                        }
+                        list.push(json!({"name": name, "model": second}));
+                        continue;
+                    }
+                    let mut row = json!({"name": name, "kind": second});
+                    let materials = r.get(2).cloned().unwrap_or_default();
+                    if !materials.is_empty() {
+                        row["materials"] = materials_json(&format!("{} ({name})", f.label), &materials)?;
+                    }
+                    list.push(row);
+                }
+                if !list.is_empty() {
+                    out.insert(f.key.to_string(), Value::Array(list));
+                }
+                continue;
+            }
+            if let Kind::Numbers(labels) | Kind::Counts(labels) | Kind::NumberMap(labels) = f.kind {
                 let v = parts(self.values.get(f.key).map(String::as_str).unwrap_or(""), labels.len());
                 if v.iter().all(|p| p.trim().is_empty()) {
+                    continue;
+                }
+                // Left as the case has it: not sent (the settings).
+                let was = parts(self.initial.get(f.key).map(String::as_str).unwrap_or(""), labels.len());
+                if spec.changed_only && v.iter().map(|x| x.trim()).eq(was.iter().map(|x| x.trim())) {
+                    continue;
+                }
+                if let Kind::NumberMap(keys) = f.kind {
+                    let mut m = Map::new();
+                    for (p, k) in v.iter().zip(keys.iter()) {
+                        let p = p.trim();
+                        if p.is_empty() {
+                            return Err(format!("{}: give all {} (none to leave them)", f.label, keys.len()));
+                        }
+                        let n = serde_json::from_str::<Value>(p)
+                            .ok()
+                            .filter(Value::is_number)
+                            .ok_or_else(|| format!("{} ({k}): `{p}` isn't a number", f.label))?;
+                        m.insert(k.to_string(), n);
+                    }
+                    out.insert(f.key.to_string(), Value::Object(m));
                     continue;
                 }
                 let mut list = Vec::with_capacity(v.len());
@@ -759,8 +1138,9 @@ impl FormState {
             }
             // An entry the case has, emptied (or set to default): nothing would change it.
             if spec.changed_only && text.is_empty() {
+                let how = if spec.id == "control.set" { " (dict.remove does)" } else { "" };
                 return Err(format!(
-                    "{}: the case has it ({initial}); an empty field doesn't take it out of the file (dict.remove does)",
+                    "{}: the case has it ({initial}); an empty field doesn't take it out of the file{how}",
                     f.label
                 ));
             }
@@ -793,6 +1173,10 @@ impl FormState {
         for p in &self.passed {
             out.insert(p.clone(), Value::Bool(true));
         }
+        // A material's coefficients: none changed, nothing to set.
+        if sending && spec.id == "material.set" && !out.contains_key("coefficients") {
+            return Err("Coefficients: none changed".to_string());
+        }
         // The grass's patches go only with the grass switched on (the command refuses them
         // otherwise).
         if spec.id == "workflow.component"
@@ -802,6 +1186,19 @@ impl FormState {
             out.remove("patches");
         }
         Ok(Value::Object(out))
+    }
+
+    /// The parameters as *Edit as JSON* shows them: what OK sends, and what the form has no
+    /// field for as the case has it too (the settings' material library and numerics), to edit
+    /// there.
+    pub(crate) fn json_view(&self, spec: &Spec) -> Result<Value, String> {
+        let mut v = self.params_for(spec, false)?;
+        if let Some(o) = v.as_object_mut() {
+            for (k, x) in &self.extra {
+                o.entry(k.clone()).or_insert_with(|| x.clone());
+            }
+        }
+        Ok(v)
     }
 
     /// Fills the fields from `params` (back from the JSON): the keys of fields go in them, the
@@ -872,10 +1269,31 @@ impl FormState {
                         (None, None) => {}
                     }
                 }
+                Kind::RegionRows | Kind::MaterialRows | Kind::NumberMap(_) => {
+                    let text = match &v {
+                        // Left out: as the case has it when only the changed are sent.
+                        None if spec.changed_only => Some(self.initial.get(f.key).cloned().unwrap_or_default()),
+                        None => Some(String::new()),
+                        Some(v) => grid_text(f.kind, v, ""),
+                    };
+                    match (text, &v) {
+                        (Some(t), _) => {
+                            self.values.insert(f.key, t);
+                        }
+                        (None, Some(v)) => {
+                            keep(&mut extra, v);
+                            self.values.insert(f.key, String::new());
+                        }
+                        (None, None) => {}
+                    }
+                }
                 Kind::Numbers(labels) | Kind::Counts(labels) => {
                     let list: Option<Vec<String>> = match &v {
+                        None if spec.changed_only => {
+                            Some(parts(self.initial.get(f.key).map(String::as_str).unwrap_or(""), labels.len()))
+                        }
                         None => Some(Vec::new()),
-                        Some(Value::Array(a)) if a.len() == labels.len() && a.iter().all(Value::is_number) => {
+                        Some(Value::Array(a)) if a.len() == labels.len() && a.iter().all(numeric) => {
                             Some(a.iter().map(as_text).collect())
                         }
                         Some(_) => None,
@@ -937,9 +1355,12 @@ impl FormState {
                                     | Kind::Surface
                                     | Kind::Text(_)
                                     | Kind::File(_) => true,
-                                    // The run controls' words read `true` or 7 as their text,
-                                    // as the file has them.
-                                    Kind::Choice(_) => !spec.changed_only,
+                                    // A word it offers (a version, 12) as its text; the run
+                                    // controls' words read `true` or 7 as their text, as the file
+                                    // has them.
+                                    Kind::Choice(options) => {
+                                        !spec.changed_only && !options.contains(&as_text(v).as_str())
+                                    }
                                     _ => false,
                                 } =>
                         {
@@ -1012,11 +1433,20 @@ pub(crate) fn offered(error: &str) -> Vec<String> {
 pub struct FileAsk {
     pub key: &'static str,
     pub extensions: &'static [&'static str],
+    /// A directory, in the system's folder dialog.
+    pub folder: bool,
 }
 
 /// Draws the form's fields; a *Browse…* pressed asks for a file (when the window has a
 /// dialog: `browse`).
-pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, browse: bool) -> Option<FileAsk> {
+pub(crate) fn show(
+    ui: &mut Ui,
+    spec: &Spec,
+    form: &mut FormState,
+    width: f32,
+    browse: bool,
+    browse_folder: bool,
+) -> Option<FileAsk> {
     let mut ask = None;
     let wide = (width - 120.0).max(120.0);
     egui::Grid::new(("form", spec.id)).num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
@@ -1137,6 +1567,28 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                             }
                         }
                     }
+                }
+                Kind::RegionRows | Kind::MaterialRows | Kind::Coefficients => {
+                    let label = ui.label(f.label);
+                    if !f.tip.is_empty() {
+                        label.on_hover_text(f.tip);
+                    }
+                    let offered = form.options.get(f.key).cloned().unwrap_or_default();
+                    let text = form.values.entry(f.key).or_default();
+                    let cols: Vec<Col<'_>> = match f.kind {
+                        Kind::RegionRows => vec![
+                            Col::Text("Name", 64.0, "air"),
+                            Col::Choice("Kind", 80.0, &["fluid", "solid", "vegetation"]),
+                            Col::Text("Materials", 92.0, "name model; …"),
+                        ],
+                        Kind::MaterialRows => {
+                            vec![Col::Text("Cell zone", 90.0, "brick"), Col::Pick("Model", 130.0, &offered)]
+                        }
+                        _ => {
+                            vec![Col::Pick("Coefficient", 106.0, &offered), Col::Text("Value", 66.0, "none: out")]
+                        }
+                    };
+                    ui.vertical(|ui| table(ui, (spec.id, f.key), text, &cols));
                 }
                 Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
                     let label = ui.label(f.label);
@@ -1264,9 +1716,41 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                     egui::TextEdit::singleline(text).desired_width(wide - 74.0).hint_text("path");
                                 ui.add(edit).labelled_by(label.id);
                                 if ui.add_enabled(browse, egui::Button::new("Browse…")).clicked() {
-                                    ask = Some(FileAsk { key: f.key, extensions: ext });
+                                    ask = Some(FileAsk { key: f.key, extensions: ext, folder: false });
                                 }
                             });
+                        }
+                        Kind::Folder => {
+                            ui.horizontal(|ui| {
+                                let edit = egui::TextEdit::singleline(text)
+                                    .desired_width(wide - 74.0)
+                                    .hint_text("a directory");
+                                ui.add(edit).labelled_by(label.id);
+                                if ui.add_enabled(browse_folder, egui::Button::new("Browse…")).clicked() {
+                                    ask = Some(FileAsk { key: f.key, extensions: &[], folder: true });
+                                }
+                            });
+                        }
+                        Kind::NumberMap(keys) => {
+                            let mut v = parts(text, keys.len());
+                            egui::Grid::new(("map", spec.id, f.key)).num_columns(2).spacing(vec2(6.0, 4.0)).show(
+                                ui,
+                                |ui| {
+                                    for (p, k) in v.iter_mut().zip(keys.iter()) {
+                                        let l = ui.label(RichText::new(*k).size(12.0));
+                                        ui.add(egui::TextEdit::singleline(p).desired_width(72.0)).labelled_by(l.id);
+                                        if p.contains(PARTS) {
+                                            *p = p.replace(PARTS, "");
+                                        }
+                                        ui.end_row();
+                                    }
+                                },
+                            );
+                            *text = if v.iter().all(|x| x.trim().is_empty()) {
+                                String::new()
+                            } else {
+                                v.join(&PARTS.to_string())
+                            };
                         }
                         Kind::Text(hint) | Kind::Number(hint) | Kind::Count(hint) => {
                             let edit = egui::TextEdit::singleline(text).desired_width(wide).hint_text(hint);
@@ -1284,7 +1768,10 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                         | Kind::Names
                         | Kind::Role(_)
                         | Kind::Model
-                        | Kind::Partner => {}
+                        | Kind::Partner
+                        | Kind::RegionRows
+                        | Kind::MaterialRows
+                        | Kind::Coefficients => {}
                     }
                 }
             }
@@ -1294,11 +1781,103 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
     ask
 }
 
+/// A column of a [`table`]: its header and width, and what its cells take.
+enum Col<'a> {
+    /// Text, with a hint.
+    Text(&'a str, f32, &'a str),
+    /// One of these words.
+    Choice(&'a str, f32, &'static [&'static str]),
+    /// A name typed or picked from these.
+    Pick(&'a str, f32, &'a [String]),
+}
+
+/// A field's rows as a table: a row a line of `text`, its cells parted by `|`; rows added
+/// (*+ Row*) and taken away (*−*).
+fn table(ui: &mut Ui, id: (&str, &str), text: &mut String, cols: &[Col<'_>]) {
+    let n = cols.len();
+    // A long table (counted before any row is made) is edited as text, a row a line.
+    let lines = if text.is_empty() { 0 } else { text.matches(ROWS).count() + 1 };
+    if lines > TABLE_ROWS {
+        let l = ui.label(RichText::new(format!("{lines} rows, a row a line, its cells parted by |")).size(12.0));
+        egui::ScrollArea::vertical().id_salt(("table-text", id)).max_height(140.0).show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(6).desired_width(f32::INFINITY))
+                .labelled_by(l.id);
+        });
+        return;
+    }
+    let mut rows: Vec<Vec<String>> = if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split(ROWS)
+            .map(|r| {
+                let mut v: Vec<String> = r.split(PARTS).map(str::to_string).collect();
+                v.resize(n, String::new());
+                v
+            })
+            .collect()
+    };
+    let mut remove = None;
+    egui::Grid::new(("table", id)).num_columns(n + 1).spacing(vec2(6.0, 3.0)).show(ui, |ui| {
+        let headers: Vec<egui::Id> = cols
+            .iter()
+            .map(|c| {
+                let h = match c {
+                    Col::Text(h, ..) | Col::Choice(h, ..) | Col::Pick(h, ..) => *h,
+                };
+                ui.label(RichText::new(h).size(11.5)).id
+            })
+            .collect();
+        ui.label("");
+        ui.end_row();
+        for (i, row) in rows.iter_mut().enumerate() {
+            for (k, (c, cellv)) in cols.iter().zip(row.iter_mut()).enumerate() {
+                let head = headers.get(k).copied().unwrap_or(ui.scope_id());
+                match c {
+                    Col::Text(_, w, hint) => {
+                        // Sized: a grid's cell would give it less than it asks for.
+                        ui.add_sized(vec2(*w, 20.0), egui::TextEdit::singleline(cellv).hint_text(*hint))
+                            .labelled_by(head);
+                    }
+                    Col::Choice(_, w, options) => {
+                        let shown = if cellv.is_empty() { "choose…".to_string() } else { cellv.clone() };
+                        egui::ComboBox::from_id_salt(("table-choice", id.0, id.1, i, k))
+                            .selected_text(shown)
+                            .width(*w)
+                            .show_ui(ui, |ui| {
+                                for o in *options {
+                                    ui.selectable_value(cellv, o.to_string(), *o);
+                                }
+                            })
+                            .response
+                            .labelled_by(head);
+                    }
+                    Col::Pick(_, w, offered) => {
+                        pick(ui, (id.0, &format!("{}-{i}-{k}", id.1)), cellv, offered, "", *w, head);
+                    }
+                }
+                *cellv = cell(cellv);
+            }
+            if ui.small_button("−").on_hover_text("Take this row away").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        rows.remove(i);
+    }
+    if ui.small_button("+ Row").clicked() {
+        rows.push(vec![String::new(); n]);
+    }
+    *text = rows.iter().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string());
+}
+
 /// A name typed, or picked from `offered` in the menu beside it (*▾*).
 fn pick(ui: &mut Ui, id: (&str, &str), text: &mut String, offered: &[String], hint: &str, width: f32, label: egui::Id) {
     ui.horizontal(|ui| {
-        let edit = egui::TextEdit::singleline(text).desired_width((width - 30.0).max(60.0)).hint_text(hint);
-        ui.add(edit).labelled_by(label);
+        // Sized: in a table's cell it would get less than it asks for.
+        let edit = egui::TextEdit::singleline(text).hint_text(hint);
+        ui.add_sized(vec2((width - 30.0).max(60.0), 20.0), edit).labelled_by(label);
         ui.add_enabled_ui(!offered.is_empty(), |ui| {
             egui::ComboBox::from_id_salt(("pick", id.0, id.1))
                 .selected_text("")
@@ -1790,5 +2369,102 @@ mod tests {
         m.fill(spec, &json!({"region": "street", "material": "brick", "model": "HamstadBrick", "remove": true}))
             .unwrap();
         assert_eq!(m.params(spec).unwrap(), json!({"region": "street", "material": "brick", "remove": true}));
+    }
+
+    #[test]
+    fn a_new_cases_regions_a_regions_materials_and_coefficients_as_tables() {
+        // A new case: its regions as rows, a solid's materials in the row.
+        let spec = spec("case.new").unwrap();
+        let mut f = FormState::default();
+        let p = json!({"path": "/tmp/x", "version": 12, "regions": [{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]});
+        f.fill(spec, &p).unwrap();
+        assert_eq!(f.values["version"], "12", "a word it offers, shown");
+        assert_eq!(f.values["regions"], "air|fluid|\nstreet|solid|soil Soil");
+        assert_eq!(
+            f.params(spec).unwrap(),
+            json!({"path": "/tmp/x", "version": "12", "regions": [{"name": "air", "kind": "fluid"}, {"name": "street", "kind": "solid", "materials": [{"name": "soil", "model": "Soil"}]}]})
+        );
+        f.values.insert("regions", "air|fluid|\n|solid|".into());
+        assert!(f.params(spec).unwrap_err().contains("a row without its name"));
+        f.values.insert("regions", "street|solid|soil Soil extra".into());
+        assert!(f.params(spec).unwrap_err().contains("isn't a material `name model`"));
+        // A region's materials.
+        let spec = super::spec("region.add").unwrap();
+        let mut r = FormState::default();
+        r.fill(
+            spec,
+            &json!({"region": "wall", "kind": "solid", "materials": [{"name": "brick", "model": "Hamstad5Brick"}]}),
+        )
+        .unwrap();
+        assert_eq!(r.values["materials"], "brick|Hamstad5Brick");
+        r.values.insert("materials", "brick|Hamstad5Brick\nplaster|".into());
+        assert!(r.params(spec).unwrap_err().contains("(plaster): give its model"));
+        // A material's coefficients: only those changed, a row taken away or emptied as null.
+        let spec = super::spec("material.set").unwrap();
+        let mut c = FormState::default();
+        for (k, v) in [("region", "street"), ("material", "soil"), ("coefficients", "rho|1600\ncap|850\nmu|3")] {
+            c.values.insert(k, v.to_string());
+        }
+        c.initial = c.values.clone();
+        assert!(c.params(spec).unwrap_err().contains("none changed"));
+        assert_eq!(c.json_view(spec).unwrap(), json!({"region": "street", "material": "soil"}), "the JSON view opens");
+        c.values.insert("coefficients", "rho|1700\ncap|\nwcap|2".into());
+        assert_eq!(c.params(spec).unwrap()["coefficients"], json!({"rho": 1700, "cap": null, "wcap": 2, "mu": null}));
+        c.values.insert("coefficients", "rho|1600\nrho|1700".into());
+        assert!(c.params(spec).unwrap_err().contains("rho is given twice"));
+        c.values.insert("coefficients", "rho|lots".into());
+        assert!(c.params(spec).unwrap_err().contains("(rho): `lots` isn't a number"));
+        // Back from JSON: its keys over what the card was filled with.
+        c.fill(spec, &json!({"region": "street", "material": "soil", "coefficients": {"rho": 1800, "mu": null}}))
+            .unwrap();
+        assert_eq!(c.values["coefficients"], "rho|1800\ncap|850");
+        // The settings: as the case has them (text), only those changed sent; what the form
+        // has no field for, sent only when changed.
+        let spec = super::spec("workflow.settings").unwrap();
+        let mut g = FormState::default();
+        let had = json!({"deltaT": "1800", "temperatureLimit": ["283.15", "370"], "blending": {"dampingThickness": "60", "alphaCoeffU": "0.3", "alphaCoeffT": "0.3"}, "numerics": {"fluid": {"SIMPLE": {"nNonOrthogonalCorrectors": "1"}}}});
+        g.fill(spec, &had).unwrap();
+        g.initial = g.values.clone();
+        g.initial_extra = g.extra.clone();
+        assert_eq!(g.params(spec).unwrap(), json!({}));
+        g.values.insert("deltaT", "900".into());
+        g.values.insert("temperatureLimit", "283.15|380".into());
+        g.values.insert("blending", "50|0.3|0.3".into());
+        assert_eq!(
+            g.params(spec).unwrap(),
+            json!({"deltaT": 900, "temperatureLimit": [283.15, 380], "blending": {"dampingThickness": 50, "alphaCoeffU": 0.3, "alphaCoeffT": 0.3}})
+        );
+        // Blending: all three or none.
+        g.values.insert("blending", "50||0.3".into());
+        assert!(g.params(spec).unwrap_err().contains("give all 3"));
+        g.values.insert("blending", g.initial["blending"].clone());
+        // The JSON view shows the numerics as the case has them, to edit; back from it, what it
+        // leaves out stays as the case has it.
+        assert!(g.json_view(spec).unwrap().get("numerics").is_some());
+        g.fill(spec, &json!({"deltaT": 900})).unwrap();
+        assert_eq!(g.values["temperatureLimit"], g.initial["temperatureLimit"]);
+        assert_eq!(g.values["blending"], g.initial["blending"]);
+        g.extra.insert("numerics".into(), json!({"fluid": {}}));
+        assert_eq!(g.params(spec).unwrap()["numerics"], json!({"fluid": {}}));
+        // A table typed in, put over the case changed meanwhile: rows not typed follow it, the
+        // typed one stays, one taken away stays away.
+        assert_eq!(
+            merge_rows("rho|1700\ncap|850", "rho|1600\ncap|850\nmu|3", "rho|1600\ncap|900\nmu|3\nwcap|2", 2),
+            "rho|1700\ncap|900\nwcap|2"
+        );
+        // Objects entry by entry: the one changed stays, the others follow the case.
+        let had = json!({"fluid": {"SIMPLE": {"n": "1"}, "relax": {"U": "0.3"}}});
+        let typed = json!({"fluid": {"SIMPLE": {"n": "2"}, "relax": {"U": "0.3"}}});
+        let now = json!({"fluid": {"SIMPLE": {"n": "1"}, "relax": {"U": "0.5"}}});
+        assert_eq!(
+            merge_json(Some(&typed), Some(&had), Some(&now)),
+            Some(json!({"fluid": {"SIMPLE": {"n": "2"}, "relax": {"U": "0.5"}}}))
+        );
+        assert_eq!(merge_json(Some(&had), Some(&had), None), None, "gone with the case");
+        assert_eq!(merge_json(None, Some(&had), Some(&now)), None, "taken away by the user");
+        // A row typed over that the case took away meanwhile: kept.
+        assert_eq!(merge_rows("rho|1600\nmu|5", "rho|1600\nmu|3", "rho|1600", 2), "rho|1600\nmu|5");
+        // A row added that the case gained meanwhile: the user's value.
+        assert_eq!(merge_rows("rho|1600\nwcap|5", "rho|1600", "rho|1600\nwcap|2", 2), "rho|1600\nwcap|5");
     }
 }

@@ -181,3 +181,23 @@ fn a_coefficient_every_material_needs_stays_when_the_version_isn_t_known() {
     let e = c.set_material("street", "soil", &[set("rho", "1700")]).unwrap();
     assert!(e.notes.is_empty(), "{e:?}");
 }
+
+#[test]
+fn a_solids_materials_and_their_coefficients_are_listed() {
+    let (_, c) = case(OfVersion::V12);
+    let m = c.material_coefficients("street");
+    assert_eq!(m.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["soil", "brick"]);
+    assert_eq!(m[0].model.as_deref(), Some("Soil"));
+    assert!(m[0].coefficients.iter().any(|(k, _)| k == "rho"), "{:?}", m[0].coefficients);
+    assert!(!m[0].coefficients.iter().any(|(k, _)| k == "name" || k == "buildingMaterialModel"));
+    // A region without the file, or not a solid: none.
+    assert!(c.material_coefficients("air").is_empty());
+    assert!(c.material_coefficients("nowhere").is_empty());
+    // The names the solver reads: every material's first, then the model's own.
+    let names = coefficient_names(Some(OfVersion::V12), Some("VanGenuchten"));
+    let mut first: Vec<&str> = names[..4].to_vec();
+    first.sort_unstable();
+    assert_eq!(first, ["cap", "lambda1", "lambda2", "rho"], "{names:?}");
+    assert!(names.contains(&"wcap") && names.contains(&"n"), "the model's own: {names:?}");
+    assert!(coefficient_names(None, None).contains(&"rho"));
+}

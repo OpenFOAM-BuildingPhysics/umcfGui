@@ -14,8 +14,12 @@ umcf-cli run --cmd 'case.new={"path": "canyon", "version": 12,
   "radiation": "vegetation", "grass": ["air_to_street"], "temperatureLimit": true}'
 ```
 
-In the desktop app it is *New case…* in the *More* group of the *Case* tab: its card starts with
-the air alone for OpenFOAM-12.
+In the desktop app it is *New case…* in the *More* group of the *Case* tab, a
+[form](desktop.md#forms): the directory (typed or chosen with *Browse…* in the system's folder
+dialog), the OpenFOAM version, the regions as a table (a row each: name, kind and a solid's
+materials as `name model; …`; *+ Row* and *−*), the radiation region (picked from the table's
+fluids and vegetation), *Grass*, *Temperature limit*, *Blending layer* and the axis up; the
+settings go in *Edit as JSON*. Its card starts with the air alone for OpenFOAM-12.
 
 ## Components
 
@@ -84,7 +88,12 @@ umcf-cli run --case path/to/case \
   --cmd 'case.save={}'
 ```
 
-In the desktop app it is *Set a material's coefficients* in the *More* group of the *Case* tab.
+In the desktop app it is *Set a material's coefficients* in the *More* group of the *Case* tab, a
+[form](desktop.md#forms) starting on the case's first solid and its first material: the material picked from those its
+`transportProperties` lists, and its coefficients as a table filled from the file (a row each,
+name and value; a name picked from those the solver reads of its model). Only what is changed
+is sent: a value changed or a row added sets it, a row taken away or its value emptied takes
+it out (`null`).
 
 ## The configuration
 
@@ -188,7 +197,9 @@ what `case.new` refuses of a region is refused here too, and so are:
 - a case without a known version or a region list (a meshing step);
 - a link or a directory where a file would go.
 
-In the desktop app it is *Add a region…* in the *More* group of the *Case* tab.
+In the desktop app it is *Add a region…* in the *More* group of the *Case* tab, a
+[form](desktop.md#forms) of its name, kind and a solid's materials as a table (the cell zone,
+and its model picked from the solver's for the case's version).
 
 ## Tested
 

@@ -3278,6 +3278,180 @@ fn the_workflow_cards_fill_from_the_description() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The last cards with forms: a new case made from its table of regions, a material's
+/// coefficients filled from the case and set, a region added with its materials, and the
+/// settings filled from the case, only those changed sent.
+#[test]
+fn a_case_is_made_and_set_up_from_forms() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-forms-case", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = harness(App::new(Session::with_backup(".umcfgui/backup/test")));
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    let set = |h: &mut Harness<'_, App>, k: &'static str, v: &str| {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert(k, v.to_string());
+    };
+    let ok = |h: &mut Harness<'_, App>| {
+        h.get_by_label("OK").click();
+        for _ in 0..40 {
+            h.run();
+            if !h.state().working() {
+                break;
+            }
+        }
+        h.run();
+        assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    };
+    // A new case: its regions as a table, the radiation picked from them.
+    h.state_mut().invoke("case.new");
+    h.run();
+    assert_eq!(form(&h).values["regions"], "air|fluid|");
+    set(&mut h, "path", dir.to_str().unwrap());
+    set(&mut h, "regions", "air|fluid|\nstreet|solid|soil Soil");
+    h.run();
+    assert_eq!(form(&h).options["radiation"], vec!["air".to_string()]);
+    set(&mut h, "radiation", "air");
+    h.run();
+    ok(&mut h);
+    assert!(h.state().session().case().unwrap().region("street").is_some());
+    // A material's coefficients: on the first solid; the material picked, its coefficients
+    // filled in; one changed, only it sent.
+    h.state_mut().invoke("material.set");
+    h.run();
+    assert_eq!(form(&h).values["region"], "street");
+    assert_eq!(form(&h).values["material"], "soil", "on its first material");
+    assert_eq!(form(&h).options["material"], vec!["soil".to_string()]);
+    h.run();
+    let rows = form(&h).values["coefficients"].clone();
+    let rho = rows.lines().find(|l| l.starts_with("rho|")).unwrap_or_else(|| panic!("{rows}")).to_string();
+    assert!(form(&h).options["coefficients"].contains(&"rho".to_string()));
+    set(&mut h, "coefficients", &rows.replace(&rho, "rho|1234"));
+    h.run();
+    let spec = crate::forms::spec("material.set").unwrap();
+    assert_eq!(
+        form(&h).params(spec).unwrap(),
+        json!({"region": "street", "material": "soil", "coefficients": {"rho": 1234}})
+    );
+    ok(&mut h);
+    let soil = h.state().session().case().unwrap().material_coefficients("street");
+    assert!(soil[0].coefficients.iter().any(|(k, v)| k == "rho" && v == "1234"), "{soil:?}");
+    // A region with its materials, models offered.
+    h.state_mut().invoke("region.add");
+    h.run();
+    assert!(form(&h).options["materials"].iter().any(|m| m == "Hamstad5Brick"));
+    set(&mut h, "region", "wall");
+    set(&mut h, "kind", "solid");
+    set(&mut h, "materials", "brick|Hamstad5Brick");
+    h.run();
+    ok(&mut h);
+    assert!(h.state().session().case().unwrap().region("wall").is_some());
+    // The settings: as the case has them; nothing changed, nothing sent; the time step changed,
+    // only it; the turbulence models offered.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    let spec = crate::forms::spec("workflow.settings").unwrap();
+    assert!(!form(&h).values["deltaT"].is_empty());
+    assert!(form(&h).options["turbulence"].iter().any(|m| m == "realizableKE"));
+    assert_eq!(form(&h).params(spec).unwrap(), json!({}));
+    set(&mut h, "deltaT", "900");
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"deltaT": 900}));
+    ok(&mut h);
+    // Shown as JSON, the settings' numerics follow a command run meanwhile in the text OK sends.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.state_mut().act("workflow.settings", json!({"numerics": {"fluid": {"SIMPLE": {"nNonOrthogonalCorrectors": 3}}}}));
+    h.run();
+    h.run();
+    let shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    assert_eq!(
+        shown.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors").and_then(|v| v.as_str()),
+        Some("3"),
+        "{shown}"
+    );
+    // OK from the JSON sends only what changed: the time step, not the library or numerics left
+    // as they are (a refused material model would fail it).
+    let mut shown = shown;
+    shown["deltaT"] = json!(600);
+    h.state_mut().dialog.as_mut().unwrap().params = shown.to_string();
+    // The text's new length moves OK: a frame to lay it out.
+    h.run();
+    h.run();
+    ok(&mut h);
+    let last = h.state().session().journal().last().cloned().unwrap();
+    assert_eq!(last["params"], json!({"deltaT": 600}), "{last}");
+    // One numerics entry edited in the JSON while a command changes another: both kept.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    shown["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("4");
+    h.state_mut().dialog.as_mut().unwrap().params = shown.to_string();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.4}}}}}));
+    h.run();
+    h.run();
+    let shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    assert_eq!(shown.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("4")), "{shown}");
+    assert_eq!(
+        shown.pointer("/numerics/fluid/relaxationFactors/equations/k").and_then(|v| v.as_str()),
+        Some("0.4"),
+        "{shown}"
+    );
+    // OK sends it: the case keeps both.
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("4")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.4")), "{case}");
+    // The JSON unreadable while a command changes an entry, mended after with another edit:
+    // OK keeps the command's change (the baseline didn't move while it couldn't be read).
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut text: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    h.state_mut().dialog.as_mut().unwrap().params = "{ not yet".into();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.35}}}}}));
+    h.run();
+    h.run();
+    text["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("5");
+    h.state_mut().dialog.as_mut().unwrap().params = text.to_string();
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("5")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.35")), "{case}");
+    // The same through *Back to the form* and OK there: the command's change kept too.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut text: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    h.state_mut().dialog.as_mut().unwrap().params = "{ not yet".into();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.3}}}}}));
+    h.run();
+    h.run();
+    text["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("6");
+    h.state_mut().dialog.as_mut().unwrap().params = text.to_string();
+    h.run();
+    h.run();
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    ok(&mut h);
+    let case: serde_json::Value = serde_json::from_str(&h.state().settings_params()).unwrap();
+    assert_eq!(case.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("6")), "{case}");
+    assert_eq!(case.pointer("/numerics/fluid/relaxationFactors/equations/k"), Some(&json!("0.3")), "{case}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A command's card sits still once open: its *OK* row doesn't move frame after frame (a
 /// right-to-left layout straight in the card took last frame's height, and the card went up and
 /// down without end), for every card with a form and one that takes JSON.
