@@ -3904,6 +3904,11 @@ fn a_box_around_the_surfaces_makes_a_regions_blocks() {
         assert!(e.contains("give margin"), "{e}");
         let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10})).unwrap_err().to_string();
         assert!(e.contains("give cellSize or cells"), "{e}");
+        let e = s
+            .execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2, "types": {"ground": "cyclic"}}))
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("mesh.box: ") && !e.contains("mesh.block:"), "{e}");
         let e = s.execute("mesh.box", &json!({"region": "air", "margin": -1, "cellSize": 2})).unwrap_err().to_string();
         assert!(e.contains("isn't a distance of 0 or more"), "{e}");
         let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 1e-6})).unwrap_err();
@@ -4016,6 +4021,9 @@ fn a_box_around_the_surfaces_makes_a_regions_blocks() {
         assert!(region(&s).mesh_box.is_none() && region(&s).blocks.is_some());
         let e = s.execute("mesh.box", &json!({"region": "air", "remove": true})).unwrap_err();
         assert!(e.to_string().contains("has no box"), "{e}");
+        // Its blocks aren't the box's once it is out: added again only with reshape, said why.
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": 5, "cellSize": 1})).unwrap_err();
+        assert!(e.to_string().starts_with("mesh.box: ") && e.to_string().contains("taken out with remove"), "{e}");
         let out =
             s.execute("mesh.box", &json!({"region": "air", "margin": 5, "cellSize": 1, "reshape": true})).unwrap();
         assert!(out.message.contains("in the undo history"), "{}", out.message);

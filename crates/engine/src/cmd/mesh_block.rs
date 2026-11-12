@@ -23,15 +23,18 @@ pub(super) const BLOCK: CommandSpec = CommandSpec {
 
 const KEYS: [&str; 8] = ["x", "y", "z", "missing", "patches", "faces", "noFaces", "types"];
 
-fn bad(m: impl std::fmt::Display) -> Error {
-    Error::Params(format!("{}: {m}", BLOCK.id))
+/// A refusal of the parameters, said as command `id`'s (`mesh.block`, or `mesh.box` calling it).
+fn bad(id: &str, m: impl std::fmt::Display) -> Error {
+    Error::Params(format!("{id}: {m}"))
 }
 
-fn grading_of(v: &Value, at: &str) -> Result<Grading, Error> {
+fn grading_of(id: &str, v: &Value, at: &str) -> Result<Grading, Error> {
     match v {
-        Value::Number(n) => n.as_f64().map(Grading::Ratio).ok_or_else(|| bad(format!("{at}: the grading is a number"))),
+        Value::Number(n) => {
+            n.as_f64().map(Grading::Ratio).ok_or_else(|| bad(id, format!("{at}: the grading is a number")))
+        }
         Value::Array(sections) if sections.len() > blocks::MAX_SECTIONS => {
-            Err(bad(format!("{at}: a grading has {} sections at most", blocks::MAX_SECTIONS)))
+            Err(bad(id, format!("{at}: a grading has {} sections at most", blocks::MAX_SECTIONS)))
         }
         Value::Array(sections) => {
             let mut out = Vec::with_capacity(sections.len());
@@ -40,20 +43,23 @@ fn grading_of(v: &Value, at: &str) -> Result<Grading, Error> {
                     s.as_array().filter(|a| a.len() == 3).map(|a| a.iter().filter_map(Value::as_f64).collect());
                 match three.as_deref() {
                     Some([a, b, c]) => out.push([*a, *b, *c]),
-                    _ => return Err(bad(format!("{at}: a section is [fraction, cells-fraction, expansion]"))),
+                    _ => return Err(bad(id, format!("{at}: a section is [fraction, cells-fraction, expansion]"))),
                 }
             }
             Ok(Grading::Sections(out))
         }
-        _ => Err(bad(format!("{at}: the grading is a number or sections [[fraction, cells-fraction, expansion], …]"))),
+        _ => Err(bad(
+            id,
+            format!("{at}: the grading is a number or sections [[fraction, cells-fraction, expansion], …]"),
+        )),
     }
 }
 
-fn axis_of(v: &Value, at: &str) -> Result<Axis, Error> {
-    let shape = || bad(format!("{at} is [station, [cells, grading], station, …]"));
+fn axis_of(id: &str, v: &Value, at: &str) -> Result<Axis, Error> {
+    let shape = || bad(id, format!("{at} is [station, [cells, grading], station, …]"));
     let items = v.as_array().ok_or_else(shape)?;
     if items.len() > 2 * blocks::MAX_STATIONS - 1 {
-        return Err(bad(format!("{at} has {} stations at most", blocks::MAX_STATIONS)));
+        return Err(bad(id, format!("{at} has {} stations at most", blocks::MAX_STATIONS)));
     }
     let mut a = Axis::default();
     for (i, item) in items.iter().enumerate() {
@@ -65,8 +71,8 @@ fn axis_of(v: &Value, at: &str) -> Result<Axis, Error> {
             let cells = c
                 .as_u64()
                 .and_then(|c| u32::try_from(c).ok())
-                .ok_or_else(|| bad(format!("{at}: the cells are a whole number")))?;
-            a.spans.push(Span { cells, grading: grading_of(g, at)? });
+                .ok_or_else(|| bad(id, format!("{at}: the cells are a whole number")))?;
+            a.spans.push(Span { cells, grading: grading_of(id, g, at)? });
         }
     }
     if items.len() % 2 == 0 {
@@ -79,26 +85,28 @@ fn index_of(v: Option<&Value>) -> Option<usize> {
     v?.as_u64().and_then(|x| usize::try_from(x).ok())
 }
 
-fn names_of(v: &Value, at: &str) -> Result<Vec<String>, Error> {
-    let a = v.as_array().ok_or_else(|| bad(format!("{at} is a list of names")))?;
+fn names_of(id: &str, v: &Value, at: &str) -> Result<Vec<String>, Error> {
+    let a = v.as_array().ok_or_else(|| bad(id, format!("{at} is a list of names")))?;
     // Counted before anything is copied.
     if a.len() > blocks::MAX_NAMES {
-        return Err(bad(format!("{at} has {} names, {} at most", a.len(), blocks::MAX_NAMES)));
+        return Err(bad(id, format!("{at} has {} names, {} at most", a.len(), blocks::MAX_NAMES)));
     }
-    a.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| bad(format!("{at} is a list of names")))).collect()
+    a.iter()
+        .map(|x| x.as_str().map(str::to_string).ok_or_else(|| bad(id, format!("{at} is a list of names"))))
+        .collect()
 }
 
 /// `grid` with the parts `p` gives put over it.
-fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
+fn apply(id: &str, grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
     for (i, k) in ["x", "y", "z"].into_iter().enumerate() {
         if let (Some(v), Some(slot)) = (p.value(k), grid.axes.get_mut(i)) {
-            *slot = axis_of(v, k)?;
+            *slot = axis_of(id, v, k)?;
         }
     }
     if let Some(v) = p.value("missing") {
-        let a = v.as_array().ok_or_else(|| bad("missing is a list of blocks [[i, j, k], …]"))?;
+        let a = v.as_array().ok_or_else(|| bad(id, "missing is a list of blocks [[i, j, k], …]"))?;
         if a.len() > 2 * blocks::MAX_BLOCKS {
-            return Err(bad(format!("missing lists {} blocks, {} at most", a.len(), 2 * blocks::MAX_BLOCKS)));
+            return Err(bad(id, format!("missing lists {} blocks, {} at most", a.len(), 2 * blocks::MAX_BLOCKS)));
         }
         grid.missing = a
             .iter()
@@ -106,7 +114,7 @@ fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
                 let b = b.as_array().filter(|b| b.len() == 3);
                 match b.map(|b| [index_of(b.first()), index_of(b.get(1)), index_of(b.get(2))]) {
                     Some([Some(i), Some(j), Some(k)]) => Ok([i, j, k]),
-                    _ => Err(bad("missing is a list of blocks [[i, j, k], …], whole numbers from 0")),
+                    _ => Err(bad(id, "missing is a list of blocks [[i, j, k], …], whole numbers from 0")),
                 }
             })
             .collect::<Result<_, _>>()?;
@@ -149,24 +157,25 @@ fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
         match p.value(key) {
             None => Ok(None),
             Some(v) => {
-                let m = v.as_object().ok_or_else(|| bad(shape))?;
+                let m = v.as_object().ok_or_else(|| bad(id, shape))?;
                 if m.len() > blocks::MAX_NAMES {
-                    return Err(bad(format!("{key} has {} entries, {} at most", m.len(), blocks::MAX_NAMES)));
+                    return Err(bad(id, format!("{key} has {} entries, {} at most", m.len(), blocks::MAX_NAMES)));
                 }
                 Ok(Some(m))
             }
         }
     };
     if let Some(v) = p.value("patches") {
-        let m = v.as_object().ok_or_else(|| bad("patches is {\"west\": \"inlet\", …} (null takes a side's away)"))?;
+        let m =
+            v.as_object().ok_or_else(|| bad(id, "patches is {\"west\": \"inlet\", …} (null takes a side's away)"))?;
         for (k, n) in m {
             let side = Side::parse(k).ok_or_else(|| {
-                bad(format!("patches/{k} is not a side: west, east, south, north, ground, top or missing"))
+                bad(id, format!("patches/{k} is not a side: west, east, south, north, ground, top or missing"))
             })?;
             let n = match n {
                 Value::Null => None,
                 Value::String(n) => Some(n.clone()),
-                _ => return Err(bad(format!("patches/{k}: the patch's name, or null"))),
+                _ => return Err(bad(id, format!("patches/{k}: the patch's name, or null"))),
             };
             let at = grid.sides.iter().position(|(s, _)| *s == side);
             match (at, n) {
@@ -194,11 +203,11 @@ fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
                 changes.push((name.clone(), None));
                 continue;
             }
-            let shape = || bad(format!("faces/{name} is a list of faces [[i, j, k, \"west\"], …], or null"));
+            let shape = || bad(id, format!("faces/{name} is a list of faces [[i, j, k, \"west\"], …], or null"));
             let list = list.as_array().ok_or_else(shape)?;
             single = single.saturating_add(list.len());
             if single > 6 * blocks::MAX_BLOCKS {
-                return Err(bad(format!("faces lists more than {} faces", 6 * blocks::MAX_BLOCKS)));
+                return Err(bad(id, format!("faces lists more than {} faces", 6 * blocks::MAX_BLOCKS)));
             }
             let mut faces = Vec::with_capacity(list.len());
             for f in list {
@@ -214,9 +223,12 @@ fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
         merge(&mut grid.faces, changes);
     }
     if let Some(v) = p.value("noFaces") {
-        grid.no_faces = names_of(v, "noFaces")?;
+        grid.no_faces = names_of(id, v, "noFaces")?;
         if grid.no_faces.len() > blocks::MAX_NAMES {
-            return Err(bad(format!("noFaces names {} patches, {} at most", grid.no_faces.len(), blocks::MAX_NAMES)));
+            return Err(bad(
+                id,
+                format!("noFaces names {} patches, {} at most", grid.no_faces.len(), blocks::MAX_NAMES),
+            ));
         }
     }
     if let Some(m) = map("types", "types is {\"patch\": \"type\", …} (null takes a type away)")? {
@@ -225,7 +237,7 @@ fn apply(grid: &mut BlockGrid, p: &Params<'_>) -> Result<(), Error> {
             match t {
                 Value::Null => changes.push((n.clone(), None)),
                 Value::String(t) => changes.push((n.clone(), Some(t.clone()))),
-                _ => return Err(bad(format!("types/{n}: the patch's blockMesh type, or null"))),
+                _ => return Err(bad(id, format!("types/{n}: the patch's blockMesh type, or null"))),
             }
         }
         merge(&mut grid.types, changes);
@@ -287,18 +299,19 @@ pub(crate) fn grid_json(g: &BlockGrid) -> Value {
 
 /// `mesh.block`: a region's blocks, and its `blockMeshDict` written from them.
 fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    set(s, p, false)
+    set(s, p, BLOCK.id)
 }
 
 /// The blocks `p` gives, and the `blockMeshDict` written from them; `from_box`: made by
 /// `mesh.box` from the region's box, which a change of the grid otherwise takes out.
-pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome, Error> {
+pub(super) fn set(s: &mut Session, p: &Value, id: &'static str) -> Result<Outcome, Error> {
+    let from_box = id != BLOCK.id;
     let allowed: Vec<&str> =
         ["region", "remove", "replace", "dropPatches", "dropEntries", "unreadPatches", "dropSettings"]
             .into_iter()
             .chain(KEYS)
             .collect();
-    let p = Params::new(BLOCK.id, p, &allowed)?;
+    let p = Params::new(id, p, &allowed)?;
     let region = p.required_str("region")?;
     let remove = p.bool("remove")?.unwrap_or(false);
     let replace = p.bool("replace")?.unwrap_or(false);
@@ -317,12 +330,12 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     if !remove && let Some(pr) = read_problems.iter().find(|x| x.at == here || x.at.starts_with(&format!("{here}/"))) {
         return Err(Error::Failed(format!(
             "{}: the blocks of region {region} in {PATH} don't read ({}: {}): mend them by hand first (remove: true takes them out)",
-            BLOCK.id, pr.at, pr.message
+            id, pr.at, pr.message
         )));
     }
     if remove {
         if !given.is_empty() || replace {
-            return Err(bad("remove: true takes the blocks out: give nothing else but the region"));
+            return Err(bad(id, "remove: true takes the blocks out: give nothing else but the region"));
         }
         o.case.undescribe_blocks(region)?;
         let boxed = o.case.undescribe_box(region)?;
@@ -334,14 +347,14 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     }
     let had = r.blocks.clone();
     let mut grid = had.clone().unwrap_or_default();
-    apply(&mut grid, &p)?;
+    apply(id, &mut grid, &p)?;
     if had.is_none() {
         let lacking: Vec<&str> = ["x", "y", "z"].into_iter().filter(|k| !given.contains(k)).collect();
         if !lacking.is_empty() {
-            return Err(bad(format!(
-                "region {region} has no blocks yet: give x, y and z ({} missing)",
-                lacking.join(", ")
-            )));
+            return Err(bad(
+                id,
+                format!("region {region} has no blocks yet: give x, y and z ({} missing)", lacking.join(", ")),
+            ));
         }
     }
     let problems = grid.problems();
@@ -350,7 +363,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
             problems.iter().map(|(at, m)| if at.is_empty() { m.clone() } else { format!("{at}: {m}") }).collect();
         return Err(Error::Failed(format!(
             "{}: the blocks of region {region} have problems, nothing is changed: {}",
-            BLOCK.id,
+            id,
             list.join("; ")
         )));
     }
@@ -364,13 +377,13 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
         if let Some(pr) = read_problems.iter().find(|x| x.at == at) {
             return Err(Error::Failed(format!(
                 "{}: the mesh of region {region} in {PATH} doesn't read ({}): mend it by hand first",
-                BLOCK.id, pr.message
+                id, pr.message
             )));
         }
         with.mesh = Some(umcf_model::workflow::MeshBuild::Block);
     }
     let (path, text) = blocks::generate(&with).map_err(|why| {
-        Error::Failed(format!("{}: {why}: give the region mesh blocks; or ( blockMesh … ) in {PATH} first", BLOCK.id))
+        Error::Failed(format!("{}: {why}: give the region mesh blocks; or ( blockMesh … ) in {PATH} first", id))
     })?;
     // A dictionary another region's mesh reads too: written from one region's blocks, it would
     // change the other's mesh unsaid.
@@ -384,7 +397,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     if !sharing.is_empty() {
         return Err(Error::Failed(format!(
             "{}: {path} is read by the mesh of region {} too: give region {region} a dictionary of its own (its blockMesh step in {PATH}) first",
-            BLOCK.id,
+            id,
             sharing.join(", ")
         )));
     }
@@ -393,7 +406,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     if text.len() as u64 > limit {
         return Err(Error::Failed(format!(
             "{}: {path} would be {} bytes, more than the case reads as a dictionary ({limit}): fewer blocks or simpler gradings",
-            BLOCK.id,
+            id,
             text.len()
         )));
     }
@@ -406,8 +419,14 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
             if old == text {
                 (false, false)
             } else if hand && !replace {
+                // workflow.import would read its blocks over the box's: not offered for mesh.box.
+                let import = if from_box {
+                    String::new()
+                } else {
+                    format!(", or workflow.import to read its blocks into {PATH}")
+                };
                 return Err(Error::Failed(format!(
-                    "{path} was edited by hand or not written by umcfGui: pass \"replace\": true to write it from the blocks (case.save keeps the one there in the backup), or workflow.import to read its blocks into {PATH}"
+                    "{id}: {path} was edited by hand or not written by umcfGui: pass \"replace\": true to write it from the blocks (case.save keeps the one there in the backup){import}"
                 )));
             } else {
                 (true, hand)
@@ -428,7 +447,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     let list = |key: &str| -> Result<Vec<String>, Error> {
         match p.value(key) {
             None => Ok(Vec::new()),
-            Some(v) => names_of(v, key),
+            Some(v) => names_of(id, v, key),
         }
     };
     let drop: std::collections::HashSet<String> = list("dropPatches")?.into_iter().collect();
@@ -450,24 +469,24 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
             Err(why) => {
                 return Err(Error::Failed(format!(
                     "{}: the patches of {path} can't all be read ({why}), so what writing over it loses can't be said: pass \"unreadPatches\": true to write over it all the same (case.save keeps it in the backup)",
-                    BLOCK.id
+                    id
                 )));
             }
         },
     };
     let new_patches = umcf_foam_dict::Document::parse(&text)
-        .map_err(|e| Error::Failed(format!("{}: the dictionary written doesn't read back: {e}", BLOCK.id)))
+        .map_err(|e| Error::Failed(format!("{}: the dictionary written doesn't read back: {e}", id)))
         .and_then(|d| {
             blocks::dict_patches(&d)
                 .map(|v| v.patches)
-                .map_err(|e| Error::Failed(format!("{}: the dictionary written: {e}", BLOCK.id)))
+                .map_err(|e| Error::Failed(format!("{}: the dictionary written: {e}", id)))
         })?;
     // What else the dictionary there holds that the blocks don't: lost only when said.
     let settings: Vec<String> = old.filter(|_| write).map(blocks::dict_settings).unwrap_or_default();
     if !settings.is_empty() && !p.bool("dropSettings")?.unwrap_or(false) {
         return Err(Error::Failed(format!(
             "{}: {path} holds what the blocks don't, which writing over it would lose: {}. Pass \"dropSettings\": true to lose them (case.save keeps the dictionary in the backup)",
-            BLOCK.id,
+            id,
             settings.join("; ")
         )));
     }
@@ -495,7 +514,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
         let list: Vec<String> = forced.iter().map(|(n, was, now)| format!("{n} ({was} → {now})")).collect();
         return Err(Error::Failed(format!(
             "{}: the blocks would change wall or constraint types of {path}, which the fields' conditions need: {}. Name the patch in types to keep or change its type: {{\"types\": {{\"{n}\": \"{was}\"}}}}",
-            BLOCK.id,
+            id,
             some(&list)
         )));
     }
@@ -507,7 +526,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     if !kept.is_empty() {
         return Err(Error::Failed(format!(
             "{}: {path} has wall or constraint patches the blocks don't have: {}. Give them to the blocks (patches, faces or noFaces), or name them in dropPatches to drop them{renamed}",
-            BLOCK.id,
+            id,
             some(&kept)
         )));
     }
@@ -520,7 +539,7 @@ pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome,
     if !unasked.is_empty() {
         return Err(Error::Failed(format!(
             "{}: patches of {path} have entries the blocks don't hold, which writing over it would lose: {}. Name the patches in dropEntries to lose them (and give the entries again in a step after blockMesh: changeDictionary, createPatch)",
-            BLOCK.id,
+            id,
             some(&unasked)
         )));
     }

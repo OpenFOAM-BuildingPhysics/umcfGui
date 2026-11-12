@@ -488,7 +488,7 @@ and north; with y up: `inlet` west, `outlet` east, `ground` south, `top` north, 
 region, those of them the description doesn't list yet are added with their roles of the same
 names, on whichever side `patches` puts them, so the ground is a `wall` and the others `patch`. A region without a `mesh` gets
 `mesh blocks;`. Blocks that weren't made from the region's box (given by `mesh.block`, read by
-`workflow.import`), or edited since the box made them (their checksum isn't its `made`: other
+`workflow.import`, or kept when `remove` took the box out: its checksum went with it), or edited since the box made them (their checksum isn't its `made`: other
 stations, cells or gradings, even of one span; an edit of the box entry or of the surfaces
 isn't one of the blocks) are replaced only with `reshape`:
 their stations, missing blocks and single faces give way to the box's, and the patch around
