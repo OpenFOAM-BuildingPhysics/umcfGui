@@ -701,3 +701,77 @@ fn a_profile_written_before_there_was_one_configuration_is_read_and_left_out() {
         assert!(!d.write().contains("profile"), "{p}");
     }
 }
+
+#[test]
+fn a_split_mesh_is_written_and_read_back() {
+    use crate::workflow::Split;
+    let split =
+        |dict: &str| MeshBuild::Split(Split { of: "air".into(), zone: Some("trees".into()), dict: dict.into() });
+    for (dict, line) in [
+        ("system/air/topoSetDict", "mesh        { from split; of air; zone trees; }"),
+        (
+            "system/vegetation/treesDict",
+            "mesh        { from split; of air; zone trees; dict \"system/vegetation/treesDict\"; }",
+        ),
+    ] {
+        let d = Description {
+            regions: vec![
+                RegionDesc {
+                    name: "air".into(),
+                    kind: RegionKind::Fluid,
+                    mesh: Some(MeshBuild::Block),
+                    steps: Vec::new(),
+                    patches: Vec::new(),
+                    materials: Vec::new(),
+                    blocks: None,
+                    mesh_box: None,
+                },
+                RegionDesc {
+                    name: "vegetation".into(),
+                    kind: RegionKind::Vegetation,
+                    mesh: Some(split(dict)),
+                    steps: vec![RegionStep::CreatePatch],
+                    patches: Vec::new(),
+                    materials: Vec::new(),
+                    blocks: None,
+                    mesh_box: None,
+                },
+            ],
+            ..Description::default()
+        };
+        let text = d.write();
+        assert!(text.contains(line), "{text}");
+        let (back, problems) = Description::read(&Document::parse(&text).unwrap());
+        assert_eq!(problems, []);
+        assert_eq!(back, d);
+    }
+}
+
+#[test]
+fn a_split_mesh_that_doesnt_read_is_named() {
+    let read = |mesh: &str| {
+        let text = format!(
+            "{}regions\n{{\n    air {{ kind fluid; mesh blocks; }}\n    vegetation {{ kind vegetation; mesh {mesh}; }}\n}}\n",
+            header("dictionary", "umcfWorkflow")
+        );
+        let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+        let said: Vec<String> = problems.iter().map(|p| format!("{}: {}", p.at, p.message)).collect();
+        (d.region("vegetation").and_then(|r| r.mesh.clone()), said)
+    };
+    let cases = [
+        ("{ of air; zone trees; }", "regions/vegetation/mesh/from: is missing", false),
+        ("{ from box; of air; zone trees; }", "regions/vegetation/mesh/from: is split, not box", false),
+        ("{ from split; zone trees; }", "regions/vegetation/mesh/of: is missing", false),
+        ("{ from split; of vegetation; zone trees; }", "regions/vegetation/mesh/of: is another region", false),
+        ("{ from split; of air; zone region1; }", "regions/vegetation/mesh/zone: is not region1", true),
+        ("{ from split; of air; }", "regions/vegetation/mesh/zone: is missing", true),
+        ("{ from split; of air; zone trees; dict \"../x\"; }", "regions/vegetation/mesh/dict: is a path", true),
+        ("{ from split; of air; zone trees; dict \"/etc/x\"; }", "regions/vegetation/mesh/dict: is a path", true),
+        ("{ from split; of air; zone trees; size 3; }", "regions/vegetation/mesh/size: is not a key of a split", true),
+    ];
+    for (mesh, says, read_still) in cases {
+        let (m, said) = read(mesh);
+        assert!(said.iter().any(|s| s.starts_with(says)), "{mesh}: {said:?}");
+        assert_eq!(m.is_some(), read_still, "{mesh}: {m:?}");
+    }
+}

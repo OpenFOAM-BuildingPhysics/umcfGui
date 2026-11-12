@@ -598,13 +598,20 @@ impl App {
                 f.values.insert("region", self.box_region());
             }
             // The patch card on the first region of the description, the material card on its
-            // first solid.
+            // first solid, the split card on its first split region.
             if f.values.get("region").is_none_or(String::is_empty) {
                 let first = self.session.case().and_then(|c| c.description()).and_then(|(d, _)| {
                     let solid = |r: &&umcf_model::description::RegionDesc| r.kind == umcf_model::RegionKind::Solid;
                     match id {
                         "workflow.patch" => d.regions.first().map(|r| r.name.clone()),
                         "workflow.material" => d.regions.iter().find(solid).map(|r| r.name.clone()),
+                        // The split card on the first split region, else the first vegetation.
+                        "mesh.split" => d
+                            .regions
+                            .iter()
+                            .find(|r| matches!(r.mesh, Some(umcf_model::workflow::MeshBuild::Split(_))))
+                            .or_else(|| d.regions.iter().find(|r| r.kind == umcf_model::RegionKind::Vegetation))
+                            .map(|r| r.name.clone()),
                         _ => None,
                     }
                 });

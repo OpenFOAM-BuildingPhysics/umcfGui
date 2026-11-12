@@ -3476,6 +3476,7 @@ fn a_command_card_stays_put_once_open() {
         "mesh.block",
         "scene.snapshot",
         "workflow.region",
+        "mesh.split",
     ];
     for id in ids {
         h.state_mut().dialog = None;
@@ -3492,4 +3493,96 @@ fn a_command_card_stays_put_once_open() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An example case, read into memory (the files under `examples/`).
+fn example(rel: &str) -> MemFs {
+    fn walk(fs: &mut MemFs, root: &std::path::Path, dir: &std::path::Path) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(fs, root, &p);
+            } else {
+                let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                fs.insert(&rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples").join(rel);
+    let mut fs = MemFs::new();
+    walk(&mut fs, &root, &root);
+    fs
+}
+
+/// The split card: filled from the region's split in the description, the regions before it
+/// and the zones its dictionary makes offered, and sent as the form has it.
+#[test]
+fn a_regions_split_is_filled_offered_and_sent_from_its_card() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM_veg")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &json!({})).unwrap();
+    let mut h = harness(App::new(s));
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    let set = |h: &mut Harness<'_, App>, k: &'static str, v: &str| {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert(k, v.to_string());
+    };
+    let spec = crate::forms::spec("mesh.split").unwrap();
+    h.state_mut().invoke("mesh.split");
+    h.run();
+    h.run();
+    // It starts on the split region.
+    let f = form(&h);
+    assert_eq!((f.values["of"].as_str(), f.values["zone"].as_str()), ("air", "trees"));
+    // The copied region's own dictionary is left empty: it follows *Split from*.
+    assert_eq!(f.values["dict"], "");
+    assert_eq!(f.options["of"], ["air", "leeward", "street", "windward"].map(String::from).to_vec());
+    assert_eq!(f.options["zone"], vec!["trees".to_string()]);
+    // The first region has none listed before it to be split from.
+    set(&mut h, "region", "air");
+    h.run();
+    assert_eq!(form(&h).options["of"], Vec::<String>::new());
+    set(&mut h, "region", "vegetation");
+    h.run();
+    // Another region to split from: the zones its own dictionary makes.
+    set(&mut h, "of", "street");
+    h.run();
+    assert_eq!(form(&h).options["zone"], vec!["soil".to_string(), "brick".to_string()]);
+    set(&mut h, "of", "air");
+    // Another dictionary: the zones it makes (none, the case hasn't it).
+    set(&mut h, "dict", "system/vegetation/topoSetDict");
+    h.run();
+    assert_eq!(form(&h).options["zone"], Vec::<String>::new());
+    set(&mut h, "dict", "");
+    set(&mut h, "zone", "bushes");
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "vegetation", "of": "air", "zone": "bushes"}));
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    let d = h.state().session.case().unwrap().description().unwrap().0;
+    let Some(umcf_model::workflow::MeshBuild::Split(sp)) = &d.region("vegetation").unwrap().mesh else {
+        panic!("{:?}", d.region("vegetation"))
+    };
+    assert_eq!(sp.zone.as_deref(), Some("bushes"));
+    // Open on it, the card follows an undo for what wasn't typed.
+    h.state_mut().invoke("mesh.split");
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["zone"], "bushes");
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["zone"], "trees");
+    h.state_mut().dialog = None;
+    // Taken out: only the region goes with it.
+    h.state_mut().invoke("mesh.split");
+    h.run();
+    set(&mut h, "region", "vegetation");
+    set(&mut h, "remove", "true");
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "vegetation", "remove": true}));
 }

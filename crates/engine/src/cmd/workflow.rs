@@ -15,7 +15,7 @@ pub(super) const SHOW: CommandSpec = CommandSpec {
     label: "Workflow description",
     menu: "Case/Workflow description",
     shortcut: None,
-    params: "scripts: true to also return the scripts workflow.scripts would write from it (scripts, version; scriptsError when none can be: no system/umcfWorkflow of the case's own, a description with problems, no version, a name unsafe in a script), without writing them. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", or the steps that build it in constant/polyMesh), blocks (its grid of blocks as mesh.block takes it, null when the description has none), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
+    params: "scripts: true to also return the scripts workflow.scripts would write from it (scripts, version; scriptsError when none can be: no system/umcfWorkflow of the case's own, a description with problems, no version, a name unsafe in a script, a region split by a cell zone that no script can split: its zone not known, a region named as the zone or the parts, its topoSetDict missing, making no such zone or others too, or whose zones can't be told, the region copied not built before it), without writing them. Returns the case's workflow description: system/umcfWorkflow as read (source \"file\", with the problems in it), or, when the case has none, as workflow.import would write it from the scripts and meshes (source \"scripts\", with what the import couldn't tell; \"unreadable\" when the file is there but isn't a dictionary, \"disk\" when it is on disk but not in the open case: written or undone since it was opened). Each region: kind (fluid, solid, vegetation), mesh (\"blocks\", the steps that build it in constant/polyMesh, or for a region split from another region's mesh by a cell zone {\"from\": \"split\", \"of\": the region copied, \"zone\": the cell zone taken out or null, \"dict\": the topoSetDict that makes it}), blocks (its grid of blocks as mesh.block takes it, null when the description has none), steps, patches with their role (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky) and partner, and a solid's materials (name: its cell zone; model: its buildingMaterialModel).",
     enabled: needs_case,
     run: show,
     journal: false,
@@ -89,15 +89,21 @@ fn show(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                     json!("no OpenFOAM version: the description names none, and the case's can't be told"),
                 );
             }
-            Some(v) => match d.scripts(case, v) {
-                Ok(written) => {
-                    o.insert("version".into(), json!(v.to_string()));
-                    let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
-                    o.insert("scripts".into(), Value::Array(texts));
+            // What on disk keeps a split from being written, then the scripts.
+            Some(v) => match super::mesh_split::conflicts(&d, fs) {
+                Some(why) => {
+                    o.insert("scriptsError".into(), json!(why));
                 }
-                Err(e) => {
-                    o.insert("scriptsError".into(), json!(format!("`{}` isn't safe in a script", e.0)));
-                }
+                None => match d.scripts(case, v) {
+                    Ok(written) => {
+                        o.insert("version".into(), json!(v.to_string()));
+                        let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
+                        o.insert("scripts".into(), Value::Array(texts));
+                    }
+                    Err(e) => {
+                        o.insert("scriptsError".into(), json!(e.to_string()));
+                    }
+                },
             },
         }
     }
@@ -703,9 +709,11 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "{PATH} names no OpenFOAM version, and the case's can't be told: set version 8 or 12"
         )));
     };
-    let written = d.scripts(&o.case, version).map_err(|e| {
-        Error::Failed(format!("{}: `{}` isn't safe in a script: no script is written", SCRIPTS.id, e.0))
-    })?;
+    if let Some(why) = super::mesh_split::conflicts(&d, o.fs.as_ref()) {
+        return Err(Error::Failed(format!("{}: {why}: no script is written", SCRIPTS.id)));
+    }
+    let written =
+        d.scripts(&o.case, version).map_err(|e| Error::Failed(format!("{}: {e}: no script is written", SCRIPTS.id)))?;
     let texts: Vec<Value> = written.iter().map(|(n, t)| json!({ "file": n, "text": t })).collect();
     // What is there now, put by a command or on disk.
     let mut changed = Vec::new();
@@ -748,7 +756,7 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
 }
 
 /// The outcome of an edit: the message, and the description as it is now.
-fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
+pub(crate) fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
     let (d, problems) = s.case().and_then(umcf_model::Case::description).unwrap_or_default();
     // What the file has the reader can't read, the edit's or not: shown with it.
     let problems: Vec<Value> = problems.iter().map(|p| json!({ "at": p.at, "message": p.message })).collect();
@@ -814,6 +822,7 @@ pub(crate) fn to_json(d: &Description) -> Value {
                         RootStep::SnappyHexMesh(d) => json!({ "step": "snappyHexMesh", "dict": d }),
                     })
                     .collect(),
+                Some(MeshBuild::Split(sp)) => json!({ "from": "split", "of": sp.of, "zone": sp.zone, "dict": sp.dict }),
             };
             let steps: Vec<Value> = r
                 .steps

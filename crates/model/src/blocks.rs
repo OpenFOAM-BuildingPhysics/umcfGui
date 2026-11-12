@@ -1868,6 +1868,7 @@ pub fn dict_path(region: &str, build: &MeshBuild) -> Option<String> {
             RootStep::BlockMesh(d) => Some(d.clone()),
             _ => None,
         }),
+        MeshBuild::Split(_) => None,
     }
 }
 

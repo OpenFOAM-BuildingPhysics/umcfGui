@@ -5,13 +5,15 @@
 use std::collections::{HashMap, HashSet};
 
 use umcf_model::blocks::{self, DEFAULT_FACES, DictState, Side};
-use umcf_model::description::{CaseMaterial, PATH, RegionDesc, Role, case_materials, materials_file};
+use umcf_model::description::{CaseMaterial, Description, PATH, RegionDesc, Role, case_materials, materials_file};
+use umcf_model::workflow::{MeshBuild, SPLIT_REST, part_name, zones_made, zones_told};
 use umcf_model::{Case, RegionKind};
 
 use crate::{Diagnostic, Level};
 
 const CODE: &str = "workflow.description";
 const BLOCKS: &str = "workflow.blocks";
+const SPLIT: &str = "workflow.split";
 
 pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     let Some((d, problems)) = case.description() else { return };
@@ -93,6 +95,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
         materials(case, r, out);
         blocks(case, r, out);
         mesh_box(case, r, out);
+        split(case, &d, r, out);
         // The patches against the mesh, where the region has one.
         let Some(mesh) = cr.patches.as_ref() else { continue };
         for p in &r.patches {
@@ -286,6 +289,94 @@ fn mesh_box(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
             "region {name}: the box is around surfaces the case doesn't have in constant/triSurface: {}",
             umcf_model::blocks::list_some(&gone)
         )));
+    }
+}
+
+/// A region split from another by a cell zone: the other built before it, the zone named and
+/// made by the dictionary, neither the zone nor the part outside it a region's name (the
+/// scripts' clean-up removes their directories).
+fn split(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
+    let Some(MeshBuild::Split(sp)) = &r.mesh else { return };
+    let name = &r.name;
+    let warn = |path: &str, m: String| Diagnostic::new(Level::Warning, SPLIT, path, m).region(name);
+    let before = d.regions.iter().take_while(|x| x.name != *name).find(|x| x.name == sp.of);
+    match before {
+        Some(o) if o.mesh.is_some() => {}
+        Some(_) => out.push(warn(
+            PATH,
+            format!("region {name} is split from {}, whose mesh the description doesn't build", sp.of),
+        )),
+        None if d.region(&sp.of).is_some() => out.push(warn(
+            PATH,
+            format!(
+                "region {name} is split from {}, which comes after it: list {} first, its mesh is copied",
+                sp.of, sp.of
+            ),
+        )),
+        None => out.push(warn(
+            PATH,
+            format!("region {name} is split from {}, which is not a region of the description", sp.of),
+        )),
+    }
+    let Some(zone) = sp.zone.as_deref() else {
+        out.push(warn(
+            PATH,
+            format!("region {name}: the cell zone it is split by isn't named (mesh.split): no script splits it"),
+        ));
+        return;
+    };
+    for (n, what) in [(zone, "the zone"), (SPLIT_REST, "the part outside the zone")] {
+        if d.region(n).is_some() || case.region(n).is_some() {
+            out.push(warn(
+                PATH,
+                format!("region {name}: {what} is named {n}, as a region: the split's clean-up would remove that region's directories, so no script is written"),
+            ));
+        }
+    }
+    if let Some(n) = d
+        .regions
+        .iter()
+        .map(|x| x.name.as_str())
+        .chain(case.regions.iter().map(|x| x.name.as_str()))
+        .find(|n| part_name(n))
+    {
+        out.push(warn(
+            PATH,
+            format!("region {name}: a region is named {n}, as splitMeshRegions names the parts outside the zone: no script splits it"),
+        ));
+    }
+    match case.dict(&sp.dict) {
+        Some(doc) => {
+            if zones_told(doc).is_none() {
+                out.push(warn(
+                    &sp.dict,
+                    format!("region {name}: which cell zones this topoSetDict makes can't be told (#include or a macro): no script splits it; write its actions out"),
+                ));
+            }
+            let made = zones_made(doc);
+            let others: Vec<&str> = made.iter().map(String::as_str).filter(|z| *z != zone).collect();
+            if !others.is_empty() {
+                out.push(warn(
+                    &sp.dict,
+                    format!("region {name} is split by the cell zone {zone}, but this topoSetDict makes others too ({}): splitMeshRegions would split them off as well, writing their meshes to constant/<zone>, so no script splits it", others.join(", ")),
+                ));
+            }
+            if !made.iter().any(|z| z == zone) {
+                let has = if made.is_empty() { "none".to_string() } else { made.join(", ") };
+                out.push(warn(
+                    &sp.dict,
+                    format!("region {name} is split by the cell zone {zone}, which this topoSetDict doesn't make (its cellZoneSet actions: {has})"),
+                ));
+            }
+        }
+        None if case.exists(&sp.dict) == Some(true) => out.push(warn(
+            &sp.dict,
+            format!("region {name} is split by a zone this file makes, but it doesn't load as a dictionary"),
+        )),
+        None => out.push(warn(
+            PATH,
+            format!("region {name} is split by a zone {} makes, which the case doesn't have", sp.dict),
+        )),
     }
 }
 

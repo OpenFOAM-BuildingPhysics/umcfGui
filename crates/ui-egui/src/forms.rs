@@ -696,6 +696,23 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "mesh.split",
+        intro: "A region's mesh split from another's by a cell zone: the cells outside it (the street canyon's vegetation is the air without the trees).",
+        fields: &[
+            field("region", "Region", Kind::WorkflowRegion, "A region of system/umcfWorkflow"),
+            field("of", "Split from", Kind::Pick("a region built before it"), "Its mesh is copied"),
+            field("zone", "Cell zone", Kind::Pick("the zone taken out"), "Made in the copy by the dictionary"),
+            field(
+                "dict",
+                "Dictionary",
+                Kind::Text("system/<split from>/topoSetDict"),
+                "The topoSetDict that makes the zone",
+            ),
+            field("remove", "Take the split out", Kind::Flag, "The region is then built by no step"),
+        ],
+        changed_only: false,
+    },
+    Spec {
         id: "mesh.block",
         intro: "A region's grid of blocks: its stations and cells along each axis, the blocks left out (the buildings) and the sides' patches; its blockMeshDict written from them.",
         fields: &[

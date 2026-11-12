@@ -1,5 +1,5 @@
 //! The workflow description's cards (`workflow.region`, `workflow.patch`, `workflow.material`,
-//! `workflow.component`): each frame, the names their fields offer (the description's regions,
+//! `workflow.component`, `mesh.split`): each frame, the names their fields offer (the description's regions,
 //! a region's patches and materials, the material models of the solver, the air's patches), and
 //! what they describe filled in when it is chosen (a region's kind, a patch's role and partner,
 //! a material's model).
@@ -11,7 +11,7 @@ use crate::App;
 use crate::forms::{FormState, PARTNER_PATCHES};
 
 /// The cards this fills.
-pub(crate) const CARDS: [&str; 8] = [
+pub(crate) const CARDS: [&str; 9] = [
     "workflow.region",
     "workflow.patch",
     "workflow.material",
@@ -20,6 +20,7 @@ pub(crate) const CARDS: [&str; 8] = [
     "case.new",
     "region.add",
     "workflow.settings",
+    "mesh.split",
 ];
 
 /// What a card is filled for: the region, and the patch or material, it describes.
@@ -90,6 +91,22 @@ fn described(
             let m = r.materials.iter().find(|m| m.name == value("material"))?;
             Some(vec![("model", m.model.clone().unwrap_or_default())])
         }
+        "mesh.split" => match &r.mesh {
+            // The copied region's own dictionary left empty: it follows *Split from*.
+            Some(umcf_model::workflow::MeshBuild::Split(sp)) => Some(vec![
+                ("of", sp.of.clone()),
+                ("zone", sp.zone.clone().unwrap_or_default()),
+                (
+                    "dict",
+                    if sp.dict == umcf_model::workflow::Split::default_dict(&sp.of) {
+                        String::new()
+                    } else {
+                        sp.dict.clone()
+                    },
+                ),
+            ]),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -101,6 +118,7 @@ fn card_fields(id: &str) -> &'static [&'static str] {
         "workflow.patch" => &["role", "partner"],
         "workflow.material" => &["model"],
         "material.set" => &["coefficients"],
+        "mesh.split" => &["of", "zone", "dict"],
         _ => &[],
     }
 }
@@ -149,7 +167,7 @@ impl App {
             }
             return;
         }
-        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material" | "material.set") {
+        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material" | "material.set" | "mesh.split") {
             return;
         }
         let case = self.session.case();
@@ -208,6 +226,27 @@ impl App {
                     let partner = f.values.get("partner").and_then(|p| p.split('|').next()).unwrap_or("").trim();
                     options.insert(PARTNER_PATCHES, patches_of(d, partner));
                     options.insert("partner", regions);
+                }
+                "mesh.split" => {
+                    // Only the regions listed before it whose meshes the description builds
+                    // (built first, so they can be copied), and the zones the dictionary makes
+                    // (the one typed, else the copied region's).
+                    let before: Vec<String> = d
+                        .regions
+                        .iter()
+                        .take_while(|r| r.name != region)
+                        .filter(|r| r.mesh.is_some())
+                        .map(|r| r.name.clone())
+                        .collect();
+                    let of = value(f, "of");
+                    let dict = match value(f, "dict") {
+                        d if d.is_empty() => umcf_model::workflow::Split::default_dict(&of),
+                        d => d,
+                    };
+                    let zones = case.and_then(|c| c.dict(&dict)).map(umcf_model::workflow::zones_made);
+                    // None for the first region: the field's hint says why.
+                    options.insert("of", before);
+                    options.insert("zone", zones.unwrap_or_default());
                 }
                 "workflow.material" => {
                     let solids =

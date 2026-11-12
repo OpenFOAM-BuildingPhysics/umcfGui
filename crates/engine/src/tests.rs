@@ -4098,3 +4098,168 @@ fn reshaping_a_grid_with_missing_blocks_drops_their_patch() {
     assert!(!g.sides.iter().any(|(s, _)| *s == umcf_model::blocks::Side::Missing), "{g:?}");
     assert!(out.message.contains("in the undo history"), "{}", out.message);
 }
+
+/// The street canyon's vegetation: read from its scripts as split from the air by the trees,
+/// set and taken out by `mesh.split`, checked by the case check, and written into Allprepare.
+#[test]
+fn a_region_split_from_the_air_by_the_trees() {
+    for version in ["of12", "of8"] {
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(example(&format!("{version}/streetCanyon_CFDHAM_veg"))), "mem", OpenOptions::default(), false)
+            .unwrap();
+        let out = s.execute("workflow.import", &Value::Null).unwrap();
+        let veg = |out: &Outcome| {
+            out.data["description"]["regions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["name"] == "vegetation")
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            veg(&out)["mesh"],
+            json!({ "from": "split", "of": "air", "zone": "trees", "dict": "system/air/topoSetDict" }),
+            "{version}"
+        );
+        let notes = out.data["notes"].to_string();
+        assert!(!notes.contains("splitMeshRegions") && !notes.contains("region1"), "{version}: {notes}");
+        let split_codes = |s: &mut Session| {
+            let out = s.execute("case.check", &Value::Null).unwrap();
+            let all: Vec<Value> = out.data["diagnostics"].as_array().unwrap().clone();
+            all.into_iter()
+                .filter(|d| d["code"] == "workflow.split")
+                .map(|d| d["message"].as_str().unwrap().to_string())
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(split_codes(&mut s), Vec::<String>::new(), "{version}");
+        // The scripts split it.
+        let out = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap();
+        let prepare = out.data["scripts"][0]["text"].as_str().unwrap().to_string();
+        assert!(prepare.contains("splitMeshRegions -region vegetation -cellZones -overwrite"), "{prepare}");
+        let dict = if version == "of8" { "system/../air/topoSetDict" } else { "system/air/topoSetDict" };
+        assert!(prepare.contains(&format!("topoSet -region vegetation -dict {dict}\n")), "{prepare}");
+
+        // A zone the dictionary doesn't make: said by the command and the check.
+        let out = s.execute("mesh.split", &json!({ "region": "vegetation", "of": "air", "zone": "bushes" })).unwrap();
+        assert!(out.message.contains("doesn't make the cell zone bushes"), "{}", out.message);
+        assert_eq!(out.data["zones"], json!(["trees"]));
+        let said = split_codes(&mut s);
+        assert!(said.iter().any(|m| m.contains("doesn't make") && m.contains("trees")), "{said:?}");
+        // A dictionary the case doesn't have.
+        let out = s
+            .execute("mesh.split", &json!({ "region": "vegetation", "of": "air", "zone": "trees", "dict": "system/vegetation/topoSetDict" }))
+            .unwrap();
+        assert!(out.message.contains("the case has no system/vegetation/topoSetDict"), "{}", out.message);
+        assert_eq!(out.data["zones"], Value::Null);
+        assert_eq!(veg(&out)["mesh"]["dict"], "system/vegetation/topoSetDict");
+        // A zone named as a region: its directories would be removed. Refused, nothing changed.
+        let before = s.case().unwrap().dict("system/umcfWorkflow").unwrap().to_string();
+        for (params, says) in [
+            (json!({ "region": "vegetation", "of": "air", "zone": "street" }), "named street, as a region"),
+            (json!({ "region": "vegetation", "of": "air", "zone": "region1" }), "region1"),
+            // The region itself, and a directory the case has (the tutorial's field backups).
+            (json!({ "region": "vegetation", "of": "air", "zone": "vegetation" }), "named vegetation, as a region"),
+            (json!({ "region": "vegetation", "of": "air", "zone": "air.bckp" }), "the case has 0/air.bckp"),
+            (json!({ "region": "vegetation", "of": "vegetation", "zone": "trees" }), "its own mesh"),
+            (json!({ "region": "vegetation", "of": "air" }), "zone"),
+            (json!({ "region": "vegetation", "remove": true, "zone": "trees" }), "takes no"),
+            (json!({ "region": "nope", "of": "air", "zone": "trees" }), "not in"),
+            // The air has blocks.
+            (json!({ "region": "air", "of": "street", "zone": "trees" }), "blocks"),
+        ] {
+            let e = s.execute("mesh.split", &params).unwrap_err().to_string();
+            assert!(e.contains(says), "{params}: {e}");
+            assert_eq!(s.case().unwrap().dict("system/umcfWorkflow").unwrap().to_string(), before);
+        }
+        // A region named as the parts outside the zone are: refused, and the check says so.
+        s.execute("workflow.region", &json!({ "region": "region2", "kind": "fluid" })).unwrap();
+        let e = s
+            .execute("mesh.split", &json!({ "region": "vegetation", "of": "air", "zone": "trees" }))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("region named region2"), "{e}");
+        let said = split_codes(&mut s);
+        assert!(said.iter().any(|m| m.contains("a region is named region2")), "{said:?}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // Split from a region listed after it, or from one that isn't described: the check says so.
+        s.execute("workflow.region", &json!({ "region": "canopy", "kind": "vegetation" })).unwrap();
+        s.execute("mesh.split", &json!({ "region": "vegetation", "of": "canopy", "zone": "trees" })).unwrap();
+        let said = split_codes(&mut s);
+        assert!(said.iter().any(|m| m.contains("which comes after it")), "{said:?}");
+        s.execute("mesh.split", &json!({ "region": "vegetation", "of": "ghost", "zone": "trees" })).unwrap();
+        let said = split_codes(&mut s);
+        assert!(said.iter().any(|m| m.contains("not a region of the description")), "{said:?}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // Taken out, and put back by undo.
+        let out = s.execute("mesh.split", &json!({ "region": "vegetation", "remove": true })).unwrap();
+        assert_eq!(veg(&out)["mesh"], Value::Null);
+        assert!(s.execute("mesh.split", &json!({ "region": "vegetation", "remove": true })).is_err());
+        s.execute("edit.undo", &Value::Null).unwrap();
+        let d = s.case().unwrap().description().unwrap().0;
+        assert!(matches!(d.region("vegetation").unwrap().mesh, Some(umcf_model::workflow::MeshBuild::Split(_))));
+    }
+}
+
+/// A split's zone and dictionary against each other: a zone the clean-up names that the
+/// dictionary doesn't make gives way to the one it makes, and a dictionary that makes other
+/// zones too is refused by the scripts and named by the command and the check.
+#[test]
+fn a_splits_dictionary_makes_its_zone_alone() {
+    let mut fs = example("of12/streetCanyon_CFDHAM_veg");
+    let prepare = String::from_utf8(fs.read("Allprepare", 1 << 20).unwrap().unwrap()).unwrap();
+    let prepare =
+        prepare.replace("rm -rf system/vegetation/trees system/vegetation/region*", "rm -rf system/vegetation/oldSets");
+    fs.insert("Allprepare", prepare.into_bytes());
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    let d = s.case().unwrap().description().unwrap().0;
+    let Some(umcf_model::workflow::MeshBuild::Split(sp)) = &d.region("vegetation").unwrap().mesh else { panic!() };
+    assert_eq!(sp.zone.as_deref(), Some("trees"));
+    // The street's dictionary makes soil and brick.
+    let out = s
+        .execute(
+            "mesh.split",
+            &json!({ "region": "vegetation", "of": "air", "zone": "soil", "dict": "system/street/topoSetDict" }),
+        )
+        .unwrap();
+    assert!(out.message.contains("makes other cell zones too (brick)"), "{}", out.message);
+    let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+    assert!(e.contains("other cell zones too (brick)"), "{e}");
+    // A dictionary the case doesn't have: no script either (it would replace the mesh first).
+    s.execute(
+        "mesh.split",
+        &json!({ "region": "vegetation", "of": "air", "zone": "trees", "dict": "system/vegetation/topoSetDict" }),
+    )
+    .unwrap();
+    let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+    assert!(e.contains("system/vegetation/topoSetDict isn't there"), "{e}");
+    s.execute("edit.undo", &Value::Null).unwrap();
+    let out = s.execute("case.check", &Value::Null).unwrap();
+    let said = out.data["diagnostics"].to_string();
+    assert!(said.contains("makes others too (brick)"), "{said}");
+}
+
+/// What on disk keeps the scripts from splitting: a directory of the zone's name that isn't a
+/// region's, and a later time with a mesh of the region (topoSet and splitMeshRegions may read
+/// it instead of the copy).
+#[test]
+fn a_split_isnt_written_over_what_the_case_has() {
+    for (extra, says) in [
+        ("constant/trees/polyMesh/faces", "the case has constant/trees"),
+        ("3600/vegetation/polyMesh/faces", "the case has 3600/vegetation/polyMesh"),
+    ] {
+        let mut fs = example("of12/streetCanyon_CFDHAM_veg");
+        fs.insert(extra, b"x".to_vec());
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.open(Box::new(fs), "mem", OpenOptions::default(), false).unwrap();
+        s.execute("workflow.import", &Value::Null).unwrap();
+        let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+        assert!(e.contains(says), "{extra}: {e}");
+        let out = s.execute("workflow.show", &json!({ "scripts": true })).unwrap();
+        assert!(out.data["scriptsError"].as_str().unwrap().contains(says), "{extra}: {}", out.data["scriptsError"]);
+    }
+}

@@ -11,6 +11,7 @@ mod material;
 mod mesh;
 pub(crate) mod mesh_block;
 pub(crate) mod mesh_box;
+mod mesh_split;
 mod patch;
 mod region;
 pub(crate) mod scene;
@@ -42,6 +43,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     mesh::CHECK,
     mesh_block::BLOCK,
     mesh_box::BOX,
+    mesh_split::SPLIT,
     scene::SNAPSHOT,
     scene::PICK,
     scene::RECT,

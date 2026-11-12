@@ -49,7 +49,7 @@ use umcf_foam_dict::{Document, Entry, Node, unquote};
 
 use crate::blocks::BlockGrid;
 use crate::mesh_box::MeshBox;
-use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Workflow};
+use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Split, Workflow};
 use crate::{Case, Patch, RegionKind};
 
 /// Where the description is.
@@ -375,10 +375,28 @@ impl Description {
         &self,
         case: &Case,
         version: OfVersion,
-    ) -> std::result::Result<Vec<(&'static str, String)>, crate::workflow::UnsafeName> {
+    ) -> std::result::Result<Vec<(&'static str, String)>, crate::workflow::ScriptError> {
         let mut wf = self.workflow();
         wf.constant_files =
             case.workflow().constant_files.into_iter().filter(|(r, _)| self.region(r).is_some()).collect();
+        wf.case_regions = case.regions.iter().map(|r| r.name.clone()).collect();
+        wf.split_zones = self
+            .regions
+            .iter()
+            .filter_map(|r| match &r.mesh {
+                Some(MeshBuild::Split(sp)) => {
+                    use crate::workflow::DictZones;
+                    let zones = match case.dict(&sp.dict) {
+                        Some(doc) => crate::workflow::zones_told(doc).map_or(DictZones::Unclear, DictZones::Made),
+                        None if case.exists(&sp.dict) == Some(false) => DictZones::Missing,
+                        // There, or not known not to be, but not read.
+                        None => DictZones::Unclear,
+                    };
+                    Some((r.name.clone(), zones))
+                }
+                _ => None,
+            })
+            .collect();
         wf.generate(version)
     }
 
@@ -407,6 +425,16 @@ impl Description {
                 Some(MeshBuild::Block) => s.push_str("        mesh        blocks;\n"),
                 Some(MeshBuild::Root(steps)) => {
                     let _ = writeln!(s, "        mesh        ( {} );", root_steps(steps));
+                }
+                Some(MeshBuild::Split(sp)) => {
+                    let _ = write!(s, "        mesh        {{ from split; of {};", word(&sp.of));
+                    if let Some(z) = &sp.zone {
+                        let _ = write!(s, " zone {};", word(z));
+                    }
+                    if sp.dict != Split::default_dict(&sp.of) {
+                        let _ = write!(s, " dict {};", quote(&sp.dict));
+                    }
+                    s.push_str(" }\n");
                 }
             }
             if let Some(g) = &r.blocks {
@@ -824,12 +852,17 @@ fn read_region(
                 _ => problem(&here, "is fluid, solid or vegetation".into()),
             },
             "mesh" => match (single(e).as_deref(), list(e)) {
+                _ if e.dict().is_some() => {
+                    if let Some(sp) = e.dict().and_then(|b| read_split(name, b, &here, problem)) {
+                        r.mesh = Some(MeshBuild::Split(sp));
+                    }
+                }
                 (Some("blocks"), _) => r.mesh = Some(MeshBuild::Block),
                 (_, Some(items)) => match read_root(items) {
                     Ok(steps) => r.mesh = Some(MeshBuild::Root(steps)),
                     Err(m) => problem(&here, m),
                 },
-                _ => problem(&here, "is blocks, or the steps that build it in constant/polyMesh: ( blockMesh [\"dict\"] createPatch snappyHexMesh [\"dict\"] )".into()),
+                _ => problem(&here, "is blocks, the steps that build it in constant/polyMesh: ( blockMesh [\"dict\"] createPatch snappyHexMesh [\"dict\"] ), or { from split; of <region>; zone <cellZone>; [dict \"system/<region>/topoSetDict\";] }".into()),
             },
             "blocks" => match e.dict() {
                 Some(b) => r.blocks = BlockGrid::read(b, &here, problem),
@@ -906,6 +939,74 @@ fn read_region(
             None
         }
     }
+}
+
+/// `{ from split; of air; zone trees; [dict "system/air/topoSetDict";] }`: a region split from
+/// another's mesh by a cell zone.
+fn read_split(
+    name: &str,
+    body: &umcf_foam_dict::Dict,
+    at: &str,
+    problem: &mut impl FnMut(&str, String),
+) -> Option<Split> {
+    let mut from = None;
+    let mut of = None;
+    let mut zone = None;
+    let mut dict = None;
+    let mut seen = HashSet::new();
+    for e in body.entries() {
+        let here = format!("{at}/{}", e.key());
+        if twice(&mut seen, e, &here, problem) {
+            continue;
+        }
+        match e.key() {
+            "from" => match single(e) {
+                Some(w) => from = Some(w),
+                None => problem(&here, "is split".into()),
+            },
+            "of" => match single(e) {
+                Some(w) if w == name => problem(&here, "is another region than this one".into()),
+                Some(w) => of = Some(w),
+                None => problem(&here, "is the region whose mesh is split, one name".into()),
+            },
+            "zone" => match single(e) {
+                Some(w) if crate::workflow::part_name(&w) => problem(
+                    &here,
+                    format!("is not {w}: splitMeshRegions names the parts outside the zone so (region and a number)"),
+                ),
+                Some(w) => zone = Some(w),
+                None => problem(&here, "is the cell zone taken out, one name".into()),
+            },
+            "dict" => match single(e) {
+                Some(d) if d.starts_with('/') || d.split('/').any(|c| c == "..") || !d.contains('/') => {
+                    problem(&here, "is a path in the case's directories, system/<region>/topoSetDict".into())
+                }
+                Some(d) => dict = Some(d),
+                None => problem(&here, "is the topoSetDict that makes the zone, a path in the case".into()),
+            },
+            _ => problem(&here, "is not a key of a split: from, of, zone, dict".into()),
+        }
+    }
+    match from.as_deref() {
+        Some("split") => {}
+        Some(other) => {
+            problem(&format!("{at}/from"), format!("is split, not {other}: the mesh is left out"));
+            return None;
+        }
+        None => {
+            problem(&format!("{at}/from"), "is missing: { from split; of <region>; zone <cellZone>; }".into());
+            return None;
+        }
+    }
+    let Some(of) = of else {
+        problem(&format!("{at}/of"), "is missing: the region whose mesh is split".into());
+        return None;
+    };
+    if zone.is_none() {
+        problem(&format!("{at}/zone"), "is missing: the cell zone taken out (no script splits it without)".into());
+    }
+    let dict = dict.unwrap_or_else(|| Split::default_dict(&of));
+    Some(Split { of, zone, dict })
 }
 
 fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> PatchDesc {

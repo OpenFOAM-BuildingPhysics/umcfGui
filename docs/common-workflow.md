@@ -83,7 +83,7 @@ regions
     vegetation
     {
         kind        vegetation;
-        mesh        { from box; }           // or `from split; of air; zone trees;` (street canyon)
+        mesh        { from box; }           // or { from split; of air; zone trees; } (street canyon, mesh.split)
         surfaces    { buildings { role coupled; } trees { role canopy; } }
     }
     buildings
@@ -173,8 +173,10 @@ An import reads a case into a `umcfWorkflow`:
 - the 3×3 pattern's scripts are read already ([the workflow](user-guide/workflow.md)), and each
   region's blocks from its `blockMeshDict` when that is a grid of blocks (the fluid, vegetation
   and street regions of the 3×3 cases, every region of the street canyon);
-- the STL chain and the split vegetation need the reading extended: the kept background,
-  `extrudeMesh`, `splitMeshRegions`, the moves between `constant/polyMesh` and the regions;
+- a region split from another by a cell zone (the street canyon's vegetation:
+  `splitMeshRegions`) is read with its zone;
+- the STL chain needs the reading extended: the kept background, `extrudeMesh`, the moves
+  between `constant/polyMesh` and the regions;
 - what doesn't fit is listed (as today), and the case keeps its own scripts until the user
   takes the generated ones. Writing them keeps the old ones as backups.
 
@@ -227,5 +229,5 @@ In the order of the [gaps](gaps.md):
 |---|---|
 | 4 | The generated dictionaries from the roles and the coupling rules (`createPatchDict`, `changeDictionaryDict`, `topoSetDict` or the `setSet` batch, `viewFactorsDict`), and `0.orig` by patch role |
 | 5–7 | The geometry settings: boxes and blocks, snappyHexMesh surfaces, extrusion layers, the split by a zone |
-| 8 | The scripts from the description, with the fields put in place after meshing; the STL chain and the split vegetation read into it; reset |
+| 8 | The scripts from the description, with the fields put in place after meshing; the STL chain read into it; reset |
 | 11 | The runner: native, WSL, a VM or container, ssh and batch jobs |
