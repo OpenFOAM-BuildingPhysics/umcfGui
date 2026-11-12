@@ -3356,6 +3356,31 @@ fn a_case_is_made_and_set_up_from_forms() {
     h.run();
     assert_eq!(form(&h).params(spec).unwrap(), json!({"deltaT": 900}));
     ok(&mut h);
+    // Shown as JSON, the settings' numerics follow a command run meanwhile in the text OK sends.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.state_mut().act("workflow.settings", json!({"numerics": {"fluid": {"SIMPLE": {"nNonOrthogonalCorrectors": 3}}}}));
+    h.run();
+    h.run();
+    let shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    assert_eq!(
+        shown.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors").and_then(|v| v.as_str()),
+        Some("3"),
+        "{shown}"
+    );
+    // OK from the JSON sends only what changed: the time step, not the library or numerics left
+    // as they are (a refused material model would fail it).
+    let mut shown = shown;
+    shown["deltaT"] = json!(600);
+    h.state_mut().dialog.as_mut().unwrap().params = shown.to_string();
+    // The text's new length moves OK: a frame to lay it out.
+    h.run();
+    h.run();
+    ok(&mut h);
+    let last = h.state().session().journal().last().cloned().unwrap();
+    assert_eq!(last["params"], json!({"deltaT": 600}), "{last}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -362,7 +362,10 @@ pub(crate) fn merge_rows(value: &str, was: &str, now: &str, n: usize) -> String 
     }
     for row in &v {
         let k = row.first().map(String::as_str).unwrap_or("");
-        if find(&w, k).is_none() && find(&m, k).is_none() {
+        let added = find(&w, k).is_none();
+        // Typed over a row the case has taken away since: the user's, kept.
+        let edited = find(&w, k).is_some_and(|filled| filled != *row);
+        if (added || edited) && find(&m, k).is_none() {
             out.push(row.clone());
         }
     }
@@ -456,12 +459,14 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
         Kind::Coefficients => {
             let (now, then) = (table_rows(text, 2), table_rows(was, 2));
             let mut m = Map::new();
+            // Every row's name, changed or not: a name twice is refused either way.
+            let mut seen = BTreeSet::new();
             for r in &now {
                 let (Some(k), Some(x)) = (r.first(), r.get(1)) else { continue };
                 if k.is_empty() {
                     return Err(format!("{}: a coefficient without its name ({x})", f.label));
                 }
-                if m.contains_key(k) {
+                if !seen.insert(k.clone()) {
                     return Err(format!("{}: {k} is given twice", f.label));
                 }
                 let before = then.iter().find(|w| w.first() == Some(k)).and_then(|w| w.get(1));
@@ -1764,6 +1769,16 @@ enum Col<'a> {
 /// (*+ Row*) and taken away (*−*).
 fn table(ui: &mut Ui, id: (&str, &str), text: &mut String, cols: &[Col<'_>]) {
     let n = cols.len();
+    // A long table (counted before any row is made) is edited as text, a row a line.
+    let lines = if text.is_empty() { 0 } else { text.matches(ROWS).count() + 1 };
+    if lines > TABLE_ROWS {
+        let l = ui.label(RichText::new(format!("{lines} rows, a row a line, its cells parted by |")).size(12.0));
+        egui::ScrollArea::vertical().id_salt(("table-text", id)).max_height(140.0).show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(6).desired_width(f32::INFINITY))
+                .labelled_by(l.id);
+        });
+        return;
+    }
     let mut rows: Vec<Vec<String>> = if text.is_empty() {
         Vec::new()
     } else {
@@ -2369,6 +2384,8 @@ mod tests {
         assert_eq!(c.json_view(spec).unwrap(), json!({"region": "street", "material": "soil"}), "the JSON view opens");
         c.values.insert("coefficients", "rho|1700\ncap|\nwcap|2".into());
         assert_eq!(c.params(spec).unwrap()["coefficients"], json!({"rho": 1700, "cap": null, "wcap": 2, "mu": null}));
+        c.values.insert("coefficients", "rho|1600\nrho|1700".into());
+        assert!(c.params(spec).unwrap_err().contains("rho is given twice"));
         c.values.insert("coefficients", "rho|lots".into());
         assert!(c.params(spec).unwrap_err().contains("(rho): `lots` isn't a number"));
         // Back from JSON: its keys over what the card was filled with.
@@ -2409,6 +2426,8 @@ mod tests {
             merge_rows("rho|1700\ncap|850", "rho|1600\ncap|850\nmu|3", "rho|1600\ncap|900\nmu|3\nwcap|2", 2),
             "rho|1700\ncap|900\nwcap|2"
         );
+        // A row typed over that the case took away meanwhile: kept.
+        assert_eq!(merge_rows("rho|1600\nmu|5", "rho|1600\nmu|3", "rho|1600", 2), "rho|1600\nmu|5");
         // A row added that the case gained meanwhile: the user's value.
         assert_eq!(merge_rows("rho|1600\nwcap|5", "rho|1600", "rho|1600\nwcap|2", 2), "rho|1600\nwcap|5");
     }

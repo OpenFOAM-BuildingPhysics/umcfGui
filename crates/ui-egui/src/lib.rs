@@ -689,8 +689,29 @@ impl App {
             }
             g.extra
         });
-        let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()) else { return };
+        let Some(d) = self.dialog.as_mut() else { return };
+        let Some(f) = d.form.as_mut() else { return };
         if let Some(now) = start_extra {
+            // Shown as JSON: its entries left as the case had them follow it too, in the text
+            // OK sends (those edited there stay).
+            if f.json
+                && let Ok(Value::Object(mut shown)) = serde_json::from_str::<Value>(&d.params)
+            {
+                for (k, was) in &f.initial_extra {
+                    if shown.get(k) == Some(was) {
+                        match now.get(k) {
+                            Some(v) => shown.insert(k.clone(), v.clone()),
+                            None => shown.remove(k),
+                        };
+                    }
+                }
+                for (k, v) in &now {
+                    if !f.initial_extra.contains_key(k) && !shown.contains_key(k) {
+                        shown.insert(k.clone(), v.clone());
+                    }
+                }
+                d.params = serde_json::to_string_pretty(&Value::Object(shown)).unwrap_or_default();
+            }
             // Those left as they were follow the case (gone with it when it has them no more);
             // those changed in the JSON stay.
             let left: Vec<String> =
@@ -2553,7 +2574,15 @@ impl App {
                 None => {}
             }
             match serde_json::from_str::<Value>(&d.params) {
-                Ok(params) => {
+                Ok(mut params) => {
+                    // From the JSON of a card that sends only what changed (the settings): what
+                    // the form has no field for, left as the case has it, isn't sent.
+                    if let (Some(f), Some(fs), Some(o)) = (&d.form, forms::spec(d.id), params.as_object_mut())
+                        && f.json
+                        && fs.changed_only
+                    {
+                        o.retain(|k, v| f.initial_extra.get(k) != Some(v));
+                    }
                     let id = d.id.to_string();
                     self.start(jobs::Work::Command { id, params, then: jobs::Then::Dialog(Box::new(d)) });
                     return;
