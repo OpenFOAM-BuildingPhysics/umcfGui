@@ -46,7 +46,8 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   goes into **»** too. A command that can't
   run now is grey, and its tooltip says why. A command that needs
   parameters opens its card on the right; *OK* runs it. [Forms](#forms) ask for the parameters of
-  *Run controls*, *Import STL…*, *Tree crowns…*, *Repair…*, *Scale…* and *Snapshot*; the others
+  *Run controls*, *Import STL…*, *Tree crowns…*, *Repair…*, *Scale…*, *Snapshot* and *Box mesh*
+  (with [a preview of the box](workflow.md#box)); the others
   show what they take, and their parameters as JSON (`{"endTime": 7200}`). The checks, *Summary* and *Read fields* run at once.
   Commands without a place of their own are in a *More* group of their tab: *New case…* (its
   card starts with the air alone for OpenFOAM-12: [a new case](new-case.md)), *Add a region…*
@@ -123,7 +124,9 @@ A command's form asks for each of its parameters in a field of its own: text and
 hint, while the field is empty, says the default or what goes there, and an empty field leaves
 the parameter out),
 checkboxes, a list to choose from (*default* leaves it to the command), the case's surfaces and
-mesh regions to tick, and a file's path with *Browse…*, which opens the system's own file dialog
+mesh regions to tick, the regions of the workflow description to choose from, a few numbers
+side by side (a box's six margins, its cells along x, y and z: all given, or none), and a file's
+path with *Browse…*, which opens the system's own file dialog
 (where there is one; else the card says so, and the path is typed). *All parameters* opens what the command takes, as
 its help says it. *Edit as JSON* shows the parameters the form makes as JSON, for what the form
 doesn't ask for (the tree crowns given one by one, a snapshot's cuts and display): what is
@@ -391,8 +394,7 @@ about the new conditions.
   the app starts (or `UMCF_MEMORY` in megabytes): see [memory](scene.md#memory). A hidden region
   dropped past it is read again when it is shown.
 - The parameters of the commands without a [form](#forms) yet (the workflow's, *New case…*, *Add
-  a region…*, a material's coefficients, the blocks and the box) are typed as JSON; their forms
-  follow.
+  a region…*, a material's coefficients, the blocks) are typed as JSON; their forms follow.
 - *Cancel* stops reading a mesh's ASCII `points` or `faces` and field files within a megabyte,
   but a file read whole (binary meshes, the mesh check's) only once it is read; the mesh check's
   computing stops within 65,536 faces, apart from the checks *all geometry* adds, which stop

@@ -134,6 +134,16 @@ pub(crate) fn box_json(b: &MeshBox) -> Value {
     })
 }
 
+impl Session {
+    /// The bounds of the case's surfaces `names` (file names in constant/triSurface), each read
+    /// as OpenFOAM would and as `mesh.box` reads them: for a preview of a box around them. An
+    /// error names one that isn't there, doesn't read, or has no finite point.
+    pub fn surface_bounds(&self, names: &[String]) -> Result<BBox, Error> {
+        let names = names.iter().map(|n| surface_name(n)).collect::<Result<Vec<_>, _>>()?;
+        bounds(self, &names)
+    }
+}
+
 /// `mesh.box`: the region's blocks made from a box around the surfaces.
 fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let allowed: Vec<&str> =

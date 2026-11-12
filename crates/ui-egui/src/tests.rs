@@ -2799,3 +2799,57 @@ fn a_form_follows_the_case() {
         h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().params(crate::forms::spec("control.set").unwrap());
     assert_eq!(p.unwrap(), json!({"deltaT": 5}));
 }
+
+/// The box card: filled from the region's box, the box previewed in the view (both renderers
+/// draw it from `viewport.blocks`) with its size and cells said, then made by OK.
+#[test]
+fn the_box_card_previews_the_box_and_makes_it() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-box", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+    )
+    .unwrap();
+    s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    assert_eq!(form(&h).values.get("region").map(String::as_str), Some("air"));
+    // Without margins: no preview, and the card says what it needs.
+    assert!(h.state().viewport.blocks.is_none());
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("six margins")));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("margin", "10|10|10|10|0|10".into());
+        f.values.insert("cellSize", "2".into());
+    }
+    h.run();
+    let blocks = h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().box_summary));
+    // 8 .. 12 in x with 10 m around: -2 .. 22, 12 cells of 2.
+    assert_eq!(blocks.stations[0].len(), 2);
+    assert_eq!(blocks.cells[0].len(), 13, "{:?}", blocks.cells[0]);
+    let summary = h.state().box_summary.clone().unwrap().unwrap();
+    assert!(summary.contains("cells; the ground: ground"), "{summary}");
+    // OK: the box made, the card closed, the preview gone.
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    assert!(h.state().viewport.blocks.is_none());
+    let d = h.state().session().case().unwrap().description().unwrap().0;
+    assert!(d.region("air").unwrap().mesh_box.is_some());
+    // Opened again: filled from the region's box.
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
+    assert!(h.state().viewport.blocks.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

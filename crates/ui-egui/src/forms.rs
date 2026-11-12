@@ -36,6 +36,21 @@ pub(crate) enum Kind {
     /// A file anywhere, its path typed or chosen in the system's dialog (*Browse…*), with
     /// these extensions offered.
     File(&'static [&'static str]),
+    /// A region of the workflow description (`system/umcfWorkflow`).
+    WorkflowRegion,
+    /// Numbers, one per label (a box's six margins): a list, sent when every one is given.
+    Numbers(&'static [&'static str]),
+    /// Whole numbers, one per label (the cells along x, y and z): a list, as [`Kind::Numbers`].
+    Counts(&'static [&'static str]),
+}
+
+/// The text of a [`Kind::Numbers`] or [`Kind::Counts`] field: its parts, one per label.
+const PARTS: char = '|';
+
+fn parts(text: &str, n: usize) -> Vec<String> {
+    let mut v: Vec<String> = text.split(PARTS).map(str::to_string).collect();
+    v.resize(n, String::new());
+    v
 }
 
 /// One field: the parameter it sets, its label, what it takes, and a tooltip.
@@ -153,6 +168,35 @@ static SPECS: &[Spec] = &[
         changed_only: true,
     },
     Spec {
+        id: "mesh.box",
+        intro: "A box around the case's surfaces: the region's blocks, and its blockMeshDict.",
+        fields: &[
+            field("region", "Region", Kind::WorkflowRegion, "A region of system/umcfWorkflow"),
+            field("surfaces", "Surfaces", Kind::Surfaces, "None ticked: the box's, else every surface"),
+            field(
+                "margin",
+                "Margins",
+                Kind::Numbers(&["West", "East", "South", "North", "Ground", "Top"]),
+                "How far the box reaches past the surfaces on each side (m): west/east along x, south/north along y, ground/top along z",
+            ),
+            field("cellSize", "Cell size", Kind::Number("m"), "Cubes; or the cells along each axis below"),
+            field("cells", "Cells", Kind::Counts(&["x", "y", "z"]), "Instead of a cell size"),
+            field(
+                "reshape",
+                "Replace blocks not made from the box",
+                Kind::Flag,
+                "Blocks given by Block mesh, read by Write workflow description, or edited since the box made them",
+            ),
+            field(
+                "replace",
+                "Write over a blockMeshDict edited by hand",
+                Kind::Flag,
+                "Save keeps the one there in the backup",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
         id: "scene.snapshot",
         intro: "A PNG of the case in 3D, drawn by the CPU renderer.",
         fields: &[
@@ -197,6 +241,11 @@ pub struct FormState {
     /// What the surfaces and regions were when the card opened.
     pub(crate) surfaces: Vec<String>,
     pub(crate) regions: Vec<String>,
+    /// The regions of the workflow description, for a [`Kind::WorkflowRegion`].
+    pub(crate) workflow_regions: Vec<String>,
+    /// The region the form was last filled for (the box card fills its fields from the
+    /// region's box when the region changes).
+    pub(crate) filled_for: Option<String>,
 }
 
 fn as_text(v: &Value) -> String {
@@ -224,6 +273,29 @@ impl FormState {
                 if !list.is_empty() {
                     out.insert(f.key.to_string(), json!(list));
                 }
+                continue;
+            }
+            if let Kind::Numbers(labels) | Kind::Counts(labels) = f.kind {
+                let v = parts(self.values.get(f.key).map(String::as_str).unwrap_or(""), labels.len());
+                if v.iter().all(|p| p.trim().is_empty()) {
+                    continue;
+                }
+                let mut list = Vec::with_capacity(v.len());
+                for (p, label) in v.iter().zip(labels.iter()) {
+                    let p = p.trim();
+                    let n = match f.kind {
+                        Kind::Counts(_) => p.parse::<u64>().ok().map(|n| json!(n)),
+                        _ => serde_json::from_str::<Value>(p).ok().filter(Value::is_number),
+                    };
+                    match n {
+                        Some(n) => list.push(n),
+                        None if p.is_empty() => {
+                            return Err(format!("{}: give all {} (none for the default)", f.label, labels.len()));
+                        }
+                        None => return Err(format!("{} ({label}): `{p}` isn't a number", f.label)),
+                    }
+                }
+                out.insert(f.key.to_string(), Value::Array(list));
                 continue;
             }
             let text = self.values.get(f.key).map(|s| s.trim()).unwrap_or("");
@@ -310,6 +382,26 @@ impl FormState {
                             keep(&mut extra, v);
                         }
                         (None, None) => {}
+                    }
+                }
+                Kind::Numbers(labels) | Kind::Counts(labels) => {
+                    let list: Option<Vec<String>> = match &v {
+                        None => Some(Vec::new()),
+                        Some(Value::Array(a)) if a.len() == labels.len() && a.iter().all(Value::is_number) => {
+                            Some(a.iter().map(as_text).collect())
+                        }
+                        Some(_) => None,
+                    };
+                    match list {
+                        Some(l) => {
+                            self.values.insert(f.key, l.join(&PARTS.to_string()));
+                        }
+                        None => {
+                            if let Some(v) = &v {
+                                keep(&mut extra, v);
+                            }
+                            self.values.insert(f.key, String::new());
+                        }
                     }
                 }
                 Kind::FlagOn | Kind::Flag => {
@@ -478,6 +570,35 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                 .response
                                 .labelled_by(label.id);
                         }
+                        Kind::WorkflowRegion => {
+                            let shown = if text.is_empty() { "choose…".to_string() } else { text.clone() };
+                            egui::ComboBox::from_id_salt(("wregion", spec.id, f.key))
+                                .selected_text(shown)
+                                .width(wide)
+                                .show_ui(ui, |ui| {
+                                    for s in &form.workflow_regions {
+                                        ui.selectable_value(text, s.clone(), s);
+                                    }
+                                })
+                                .response
+                                .labelled_by(label.id);
+                        }
+                        Kind::Numbers(labels) | Kind::Counts(labels) => {
+                            let mut v = parts(text, labels.len());
+                            egui::Grid::new(("parts", spec.id, f.key)).num_columns(2).spacing(vec2(6.0, 4.0)).show(
+                                ui,
+                                |ui| {
+                                    for (k, (p, name)) in v.iter_mut().zip(labels.iter()).enumerate() {
+                                        let l = ui.label(RichText::new(*name).size(12.0));
+                                        ui.add(egui::TextEdit::singleline(p).desired_width(56.0)).labelled_by(l.id);
+                                        if k % 2 == 1 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                },
+                            );
+                            *text = v.join(&PARTS.to_string());
+                        }
                         Kind::Surface => {
                             let shown = if text.is_empty() { "choose…".to_string() } else { text.clone() };
                             egui::ComboBox::from_id_salt(("surface", spec.id, f.key))
@@ -631,5 +752,22 @@ mod tests {
         f.fill(spec, &json!({"dropSettings": false})).unwrap();
         assert!(f.passed.is_empty());
         assert_eq!(f.extra.get("dropSettings"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn a_boxs_margins_and_cells_are_lists() {
+        let spec = spec("mesh.box").unwrap();
+        let mut f = FormState::default();
+        f.fill(spec, &json!({"region": "air", "margin": [1, 2, 3, 4, 0, 6], "cellSize": 2})).unwrap();
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "margin": [1, 2, 3, 4, 0, 6], "cellSize": 2}));
+        f.values.insert("cells", "10|20|".to_string());
+        assert!(f.params(spec).unwrap_err().contains("Cells: give all 3"));
+        f.values.insert("cells", "10|20|x".to_string());
+        assert!(f.params(spec).unwrap_err().contains("(z): `x`"));
+        f.values.insert("cells", "10|20|30".to_string());
+        assert_eq!(f.params(spec).unwrap()["cells"], json!([10, 20, 30]));
+        // One margin for all (JSON only): kept and sent as it is.
+        f.fill(spec, &json!({"margin": 50})).unwrap();
+        assert_eq!(f.params(spec).unwrap()["margin"], json!(50));
     }
 }
