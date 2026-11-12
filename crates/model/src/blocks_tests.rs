@@ -980,3 +980,30 @@ fn many_root_entries_are_read_in_one_pass() {
     assert!(s.contains(&"entries given twice (a7)".to_string()), "{s:?}");
     assert!(start.elapsed().as_secs() < 3, "{:?}", start.elapsed());
 }
+
+#[test]
+fn a_spans_cells_are_spread_by_its_grading() {
+    let close = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
+    // Even, and every second cell.
+    assert!(close(&Grading::Ratio(1.0).fractions(4, 1), &[0.0, 0.25, 0.5, 0.75, 1.0]));
+    assert!(close(&Grading::Ratio(1.0).fractions(4, 2), &[0.0, 0.5, 1.0]));
+    // Last cell 4 times the first over 3 cells: 1, 2, 4 of 7.
+    assert!(close(&Grading::Ratio(4.0).fractions(3, 1), &[0.0, 1.0 / 7.0, 3.0 / 7.0, 1.0]));
+    // Two even sections, the first half of the length with a quarter of the cells.
+    let s = Grading::Sections(vec![[0.5, 0.25, 1.0], [0.5, 0.75, 1.0]]);
+    assert!(close(&s.fractions(4, 1), &[0.0, 0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0]));
+    // Bad gradings: even cells; many cells: only those drawn are visited (all of them would
+    // take minutes).
+    assert!(close(&Grading::Ratio(-1.0).fractions(2, 1), &[0.0, 0.5, 1.0]));
+    let many = Grading::Ratio(2.0).fractions(u32::MAX, 1 << 26);
+    assert_eq!(many.len(), 65);
+    assert!(many.windows(2).all(|w| w[0] <= w[1]) && many.iter().all(|x| (0.0..=1.0).contains(x)), "{many:?}");
+    // Along an axis: each station once.
+    let a = Axis {
+        stations: vec![0.0, 10.0, 30.0],
+        spans: vec![Span { cells: 2, grading: Grading::Ratio(1.0) }, Span { cells: 2, grading: Grading::Ratio(1.0) }],
+    };
+    assert!(close(&a.cell_lines(1), &[0.0, 5.0, 10.0, 20.0, 30.0]));
+    assert_eq!(a.cells(), Some(4));
+    assert!(Axis { stations: vec![0.0], spans: a.spans.clone() }.cell_lines(1).is_empty());
+}

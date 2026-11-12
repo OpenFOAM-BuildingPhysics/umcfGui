@@ -37,6 +37,7 @@ use umcf_render::Source;
 use umcf_render::camera::{Camera, View};
 
 pub mod bc;
+mod blockcard;
 mod boxcard;
 pub mod cut;
 pub mod display;
@@ -141,8 +142,11 @@ pub struct App {
     unlisted: bool,
     /// Why the last listing of the surfaces failed; `None` when it worked.
     listing_error: Option<String>,
-    /// The box card's line: the box's size and cells, or what keeps it from being made.
-    pub(crate) box_summary: Option<Result<String, String>>,
+    /// The block card's plan, kept while the parameters and the case don't change.
+    pub(crate) block_plan: Option<blockcard::Plan>,
+    /// The box or block card's line: the grid's size and cells, or what keeps it from being
+    /// made.
+    pub(crate) preview_summary: Option<Result<String, String>>,
     /// The surfaces' bounds the box card's preview is around, kept while they don't change.
     pub(crate) box_bounds: Option<boxcard::Bounds>,
     /// Goes up when a command may have changed the case's surfaces (geometry, undo, redo,
@@ -302,7 +306,8 @@ impl App {
             surfaces: Vec::new(),
             unlisted: false,
             listing_error: None,
-            box_summary: None,
+            preview_summary: None,
+            block_plan: None,
             box_bounds: None,
             geometry_revision: 0,
             waiting: Vec::new(),
@@ -595,6 +600,10 @@ impl App {
             if id == "mesh.box" && f.values.get("region").is_none_or(String::is_empty) {
                 f.values.insert("region", self.box_region());
             }
+            // The block card on the first region with blocks.
+            if id == "mesh.block" && f.values.get("region").is_none_or(String::is_empty) {
+                f.values.insert("region", self.blocks_region());
+            }
             f.initial = f.values.clone();
             f
         });
@@ -779,9 +788,26 @@ impl App {
         self.fit(None);
     }
 
+    /// Whether the browser shows nothing in the 3D view (no region, surface or cut).
+    fn nothing_shown(&self) -> bool {
+        self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && !self.cut_visible()
+    }
+
     /// The fit [`App::fit_view`] or [`App::fit_findings`] asked for: now, or, while work runs or
     /// the scene isn't read, once it is (`fit_pending`, with `fit_found` kept).
     pub(crate) fn fit(&mut self, view: Option<View>) {
+        // Only a grid previewed: framed by it.
+        if self.nothing_shown()
+            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::bbox)
+        {
+            let (az, el) = match view {
+                Some(v) => v.angles(),
+                None => self.viewport.camera.map_or(View::Iso.angles(), |c| (c.azimuth, c.elevation)),
+            };
+            self.viewport.camera = Some(Camera::fit_angles(az, el, &b, self.viewport.aspect()));
+            self.fit_pending = None;
+            return;
+        }
         // While work runs or waits, the fit follows the next scene read.
         if self.working() {
             self.fit_pending = Some(view);
@@ -1687,7 +1713,18 @@ impl App {
         if self.session.case().is_none() {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
-        } else if self.shown_regions.is_empty() && self.shown_surfaces.is_empty() && !self.cut_visible() {
+        } else if self.nothing_shown()
+            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::bbox)
+        {
+            // Only a grid previewed (the block card on a case without a mesh or surfaces): drawn
+            // on its own, around it.
+            let scene = umcf_render::Scene::new(b.centre());
+            let entries = self.view_display();
+            let display = umcf_engine::display_style(&scene, &entries);
+            let look = self.look;
+            self.viewport.cut_plane = None;
+            let _ = self.viewport.show(ui, rect, &scene, &[], &display, [self.revision, look], &t);
+        } else if self.nothing_shown() {
             let text = RichText::new("Nothing shown: turn on a region or a surface in the browser.").color(muted);
             ui.put(rect, egui::Label::new(text));
         } else {
@@ -2186,17 +2223,23 @@ impl App {
                     match (&mut d.form, form_spec) {
                         // The command's form.
                         (Some(f), Some(fs)) if !f.json => {
-                            ui.label(RichText::new(fs.intro).color(t.text_muted));
-                            ui.add_space(2.0);
+                            // Below the fields: the links and buttons, and the box or block
+                            // card's lines saying its grid (up to three).
+                            let previewing = d.id == "mesh.box" || d.id == "mesh.block";
+                            let below = if previewing { 250.0 } else { 190.0 };
                             egui::ScrollArea::vertical()
                                 .id_salt("form-body")
-                                .max_height((room - 190.0).max(160.0))
+                                .max_height((room - below).max(160.0))
                                 .show(ui, |ui| {
+                                    // The intro scrolls with the fields: the card stays within
+                                    // the view, however long it is.
+                                    ui.label(RichText::new(fs.intro).color(t.text_muted));
+                                    ui.add_space(2.0);
                                     ask_file = forms::show(ui, fs, f, width, browse);
                                 });
                             // The box card: the box the form makes, previewed in the view.
-                            if d.id == "mesh.box" {
-                                match &self.box_summary {
+                            if previewing {
+                                match &self.preview_summary {
                                     Some(Ok(line)) => {
                                         ui.label(RichText::new(line).color(t.text));
                                     }
@@ -2250,8 +2293,17 @@ impl App {
                                     Ok(v) => match f.fill(fs, &v) {
                                         Ok(()) => {
                                             // What the JSON gives stays: a region it names
-                                            // doesn't fill the box card from its box.
-                                            f.filled_for = f.values.get("region").cloned();
+                                            // doesn't fill the box card from its box. The block
+                                            // card's grid is filled from that region's, the
+                                            // JSON laid over it (what it leaves out is the
+                                            // region's).
+                                            let region = f.values.get("region").cloned();
+                                            if d.id == "mesh.block" && f.filled_for != region {
+                                                f.filled_for = None;
+                                                f.refill = Some(v.clone());
+                                            } else {
+                                                f.filled_for = region;
+                                            }
                                             f.json = false;
                                             d.error = None;
                                         }

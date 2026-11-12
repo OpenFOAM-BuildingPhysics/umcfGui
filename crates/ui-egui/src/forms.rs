@@ -42,6 +42,205 @@ pub(crate) enum Kind {
     Numbers(&'static [&'static str]),
     /// Whole numbers, one per label (the cells along x, y and z): a list, as [`Kind::Numbers`].
     Counts(&'static [&'static str]),
+    /// An axis of a grid of blocks, as a table: a row per station, with the cells and their
+    /// grading to the next (`[station, [cells, grading], station, …]`). Sent only when changed
+    /// from what the form was filled with.
+    Axis,
+    /// Blocks of a grid left out, `[[i, j, k], …]`: ticked on a layer of the grid the axes'
+    /// fields (these keys) make, or listed. Sent only when changed.
+    Missing(&'static [&'static str; 3]),
+    /// A patch name for each of these sides (`{"west": "inlet", …}`): only those changed are
+    /// sent, one emptied as `null` (taken away).
+    Sides(&'static [&'static str]),
+}
+
+/// The rows of a [`Kind::Axis`] or [`Kind::Missing`] field's text.
+const ROWS: char = '\n';
+
+/// Whether a field is sent only when changed from what the form was filled with.
+fn sent_when_changed(kind: Kind) -> bool {
+    matches!(kind, Kind::Axis | Kind::Missing(_) | Kind::Sides(_))
+}
+
+/// A grading as JSON: a number, or sections `a b c; a b c` as `[[a, b, c], …]`; blank: 1.
+fn grading_json(text: &str) -> Option<Value> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(json!(1));
+    }
+    if !text.contains(|c: char| c == ';' || c == ',' || c.is_whitespace()) {
+        return serde_json::from_str::<Value>(text).ok().filter(Value::is_number);
+    }
+    let mut sections = Vec::new();
+    for s in text.split(';').filter(|s| !s.trim().is_empty()) {
+        let three: Option<Vec<Value>> = s
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|x| !x.is_empty())
+            .map(|x| serde_json::from_str::<Value>(x).ok().filter(Value::is_number))
+            .collect();
+        match three {
+            Some(t) if t.len() == 3 => sections.push(Value::Array(t)),
+            _ => return None,
+        }
+    }
+    (!sections.is_empty()).then_some(Value::Array(sections))
+}
+
+/// A grading's text: a number, or sections `a b c; a b c`.
+fn grading_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Number(n) => Some(n.to_string()),
+        Value::Array(sections) if !sections.is_empty() => {
+            let parts: Option<Vec<String>> = sections
+                .iter()
+                .map(|s| {
+                    let t = s.as_array().filter(|t| t.len() == 3 && t.iter().all(Value::is_number))?;
+                    Some(t.iter().map(as_text).collect::<Vec<_>>().join(" "))
+                })
+                .collect();
+            parts.map(|p| p.join("; "))
+        }
+        _ => None,
+    }
+}
+
+/// A row of an axis' table: its station, and the cells and grading to the next.
+fn axis_row(line: &str) -> [String; 3] {
+    let mut p = line.split(PARTS).map(str::to_string);
+    [p.next().unwrap_or_default(), p.next().unwrap_or_default(), p.next().unwrap_or_default()]
+}
+
+/// The text of a [`Kind::Axis`], [`Kind::Missing`] or [`Kind::Sides`] field from its JSON;
+/// `None` for a value it can't hold. Sides: over `start`'s parts (their keys merge).
+pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
+    match kind {
+        Kind::Axis => {
+            let items = v.as_array()?;
+            if items.len() % 2 == 0 {
+                return None;
+            }
+            let mut rows = Vec::with_capacity(items.len() / 2 + 1);
+            for pair in items.chunks(2) {
+                let station = pair.first().filter(|x| x.is_number()).map(as_text)?;
+                match pair.get(1) {
+                    Some(span) => {
+                        let two = span.as_array().filter(|t| t.len() == 2)?;
+                        let cells = two.first().and_then(Value::as_u64)?;
+                        let grading = grading_text(two.get(1)?)?;
+                        rows.push(format!("{station}{PARTS}{cells}{PARTS}{grading}"));
+                    }
+                    None => rows.push(station),
+                }
+            }
+            Some(rows.join(&ROWS.to_string()))
+        }
+        Kind::Missing(_) => {
+            let rows: Option<Vec<String>> = v
+                .as_array()?
+                .iter()
+                .map(|b| {
+                    let b = b.as_array().filter(|b| b.len() == 3)?;
+                    let n: Option<Vec<String>> = b.iter().map(|x| x.as_u64().map(|x| x.to_string())).collect();
+                    n.map(|n| n.join(" "))
+                })
+                .collect();
+            rows.map(|r| r.join(&ROWS.to_string()))
+        }
+        Kind::Sides(names) => {
+            let m = v.as_object()?;
+            let mut p = parts(start, names.len());
+            for (k, n) in m {
+                let at = names.iter().position(|x| x == k)?;
+                let slot = p.get_mut(at)?;
+                match n {
+                    Value::Null => slot.clear(),
+                    Value::String(n) if !n.contains(PARTS) => *slot = n.clone(),
+                    _ => return None,
+                }
+            }
+            Some(p.join(&PARTS.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The JSON of a [`Kind::Axis`], [`Kind::Missing`] or [`Kind::Sides`] field's text (`was`:
+/// what the form was filled with); `None` to leave it out; an error naming the field.
+fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> {
+    let blank = |t: &str| t.chars().all(|c| c == PARTS || c == ROWS || c.is_whitespace());
+    let rows = |t: &str| -> Vec<String> {
+        t.split(ROWS).filter(|r| !blank(r)).map(|r| r.trim().to_string()).collect::<Vec<_>>()
+    };
+    match f.kind {
+        Kind::Axis => {
+            let (now, then) = (rows(text), rows(was));
+            if now == then {
+                return Ok(None);
+            }
+            if now.is_empty() {
+                return Err(format!("{}: give its stations (an axis isn't taken away)", f.label));
+            }
+            let mut out = Vec::with_capacity(2 * now.len());
+            for (i, r) in now.iter().enumerate() {
+                let [station, cells, grading] = axis_row(r);
+                let row = i + 1;
+                if r.matches(PARTS).count() > 2 {
+                    return Err(format!("{} (row {row}): `{r}` has more than station|cells|grading", f.label));
+                }
+                let station =
+                    serde_json::from_str::<Value>(station.trim()).ok().filter(Value::is_number).ok_or_else(|| {
+                        format!("{} (row {row}): the station `{}` isn't a number", f.label, station.trim())
+                    })?;
+                out.push(station);
+                if i + 1 < now.len() {
+                    let cells = cells.trim().parse::<u64>().map_err(|_| {
+                        format!(
+                            "{} (row {row}): the cells to the next station `{}` aren't a whole number",
+                            f.label,
+                            cells.trim()
+                        )
+                    })?;
+                    let grading = grading_json(&grading).ok_or_else(|| {
+                        format!(
+                            "{} (row {row}): the grading `{}` is a number, or sections `fraction cells-fraction expansion; …`",
+                            f.label,
+                            grading.trim()
+                        )
+                    })?;
+                    out.push(json!([cells, grading]));
+                }
+            }
+            Ok(Some(Value::Array(out)))
+        }
+        Kind::Missing(_) => {
+            let (now, then) = (rows(text), rows(was));
+            if now == then {
+                return Ok(None);
+            }
+            let mut out = Vec::with_capacity(now.len());
+            for r in &now {
+                let n: Option<Vec<u64>> = block_parts(r).into_iter().map(|x| x.parse().ok()).collect();
+                match n.as_deref() {
+                    Some([i, j, k]) => out.push(json!([i, j, k])),
+                    _ => return Err(format!("{}: `{r}` isn't a block `i j k` (whole numbers from 0)", f.label)),
+                }
+            }
+            Ok(Some(Value::Array(out)))
+        }
+        Kind::Sides(names) => {
+            let (now, then) = (parts(text, names.len()), parts(was, names.len()));
+            let mut m = Map::new();
+            for ((name, n), w) in names.iter().zip(&now).zip(&then) {
+                let (n, w) = (n.trim(), w.trim());
+                if n == w {
+                    continue;
+                }
+                m.insert(name.to_string(), if n.is_empty() { Value::Null } else { json!(n) });
+            }
+            Ok((!m.is_empty()).then_some(Value::Object(m)))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The text of a [`Kind::Numbers`] or [`Kind::Counts`] field: its parts, one per label.
@@ -197,6 +396,41 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "mesh.block",
+        intro: "A region's grid of blocks: its stations and cells along each axis, the blocks left out (the buildings) and the sides' patches; its blockMeshDict written from them.",
+        fields: &[
+            field("region", "Region", Kind::WorkflowRegion, "A region of system/umcfWorkflow"),
+            field("x", "x", Kind::Axis, "The stations along x, west to east"),
+            field("y", "y", Kind::Axis, "The stations along y, south to north"),
+            field("z", "z", Kind::Axis, "The stations along z"),
+            field(
+                "missing",
+                "Missing blocks",
+                Kind::Missing(&["x", "y", "z"]),
+                "Blocks left out (the buildings), counted from 0 along x, y and z",
+            ),
+            field(
+                "patches",
+                "Patches",
+                Kind::Sides(&["west", "east", "south", "north", "ground", "top", "missing"]),
+                "Each side's patch; empty: its faces left to blockMesh's own (defaultFaces)",
+            ),
+            field(
+                "replace",
+                "Write over a blockMeshDict edited by hand",
+                Kind::Flag,
+                "Save keeps the one there in the backup",
+            ),
+            field(
+                "remove",
+                "Take the blocks out of the description",
+                Kind::Flag,
+                "With the box they were made from; the blockMeshDict stays",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
         id: "scene.snapshot",
         intro: "A PNG of the case in 3D, drawn by the CPU renderer.",
         fields: &[
@@ -248,6 +482,9 @@ pub struct FormState {
     /// The region the form was last filled for (the box card fills its fields from the
     /// region's box when the region changes).
     pub(crate) filled_for: Option<String>,
+    /// Parameters from *Edit as JSON* naming another region than the form was filled for:
+    /// laid over that region's grid once it is filled from it (the block card).
+    pub(crate) refill: Option<Value>,
 }
 
 fn as_text(v: &Value) -> String {
@@ -263,7 +500,7 @@ impl FormState {
     /// Whether something was typed or ticked since the form was filled: a field's text other
     /// than it was (empty parts counted as empty), a list other than it was.
     pub(crate) fn typed(&self) -> bool {
-        let empty = |t: &str| t.chars().all(|c| c == PARTS || c.is_whitespace());
+        let empty = |t: &str| t.chars().all(|c| c == PARTS || c == ROWS || c.is_whitespace());
         let differs = |k: &&'static str, v: &String| {
             let was = self.initial.get(k).map(String::as_str).unwrap_or("");
             v != was && !(empty(v) && empty(was))
@@ -288,6 +525,18 @@ impl FormState {
                 // None ticked: left out (or what the JSON had that a list can't hold, kept).
                 if !list.is_empty() {
                     out.insert(f.key.to_string(), json!(list));
+                }
+                continue;
+            }
+            if sent_when_changed(f.kind) {
+                let text = self.values.get(f.key).map(String::as_str).unwrap_or("");
+                // What the JSON had that the field can't hold: kept, sent as it is.
+                if text.trim().is_empty() && self.extra.contains_key(f.key) {
+                    continue;
+                }
+                let was = self.initial.get(f.key).map(String::as_str).unwrap_or("");
+                if let Some(v) = grid_json(f, text, was)? {
+                    out.insert(f.key.to_string(), v);
                 }
                 continue;
             }
@@ -396,6 +645,24 @@ impl FormState {
                         (None, Some(v)) => {
                             self.lists.insert(f.key, BTreeSet::new());
                             keep(&mut extra, v);
+                        }
+                        (None, None) => {}
+                    }
+                }
+                Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
+                    // Left out: as the form was filled (unchanged).
+                    let was = self.initial.get(f.key).cloned().unwrap_or_default();
+                    let text = match &v {
+                        None => Some(was.clone()),
+                        Some(v) => grid_text(f.kind, v, &was),
+                    };
+                    match (text, &v) {
+                        (Some(t), _) => {
+                            self.values.insert(f.key, t);
+                        }
+                        (None, Some(v)) => {
+                            keep(&mut extra, v);
+                            self.values.insert(f.key, String::new());
                         }
                         (None, None) => {}
                     }
@@ -533,6 +800,25 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                         form.values.insert(f.key, String::new());
                     }
                 }
+                Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
+                    let label = ui.label(f.label);
+                    if !f.tip.is_empty() {
+                        label.on_hover_text(f.tip);
+                    }
+                    let counts = match f.kind {
+                        Kind::Missing(axes) => {
+                            Some(axes.map(|k| stations(form.values.get(k).map_or("", String::as_str))))
+                        }
+                        _ => None,
+                    };
+                    let text = form.values.entry(f.key).or_default();
+                    ui.vertical(|ui| match f.kind {
+                        Kind::Axis => axis_table(ui, (spec.id, f.key), text),
+                        Kind::Missing(_) => missing_blocks(ui, (spec.id, f.key), text, counts.unwrap_or_default()),
+                        Kind::Sides(names) => sides(ui, (spec.id, f.key), text, names),
+                        _ => {}
+                    });
+                }
                 Kind::Surfaces | Kind::Regions => {
                     let label = ui.label(f.label);
                     if !f.tip.is_empty() {
@@ -646,7 +932,13 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                             let edit = egui::TextEdit::singleline(text).desired_width(wide).hint_text(hint);
                             ui.add(edit).labelled_by(label.id);
                         }
-                        Kind::Flag | Kind::FlagOn | Kind::Surfaces | Kind::Regions => {}
+                        Kind::Flag
+                        | Kind::FlagOn
+                        | Kind::Surfaces
+                        | Kind::Regions
+                        | Kind::Axis
+                        | Kind::Missing(_)
+                        | Kind::Sides(_) => {}
                     }
                 }
             }
@@ -654,6 +946,195 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
         }
     });
     ask
+}
+
+/// The parts of a missing block's row (`1 1 0`, `1,1,0`).
+fn block_parts(row: &str) -> Vec<&str> {
+    row.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).collect()
+}
+
+/// The number of stations an axis' table gives (its rows not blank).
+fn stations(text: &str) -> usize {
+    text.split(ROWS).filter(|r| !r.chars().all(|c| c == PARTS || c.is_whitespace())).count()
+}
+
+/// The rows of a table shown at most, past which it is edited as text.
+const TABLE_ROWS: usize = 200;
+
+/// An axis as a table: a row per station, with the cells and grading to the next; rows added
+/// and taken away. A longer one as text, a row a line (`station|cells|grading`).
+fn axis_table(ui: &mut Ui, id: (&str, &str), text: &mut String) {
+    let mut rows: Vec<[String; 3]> = text.split(ROWS).map(axis_row).collect();
+    if text.is_empty() {
+        rows.clear();
+    }
+    if rows.len() > TABLE_ROWS {
+        let l =
+            ui.label(RichText::new(format!("{} stations, a row a line: station|cells|grading", rows.len())).size(12.0));
+        egui::ScrollArea::vertical().id_salt(("axis-text", id)).max_height(140.0).show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(6).desired_width(f32::INFINITY))
+                .labelled_by(l.id);
+        });
+        return;
+    }
+    let mut remove = None;
+    let last = rows.len().saturating_sub(1);
+    egui::ScrollArea::vertical().id_salt(("axis", id)).max_height(150.0).show(ui, |ui| {
+        egui::Grid::new(("axis-grid", id)).num_columns(4).spacing(vec2(6.0, 3.0)).show(ui, |ui| {
+            let hs = ui.label(RichText::new("Station (m)").size(11.5)).id;
+            let hc = ui.label(RichText::new("Cells to next").size(11.5)).id;
+            let hg = ui
+                .label(RichText::new("Grading").size(11.5))
+                .on_hover_text("Last cell over first; or sections: fraction cells-fraction expansion; …")
+                .id;
+            ui.label("");
+            ui.end_row();
+            for (i, [station, cells, grading]) in rows.iter_mut().enumerate() {
+                ui.add(egui::TextEdit::singleline(station).desired_width(64.0)).labelled_by(hs);
+                if i < last {
+                    ui.add(egui::TextEdit::singleline(cells).desired_width(52.0)).labelled_by(hc);
+                    ui.add(egui::TextEdit::singleline(grading).desired_width(84.0).hint_text("1")).labelled_by(hg);
+                } else {
+                    ui.label("");
+                    ui.label("");
+                }
+                if ui.small_button("−").on_hover_text("Take this station away").clicked() {
+                    remove = Some(i);
+                }
+                for t in [&mut *station, &mut *cells, &mut *grading] {
+                    if t.contains([PARTS, ROWS]) {
+                        *t = t.replace([PARTS, ROWS], "");
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if let Some(i) = remove {
+        rows.remove(i);
+    }
+    if ui.small_button("+ Station").on_hover_text("A station after the last").clicked() {
+        rows.push(Default::default());
+    }
+    let joined: Vec<String> =
+        rows.iter()
+            // A row only of its station (the last) as the station; a blank one kept as its parts,
+            // to be typed in (blank rows are sent as none).
+            .map(|[a, b, c]| {
+                if b.is_empty() && c.is_empty() && !a.is_empty() {
+                    a.clone()
+                } else {
+                    format!("{a}{PARTS}{b}{PARTS}{c}")
+                }
+            })
+            .collect();
+    *text = joined.join(&ROWS.to_string());
+}
+
+/// The most blocks along x or y shown to tick on a layer; past it, listed only.
+const TICK_SIDE: usize = 40;
+
+/// Missing blocks: ticked on a layer of the grid (along z; x across, y up), and listed, a block
+/// a line (`i j k`).
+fn missing_blocks(ui: &mut Ui, id: (&str, &str), text: &mut String, stations: [usize; 3]) {
+    let [nx, ny, nz] = stations.map(|s| s.saturating_sub(1));
+    // Each row as `i j k`, however typed.
+    let mut list: Vec<String> = text.split(ROWS).map(|r| block_parts(r).join(" ")).filter(|r| !r.is_empty()).collect();
+    let ticked: std::collections::HashSet<String> = list.iter().cloned().collect();
+    let mut toggle = None;
+    if nx > 0 && ny > 0 && nz > 0 && nx <= TICK_SIDE && ny <= TICK_SIDE {
+        let layer_id = egui::Id::unique(("missing-layer", id));
+        let mut k: usize = ui.data(|d| d.get_temp(layer_id)).unwrap_or(0).min(nz - 1);
+        ui.horizontal(|ui| {
+            let l = ui.label(RichText::new("Layer k (along z)").size(12.0));
+            ui.add(egui::DragValue::new(&mut k).range(0..=nz - 1)).labelled_by(l.id);
+            ui.label(RichText::new(format!("of {nz}; x across, y up")).size(12.0).weak());
+        });
+        ui.data_mut(|d| d.insert_temp(layer_id, k));
+        let side = (220.0 / nx.max(ny) as f32).clamp(5.0, 18.0);
+        let (rect, response) = ui.allocate_exact_size(vec2(side * nx as f32, side * ny as f32), egui::Sense::click());
+        let painter = ui.painter_at(rect);
+        let v = ui.visuals();
+        let (fill, empty, line) = (v.selection.bg_fill, v.extreme_bg_color, v.widgets.noninteractive.bg_stroke);
+        for i in 0..nx {
+            for j in 0..ny {
+                let at = egui::pos2(rect.min.x + i as f32 * side, rect.max.y - (j + 1) as f32 * side);
+                let cell = egui::Rect::from_min_size(at, vec2(side, side));
+                let on = ticked.contains(&format!("{i} {j} {k}"));
+                painter.rect_filled(cell.shrink(0.5), 0.0, if on { fill } else { empty });
+                painter.rect_stroke(cell, 0.0, line, egui::StrokeKind::Inside);
+            }
+        }
+        let block = |p: egui::Pos2| {
+            let i = ((p.x - rect.min.x) / side).floor();
+            let j = ((rect.max.y - p.y) / side).floor();
+            (i >= 0.0 && j >= 0.0 && (i as usize) < nx && (j as usize) < ny).then_some((i as usize, j as usize))
+        };
+        if let Some((i, j)) = response.hover_pos().and_then(block) {
+            response.clone().on_hover_text(format!("block {i} {j} {k}"));
+        }
+        if response.clicked()
+            && let Some((i, j)) = response.interact_pointer_pos().and_then(block)
+        {
+            toggle = Some(format!("{i} {j} {k}"));
+        }
+    } else if nx > TICK_SIDE || ny > TICK_SIDE {
+        ui.label(RichText::new(format!("{nx} × {ny} blocks a layer: listed below")).size(12.0).weak());
+    }
+    if let Some(b) = toggle {
+        // Every row of the block taken away (however typed), or the block added.
+        let before = list.len();
+        list.retain(|x| *x != b);
+        if list.len() == before {
+            list.push(b);
+        }
+        *text = list.join(&ROWS.to_string());
+    }
+    egui::CollapsingHeader::new(RichText::new(format!("{} missing, as a list", list.len())).size(12.0))
+        .id_salt(("missing-list", id))
+        .show(ui, |ui| {
+            let l = ui.label(RichText::new("A block a line: i j k").size(11.5));
+            egui::ScrollArea::vertical().id_salt(("missing-text", id)).max_height(120.0).show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .code_editor()
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("i j k, a block a line"),
+                )
+                .labelled_by(l.id);
+            });
+        });
+}
+
+/// What each side is, for its label.
+fn side_hint(name: &str) -> &'static str {
+    match name {
+        "west" => "x min",
+        "east" => "x max",
+        "south" => "y min",
+        "north" => "y max",
+        "ground" => "z min",
+        "top" => "z max",
+        "missing" => "around the missing blocks",
+        _ => "",
+    }
+}
+
+/// A patch for each side: a name each; empty: none (its faces to blockMesh's own).
+fn sides(ui: &mut Ui, id: (&str, &str), text: &mut String, names: &[&str]) {
+    let mut v = parts(text, names.len());
+    egui::Grid::new(("sides", id)).num_columns(2).spacing(vec2(6.0, 3.0)).show(ui, |ui| {
+        for (p, name) in v.iter_mut().zip(names) {
+            let l = ui.label(RichText::new(*name).size(12.0)).on_hover_text(side_hint(name));
+            ui.add(egui::TextEdit::singleline(p).desired_width(120.0).hint_text(side_hint(name))).labelled_by(l.id);
+            if p.contains([PARTS, ROWS]) {
+                *p = p.replace([PARTS, ROWS], "");
+            }
+            ui.end_row();
+        }
+    });
+    *text = v.join(&PARTS.to_string());
 }
 
 /// Draws the parameters a refusal offered, as checkboxes.
@@ -789,5 +1270,69 @@ mod tests {
         // One margin for all (JSON only): kept and sent as it is.
         f.fill(spec, &json!({"margin": 50})).unwrap();
         assert_eq!(f.params(spec).unwrap()["margin"], json!(50));
+    }
+
+    #[test]
+    fn a_grids_axes_missing_blocks_and_sides_are_sent_when_changed() {
+        let spec = spec("mesh.block").unwrap();
+        // Filled from a region's grid: as JSON, the same back; unchanged, left out.
+        let had = json!({
+            "x": [0, [7, 0.5], 200, [10, [[0.5, 0.5, 13.9], [0.5, 0.5, 0.072]]], 590],
+            "missing": [[1, 1, 0], [2, 0, 3]],
+            "patches": {"west": "inlet", "ground": "ground"},
+        });
+        let mut f = FormState::default();
+        for k in ["x", "missing", "patches"] {
+            let field = spec.fields.iter().find(|x| x.key == k).unwrap();
+            f.values.insert(field.key, grid_text(field.kind, &had[k], "").unwrap());
+        }
+        assert_eq!(f.values["x"], "0|7|0.5\n200|10|0.5 0.5 13.9; 0.5 0.5 0.072\n590");
+        assert_eq!(f.values["patches"], "inlet||||ground||");
+        f.values.insert("region", "air".into());
+        f.initial = f.values.clone();
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air"}));
+        assert!(!f.typed());
+        // A station changed: the whole axis sent; a grading left blank is 1.
+        f.values.insert("x", "0|7|0.5\n200|10|\n600".into());
+        assert_eq!(f.params(spec).unwrap()["x"], json!([0, [7, 0.5], 200, [10, 1], 600]));
+        assert!(f.typed());
+        // A side renamed and one emptied: only those, the emptied one as null.
+        f.values.insert("patches", "inflow||||||buildings".into());
+        assert_eq!(
+            f.params(spec).unwrap()["patches"],
+            json!({"west": "inflow", "ground": null, "missing": "buildings"})
+        );
+        // Every missing block taken away: an empty list.
+        f.values.insert("missing", " \n".into());
+        assert_eq!(f.params(spec).unwrap()["missing"], json!([]));
+        // What isn't what the field takes: said by row.
+        f.values.insert("x", "0|7|0.5\nfar|10|1\n600".into());
+        assert!(f.params(spec).unwrap_err().contains("x (row 2): the station `far`"));
+        f.values.insert("x", "0|seven|1\n600".into());
+        assert!(f.params(spec).unwrap_err().contains("aren't a whole number"));
+        f.values.insert("x", "0|7|1 2\n600".into());
+        assert!(f.params(spec).unwrap_err().contains("the grading `1 2`"));
+        f.values.insert("x", String::new());
+        assert!(f.params(spec).unwrap_err().contains("isn't taken away"));
+        f.values.insert("x", "0|7|1|9\n600".into());
+        assert!(f.params(spec).unwrap_err().contains("more than station|cells|grading"));
+        // Sections typed with tabs or commas; a block with commas.
+        f.values.insert("x", "0|7|0.5\t0.5\t2;0.5,0.5,1\n600".into());
+        assert_eq!(f.params(spec).unwrap()["x"], json!([0, [7, [[0.5, 0.5, 2], [0.5, 0.5, 1]]], 600]));
+        f.values.insert("missing", "1,1,0".into());
+        assert_eq!(f.params(spec).unwrap()["missing"], json!([[1, 1, 0]]));
+        f.values.insert("x", f.initial["x"].clone());
+        f.values.insert("missing", "1 1".into());
+        assert!(f.params(spec).unwrap_err().contains("`1 1` isn't a block"));
+        // Back from JSON: a key left out stays as filled; patches merge over it; what the
+        // fields can't hold is kept and sent as it is.
+        f.fill(spec, &json!({"region": "air", "patches": {"top": "sky"}, "y": "bad", "types": {"sky": "patch"}}))
+            .unwrap();
+        assert_eq!(f.values["missing"], f.initial["missing"]);
+        assert_eq!(f.values["patches"], "inlet||||ground|sky|");
+        assert_eq!(
+            f.params(spec).unwrap(),
+            json!({"region": "air", "patches": {"top": "sky"}, "y": "bad", "types": {"sky": "patch"}})
+        );
     }
 }
