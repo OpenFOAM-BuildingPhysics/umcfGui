@@ -411,6 +411,7 @@ fn a_box_changes_key_by_key() {
         surfaces: vec!["a.stl".to_string()],
         margin: [1.0, 1.0, 1.0, 1.0, 0.0, 1.0],
         cells: BoxCells::Size(2.0),
+        made: None,
     };
     c.describe_box(&region, &b).unwrap();
     assert_eq!(read(&c).region(&region).unwrap().mesh_box.as_ref(), Some(&b));

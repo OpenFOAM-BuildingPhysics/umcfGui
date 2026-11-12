@@ -41,6 +41,10 @@ pub fn ground_and_top(case: &Case, region: &str) -> (Side, Side, bool) {
     let g = [format!("constant/{region}/g"), "constant/g".to_string()].iter().find_map(|rel| {
         let e = case.dict(rel)?.get(&["value"])?;
         let [umcf_foam_dict::Node::List { items, .. }] = e.value.as_slice() else { return None };
+        // Three items, or no gravity: counted before anything is read of them.
+        if items.len() != 3 {
+            return None;
+        }
         // Exactly three numbers, all finite, one at least not 0: else no gravity is read.
         let v: Option<Vec<f64>> = items
             .iter()
@@ -1289,6 +1293,18 @@ impl BlockGrid {
 
 /// The header line that carries a generated file's checksum.
 const CHECKSUM: &str = "// checksum ";
+
+/// A checksum of a grid's shape: its stations, cells and gradings, missing blocks and single
+/// faces, as the description writes them (not its patches or types).
+pub fn shape_checksum(g: &BlockGrid) -> u64 {
+    let mut text = String::new();
+    for (k, v) in g.parts() {
+        if matches!(k, "x" | "y" | "z" | "missing" | "faces") {
+            let _ = writeln!(text, "{k} {}", v.unwrap_or_default());
+        }
+    }
+    checksum(text.as_bytes())
+}
 
 /// FNV-1a, 64 bits: the same on every platform and version, unlike the standard library's
 /// hashers.

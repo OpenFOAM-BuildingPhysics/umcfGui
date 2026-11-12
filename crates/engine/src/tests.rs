@@ -3977,7 +3977,30 @@ fn a_box_around_the_surfaces_makes_a_regions_blocks() {
         )
         .unwrap();
         let e = s.execute("mesh.box", &json!({"region": "air"})).unwrap_err().to_string();
-        assert!(e.starts_with("mesh.box: ") && e.contains("aren't a box's any more") && e.contains("reshape"), "{e}");
+        assert!(
+            e.starts_with("mesh.box: ") && e.contains("edited since its box made them") && e.contains("reshape"),
+            "{e}"
+        );
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // Also an edit that keeps a box's shape: other stations, one span each.
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/umcfWorkflow", "path": "regions/air/blocks/z", "value": "( 0 (3 1) 30 )"}),
+        )
+        .unwrap();
+        let e = s.execute("mesh.box", &json!({"region": "air"})).unwrap_err().to_string();
+        assert!(e.contains("edited since its box made them") && e.contains("reshape"), "{e}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // The box entry edited by hand isn't an edit of the blocks: made again from it.
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/umcfWorkflow", "path": "regions/air/box/margin", "value": "( 4 4 4 4 0 4 )"}),
+        )
+        .unwrap();
+        let out = s.execute("mesh.box", &json!({"region": "air"})).unwrap();
+        assert_eq!(region(&s).blocks.unwrap().axes[0].stations, [min[0] - 4.0, max[0] + 4.0]);
+        assert!(!out.message.contains("in the undo history"), "{}", out.message);
+        s.execute("edit.undo", &Value::Null).unwrap();
         s.execute("edit.undo", &Value::Null).unwrap();
         // A grid given by hand isn't the box's any more.
         let out = s.execute("mesh.block", &json!({"region": "air", "x": [0, [3, 1], 30]})).unwrap();

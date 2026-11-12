@@ -446,8 +446,9 @@ air
 |---|---|
 | `surfaces` | the STL surfaces of `constant/triSurface` whose bounds the box is around: file names ending `.stl`, `.stlb`, `.stl.gz` or `.stlb.gz` |
 | `margin` | how far the box reaches past the bounds on each side: `west`/`east` along x, `south`/`north` along y, `ground`/`top` along z, as the blocks name the sides |
-| `cellSize` | the cells' size: cubes, the box grown by less than a cell so that each axis is a whole number of cells: at the far end of each axis (east, north, top), and along the gravity away from the ground |
+| `cellSize` | the cells' size: cubes, the box grown by less than a cell so that each axis is a whole number of cells: at the far end of each axis (east, north, top), except along the gravity, where it grows away from the ground (at `ground` with the gravity along +z, where `top` is the ground); a length within rounding of whole cells keeps its end, so the box never falls short of the bounds plus margins |
 | `cells` | instead of `cellSize`, the cells along x, y and z: the box is as the bounds and margins make it |
+| `made` | written by `mesh.box`: a checksum of the blocks it made (their stations, cells, gradings, missing blocks and single faces), so that blocks edited since are told from a box or surfaces that changed |
 
 `mesh.box` reads the surfaces (each as OpenFOAM reads it: ASCII or binary, compressed or not),
 makes the region's blocks from their bounds and the box, one block with one span along each axis
@@ -469,7 +470,7 @@ umcf-cli run --case path/to/case \
 | `margin` | `50` (every side but the ground, which is 0, so the box stands on the surfaces' bottom), or six `[west, east, south, north, ground, top]`, each 0 or more |
 | `cellSize`, `cells` | one of the two: `2`, or `[200, 75, 40]` |
 | `patches`, `types`, `noFaces` | as `mesh.block` takes them |
-| `reshape` | `true` to replace blocks that weren't made from the region's box, or no longer have a box's shape (edited since) |
+| `reshape` | `true` to replace blocks that weren't made from the region's box, or aren't what it made (edited since) |
 | `replace`, `dropPatches`, `dropEntries`, `unreadPatches`, `dropSettings` | as `mesh.block` takes them, for the `blockMeshDict` there |
 | `remove` | `true` takes the box out of the description; the blocks stay as they are |
 
@@ -487,8 +488,9 @@ and north; with y up: `inlet` west, `outlet` east, `ground` south, `top` north, 
 region, those of them the description doesn't list yet are added with their roles of the same
 names, on whichever side `patches` puts them, so the ground is a `wall` and the others `patch`. A region without a `mesh` gets
 `mesh blocks;`. Blocks that weren't made from the region's box (given by `mesh.block`, read by
-`workflow.import`), or no longer have a box's shape (one span along each axis, graded 1, no
-missing blocks or single faces: blocks edited by hand since) are replaced only with `reshape`:
+`workflow.import`), or edited since the box made them (their checksum isn't its `made`: other
+stations, cells or gradings, even of one span; an edit of the box entry or of the surfaces
+isn't one of the blocks) are replaced only with `reshape`:
 their stations, missing blocks and single faces give way to the box's, and the patch around
 the missing blocks goes, with the `types` of the patches the box no longer has (as any patch the dictionary drops: a wall only when `dropPatches`
 names it); the rest stays (`edit.undo` takes it back). The surfaces are read one after the

@@ -2411,7 +2411,7 @@ fn the_ground_and_top_of_blocks_follow_the_gravity() {
         "{m:#?}"
     );
     // Nor a g with a component that isn't a finite number, or not three of them.
-    for bad in ["(NaN -9.81 0)", "(0 0 -9.81 foo)", "(0 -9.81)", "(inf 0 0)"] {
+    for bad in ["(NaN -9.81 0)", "(0 0 -9.81 foo)", "(0 -9.81)", "(inf 0 0)", "(0 -9.81 0 0)"] {
         fs.insert("constant/air/g", format!("{}value {bad};\n", header("uniformDimensionedVectorField")));
         let m = fits(&fs);
         assert!(

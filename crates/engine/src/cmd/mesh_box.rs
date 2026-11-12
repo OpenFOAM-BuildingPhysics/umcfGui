@@ -21,7 +21,7 @@ pub(super) const BOX: CommandSpec = CommandSpec {
     label: "Box mesh",
     menu: "Mesh/Box around the surfaces",
     shortcut: None,
-    params: "region: a region of system/umcfWorkflow whose mesh is `blocks` or built in constant/polyMesh by steps starting with blockMesh (as for mesh.block; a region without a mesh is given `mesh blocks;`). surfaces: the surfaces in constant/triSurface the box is around, [\"buildings.stl\", …] (default: the region's box's, else every STL surface there). margin: how far the box reaches past the surfaces' bounds, a number (every side but the ground, which is 0) or six [west, east, south, north, ground, top] (west/east along x, south/north along y, ground/top along z). The ground is the side the gravity points to (constant/<region>/g, else constant/g, else z down): ground with g along -z, south with g along -y. cellSize: the cells' size, cubes (the box grows by less than a cell so each axis is a whole number of cells: at the far end of each axis, and away from the ground along the gravity); or cells: [nx, ny, nz], the box kept as the bounds and margins make it. Each defaults to the region's box's; a region without a box needs margin and cellSize or cells. The box is one block with one span along each axis, its grading 1, at most 1000000000 cells. patches, types, noFaces: as mesh.block takes them (a region without blocks gets ground and top across the gravity, inlet and outlet at the ends of the first other axis, side on both ends of the last: along z {\"west\": \"inlet\", \"east\": \"outlet\", \"south\": \"side\", \"north\": \"side\", \"ground\": \"ground\", \"top\": \"top\"}, which patches changes; in a fluid region those of these names the description doesn't list are added with their roles of the same names, on whichever side patches puts them). Blocks that weren't made from the region's box (given by mesh.block or read by workflow.import), or no longer a box's (more than one span along an axis, a grading, missing blocks or single faces), are kept unless reshape: true, which replaces their stations, missing blocks and single faces and drops the patch around the missing blocks (the description keeps the rest; edit.undo takes it all back). replace, dropPatches, dropEntries, unreadPatches, dropSettings: as mesh.block takes them, for the blockMeshDict there; the outcome is mesh.block's, with the box, the surfaces' bounds, boxChanged and the ground's side (ground; without a g read, z is taken as up, and the message says so). With only region, the blocks are made again from the box there (after the surfaces changed). remove: true takes the box out of the description (the blocks stay, as they are). The surfaces are read one after the other; the call can be cancelled between them. The box goes into the region's box entry of system/umcfWorkflow (only the keys that change), and a later mesh.block that changes the grid's shape takes it out. case.save writes it all; edit.undo takes it back. The case check (workflow.blocks) names a box without blocks, one with a problem of its own (a surface name that isn't an STL file of constant/triSurface, a negative margin), and surfaces the case doesn't have.",
+    params: "region: a region of system/umcfWorkflow whose mesh is `blocks` or built in constant/polyMesh by steps starting with blockMesh (as for mesh.block; a region without a mesh is given `mesh blocks;`). surfaces: the surfaces in constant/triSurface the box is around, [\"buildings.stl\", …] (default: the region's box's, else every STL surface there). margin: how far the box reaches past the surfaces' bounds, a number (every side but the ground, which is 0) or six [west, east, south, north, ground, top] (west/east along x, south/north along y, ground/top along z). The ground is the side the gravity points to (constant/<region>/g, else constant/g, else z down): ground with g along -z, south with g along -y. cellSize: the cells' size, cubes (the box grows by less than a cell so each axis is a whole number of cells: at the far end of each axis, and away from the ground along the gravity; a length within rounding of whole cells keeps its end, the cells a size within rounding); or cells: [nx, ny, nz], the box kept as the bounds and margins make it. Each defaults to the region's box's; a region without a box needs margin and cellSize or cells. The box is one block with one span along each axis, its grading 1, at most 1000000000 cells. patches, types, noFaces: as mesh.block takes them (a region without blocks gets ground and top across the gravity, inlet and outlet at the ends of the first other axis, side on both ends of the last: along z {\"west\": \"inlet\", \"east\": \"outlet\", \"south\": \"side\", \"north\": \"side\", \"ground\": \"ground\", \"top\": \"top\"}, which patches changes; in a fluid region those of these names the description doesn't list are added with their roles of the same names, on whichever side patches puts them). Blocks that weren't made from the region's box (given by mesh.block or read by workflow.import), or edited since the box made them (its entry keeps the checksum of the blocks it made, made; without one: blocks of another shape than one span along each axis, graded 1, nothing missing), are kept unless reshape: true, which replaces their stations, missing blocks and single faces and drops the patch around the missing blocks (the description keeps the rest; edit.undo takes it all back). replace, dropPatches, dropEntries, unreadPatches, dropSettings: as mesh.block takes them, for the blockMeshDict there; the outcome is mesh.block's, with the box, the surfaces' bounds, boxChanged and the ground's side (ground; without a g read, z is taken as up, and the message says so). With only region, the blocks are made again from the box there (after the surfaces changed). remove: true takes the box out of the description (the blocks stay, as they are). The surfaces are read one after the other; the call can be cancelled between them. The box goes into the region's box entry of system/umcfWorkflow (only the keys that change), with made: the checksum of the blocks it made, and a later mesh.block that changes the grid's shape takes it out. case.save writes it all; edit.undo takes it back. The case check (workflow.blocks) names a box without blocks, one with a problem of its own (a surface name that isn't an STL file of constant/triSurface, a negative margin), and surfaces the case doesn't have.",
     enabled: needs_case,
     run: make_box,
     journal: true,
@@ -176,12 +176,22 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         }) && g.missing.is_empty()
             && g.faces.is_empty()
     });
-    let replaces = r.blocks.is_some() && (had.is_none() || !boxlike);
+    // The checksum of the blocks the box last made: the blocks as it left them (a hand edit
+    // that keeps a box's shape, other stations or cells, is told too; one of the box entry
+    // itself, or of the surfaces, isn't an edit of the blocks).
+    let made_then = match (&had, &r.blocks) {
+        (Some(h), Some(g)) => match h.made {
+            Some(c) => umcf_model::blocks::shape_checksum(g) == c,
+            None => boxlike,
+        },
+        _ => false,
+    };
+    let replaces = r.blocks.is_some() && !made_then;
     if replaces && !reshape {
         let why = if had.is_none() {
             "blocks that weren't made from a box (given by mesh.block or read by workflow.import)"
         } else {
-            "blocks that aren't a box's any more (more than one span along an axis, a grading, missing blocks or single faces: edited since)"
+            "blocks edited since its box made them"
         };
         return Err(Error::Failed(format!(
             "{}: region {region} has {why}: pass \"reshape\": true to replace their stations, missing blocks and single faces with the box",
@@ -239,13 +249,15 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         (None, None, Some(b)) => b.cells.clone(),
         (None, None, None) => return Err(bad(format!("region {region} has no box yet: give cellSize or cells"))),
     };
-    let b = MeshBox { surfaces, margin, cells };
+    let mut b = MeshBox { surfaces, margin, cells, made: None };
     if let Some((k, m)) = b.problems().first() {
         return Err(bad(format!("{k} {m}")));
     }
     let bbox = bounds(s, &b.surfaces)?;
     let at = |v: umcf_geom::Vec3| [v.x, v.y, v.z];
     let axes = b.axes(at(bbox.min), at(bbox.max), ground).map_err(bad)?;
+    let made = umcf_model::blocks::BlockGrid { axes: axes.clone(), ..Default::default() };
+    b.made = Some(umcf_model::blocks::shape_checksum(&made));
     // The blocks, as mesh.block takes them: the box's stations, no missing blocks or single
     // faces, the sides' patches the region has (or the defaults), and what the call passes on.
     let mut call = Map::new();

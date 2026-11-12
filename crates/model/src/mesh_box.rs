@@ -52,6 +52,10 @@ pub struct MeshBox {
     /// West, east, south, north, ground, top: how far the box reaches past the bounds.
     pub margin: [f64; 6],
     pub cells: BoxCells,
+    /// The checksum of the blocks' shape (stations, cells, gradings, missing blocks, single
+    /// faces: [`crate::blocks::shape_checksum`]) the box last made, written by `mesh.box`:
+    /// blocks with another were edited since.
+    pub made: Option<u64>,
 }
 
 impl MeshBox {
@@ -125,8 +129,8 @@ impl MeshBox {
                 BoxCells::Counts(n) => u64::from(n.get(a).copied().unwrap_or(1)),
                 BoxCells::Size(h) => {
                     let q = length / h;
-                    // A length within rounding of a whole number of cells is that number,
-                    // not one more.
+                    // A length within rounding of a whole number of cells is that number, not
+                    // one more (coordinates far from the origin lose digits in `hi - lo`).
                     let n = if (q - q.round()).abs() <= 1e-9 * q.max(1.0) { q.round() } else { q.ceil() };
                     if !(n.is_finite() && n >= 1.0 && n <= MAX_CELLS as f64) {
                         return Err(format!(
@@ -136,10 +140,12 @@ impl MeshBox {
                     }
                     // Within MAX_CELLS, so exact as an integer.
                     let n = n as u64;
+                    // Never inside the bounds plus margins: a cell within rounding of the size
+                    // keeps the end where they put it.
                     if from_hi {
-                        lo = hi - n as f64 * h;
+                        lo = lo.min(hi - n as f64 * h);
                     } else {
-                        hi = lo + n as f64 * h;
+                        hi = hi.max(lo + n as f64 * h);
                     }
                     if !(lo.is_finite() && hi.is_finite()) {
                         return Err(format!("along {name} the box isn't finite"));
@@ -183,6 +189,7 @@ impl MeshBox {
             ("margin", Some(self.margin_text())),
             ("cellSize", size),
             ("cells", counts),
+            ("made", self.made.map(|c| c.to_string())),
         ]
     }
 
@@ -205,6 +212,7 @@ impl MeshBox {
         let mut margin = None;
         let mut size = None;
         let mut counts = None;
+        let mut made = None;
         let mut ok = true;
         let mut seen = HashSet::new();
         non_entries(body, at, problem);
@@ -261,7 +269,14 @@ impl MeshBox {
                         }
                     }
                 }
-                _ => problem(&here, "isn't a key of a box: surfaces, margin, cellSize or cells".into()),
+                "made" => match e.value.as_slice() {
+                    [n] if node_count(n).is_some() => made = node_count(n),
+                    _ => {
+                        ok = false;
+                        problem(&here, "is the checksum of the blocks the box made (a whole number)".into());
+                    }
+                },
+                _ => problem(&here, "isn't a key of a box: surfaces, margin, cellSize, cells or made".into()),
             }
         }
         let cells = match (size, counts) {
@@ -283,7 +298,7 @@ impl MeshBox {
                 problem(at, format!("has no {k}"));
             }
         }
-        Some(MeshBox { surfaces: surfaces?, margin: margin?, cells: cells? })
+        Some(MeshBox { surfaces: surfaces?, margin: margin?, cells: cells?, made })
     }
 }
 
@@ -297,11 +312,13 @@ pub fn is_surface_file(name: &str) -> bool {
         && [".stl", ".stlb", ".stl.gz", ".stlb.gz"].iter().any(|e| name.len() > e.len() && name.ends_with(e))
 }
 
-/// A surface's file name in a `surfaces` list: a word or a string.
+/// A surface's file name in a `surfaces` list: a word, or a string (which may start with `$`
+/// or `#`, as the description writes such a name; a word that does is a macro or directive).
 fn name_of(n: &Node) -> Option<String> {
     let t = atom(n)?;
+    let quoted = t.len() >= 2 && t.starts_with('"') && t.ends_with('"');
     let s = unescaped(t);
-    (!s.is_empty() && !s.starts_with(['$', '#'])).then_some(s)
+    (!s.is_empty() && (quoted || !s.starts_with(['$', '#']))).then_some(s)
 }
 
 #[cfg(test)]
@@ -309,7 +326,7 @@ mod tests {
     use super::*;
 
     fn box_of(margin: [f64; 6], cells: BoxCells) -> MeshBox {
-        MeshBox { surfaces: vec!["buildings.stl".to_string()], margin, cells }
+        MeshBox { surfaces: vec!["buildings.stl".to_string()], margin, cells, made: None }
     }
 
     fn read(text: &str) -> (Option<MeshBox>, Vec<String>) {
@@ -360,6 +377,32 @@ mod tests {
     }
 
     #[test]
+    fn the_box_is_never_short_of_the_bounds() {
+        let b = box_of([0.0; 6], BoxCells::Size(1.0));
+        let [x, _, _] = b.axes([0.0; 3], [10_000_000.009, 1.0, 1.0], Side::Ground).unwrap();
+        // Within rounding of whole cells: no cell more, but the end where the bounds are.
+        assert_eq!(x.spans[0].cells, 10_000_000);
+        assert_eq!(x.stations[1], 10_000_000.009);
+        // Never short of the bounds, also by a rounding of `lo + n * h`.
+        for i in 1..2000 {
+            let target = 2.5 * f64::from(i) + 1e-12 * f64::from(i % 7);
+            let [x, _, _] = b.axes([0.0; 3], [target, 1.0, 1.0], Side::Ground).unwrap();
+            assert!(x.stations[1] >= target, "{target}");
+        }
+    }
+
+    #[test]
+    fn a_surface_name_with_a_dollar_reads_back() {
+        let mut b = box_of([0.0; 6], BoxCells::Size(1.0));
+        b.surfaces = vec!["$roof.stl".to_string()];
+        let (read_back, problems) = read(&b.entry(""));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(read_back, Some(b));
+        let (_, problems) = read("box { surfaces ( $roof ); margin ( 1 1 1 1 0 1 ); cellSize 1; }");
+        assert!(problems.iter().any(|p| p.starts_with("box/surfaces")), "{problems:?}");
+    }
+
+    #[test]
     fn a_length_within_rounding_of_whole_cells_takes_no_more() {
         let b = box_of([0.0; 6], BoxCells::Size(0.1));
         let [x, _, _] = b.axes([0.0, 0.0, 0.0], [0.7, 0.3, 0.3], Side::Ground).unwrap();
@@ -405,6 +448,7 @@ mod tests {
                 surfaces: vec!["buildings.stl".to_string(), "my trees.stl".to_string()],
                 margin: [100.0, 200.0, 50.5, 50.0, 0.0, 0.1 + 0.2],
                 cells,
+                made: Some(u64::MAX),
             };
             let text = b.entry("");
             let (read, problems) = read(&text);
