@@ -236,7 +236,13 @@ impl App {
                     Change::Opacity(a) => e.opacity = Some(a),
                     Change::Reset => {}
                 }
-                self.display.push(e);
+                // Last, but before the cut card's hiding of the region (the last of its entries
+                // that hides it): that one stays the card's, also when the region's own hides
+                // it too.
+                match self.card_hiding(&layer) {
+                    Some(h) => self.display.insert(h, e),
+                    None => self.display.push(e),
+                }
             }
             (c, None) => {
                 let (mode, opacity) = match c {

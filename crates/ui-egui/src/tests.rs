@@ -2337,6 +2337,16 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     assert_eq!(app.layer_display(&patch, &[]).opacity, 0.7, "{:?}", app.display);
     assert_eq!(app.layer_display(&region, &[]).opacity, 0.4, "{:?}", app.display);
     app.display = vec![DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }];
+    // The region hidden by its own entry before the card opened, then an opacity: the card's
+    // hiding stays the card's, so closing leaves the region's own, and a reset takes it all.
+    app.display = vec![DisplayEntry { layer: region.clone(), mode: Some(Mode::Hidden), opacity: None }];
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: Some(Mode::Hidden), opacity: Some(0.4) }]);
+    app.set_display(region.clone(), crate::display::Change::Reset);
+    assert!(app.display.is_empty(), "{:?}", app.display);
+    app.display = vec![DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }];
     // The view draws the region so once the card is closed.
     let (entries, shown) = (app.view_display(), app.shown());
     let style = umcf_engine::display_style(app.session.scene(&shown).unwrap(), &entries);

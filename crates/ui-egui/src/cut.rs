@@ -236,16 +236,20 @@ impl App {
         (e.mode.is_some() || e.opacity.is_some()).then_some(e)
     }
 
+    /// Where the cut card's hiding of `layer` is, when the card hides that region: the last of
+    /// the region's entries that hide it (kept last, [`App::keep_hiding_last`]).
+    pub(crate) fn card_hiding(&self, layer: &Layer) -> Option<usize> {
+        let r = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone())?;
+        if *layer != Layer::Region(r) {
+            return None;
+        }
+        self.display.iter().rposition(|e| e.layer == *layer && e.mode == Some(Mode::Hidden))
+    }
+
     /// Puts an entry of `layer`'s own before the card's hiding of it, when the card hides it and
     /// it has none, so that what is set for the region goes there, not into the hiding.
     pub(crate) fn own_entry_before_hiding(&mut self, layer: &Layer) {
-        let Some(r) = self.cut.as_ref().filter(|f| !f.released).and_then(|f| f.hid.clone()) else { return };
-        if *layer != Layer::Region(r) {
-            return;
-        }
-        let Some(h) = self.display.iter().rposition(|e| e.layer == *layer && e.mode == Some(Mode::Hidden)) else {
-            return;
-        };
+        let Some(h) = self.card_hiding(layer) else { return };
         if self.display.iter().position(|e| e.layer == *layer) == Some(h) {
             self.display.insert(h, DisplayEntry { layer: layer.clone(), mode: None, opacity: None });
         }
