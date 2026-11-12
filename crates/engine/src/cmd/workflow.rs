@@ -843,7 +843,8 @@ pub(crate) fn to_json(d: &Description) -> Value {
             let materials: Vec<Value> =
                 r.materials.iter().map(|m| json!({ "name": m.name, "model": m.model })).collect();
             let blocks = r.blocks.as_ref().map_or(Value::Null, super::mesh_block::grid_json);
-            json!({ "name": r.name, "kind": kind, "mesh": mesh, "blocks": blocks, "steps": steps, "patches": patches, "materials": materials })
+            let mesh_box = r.mesh_box.as_ref().map_or(Value::Null, super::mesh_box::box_json);
+            json!({ "name": r.name, "kind": kind, "mesh": mesh, "blocks": blocks, "box": mesh_box, "steps": steps, "patches": patches, "materials": materials })
         })
         .collect();
     json!({

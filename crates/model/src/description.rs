@@ -48,6 +48,7 @@ use umcf_core::OfVersion;
 use umcf_foam_dict::{Document, Entry, Node, unquote};
 
 use crate::blocks::BlockGrid;
+use crate::mesh_box::MeshBox;
 use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Workflow};
 use crate::{Case, Patch, RegionKind};
 
@@ -147,6 +148,9 @@ pub struct RegionDesc {
     /// The grid of blocks its `blockMeshDict` is written from ([`crate::blocks`]); `None`: not
     /// described (the dictionary is the case's own).
     pub blocks: Option<BlockGrid>,
+    /// The box around the case's surfaces its blocks were made from ([`crate::mesh_box`]);
+    /// `None`: none (the blocks are given as they are, or there are none).
+    pub mesh_box: Option<MeshBox>,
 }
 
 /// The components a case has that its regions don't tell (the air, the solids' heat and
@@ -306,6 +310,7 @@ impl Description {
                 patches,
                 materials,
                 blocks,
+                mesh_box: None,
             });
         }
         // A blockMeshDict two regions' meshes read: written from one's blocks, it would change
@@ -406,6 +411,9 @@ impl Description {
             }
             if let Some(g) = &r.blocks {
                 s.push_str(&g.entry("        "));
+            }
+            if let Some(b) = &r.mesh_box {
+                s.push_str(&b.entry("        "));
             }
             if !r.steps.is_empty() {
                 let _ = writeln!(s, "        steps       ( {} );", region_steps(&r.steps));
@@ -797,6 +805,7 @@ fn read_region(
         patches: Vec::new(),
         materials: Vec::new(),
         blocks: None,
+        mesh_box: None,
     };
     let mut kind = None;
     let mut materials_given = false;
@@ -825,6 +834,10 @@ fn read_region(
             "blocks" => match e.dict() {
                 Some(b) => r.blocks = BlockGrid::read(b, &here, problem),
                 None => problem(&here, "is a dictionary: { x ( … ); y ( … ); z ( … ); patches { … } }".into()),
+            },
+            "box" => match e.dict() {
+                Some(b) => r.mesh_box = MeshBox::read(b, &here, problem),
+                None => problem(&here, "is a dictionary: { surfaces ( … ); margin ( … ); cellSize …; }".into()),
             },
             "steps" => match list(e).map(read_steps) {
                 Some(Ok(steps)) => r.steps = steps,

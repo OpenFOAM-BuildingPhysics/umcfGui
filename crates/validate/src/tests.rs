@@ -2332,6 +2332,41 @@ fn a_regions_blocks_against_its_patches_and_its_dictionary() {
 }
 
 #[test]
+fn a_regions_box_without_blocks_or_its_surfaces() {
+    use umcf_model::description::{Description, PATH};
+    let mut fs = case();
+    let (d, _) = Description::import(&Case::open(&complete(&fs)).unwrap());
+    let with = |extra: &str| {
+        d.write().replacen("        kind        fluid;\n", &format!("        kind        fluid;\n{extra}"), 1)
+    };
+    let messages = |fs: &MemFs| -> Vec<String> {
+        let c = Case::open(&complete(fs)).unwrap();
+        check(&c).into_iter().filter(|d| d.code == "workflow.blocks").map(|d| d.message).collect()
+    };
+    let boxed = "        box { surfaces ( buildings.stl ); margin ( 1 1 1 1 0 1 ); cellSize 2; }\n";
+    fs.insert(PATH, with(boxed));
+    let m = messages(&fs);
+    assert!(m.iter().any(|x| x.contains("region air has a box but no blocks")), "{m:#?}");
+    assert!(m.iter().any(|x| x.contains("doesn't have in constant/triSurface: buildings.stl")), "{m:#?}");
+    // The surface there: only the blocks are missing.
+    fs.insert("constant/triSurface/buildings.stl", "solid a\nendsolid a\n");
+    let m = messages(&fs);
+    assert!(!m.iter().any(|x| x.contains("constant/triSurface")), "{m:#?}");
+    // A box with a problem of its own.
+    fs.insert(PATH, with(&boxed.replace("cellSize 2", "cellSize 0")));
+    let m = messages(&fs);
+    assert!(m.iter().any(|x| x.contains("region air, box/cellSize: 0 isn't a size above 0")), "{m:#?}");
+    // One that doesn't read is the description's problem.
+    fs.insert(PATH, with(&boxed.replace("cellSize 2;", "")));
+    let c = Case::open(&complete(&fs)).unwrap();
+    let all: Vec<String> = check(&c).into_iter().map(|d| format!("{}: {}", d.code, d.message)).collect();
+    assert!(
+        all.iter().any(|x| x.starts_with("workflow.description") && x.contains("has no cellSize or cells")),
+        "{all:#?}"
+    );
+}
+
+#[test]
 fn the_ground_and_top_of_blocks_follow_the_gravity() {
     use umcf_model::description::{Description, PATH};
     let mut fs = case();

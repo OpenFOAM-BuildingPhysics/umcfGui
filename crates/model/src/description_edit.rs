@@ -489,6 +489,87 @@ impl Case {
         Ok(EditReport::default())
     }
 
+    /// Sets `region`'s `box` entry of the description to `b`, key by key: those that don't
+    /// change are left as they are, their comments with them.
+    pub fn describe_box(&mut self, region: &str, b: &crate::mesh_box::MeshBox) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        self.box_read(region)?;
+        let base = ["regions", region, "box"];
+        let there = once(doc, &base)?;
+        let mut current = None;
+        if there {
+            if doc.get(&base).is_some_and(|e| e.dict().is_none()) {
+                return Err(refuse(format!(
+                    "{PATH}: `regions/{region}/box` is not a dictionary: mend it by hand first"
+                )));
+            }
+            for (k, _) in b.parts() {
+                once(doc, &[&base[..], &[k]].concat())?;
+            }
+            unended(doc, &base)?;
+            current = self.description().and_then(|(d, _)| d.region(region).and_then(|r| r.mesh_box.clone()));
+        }
+        let old: Vec<(&str, Option<String>)> = current.as_ref().map(|g| g.parts()).unwrap_or_default();
+        for (k, v) in b.parts() {
+            if current.is_some() && old.iter().any(|(ok, ov)| *ok == k && *ov == v) {
+                continue;
+            }
+            let path = [&base[..], &[k]].concat();
+            match v {
+                Some(v) => self.set_inline(PATH, &path, &v)?,
+                None => {
+                    self.remove(PATH, &path)?;
+                }
+            }
+        }
+        Ok(EditReport { added: !there, ..EditReport::default() })
+    }
+
+    /// Gives `region`, which has no `mesh` entry, `mesh blocks;`: meshed by blockMesh from its
+    /// own dictionary. Refused when it has one (read or not).
+    pub fn describe_block_mesh(&mut self, region: &str) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        if doc.get(&["regions", region, "mesh"]).is_some() {
+            return Err(refuse(format!("region {region} has a mesh entry in {PATH} already")));
+        }
+        self.set_inline(PATH, &["regions", region, "mesh"], "blocks")?;
+        Ok(EditReport { added: true, ..EditReport::default() })
+    }
+
+    /// Refused, naming the first read problem, while `region`'s `box` entry in the description
+    /// doesn't read whole.
+    pub fn box_read(&self, region: &str) -> Result<()> {
+        let here = format!("regions/{region}/box");
+        let Some((_, problems)) = self.description() else { return Ok(()) };
+        match problems.iter().find(|p| p.at == here || p.at.starts_with(&format!("{here}/"))) {
+            Some(p) => Err(refuse(format!(
+                "the box of region {region} in {PATH} doesn't read ({}: {}): mend it by hand first",
+                p.at, p.message
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Takes the `box` entry out of `region` of the description (its blocks stay); whether
+    /// there was one.
+    pub fn undescribe_box(&mut self, region: &str) -> Result<bool> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region, "box"])? {
+            return Ok(false);
+        }
+        self.remove(PATH, &["regions", region, "box"])?;
+        Ok(true)
+    }
+
     /// Gives the description's entry at `path` the key `to`; an error when it isn't there.
     fn rename_described(&mut self, path: &[&str], to: &str) -> Result<()> {
         let doc = self.dict_mut(PATH)?;

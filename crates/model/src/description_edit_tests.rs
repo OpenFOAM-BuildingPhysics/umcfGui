@@ -399,3 +399,38 @@ fn a_partner_the_reader_leaves_out_follows_a_rename() {
     assert!(text(&c).contains("a { role coupled; partner ( air x ); }"), "{}", text(&c));
     assert!(!text(&c).contains("air_to_street )"), "{}", text(&c));
 }
+
+/// A box changes key by key: a comment inside it stays, and the other way of cutting it into
+/// cells goes.
+#[test]
+fn a_box_changes_key_by_key() {
+    use crate::mesh_box::{BoxCells, MeshBox};
+    let (fs, mut c) = described();
+    let region = read(&c).regions[0].name.clone();
+    let mut b = MeshBox {
+        surfaces: vec!["a.stl".to_string()],
+        margin: [1.0, 1.0, 1.0, 1.0, 0.0, 1.0],
+        cells: BoxCells::Size(2.0),
+    };
+    c.describe_box(&region, &b).unwrap();
+    assert_eq!(read(&c).region(&region).unwrap().mesh_box.as_ref(), Some(&b));
+    // A comment by hand inside it, then the cells as counts.
+    let t = text(&c).replace("surfaces ", "// my box\n            surfaces ");
+    c.put_description(&fs, &t, true).unwrap();
+    b.cells = BoxCells::Counts([3, 4, 5]);
+    c.describe_box(&region, &b).unwrap();
+    let after = text(&c);
+    assert!(after.contains("// my box") && after.contains("( 3 4 5 )") && !after.contains("cellSize"), "{after}");
+    assert!(after.contains("// kept by every edit"));
+    assert_eq!(read(&c).region(&region).unwrap().mesh_box.as_ref(), Some(&b));
+    // A box that isn't a dictionary, or doesn't read, isn't edited.
+    let bad = text(&c).replacen("box\n", "box ( 1 2 );\n        boxed\n", 1);
+    c.put_description(&fs, &bad, true).unwrap();
+    assert!(c.describe_box(&region, &b).is_err());
+    // Taken out: the region has none.
+    let (_, mut c) = described();
+    c.describe_box(&region, &b).unwrap();
+    assert!(c.undescribe_box(&region).unwrap());
+    assert!(!c.undescribe_box(&region).unwrap());
+    assert!(read(&c).region(&region).unwrap().mesh_box.is_none());
+}

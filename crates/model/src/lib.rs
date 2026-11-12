@@ -49,6 +49,7 @@ mod controls;
 pub mod description;
 pub mod description_edit;
 pub mod material_edit;
+pub mod mesh_box;
 pub mod new_case;
 pub mod region_add;
 pub mod results;

@@ -13,7 +13,7 @@ pub(super) const BLOCK: CommandSpec = CommandSpec {
     label: "Block mesh",
     menu: "Mesh/Blocks",
     shortcut: None,
-    params: "region: a region of system/umcfWorkflow whose mesh is `blocks` (blockMesh -region <region> from system/<region>/blockMeshDict) or built in constant/polyMesh by steps starting with blockMesh (the dictionary that step names, system/blockMeshDict by default). The grid, each part optional (those given replace the region's; a region without blocks needs x, y and z): x, y, z: the stations along the axis with (cells grading) between each two, [0, [7, 0.0074], 200, [10, [[0.5, 0.5, 13.9], [0.5, 0.5, 0.072]]], 590] (a grading is the ratio of the last cell to the first, or blockMesh's sections [fraction, cells-fraction, expansion]); missing: the blocks left out (the buildings), [[1, 1, 0], …], counted from 0 along x, y, z; patches: each side's patch, {\"west\": \"inlet\", \"east\": \"outlet\", \"south\": \"side\", \"north\": \"side\", \"ground\": \"ground\", \"top\": \"top\", \"missing\": \"buildings\"} (west/east: x min/max, south/north: y min/max, ground/top: z min/max, missing: the faces around the missing blocks; defaultFaces leaves faces to blockMesh's own patch, type empty); faces: single block faces in another patch than their side's, {\"air_to_street\": [[2, 1, 0, \"ground\"], …]} (block i, j, k and its side west … top); noFaces: patches declared without faces, [\"street\"] ([] takes them away); types: patch types given explicitly, {\"side1\": \"symmetryPlane\"}. The maps patches, faces and types merge into the region's: a key given replaces its entry (a new one goes after the others, in the order of its name), null takes it away, the others stay. Each patch's blockMesh type is its types entry, else the one its role in the region's patches gives (wall for ground, coupled, interior and bottom in a fluid or vegetation region, patch otherwise and in a solid), else patch (workflow.import fills types for every type the role wouldn't give). The outcome lists every patch whose type the written dictionary changes from the one it replaces (typesChanged), and the patches it drops or adds (patchesRemoved, patchesAdded). The dictionary there is read whole for its patches: its boundary, the older patches ( type name ( faces ) … ) syntax, its defaultPatch, and blockMesh's own defaultFaces when it leaves faces to it. A wall or a constraint type there (symmetryPlane, symmetry, empty, wedge, cyclic…, processor…) is changed only when this call's types gives the patch its new type; such a patch the blocks don't have is dropped only when dropPatches ([\"name\", …]) names it (a patch renamed in the description reads as one dropped and one added, and the refusal says so); a patch's entries besides type and faces (neighbourPatch, inGroups, …), which the blocks don't hold, are lost only when dropEntries ([\"name\", …]) names the patch (entriesLost lists them); a dictionary whose patches can't all be read (an #include, a macro, a list of another shape, a name twice, faces left to its default patch that can't be told) is written over only with unreadPatches: true; and what else it holds that the blocks don't (cell zones of blocks, curved edges, projected faces and geometry, mergePatchPairs, a scale other than 1, any other key at its top, a key given twice, expressions in its vertices or blocks) is lost only with dropSettings: true (settingsLost lists it). The default patch, when faces are left to it, is typed like the others: types {\"defaultFaces\": \"patch\"}; the import fills it from the dictionary's defaultPatch, and reads one named otherwise as a patch of that name. Otherwise the call is refused, nothing changed. A cyclic…, nonConformal…, mapped… or processor… type in types is refused: it needs entries the blocks don't hold (give it after blockMesh, with changeDictionary or createPatch). At most 20000 blocks, 10000 stations along an axis (9999 spans), 1000 sections in a grading, 10000 names in each of faces, noFaces, types, dropPatches and dropEntries, 40000 missing blocks, 120000 single faces in all, and a dictionary that reads back (48 MB and 3000000 tokens, as the dictionary parser counts them, and no more than the case reads as a dictionary: 4 MB unless opened with more). With only region, the dictionary is written again from the blocks there. Refused while the region's blocks entry in the description doesn't read whole (an #include, a $macro or a value it can't read, also in its patches, faces or types; remove: true still takes it out), and when another region's mesh reads the same dictionary. Only the keys of blocks that change are written, each on one line (comments inside it are not kept). remove: true takes the blocks out of the description (the dictionary stays, the case's own). A grid with problems (stations not increasing, no cells, a missing block outside the grid or listed twice, a face without a patch, more than 20000 blocks) is refused, nothing changed. The blocks go into the region's blocks entry of system/umcfWorkflow (only the keys that change; comments stay), and the blockMeshDict is written from them, generated (its header says so, with a checksum). One that umcfGui didn't write, or that was edited since, is refused unless replace: true (case.save keeps the one there in the backup). case.save writes both; edit.undo takes both back. The case check (workflow.blocks) says when the dictionary isn't what the blocks make.",
+    params: "region: a region of system/umcfWorkflow whose mesh is `blocks` (blockMesh -region <region> from system/<region>/blockMeshDict) or built in constant/polyMesh by steps starting with blockMesh (the dictionary that step names, system/blockMeshDict by default); a region without a mesh (as case.new makes them) is given `mesh blocks;`. The grid, each part optional (those given replace the region's; a region without blocks needs x, y and z): x, y, z: the stations along the axis with (cells grading) between each two, [0, [7, 0.0074], 200, [10, [[0.5, 0.5, 13.9], [0.5, 0.5, 0.072]]], 590] (a grading is the ratio of the last cell to the first, or blockMesh's sections [fraction, cells-fraction, expansion]); missing: the blocks left out (the buildings), [[1, 1, 0], …], counted from 0 along x, y, z; patches: each side's patch, {\"west\": \"inlet\", \"east\": \"outlet\", \"south\": \"side\", \"north\": \"side\", \"ground\": \"ground\", \"top\": \"top\", \"missing\": \"buildings\"} (west/east: x min/max, south/north: y min/max, ground/top: z min/max, missing: the faces around the missing blocks; defaultFaces leaves faces to blockMesh's own patch, type empty); faces: single block faces in another patch than their side's, {\"air_to_street\": [[2, 1, 0, \"ground\"], …]} (block i, j, k and its side west … top); noFaces: patches declared without faces, [\"street\"] ([] takes them away); types: patch types given explicitly, {\"side1\": \"symmetryPlane\"}. The maps patches, faces and types merge into the region's: a key given replaces its entry (a new one goes after the others, in the order of its name), null takes it away, the others stay. Each patch's blockMesh type is its types entry, else the one its role in the region's patches gives (wall for ground, coupled, interior and bottom in a fluid or vegetation region, patch otherwise and in a solid), else patch (workflow.import fills types for every type the role wouldn't give). The outcome lists every patch whose type the written dictionary changes from the one it replaces (typesChanged), and the patches it drops or adds (patchesRemoved, patchesAdded). The dictionary there is read whole for its patches: its boundary, the older patches ( type name ( faces ) … ) syntax, its defaultPatch, and blockMesh's own defaultFaces when it leaves faces to it. A wall or a constraint type there (symmetryPlane, symmetry, empty, wedge, cyclic…, processor…) is changed only when this call's types gives the patch its new type; such a patch the blocks don't have is dropped only when dropPatches ([\"name\", …]) names it (a patch renamed in the description reads as one dropped and one added, and the refusal says so); a patch's entries besides type and faces (neighbourPatch, inGroups, …), which the blocks don't hold, are lost only when dropEntries ([\"name\", …]) names the patch (entriesLost lists them); a dictionary whose patches can't all be read (an #include, a macro, a list of another shape, a name twice, faces left to its default patch that can't be told) is written over only with unreadPatches: true; and what else it holds that the blocks don't (cell zones of blocks, curved edges, projected faces and geometry, mergePatchPairs, a scale other than 1, any other key at its top, a key given twice, expressions in its vertices or blocks) is lost only with dropSettings: true (settingsLost lists it). The default patch, when faces are left to it, is typed like the others: types {\"defaultFaces\": \"patch\"}; the import fills it from the dictionary's defaultPatch, and reads one named otherwise as a patch of that name. Otherwise the call is refused, nothing changed. A cyclic…, nonConformal…, mapped… or processor… type in types is refused: it needs entries the blocks don't hold (give it after blockMesh, with changeDictionary or createPatch). At most 20000 blocks, 10000 stations along an axis (9999 spans), 1000 sections in a grading, 10000 names in each of faces, noFaces, types, dropPatches and dropEntries, 40000 missing blocks, 120000 single faces in all, and a dictionary that reads back (48 MB and 3000000 tokens, as the dictionary parser counts them, and no more than the case reads as a dictionary: 4 MB unless opened with more). With only region, the dictionary is written again from the blocks there. Refused while the region's blocks entry in the description doesn't read whole (an #include, a $macro or a value it can't read, also in its patches, faces or types; remove: true still takes it out), and when another region's mesh reads the same dictionary. Only the keys of blocks that change are written, each on one line (comments inside it are not kept). remove: true takes the blocks out of the description, with the box they were made from (the dictionary stays, the case's own). A call that changes the grid (x, y, z, missing or faces) of a region made from a box (mesh.box) takes the box out of the description, and says so. A grid with problems (stations not increasing, no cells, a missing block outside the grid or listed twice, a face without a patch, more than 20000 blocks) is refused, nothing changed. The blocks go into the region's blocks entry of system/umcfWorkflow (only the keys that change; comments stay), and the blockMeshDict is written from them, generated (its header says so, with a checksum). One that umcfGui didn't write, or that was edited since, is refused unless replace: true (case.save keeps the one there in the backup). case.save writes both; edit.undo takes both back. The case check (workflow.blocks) says when the dictionary isn't what the blocks make.",
     enabled: needs_case,
     run: block,
     journal: true,
@@ -287,6 +287,12 @@ pub(crate) fn grid_json(g: &BlockGrid) -> Value {
 
 /// `mesh.block`: a region's blocks, and its `blockMeshDict` written from them.
 fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    set(s, p, false)
+}
+
+/// The blocks `p` gives, and the `blockMeshDict` written from them; `from_box`: made by
+/// `mesh.box` from the region's box, which a change of the grid otherwise takes out.
+pub(super) fn set(s: &mut Session, p: &Value, from_box: bool) -> Result<Outcome, Error> {
     let allowed: Vec<&str> =
         ["region", "remove", "replace", "dropPatches", "dropEntries", "unreadPatches", "dropSettings"]
             .into_iter()
@@ -319,8 +325,10 @@ fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             return Err(bad("remove: true takes the blocks out: give nothing else but the region"));
         }
         o.case.undescribe_blocks(region)?;
+        let boxed = o.case.undescribe_box(region)?;
         let message = format!(
-            "{PATH}: the blocks of region {region} taken out (its blockMeshDict stays as it is, the case's own)"
+            "{PATH}: the blocks of region {region} taken out{} (its blockMeshDict stays as it is, the case's own)",
+            if boxed { ", with the box they were made from" } else { "" }
         );
         return Ok(Outcome::new(message, json!({ "region": region, "file": PATH, "blocks": Value::Null })));
     }
@@ -348,6 +356,19 @@ fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     }
     let mut with = r.clone();
     with.blocks = Some(grid.clone());
+    // A region without a mesh (as case.new makes them) is meshed from its own dictionary; one
+    // whose mesh entry doesn't read is left to be mended.
+    let meshless = r.mesh.is_none();
+    if meshless {
+        let at = format!("regions/{region}/mesh");
+        if let Some(pr) = read_problems.iter().find(|x| x.at == at) {
+            return Err(Error::Failed(format!(
+                "{}: the mesh of region {region} in {PATH} doesn't read ({}): mend it by hand first",
+                BLOCK.id, pr.message
+            )));
+        }
+        with.mesh = Some(umcf_model::workflow::MeshBuild::Block);
+    }
     let (path, text) = blocks::generate(&with).map_err(|why| {
         Error::Failed(format!("{}: {why}: give the region mesh blocks; or ( blockMesh … ) in {PATH} first", BLOCK.id))
     })?;
@@ -504,9 +525,17 @@ fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         )));
     }
     let described = had.as_ref() != Some(&grid);
+    if meshless {
+        o.case.describe_block_mesh(region)?;
+    }
     if described {
         o.case.describe_blocks(region, &grid)?;
     }
+    // Blocks set by hand aren't the box's any more: its entry would make others.
+    let reshaped =
+        had.as_ref().is_none_or(|h| h.axes != grid.axes || h.missing != grid.missing || h.faces != grid.faces);
+    // Whether the box entry reads or not: either way it no longer makes these blocks.
+    let unboxed = !from_box && reshaped && o.case.undescribe_box(region)?;
     if write {
         o.case.put_dict(o.fs.as_ref(), &path, &text).map_err(|e| match e {
             umcf_model::Error::IsLink(_) => Error::Failed(format!("{path} is a symbolic link: it isn't written over")),
@@ -523,6 +552,16 @@ fn block(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let described_names: std::collections::HashSet<&str> = with.patches.iter().map(|q| q.name.as_str()).collect();
     let undescribed: Vec<&str> = grid.patch_names().into_iter().filter(|n| !described_names.contains(n)).collect();
     let mut notes: Vec<String> = Vec::new();
+    if meshless {
+        notes.push(format!(
+            "region {region} had no mesh: given mesh blocks; in {PATH} (blockMesh -region {region} from {path})"
+        ));
+    }
+    if unboxed {
+        notes.push(format!(
+            "the box of region {region} taken out of {PATH}: the blocks are given as they are now (mesh.box makes them from a box again)"
+        ));
+    }
     for n in &read_notes {
         notes.push(format!("the dictionary it replaces: {n}"));
     }

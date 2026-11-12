@@ -190,6 +190,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                 patches: Vec::new(),
                 materials: r.materials.clone(),
                 blocks: None,
+                mesh_box: None,
             })
             .collect(),
         features: false,

@@ -92,6 +92,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
         }
         materials(case, r, out);
         blocks(case, r, out);
+        mesh_box(case, r, out);
         // The patches against the mesh, where the region has one.
         let Some(mesh) = cr.patches.as_ref() else { continue };
         for p in &r.patches {
@@ -238,34 +239,6 @@ enum Place {
     Missing,
 }
 
-/// The sides on the ground and on top: those across the axis the gravity is along (the region's
-/// `constant/<region>/g`, else `constant/g`; z down without either), the ground the one it
-/// points to.
-/// The third value: whether a `g` was read (else z is taken as up).
-fn ground_and_top(case: &Case, region: &str) -> (Side, Side, bool) {
-    let g = [format!("constant/{region}/g"), "constant/g".to_string()].iter().find_map(|rel| {
-        let e = case.dict(rel)?.get(&["value"])?;
-        let [umcf_foam_dict::Node::List { items, .. }] = e.value.as_slice() else { return None };
-        // Exactly three numbers, all finite, one at least not 0: else no gravity is read.
-        let v: Option<Vec<f64>> = items
-            .iter()
-            .map(|n| match n {
-                umcf_foam_dict::Node::Atom(t) => t.text.parse::<f64>().ok().filter(|x| x.is_finite()),
-                _ => None,
-            })
-            .collect();
-        match v?.as_slice() {
-            [x, y, z] if [x, y, z].iter().any(|c| **c != 0.0) => Some([*x, *y, *z]),
-            _ => None,
-        }
-    });
-    let read = g.is_some();
-    let g = g.unwrap_or([0.0, 0.0, -1.0]);
-    let axis = (0..3).max_by(|a, b| g[*a].abs().total_cmp(&g[*b].abs())).unwrap_or(2);
-    let [low, high] = [[Side::West, Side::East], [Side::South, Side::North], [Side::Ground, Side::Top]][axis];
-    if g[axis] < 0.0 { (low, high, read) } else { (high, low, read) }
-}
-
 /// Whether a patch of `role` belongs at `place`: an inlet, outlet or side around, the top on
 /// top, the ground (or a solid's bottom) on the ground or around the missing blocks, the sky
 /// around or on top; a coupled patch or a solid's interior anywhere; the canopy nowhere (it is
@@ -283,6 +256,38 @@ fn fits(place: Place, role: Role) -> bool {
 
 /// The most warnings of one kind said one by one for a region's blocks.
 const MAX_SAID: usize = 20;
+
+/// A region's box: one without blocks to make, problems of its own, surfaces the case doesn't
+/// have.
+fn mesh_box(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
+    let Some(b) = &r.mesh_box else { return };
+    let name = &r.name;
+    let warn = |m: String| Diagnostic::new(Level::Warning, BLOCKS, PATH, m).region(name);
+    if r.blocks.is_none() {
+        out.push(warn(format!(
+            "region {name} has a box but no blocks: mesh.box makes them from it (with region {name})"
+        )));
+    }
+    for (at, m) in b.problems() {
+        out.push(warn(format!("region {name}, box/{at}: {m}")));
+    }
+    let put: HashSet<&str> = case.put_paths().collect();
+    let gone: Vec<&str> = b
+        .surfaces
+        .iter()
+        .map(String::as_str)
+        .filter(|s| {
+            let rel = format!("constant/triSurface/{s}");
+            case.exists(&rel) == Some(false) && !put.contains(rel.as_str())
+        })
+        .collect();
+    if !gone.is_empty() {
+        out.push(warn(format!(
+            "region {name}: the box is around surfaces the case doesn't have in constant/triSurface: {}",
+            umcf_model::blocks::list_some(&gone)
+        )));
+    }
+}
 
 /// A region's blocks: what is wrong with the grid, the patches it names against the region's,
 /// and its `blockMeshDict` against it (stale, edited by hand, missing).
@@ -302,7 +307,7 @@ fn blocks(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
         out.push(warn(PATH, format!("region {name}, {at}: {m}")));
     }
     // The patches it names: the region's, in a place their role fits.
-    let (ground, top, by_g) = ground_and_top(case, name);
+    let (ground, top, by_g) = umcf_model::blocks::ground_and_top(case, name);
     let gravity = if by_g { "" } else { " (no g: z taken as up)" };
     let place = |side: Side| match side {
         Side::Missing => Place::Missing,

@@ -3881,3 +3881,189 @@ fn long_parameter_lists_are_counted_before_they_are_read() {
     let e = s.execute("mesh.block", &json!({"region": "air", "faces": {"a": faces}})).unwrap_err().to_string();
     assert!(e.contains("faces lists more than 120000 faces"), "{e}");
 }
+
+#[test]
+fn a_box_around_the_surfaces_makes_a_regions_blocks() {
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-box-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        // The description's text, its runs of spaces one.
+        let desc = |s: &Session| {
+            let t = s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string();
+            t.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+        };
+        let region = |s: &Session| s.case().unwrap().description().unwrap().0.region("air").cloned().unwrap();
+        // No surface yet.
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2})).unwrap_err();
+        assert!(e.to_string().contains("no STL surface"), "{e}");
+        s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]}))
+            .unwrap();
+        let e = s.execute("mesh.box", &json!({"region": "air"})).unwrap_err().to_string();
+        assert!(e.contains("give margin"), "{e}");
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10})).unwrap_err().to_string();
+        assert!(e.contains("give cellSize or cells"), "{e}");
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": -1, "cellSize": 2})).unwrap_err().to_string();
+        assert!(e.contains("isn't a distance of 0 or more"), "{e}");
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 1e-6})).unwrap_err();
+        assert!(e.to_string().contains("1000000000 cells"), "{e}");
+        let e = s
+            .execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2, "surfaces": ["gone.stl"]}))
+            .unwrap_err();
+        assert!(e.to_string().contains("there is no surface constant/triSurface/gone.stl"), "{e}");
+        assert!(region(&s).blocks.is_none() && region(&s).mesh.is_none());
+        // The box: the crown's bounds, 10 m around but not below the ground, cubes of 2 m.
+        let out = s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2})).unwrap();
+        let min = out.data["bounds"]["min"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let max = out.data["bounds"]["max"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(min[2], 0.0, "{}", out.data["bounds"]);
+        let r = region(&s);
+        assert_eq!(r.mesh, Some(umcf_model::workflow::MeshBuild::Block));
+        let g = r.blocks.unwrap();
+        for a in 0..3 {
+            let (lo, hi) = (g.axes[a].stations[0], g.axes[a].stations[1]);
+            let below = if a == 2 { 0.0 } else { 10.0 };
+            assert_eq!(lo, min[a] - below, "{a}");
+            assert!(hi >= max[a] + 10.0 && hi < max[a] + 12.0, "{a}: {hi}");
+            assert_eq!(f64::from(g.axes[a].spans[0].cells) * 2.0, hi - lo, "{a}");
+        }
+        assert_eq!(g.sides.len(), 6);
+        let text = desc(&s);
+        assert!(text.contains("mesh blocks;"), "{text}");
+        assert!(text.contains("surfaces ( trees.stl );"), "{text}");
+        assert!(text.contains("margin ( 10 10 10 10 0 10 );"), "{text}");
+        assert!(text.contains("cellSize 2;"), "{text}");
+        let dict = "system/air/blockMeshDict";
+        let written = s.case().unwrap().dict(dict).unwrap().to_string();
+        assert!(umcf_model::blocks::untouched(&written), "{written}");
+        assert!(out.message.contains("had no mesh: given mesh blocks;"), "{}", out.message);
+        // The default patches of the fluid have their roles: the ground is a wall.
+        assert!(out.message.contains("given their roles in system/umcfWorkflow: inlet, outlet, side, ground, top"));
+        assert!(written.contains("    ground\n    {\n        type wall;"), "{written}");
+        assert!(written.contains("    side\n    {\n        type patch;"), "{written}");
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["regions"][0]["box"]["margin"]["ground"], json!(0.0));
+        assert_eq!(show.data["description"]["regions"][0]["box"]["cellSize"], json!(2.0));
+        // No check finds fault with the box.
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let boxed: Vec<&Value> = check.data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "workflow.blocks" && d["message"].as_str().unwrap_or("").contains("box"))
+            .collect();
+        assert!(boxed.is_empty(), "{boxed:?}");
+        // Counts instead of a size: the box as the margins make it, cellSize gone.
+        let out = s.execute("mesh.box", &json!({"region": "air", "cells": [6, 6, 4]})).unwrap();
+        assert_eq!(out.data["boxChanged"], json!(true));
+        let text = desc(&s);
+        assert!(text.contains("cells ( 6 6 4 );") && !text.contains("cellSize"), "{text}");
+        let g = region(&s).blocks.unwrap();
+        assert_eq!(g.axes[0].stations, [min[0] - 10.0, max[0] + 10.0]);
+        // Again, nothing changes.
+        let again = s.execute("mesh.box", &json!({"region": "air"})).unwrap();
+        assert_eq!((again.data["written"].clone(), again.data["boxChanged"].clone()), (json!(false), json!(false)));
+        // A patch changed with the box's own stations: the box stays.
+        let x = out.data["blocks"]["x"].clone();
+        let kept = s.execute("mesh.block", &json!({"region": "air", "x": x, "patches": {"top": "sky"}})).unwrap();
+        assert!(!kept.message.contains("box of region air taken out"), "{}", kept.message);
+        assert!(region(&s).mesh_box.is_some());
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // Blocks edited by hand under the box: not made again from it without reshape.
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/umcfWorkflow", "path": "regions/air/blocks/z", "value": "( 0 (2 1) 4 (2 2) 20 )"}),
+        )
+        .unwrap();
+        let e = s.execute("mesh.box", &json!({"region": "air"})).unwrap_err().to_string();
+        assert!(e.starts_with("mesh.box: ") && e.contains("aren't a box's any more") && e.contains("reshape"), "{e}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // A grid given by hand isn't the box's any more.
+        let out = s.execute("mesh.block", &json!({"region": "air", "x": [0, [3, 1], 30]})).unwrap();
+        assert!(out.message.contains("the box of region air taken out"), "{}", out.message);
+        assert!(region(&s).mesh_box.is_none());
+        // Then the box replaces it only when asked.
+        let e = s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2})).unwrap_err();
+        assert!(e.to_string().contains("reshape"), "{e}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert!(region(&s).mesh_box.is_some());
+        // Taken out: the blocks stay.
+        s.execute("mesh.box", &json!({"region": "air", "remove": true})).unwrap();
+        assert!(region(&s).mesh_box.is_none() && region(&s).blocks.is_some());
+        let e = s.execute("mesh.box", &json!({"region": "air", "remove": true})).unwrap_err();
+        assert!(e.to_string().contains("has no box"), "{e}");
+        let out =
+            s.execute("mesh.box", &json!({"region": "air", "margin": 5, "cellSize": 1, "reshape": true})).unwrap();
+        assert!(out.message.contains("in the undo history"), "{}", out.message);
+        // Saved: the description and the dictionary on disk.
+        s.execute("case.save", &Value::Null).unwrap();
+        let on_disk = std::fs::read_to_string(dir.join(dict)).unwrap();
+        assert!(umcf_model::blocks::untouched(&on_disk));
+        assert!(std::fs::read_to_string(dir.join("system/umcfWorkflow")).unwrap().contains("cellSize        1;"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_box_stands_on_the_ground_the_gravity_points_to() {
+    // OpenFOAM-8 with y up, as the street canyon tutorials have it.
+    let dir = std::env::temp_dir().join(format!("umcf-engine-{}-box-y", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    let mut p = canyon_params(&dir, 8);
+    p["up"] = json!("y");
+    s.execute("case.new", &p).unwrap();
+    s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
+    // The wind from the east: the inlet and outlet swapped, still given their roles.
+    let call = json!({"region": "air", "margin": 10, "cellSize": 2, "patches": {"west": "outlet", "east": "inlet"}});
+    let out = s.execute("mesh.box", &call).unwrap();
+    assert_eq!(out.data["ground"], json!("south"));
+    assert!(!out.message.contains("no g read"), "{}", out.message);
+    let min = out.data["bounds"]["min"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+    let g = s.case().unwrap().description().unwrap().0.region("air").unwrap().blocks.clone().unwrap();
+    // The ground is south (y min), without a margin; z has one on both sides.
+    assert_eq!(g.axes[1].stations[0], min[1]);
+    assert_eq!(g.axes[2].stations[0], min[2] - 10.0);
+    assert_eq!(out.data["box"]["margin"]["south"], json!(0.0));
+    assert_eq!(out.data["box"]["margin"]["ground"], json!(10.0));
+    let sides: Vec<(String, String)> = g.sides.iter().map(|(s, n)| (s.name().to_string(), n.clone())).collect();
+    let want = [
+        ("west", "outlet"),
+        ("east", "inlet"),
+        ("south", "ground"),
+        ("north", "top"),
+        ("ground", "side"),
+        ("top", "side"),
+    ];
+    assert_eq!(sides, want.map(|(a, b)| (a.to_string(), b.to_string())));
+    // The case check finds no role out of place.
+    let check = s.execute("case.check", &Value::Null).unwrap();
+    let misplaced: Vec<&Value> =
+        check.data["diagnostics"].as_array().unwrap().iter().filter(|d| d["code"] == "workflow.blocks").collect();
+    assert!(misplaced.is_empty(), "{misplaced:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reshaping_a_grid_with_missing_blocks_drops_their_patch() {
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.open(Box::new(example("of12/streetCanyon_CFDHAM")), "mem", OpenOptions::default(), false).unwrap();
+    s.execute("workflow.import", &Value::Null).unwrap();
+    s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
+    let before = s.case().unwrap().description().unwrap().0.region("air").unwrap().blocks.clone().unwrap();
+    assert!(!before.missing.is_empty() && !before.faces.is_empty());
+    let call = json!({"region": "air", "margin": 10, "cellSize": 2, "reshape": true, "replace": true});
+    // The dictionary's walls around the buildings are dropped only when named.
+    let e = s.execute("mesh.box", &call).unwrap_err().to_string();
+    assert!(e.starts_with("mesh.box: ") && e.contains("dropPatches"), "{e}");
+    let mut names: Vec<String> = before.faces.iter().map(|(n, _)| n.clone()).collect();
+    names.extend(before.sides.iter().filter(|(s, _)| *s == umcf_model::blocks::Side::Missing).map(|(_, n)| n.clone()));
+    let mut call = call;
+    call["dropPatches"] = json!(names);
+    let out = s.execute("mesh.box", &call).unwrap();
+    let g = s.case().unwrap().description().unwrap().0.region("air").unwrap().blocks.clone().unwrap();
+    assert!(g.missing.is_empty() && g.faces.is_empty(), "{g:?}");
+    assert!(!g.sides.iter().any(|(s, _)| *s == umcf_model::blocks::Side::Missing), "{g:?}");
+    assert!(out.message.contains("in the undo history"), "{}", out.message);
+}
