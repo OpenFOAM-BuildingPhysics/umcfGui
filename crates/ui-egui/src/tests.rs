@@ -2175,7 +2175,7 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     app.display.clear();
     app.toggle_cut();
     app.set_display(Layer::Region(String::new()), crate::display::Change::Opacity(0.5));
-    assert_eq!(app.layer_entry(&Layer::Cut(String::new())).and_then(|e| e.opacity), Some(0.5));
+    assert_eq!(app.shared_cut_entry().and_then(|e| e.opacity), Some(0.5));
     app.toggle_cut();
     assert_eq!(app.display, [DisplayEntry { layer: Layer::Region(String::new()), mode: None, opacity: Some(0.5) }]);
     // A region turned off in the browser: the slider's extent from its whole mesh, read for
@@ -2267,7 +2267,7 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     app.toggle_cut();
     app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
     assert!(hidden(&app));
-    assert_eq!(app.layer_entry(&cut_layer).and_then(|e| e.opacity), Some(0.4));
+    assert_eq!(app.shared_cut_entry().and_then(|e| e.opacity), Some(0.4));
     app.set_display(region.clone(), crate::display::Change::Reset);
     assert!(hidden(&app) && app.layer_entry(&cut_layer).is_none(), "{:?}", app.display);
     app.toggle_cut();
@@ -2308,6 +2308,34 @@ fn the_cut_card_hides_the_boundary_and_leaves_the_display_as_it_was() {
     );
     app.toggle_cut();
     assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: Some(Mode::Wireframe), opacity: None }]);
+    app.display = vec![DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }];
+    // One value: an opacity set while the card shows nothing (the region's own) is the cut's
+    // once it shows one again.
+    app.display.clear();
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Found;
+    app.set_cut(form);
+    assert!(app.cut_takes(&region).is_none());
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.7));
+    let mut form = app.cut.clone().unwrap();
+    form.show = crate::cut::Show::Plane;
+    app.set_cut(form);
+    assert_eq!(app.shared_cut_entry().and_then(|e| e.opacity), Some(0.7));
+    assert_eq!(app.region_note(""), "cut 70%");
+    app.toggle_cut();
+    assert_eq!(app.display, [DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.7) }]);
+    // A patch's opacity set after the region's, while the card shows the cut: the patch keeps
+    // it once the card closes (the region's is in an entry of its own, not the card's hiding).
+    app.display.clear();
+    app.toggle_cut();
+    app.set_display(region.clone(), crate::display::Change::Opacity(0.4));
+    let patch = Layer::Patch { region: String::new(), patch: "walls".into() };
+    app.set_display(patch.clone(), crate::display::Change::Opacity(0.7));
+    app.toggle_cut();
+    assert_eq!(app.layer_display(&patch, &[]).opacity, 0.7, "{:?}", app.display);
+    assert_eq!(app.layer_display(&region, &[]).opacity, 0.4, "{:?}", app.display);
     app.display = vec![DisplayEntry { layer: region.clone(), mode: None, opacity: Some(0.4) }];
     // The view draws the region so once the card is closed.
     let (entries, shown) = (app.view_display(), app.shown());

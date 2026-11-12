@@ -155,8 +155,9 @@ and the browser notes the cut beside the region (`cut wireframe`, or `cut` witho
 opacity of its own). An opacity set there is the region's: it makes the cut's cells translucent
 while the card shows them, and the region's boundary whenever that shows (the card showing
 nothing, or closed); as any opacity set for the region, it takes the place of its patches' own.
-An opacity the region had before the card opened is the cut's too (the view, the menu and the
-note show it), and a reset takes it away from both. Closing the card, or cutting another region, takes the cut's mode with the cut. While
+It is one value: an opacity the region had before the card opened, or was given while the card
+showed nothing, is the cut's too (the view, the menu and the note show it), and a reset takes it
+away from both. A patch's opacity set after it keeps its own once the card closes. Closing the card, or cutting another region, takes the cut's mode with the cut. While
 the card has nothing to show, a mode set for the region, or a reset of it, ends the card's hiding
 instead (and drops a mode set for the cut): the region is drawn so, and stays so once the card
 closes; once the card shows a cut again (another *Show*, or the check's findings coming), the

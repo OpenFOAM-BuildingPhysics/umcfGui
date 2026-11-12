@@ -127,7 +127,8 @@ impl App {
 
     /// What the browser's menu of region layer `layer` shows, and whether it has something to
     /// reset: while the cut card shows a cut of it (`cut`), the cut's mode and the opacity the
-    /// cut and the region share (the cut's own, else the region's, set before the card opened);
+    /// cut and the region share (the region's whenever it has one, else a cut's own `display`
+    /// entry);
     /// else the region's own.
     pub(crate) fn menu_display(&self, layer: &Layer, cut: Option<&Layer>) -> (Display, bool) {
         let Some(cut) = cut else {
@@ -137,8 +138,8 @@ impl App {
         if let Some(a) = self.shared_cut_entry().and_then(|e| e.opacity) {
             d.opacity = a;
         }
-        let region = self.display.iter().any(|e| e.layer == *layer && e.opacity.is_some());
-        (d, self.layer_entry(cut).is_some() || region)
+        let region_opacity = self.display.iter().any(|e| e.layer == *layer && e.opacity.is_some());
+        (d, self.layer_entry(cut).is_some() || region_opacity)
     }
 
     /// How `layer` is drawn: after every entry the view draws with ([`App::view_display`]: the
@@ -170,13 +171,17 @@ impl App {
     /// for its mode and opacity.
     pub fn set_display(&mut self, layer: Layer, change: Change) {
         // For the region the cut card hides while it shows a cut: a mode is the cut's; an opacity
-        // the region's (it stays once the card closes) and the cut's too, so that it shows now;
-        // a reset takes out the cut's and the region's opacity, the card's hiding staying.
+        // the region's alone (one value: the cut is drawn with it, App::shared_cut_entry, and the
+        // region keeps it once the card closes); a reset takes out the cut's entry and the
+        // region's opacity, the card's hiding staying.
         if let Some(cut) = self.cut_takes(&layer) {
-            self.set_cut_display(cut, &change);
             match change {
-                Change::Mode(_) => return,
+                Change::Mode(_) => {
+                    self.set_cut_display(cut, &change);
+                    return;
+                }
                 Change::Reset => {
+                    self.set_cut_display(cut, &change);
                     for e in self.display.iter_mut().filter(|e| e.layer == layer) {
                         e.opacity = None;
                     }
@@ -184,9 +189,20 @@ impl App {
                     self.look += 1;
                     return;
                 }
-                // On to the region's own (the card's hiding isn't released by an opacity).
-                Change::Opacity(_) => {}
+                // An opacity of the cut's own from before gives way to the region's.
+                Change::Opacity(_) => {
+                    for e in self.display.iter_mut().filter(|e| e.layer == cut) {
+                        e.opacity = None;
+                    }
+                    self.display.retain(|e| e.layer != cut || e.mode.is_some());
+                }
             }
+        }
+        // The region's opacity in an entry of its own, never the card's hiding: that one stays
+        // last (over the patches) and goes when the card closes, so what it held would stay
+        // over the patches set after.
+        if let Change::Opacity(_) = change {
+            self.own_entry_before_hiding(&layer);
         }
         self.release_hiding(&layer, &change);
         if let Change::Mode(_) | Change::Opacity(_) = change {
