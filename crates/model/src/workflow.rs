@@ -1103,7 +1103,7 @@ pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
         let (Some(kind), Some(name)) = (word("type"), word("name")) else { return None };
         if kind == "cellZoneSet" {
             // In order: `remove` takes the zone away, any other action leaves it made.
-            let Some(action) = word("action") else { return None };
+            let action = word("action")?;
             apply(&mut out, name, &action);
         }
     }
