@@ -342,6 +342,32 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
     }
 }
 
+/// A JSON value as the user has it (`value`), filled from `was`, put over the case as it is
+/// `now`: left as filled, it follows the case (`None`: gone with it); objects entry by entry,
+/// at any depth, so an entry changed keeps its change while the others follow; anything else
+/// changed stays as the user has it (`None`: taken away by the user).
+pub(crate) fn merge_json(value: Option<&Value>, was: Option<&Value>, now: Option<&Value>) -> Option<Value> {
+    if value == was {
+        return now.cloned();
+    }
+    let empty = Map::new();
+    match (value, was.unwrap_or(&Value::Null), now) {
+        (Some(Value::Object(v)), Value::Object(_) | Value::Null, Some(Value::Object(n))) => {
+            let w = was.and_then(Value::as_object).unwrap_or(&empty);
+            let mut out = Map::new();
+            // In the order the case has them, then those only the user has.
+            let keys = n.keys().chain(v.keys().filter(|k| !n.contains_key(*k)));
+            for k in keys {
+                if let Some(x) = merge_json(v.get(k), w.get(k), n.get(k)) {
+                    out.insert(k.clone(), x);
+                }
+            }
+            Some(Value::Object(out))
+        }
+        _ => value.cloned(),
+    }
+}
+
 /// A table's text typed in (`value`), filled from `was`, put over the case as it is `now`, row
 /// by row by its first cell: a row not typed in (as it was filled) takes the case's, one typed
 /// stays, one taken away stays away, one added stays.
@@ -2426,6 +2452,16 @@ mod tests {
             merge_rows("rho|1700\ncap|850", "rho|1600\ncap|850\nmu|3", "rho|1600\ncap|900\nmu|3\nwcap|2", 2),
             "rho|1700\ncap|900\nwcap|2"
         );
+        // Objects entry by entry: the one changed stays, the others follow the case.
+        let had = json!({"fluid": {"SIMPLE": {"n": "1"}, "relax": {"U": "0.3"}}});
+        let typed = json!({"fluid": {"SIMPLE": {"n": "2"}, "relax": {"U": "0.3"}}});
+        let now = json!({"fluid": {"SIMPLE": {"n": "1"}, "relax": {"U": "0.5"}}});
+        assert_eq!(
+            merge_json(Some(&typed), Some(&had), Some(&now)),
+            Some(json!({"fluid": {"SIMPLE": {"n": "2"}, "relax": {"U": "0.5"}}}))
+        );
+        assert_eq!(merge_json(Some(&had), Some(&had), None), None, "gone with the case");
+        assert_eq!(merge_json(None, Some(&had), Some(&now)), None, "taken away by the user");
         // A row typed over that the case took away meanwhile: kept.
         assert_eq!(merge_rows("rho|1600\nmu|5", "rho|1600\nmu|3", "rho|1600", 2), "rho|1600\nmu|5");
         // A row added that the case gained meanwhile: the user's value.

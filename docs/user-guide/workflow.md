@@ -596,7 +596,8 @@ step, end time and write interval, the turbulence model (picked from the RAS mod
 case's version), the temperature limit's min and max, the blending coefficients, and a case to
 take settings *From* (*Browse…*). Only what is changed is sent; the material library and the
 numerics are edited in *Edit as JSON*, and sent only when changed there. After another command
-or an undo, what wasn't changed follows the case, in the JSON shown too.
+or an undo, what wasn't changed follows the case, entry by entry (a numerics entry edited
+stays, the others follow), in the JSON shown too.
 
 ### Components
 

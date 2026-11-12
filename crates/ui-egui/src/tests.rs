@@ -3381,6 +3381,25 @@ fn a_case_is_made_and_set_up_from_forms() {
     ok(&mut h);
     let last = h.state().session().journal().last().cloned().unwrap();
     assert_eq!(last["params"], json!({"deltaT": 600}), "{last}");
+    // One numerics entry edited in the JSON while a command changes another: both kept.
+    h.state_mut().invoke("workflow.settings");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    let mut shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    shown["numerics"]["fluid"]["SIMPLE"]["nNonOrthogonalCorrectors"] = json!("4");
+    h.state_mut().dialog.as_mut().unwrap().params = shown.to_string();
+    h.state_mut()
+        .act("workflow.settings", json!({"numerics": {"fluid": {"relaxationFactors": {"equations": {"k": 0.4}}}}}));
+    h.run();
+    h.run();
+    let shown: serde_json::Value = serde_json::from_str(&h.state().dialog.as_ref().unwrap().params).unwrap();
+    assert_eq!(shown.pointer("/numerics/fluid/SIMPLE/nNonOrthogonalCorrectors"), Some(&json!("4")), "{shown}");
+    assert_eq!(
+        shown.pointer("/numerics/fluid/relaxationFactors/equations/k").and_then(|v| v.as_str()),
+        Some("0.4"),
+        "{shown}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

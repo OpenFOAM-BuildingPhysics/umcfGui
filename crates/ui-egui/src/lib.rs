@@ -697,35 +697,32 @@ impl App {
             if f.json
                 && let Ok(Value::Object(mut shown)) = serde_json::from_str::<Value>(&d.params)
             {
-                for (k, was) in &f.initial_extra {
-                    if shown.get(k) == Some(was) {
-                        match now.get(k) {
-                            Some(v) => shown.insert(k.clone(), v.clone()),
-                            None => shown.remove(k),
-                        };
-                    }
-                }
-                for (k, v) in &now {
-                    if !f.initial_extra.contains_key(k) && !shown.contains_key(k) {
-                        shown.insert(k.clone(), v.clone());
-                    }
+                // The form's own fields shown there aren't the case's extras: left as they are.
+                let keys: std::collections::BTreeSet<String> = f
+                    .initial_extra
+                    .keys()
+                    .chain(now.keys())
+                    .chain(shown.keys().filter(|k| f.initial_extra.contains_key(*k)))
+                    .cloned()
+                    .collect();
+                for k in keys {
+                    match forms::merge_json(shown.get(&k), f.initial_extra.get(&k), now.get(&k)) {
+                        Some(v) => shown.insert(k, v),
+                        None => shown.remove(&k),
+                    };
                 }
                 d.params = serde_json::to_string_pretty(&Value::Object(shown)).unwrap_or_default();
             }
             // Those left as they were follow the case (gone with it when it has them no more);
             // those changed in the JSON stay.
-            let left: Vec<String> =
-                f.extra.iter().filter(|(k, v)| f.initial_extra.get(*k) == Some(*v)).map(|(k, _)| k.clone()).collect();
-            for k in left {
-                match now.get(&k) {
-                    Some(v) => f.extra.insert(k, v.clone()),
+            // Entry by entry, at any depth (forms::merge_json).
+            let keys: std::collections::BTreeSet<String> =
+                f.extra.keys().chain(f.initial_extra.keys()).chain(now.keys()).cloned().collect();
+            for k in keys {
+                match forms::merge_json(f.extra.get(&k), f.initial_extra.get(&k), now.get(&k)) {
+                    Some(v) => f.extra.insert(k, v),
                     None => f.extra.remove(&k),
                 };
-            }
-            for (k, v) in &now {
-                if !f.extra.contains_key(k) && !f.initial_extra.contains_key(k) {
-                    f.extra.insert(k.clone(), v.clone());
-                }
             }
             f.initial_extra = now;
         }
