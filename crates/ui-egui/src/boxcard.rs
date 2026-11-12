@@ -111,6 +111,10 @@ impl App {
         let bad = |what: &str| format!("{what}: as OK would send it, the command refuses it");
         // The surfaces: those given, else the box's, else every surface (as the command).
         let surfaces: Vec<String> = match params.get("surfaces") {
+            // Counted before anything is copied.
+            Some(Value::Array(a)) if a.len() > umcf_model::mesh_box::MAX_SURFACES => {
+                return Err(bad("Surfaces"));
+            }
             Some(Value::Array(a)) => a
                 .iter()
                 // As the command takes a name: with or without its folder.
@@ -133,6 +137,7 @@ impl App {
                 }
                 out
             }
+            Some(Value::Array(a)) if a.len() != 6 => return Err(bad("Margins")),
             Some(Value::Array(a)) => {
                 // Every member a number, six of them: else the command refuses it.
                 let v: Vec<f64> = a.iter().map(Value::as_f64).collect::<Option<_>>().ok_or_else(|| bad("Margins"))?;
