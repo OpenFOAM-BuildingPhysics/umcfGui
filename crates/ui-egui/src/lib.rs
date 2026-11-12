@@ -144,7 +144,7 @@ pub struct App {
     /// The box card's line: the box's size and cells, or what keeps it from being made.
     pub(crate) box_summary: Option<Result<String, String>>,
     /// The surfaces' bounds the box card's preview is around, kept while they don't change.
-    box_bounds: Option<boxcard::Bounds>,
+    pub(crate) box_bounds: Option<boxcard::Bounds>,
     /// Goes up when a command may have changed the case's surfaces (geometry, undo, redo,
     /// another case): the box card's bounds are read again then, not at every view change.
     pub(crate) geometry_revision: u64,

@@ -2893,6 +2893,11 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
     h.state_mut().dialog = None;
     h.run();
+    // A read cancelled is read again when the card opens again.
+    let key = h.state().box_bounds.as_ref().map(|(s, r, _)| (s.clone(), *r)).unwrap();
+    h.state_mut().box_bounds = Some((key.0, key.1, Err("Reading the surfaces cancelled".into())));
+    h.run();
+    assert!(h.state().box_bounds.is_none(), "dropped when the card is closed");
     // Opened again: filled from the region's box; untouched, it follows the case (the box
     // undone: emptied), ticked surfaces count as typed.
     h.state_mut().invoke("mesh.box");

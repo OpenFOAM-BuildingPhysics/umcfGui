@@ -508,7 +508,7 @@ impl App {
             (Work::Bounds { surfaces, revision }, Done::Bounds(result)) => {
                 let result = result.map_err(|e| match e {
                     Error::Cancelled { .. } => {
-                        "Reading the surfaces cancelled: change them, or close and open the card, to read them again."
+                        "Reading the surfaces cancelled: change them, or close the card and open it again, to read them again."
                             .to_string()
                     }
                     e => e.to_string(),

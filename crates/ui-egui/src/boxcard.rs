@@ -22,6 +22,10 @@ impl App {
         if !open {
             self.viewport.blocks = None;
             self.box_summary = None;
+            // A read that failed or was cancelled is tried again when the card opens again.
+            if self.box_bounds.as_ref().is_some_and(|(_, _, b)| b.is_err()) {
+                self.box_bounds = None;
+            }
             return;
         }
         self.box_prefill();
