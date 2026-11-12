@@ -2039,6 +2039,7 @@ fn a_command_asked_for_at_start_up_leaves_the_first_scene_waiting() {
             crate::jobs::Work::Command { id, .. } => id.clone(),
             crate::jobs::Work::Scene { .. } => "scene".to_string(),
             crate::jobs::Work::History { .. } => "history".to_string(),
+            crate::jobs::Work::Bounds { .. } => "bounds".to_string(),
         })
         .collect();
     assert_eq!(ids, ["scene", "case.fields", "case.check"]);
@@ -2872,6 +2873,24 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert_eq!(form(&h).values.get("region").map(String::as_str), Some("street"));
     assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("1|1|1|1|0|1"));
     assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("3"));
+    // The preview is of what OK sends: one margin from the JSON previews; a cell size that
+    // isn't a number, or a region the description doesn't have, doesn't.
+    let set_json = |h: &mut Harness<'_, App>, p: serde_json::Value| {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        let spec = crate::forms::spec("mesh.box").unwrap();
+        let f = d.form.as_mut().unwrap();
+        f.fill(spec, &p).unwrap();
+        f.filled_for = f.values.get("region").cloned();
+    };
+    set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": 1}));
+    h.run();
+    assert!(h.state().viewport.blocks.is_some(), "{:?}", h.state().box_summary);
+    set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": "two", "cells": null}));
+    h.run();
+    assert!(h.state().viewport.blocks.is_none());
+    set_json(&mut h, json!({"region": "nowhere", "margin": 5, "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
     h.state_mut().dialog = None;
     h.run();
     // Opened again: filled from the region's box; untouched, it follows the case (the box

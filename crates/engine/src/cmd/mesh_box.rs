@@ -140,12 +140,14 @@ impl Session {
     /// The bounds of the case's surfaces `names` (file names in constant/triSurface), each read
     /// as OpenFOAM would and as `mesh.box` reads them: for a preview of a box around them. An
     /// error names one that isn't there, doesn't read, or has no finite point.
-    pub fn surface_bounds(&self, names: &[String]) -> Result<BBox, Error> {
+    /// `cancellable`: a cancel stops it between surfaces (run as a job, whose cancel is reset as
+    /// it starts).
+    pub fn surface_bounds(&self, names: &[String], cancellable: bool) -> Result<BBox, Error> {
         if names.len() > MAX_SURFACES {
             return Err(bad(format!("{} surfaces, {MAX_SURFACES} at most", names.len())));
         }
         let names = names.iter().map(|n| surface_name(n)).collect::<Result<Vec<_>, _>>()?;
-        bounds(self, &names, false)
+        bounds(self, &names, cancellable)
     }
 }
 

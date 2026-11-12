@@ -23,6 +23,9 @@ pub(crate) enum Work {
     Scene { params: Value },
     /// Undo or redo until `done` edits are done (the history bar).
     History { done: usize },
+    /// The bounds of the case's surfaces `surfaces` for the box card's preview, as of the
+    /// case's geometry `revision` ([`App::geometry_revision`]).
+    Bounds { surfaces: Vec<String>, revision: u64 },
 }
 
 /// What the window does once a command ran.
@@ -92,6 +95,7 @@ fn of_megabytes(bytes: u64, expected: u64) -> String {
 enum Done {
     Command(Result<Outcome, Error>),
     Scene(Result<(), Error>),
+    Bounds(Result<umcf_geom::BBox, Error>),
     /// Each undo or redo, with its outcome.
     History(Vec<(&'static str, Result<Outcome, Error>)>),
 }
@@ -124,6 +128,7 @@ fn perform(session: &mut Session, work: &Work) -> Done {
     match work {
         Work::Command { id, params, .. } => Done::Command(session.execute(id, params)),
         Work::Scene { params } => Done::Scene(session.scene(params).map(|_| ())),
+        Work::Bounds { surfaces, .. } => Done::Bounds(session.surface_bounds(surfaces, true)),
         Work::History { done } => {
             let mut steps = Vec::new();
             // Each step moves one edit between the two lists: never more steps than edits.
@@ -157,7 +162,7 @@ fn perform(session: &mut Session, work: &Work) -> Done {
 pub(crate) fn cancellable(work: &Work) -> bool {
     match work {
         Work::Command { id, .. } => Session::command(id).is_some_and(|c| c.reads_only),
-        Work::Scene { .. } => true,
+        Work::Scene { .. } | Work::Bounds { .. } => true,
         Work::History { .. } => false,
     }
 }
@@ -191,6 +196,7 @@ fn label(work: &Work) -> String {
         },
         Work::Scene { .. } => "Reading the meshes and surfaces to show".to_string(),
         Work::History { .. } => "Going back or forward in the history".to_string(),
+        Work::Bounds { .. } => "Reading the surfaces for the box".to_string(),
     }
 }
 
@@ -200,6 +206,7 @@ fn id_of(work: &Work) -> String {
         Work::Command { id, .. } => id.clone(),
         Work::Scene { .. } => "scene".to_string(),
         Work::History { .. } => "edit.history".to_string(),
+        Work::Bounds { .. } => "surface bounds".to_string(),
     }
 }
 
@@ -225,6 +232,9 @@ impl App {
                 *queued = params.clone();
                 return;
             }
+        } else if let Work::Bounds { .. } = &work {
+            // The newest bounds asked for only; a scene waiting stays (the bounds change nothing).
+            self.queue.retain(|w| !matches!(w, Work::Bounds { .. }));
         } else {
             self.queue.retain(|w| !matches!(w, Work::Scene { .. }));
         }
@@ -261,6 +271,7 @@ impl App {
                     match &work {
                         Work::Command { .. } => Done::Command(Err(e)),
                         Work::Scene { .. } => Done::Scene(Err(e)),
+                        Work::Bounds { .. } => Done::Bounds(Err(e)),
                         // The walk as a whole: which steps it took before is lost with the panic.
                         Work::History { .. } => Done::History(vec![("edit.history", Err(e))]),
                     }
@@ -289,6 +300,7 @@ impl App {
             }
             Work::Scene { params } => Work::Scene { params: params.clone() },
             Work::History { done } => Work::History { done: *done },
+            Work::Bounds { surfaces, revision } => Work::Bounds { surfaces: surfaces.clone(), revision: *revision },
         };
         if let Err(std::sync::mpsc::SendError((session, _))) = give.send((session, work_for_thread)) {
             // The thread is gone already: run it here.
@@ -493,8 +505,18 @@ impl App {
                     self.fit(view);
                 }
             }
+            (Work::Bounds { surfaces, revision }, Done::Bounds(result)) => {
+                let result = result.map_err(|e| match e {
+                    Error::Cancelled { .. } => {
+                        "Reading the surfaces cancelled: change them, or close and open the card, to read them again."
+                            .to_string()
+                    }
+                    e => e.to_string(),
+                });
+                self.box_bounds = Some((surfaces, revision, result));
+            }
             // A job gives back what its work makes.
-            (Work::Command { .. } | Work::Scene { .. } | Work::History { .. }, _) => {}
+            (Work::Command { .. } | Work::Scene { .. } | Work::History { .. } | Work::Bounds { .. }, _) => {}
         }
     }
 
