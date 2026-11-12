@@ -1109,6 +1109,7 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                     all.push(n.clone());
                                 }
                             }
+                            let mut clicked = false;
                             ui.vertical(|ui| {
                                 if all.is_empty() {
                                     ui.label(RichText::new("none").weak());
@@ -1119,6 +1120,7 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                         for name in &all {
                                             let mut on = set.contains(name);
                                             if ui.checkbox(&mut on, name.as_str()).changed() {
+                                                clicked = true;
                                                 if on {
                                                     set.insert(name.clone());
                                                 } else {
@@ -1129,6 +1131,10 @@ pub(crate) fn show(ui: &mut Ui, spec: &Spec, form: &mut FormState, width: f32, b
                                     },
                                 );
                             });
+                            // A tick replaces what the JSON gave that the list couldn't hold.
+                            if clicked {
+                                form.extra.remove(f.key);
+                            }
                         }
                     }
                 }

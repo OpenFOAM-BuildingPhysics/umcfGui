@@ -3247,6 +3247,21 @@ fn the_workflow_cards_fill_from_the_description() {
     h.run();
     assert_eq!(form(&h).lists["patches"].iter().cloned().collect::<Vec<_>>(), vec!["ground".to_string()]);
     assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "grass", "on": true}));
+    // A list the JSON gave that the field can't hold is sent as it is, until a tick replaces it.
+    h.state_mut()
+        .dialog
+        .as_mut()
+        .unwrap()
+        .form
+        .as_mut()
+        .unwrap()
+        .fill(spec, &json!({"component": "grass", "on": true, "patches": null}))
+        .unwrap();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["patches"], json!(null));
+    h.get_by_label("ground").click();
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap(), json!({"component": "grass", "on": true}));
     // A bad `on` from the JSON stays through the frames the form is drawn: sent as it is.
     h.state_mut()
         .dialog

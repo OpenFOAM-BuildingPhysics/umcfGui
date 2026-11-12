@@ -618,8 +618,9 @@ In the desktop app it is *Switch a component* in the *More* group of the *Case* 
 [form](desktop.md#forms) of the component, *On* (ticked to start with) and, for the grass, the
 patches of air to tick (its mesh's and those the description gives it), those the case's
 `grassProperties` names ticked to start with; the patches are sent only when changed (all
-unticked: `[]`, the file's taken away), and only with the grass switched on; after another
-command or an undo, ticks not changed follow the file. Its card starts
+unticked: `[]`, an empty `grassPatches` list written, the grass staying on), and only with the
+grass switched on; after another command or an undo, the ticks follow the file while none was
+changed, a changed selection staying as it is. Its card starts
 with the temperature limit.
 
 ### Editing the description
