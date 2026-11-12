@@ -33,7 +33,7 @@ pub(crate) enum Then {
         path: String,
     },
     /// The command card it ran from: open again, with the error, when the command failed.
-    Dialog(Dialog),
+    Dialog(Box<Dialog>),
     /// One of the edit cards, which stays open while it runs: closed when the command worked,
     /// with the error when it didn't.
     Card(Card),
@@ -448,8 +448,12 @@ impl App {
                     (Then::Open { path }, result) => self.opened_folder(&path, result),
                     (Then::Dialog(_), Ok(_)) => {}
                     (Then::Dialog(mut d), Err(e)) => {
+                        // What the refusal tells to pass, offered on the form.
+                        if let (Some(f), Some(spec)) = (&mut d.form, crate::forms::spec(d.id)) {
+                            f.offer(spec, &e);
+                        }
                         d.error = Some(e);
-                        self.dialog = Some(d);
+                        self.dialog = Some(*d);
                     }
                     (Then::Card(card), Ok(_)) => self.close_card(card),
                     (Then::Card(card), Err(e)) => self.card_error(card, e),

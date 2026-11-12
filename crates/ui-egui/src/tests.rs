@@ -505,15 +505,41 @@ fn commands_with_parameters_open_a_dialog_and_undo_has_its_shortcut() {
     h.state_mut().invoke("control.set");
     h.run();
     assert!(h.state().dialog.is_some());
-    // Not JSON: the dialog stays and says why.
+    // A form, filled from the case's controlDict.
+    assert_eq!(
+        h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().values.get("endTime").map(String::as_str),
+        Some("3600")
+    );
+    // As JSON (Edit as JSON), not JSON: the dialog stays and says why.
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    assert_eq!(h.state().dialog.as_ref().unwrap().params.trim(), "{}", "nothing changed yet");
     h.state_mut().dialog.as_mut().unwrap().params = "{endTime: 1}".into();
     h.get_by_label("OK").click();
     h.run();
     assert!(h.state().dialog.as_ref().unwrap().error.as_deref().unwrap().starts_with("not JSON"));
-    h.state_mut().dialog.as_mut().unwrap().params = r#"{"endTime": 7200}"#.into();
+    // Back to the form, the end time typed there.
+    h.state_mut().dialog.as_mut().unwrap().params = "{}".into();
+    // The card settles (its scroll area grows to its height over frames) before its link is
+    // clicked.
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Back to the form").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
+    h.get_by_label("Back to the form").click();
+    h.run();
+    assert!(!h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().json);
+    // The end time typed in its field.
+    h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("endTime", "7200".into());
+    h.run();
     h.get_by_label("OK").click();
     h.run();
-    assert!(h.state().dialog.is_none());
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
     let end = |h: &Harness<'_, App>| {
         h.state().session().case().unwrap().dict(umcf_model::CONTROL_DICT).unwrap().value(&["endTime"])
     };
@@ -1583,11 +1609,11 @@ fn work_asked_while_a_job_runs_waits_and_runs_after_it() {
     // Not refused: queued, in order, and the window still draws from a copy of the session.
     let logged = app.log.len();
     app.invoke("case.check");
-    let d = crate::Dialog { id: "control.set", params: "{\"endTime\": 7200}".into(), error: None };
+    let d = crate::Dialog { id: "control.set", params: "{\"endTime\": 7200}".into(), error: None, form: None };
     app.start(crate::jobs::Work::Command {
         id: "control.set".into(),
         params: json!({ "endTime": 7200 }),
-        then: crate::jobs::Then::Dialog(d),
+        then: crate::jobs::Then::Dialog(Box::new(d)),
     });
     assert_eq!(app.log.len(), logged, "nothing refused");
     assert!(app.busy() && !app.modal_busy() && app.session().case().is_some());
@@ -2093,12 +2119,16 @@ fn new_case_starts_from_the_air_alone_and_opens_what_it_makes() {
     app.start(crate::jobs::Work::Command {
         id: "case.new".into(),
         params: params.clone(),
-        then: crate::jobs::Then::Dialog(d.clone()),
+        then: crate::jobs::Then::Dialog(Box::new(d.clone())),
     });
     app.wait_for_job();
     assert!(app.dialog.as_ref().and_then(|d| d.error.as_ref()).is_some());
     params["path"] = json!(dir.to_str().unwrap());
-    app.start(crate::jobs::Work::Command { id: "case.new".into(), params, then: crate::jobs::Then::Dialog(d) });
+    app.start(crate::jobs::Work::Command {
+        id: "case.new".into(),
+        params,
+        then: crate::jobs::Then::Dialog(Box::new(d)),
+    });
     app.wait_for_job();
     assert_eq!(app.session().location(), dir.to_str());
     assert_eq!(app.log.last().unwrap().command, "case.new");
@@ -2659,4 +2689,30 @@ fn the_cut_s_plane_is_dragged_by_its_arrow() {
     drag(&mut h, away, away + vec2(40.0, 0.0), Modifiers::NONE);
     assert_eq!(h.state().cut.as_ref().unwrap().at, moved.at);
     assert_ne!(h.state().viewport.camera, Some(camera));
+}
+
+/// The open card's form follows the case: the run controls left alone show what the case has
+/// after a command changed it; one typed in stays.
+#[test]
+fn a_form_follows_the_case() {
+    let mut h = harness(app());
+    h.state_mut().invoke("control.set");
+    h.run();
+    let form = |h: &Harness<'_, App>, k: &str| {
+        h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().values.get(k).cloned().unwrap_or_default()
+    };
+    assert_eq!(form(&h, "endTime"), "3600");
+    h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("deltaT", "5".into());
+    h.state_mut().act("control.set", json!({"endTime": 9000, "deltaT": 7}));
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert_eq!(form(&h, "endTime"), "9000");
+    assert_eq!(form(&h, "deltaT"), "5", "typed: kept");
+    let p =
+        h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().params(crate::forms::spec("control.set").unwrap());
+    assert_eq!(p.unwrap(), json!({"deltaT": 5}));
 }
