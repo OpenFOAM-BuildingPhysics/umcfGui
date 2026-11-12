@@ -598,6 +598,10 @@ rm -f constant/vegetation/cellToRegion constant/vegetation/cellToRegion.gz 0/veg
   mesh. The meshes of parts an earlier split left that it looks at (`constant/region1/polyMesh`,
   `constant/region2/polyMesh`) are removed before the split, so that the check sees only this one's; no region of the case may be named
   `region` and a number.
+- Nothing is removed through a symbolic link: the script stops when a directory the split
+  writes to (`constant/region1`, `constant/region2`, `constant/<zone>`, and in OpenFOAM-8
+  `system/<r>/region1` and `system/<r>/<zone>`) is one, and `workflow.scripts` writes none while
+  the case has such a link.
 - Only what the split made is removed: the zone's mesh, the parts' directories when they are
   empty (a directory with anything else in it stays), the `cellToRegion` maps, and in
   OpenFOAM-8 the `fvSchemes` and `fvSolution` it writes for each part in `system/<r>/<part>/`.
@@ -630,8 +634,9 @@ without `-overwrite` and `-noFields`; another option doesn't fit), the part outs
 in (`cp -r 3600/region1/polyMesh constant/vegetation/`, or the `mv` above), and what the split
 leaves removed: the parts (`region1`, the zone, `region*`) in `constant/` and `0/` or their
 meshes, their `fvSchemes` and `fvSolution` in `system/<r>/`, the maps, and the time directory
-when the split wrote one. Anything else is listed, as are a copy no split follows and a `mkdir`
-no copy follows. The zone is the one the clean-up names (`system/vegetation/trees`,
+when the split wrote one. Anything else is listed, as are a copy no split follows, a `mkdir`
+no copy follows, and a split whose part outside the zone is never put in the region (it builds
+no mesh there). The zone is the one the clean-up names (`system/vegetation/trees`,
 `constant/trees/polyMesh`; not a dictionary's or a region's name) when the dictionary makes it,
 else the one cell zone the dictionary makes (its `cellZoneSet` actions, in order: `new` and
 `clear` make a zone, `remove` takes it away, and another action on a zone not made yet, which

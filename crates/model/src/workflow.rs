@@ -255,7 +255,7 @@ impl Workflow {
         // (whose leftovers the script may then take away).
         let mut pending: Option<PendingSplit> = None;
         // The region split, and whether into a time directory (without `-overwrite`).
-        let mut split: Option<(String, bool)> = None;
+        let mut split: Option<DoneSplit> = None;
         // `mkdir constant/<r>`: part of a split when a copy of a mesh into it follows.
         let mut made: Vec<(usize, String, String)> = Vec::new();
         let miss = |wf: &mut Workflow, line: usize, what: String, redundant: bool| {
@@ -273,14 +273,20 @@ impl Workflow {
                 // What the split leaves: the time directory it wrote (without `-overwrite`),
                 // the parts, their copies of the region's `system/` dictionaries, its maps.
                 StepKind::Remove { paths }
-                    if split.as_ref().is_some_and(|(reg, timed)| {
-                        let zone = self.split_zone_of(reg).or_else(|| self.zone_hint(paths, reg));
-                        paths.iter().all(|p| split_leftover(p, reg, zone.as_deref(), *timed))
+                    if split.as_ref().is_some_and(|d| {
+                        let known = if d.taken { self.split_zone_of(&d.region) } else { d.split.zone.clone() };
+                        let zone = known.or_else(|| self.zone_hint(paths, &d.region));
+                        paths.iter().all(|p| split_leftover(p, &d.region, zone.as_deref(), d.timed))
                     }) =>
                 {
-                    if let Some((reg, _)) = split.as_ref() {
-                        let zone = self.zone_hint(paths, reg);
-                        if let (Some(z), Some(m)) = (zone, self.mesh(reg))
+                    if let Some(d) = split.as_mut() {
+                        let zone = self.zone_hint(paths, &d.region);
+                        // Before the part is put in, the split waiting for it holds the zone.
+                        if !d.taken {
+                            if d.split.zone.is_none() {
+                                d.split.zone = zone;
+                            }
+                        } else if let (Some(z), Some(m)) = (zone, self.mesh(&d.region))
                             && let MeshBuild::Split(sp) = &mut m.build
                             && sp.zone.is_none()
                         {
@@ -336,13 +342,21 @@ impl Workflow {
                     }
                 }
                 StepKind::Run(r) if r.app == "splitMeshRegions" => match (pending.take(), r.region.as_deref()) {
-                    (Some(PendingSplit { region, of, dict: Some(dict), .. }), Some(reg))
+                    (Some(PendingSplit { region, of, dict: Some(dict), mut lines }), Some(reg))
                         if region == reg && !r.parallel && split_args(&r.args, reg) =>
                     {
-                        let build = MeshBuild::Split(Split { of, zone: None, dict });
-                        self.meshes.retain(|m| m.region != reg);
-                        self.meshes.push(RegionMesh { region: reg.to_string(), build, steps: Vec::new() });
-                        split = Some((reg.to_string(), !r.args.iter().any(|a| a == "-overwrite")));
+                        if let Some(done) = split.take() {
+                            done.end(self, &s.path);
+                        }
+                        // The region's mesh once the part outside the zone is put in.
+                        lines.push((line, describe(r)));
+                        split = Some(DoneSplit {
+                            region: reg.to_string(),
+                            split: Split { of, zone: None, dict },
+                            timed: !r.args.iter().any(|a| a == "-overwrite"),
+                            taken: false,
+                            lines,
+                        });
                     }
                     (p, _) => {
                         if let Some(p) = p {
@@ -354,7 +368,17 @@ impl Workflow {
                 // The split's part outside the zone put in place:
                 // `cp -r 3600/region1/polyMesh constant/vegetation/`.
                 StepKind::Copy { from, to } | StepKind::Move { from, to }
-                    if split.as_ref().is_some_and(|(reg, _)| split_take(from, to, reg)) => {}
+                    if split.as_ref().is_some_and(|d| split_take(from, to, &d.region)) =>
+                {
+                    if let Some(d) = split.as_mut()
+                        && !d.taken
+                    {
+                        d.taken = true;
+                        let build = MeshBuild::Split(d.split.clone());
+                        self.meshes.retain(|m| m.region != d.region);
+                        self.meshes.push(RegionMesh { region: d.region.clone(), build, steps: Vec::new() });
+                    }
+                }
                 // The region's directory for the copy: `mkdir -p constant/vegetation`, reported
                 // unless a copy of a mesh into it follows.
                 StepKind::MakeDir { paths }
@@ -420,6 +444,9 @@ impl Workflow {
         }
         if let Some(p) = pending {
             p.unused(self, &s.path);
+        }
+        if let Some(done) = split {
+            done.end(self, &s.path);
         }
         for (line, what, _) in made {
             miss(self, line, what, false);
@@ -878,6 +905,25 @@ fn split_script(region: &str, sp: &Split, version: OfVersion) -> String {
     s.push_str(&format!(
         "rm -rf constant/{r}/polyMesh/cellZones constant/{r}/polyMesh/cellZones.gz constant/{r}/polyMesh/sets\n"
     ));
+    // Nothing is removed through a link (into another case, say): the directories the split
+    // writes to and the clean-up removes from are checked first.
+    let mut links = vec![format!("constant/{rest}"), "constant/region2".to_string(), format!("constant/{zone}")];
+    if version == OfVersion::V8 {
+        links.push(format!("system/{r}/{rest}"));
+        links.push(format!("system/{r}/{zone}"));
+    }
+    let test: Vec<String> = links.iter().map(|l| format!("[ -L {l} ]")).collect();
+    let raw_zone = sp.zone.as_deref().unwrap_or_default();
+    let mut shown = vec![format!("constant/{rest}"), "constant/region2".to_string(), format!("constant/{raw_zone}")];
+    if version == OfVersion::V8 {
+        shown.push(format!("system/{region}/{rest}"));
+        shown.push(format!("system/{region}/{raw_zone}"));
+    }
+    let message = format!(
+        "region {region}: a directory the split writes to is a symbolic link ({}): nothing is removed through it",
+        shown.join(", ")
+    );
+    s.push_str(&format!("if {}\nthen\n    echo {} >&2\n    exit 1\nfi\n", test.join(" || "), q(&message)));
     // What an earlier split left (no region is named so: see `split_ok`), so that the check
     // after this one sees only its parts.
     s.push_str(&format!("rm -rf {}\n", PARTS_LEFT));
@@ -1048,6 +1094,38 @@ fn split_zone(p: &str, reg: &str) -> Option<String> {
         || matches!(z, "fvSchemes" | "fvSolution" | "fvConstraints" | "fvModels" | "fvOptions" | "controlDict");
     let plain = !z.is_empty() && !z.contains(['/', '*', '?', '[']) && !z.starts_with("region") && !dictionary;
     plain.then(|| z.to_string())
+}
+
+/// A split read, waiting for its part outside the zone to be put in as the region's mesh.
+struct DoneSplit {
+    region: String,
+    split: Split,
+    /// Into a time directory (without `-overwrite`).
+    timed: bool,
+    /// The part was put in place (`cp`/`mv` of `region1/polyMesh`).
+    taken: bool,
+    /// The copy, the `topoSet` and the split, with what they run.
+    lines: Vec<(usize, String)>,
+}
+
+impl DoneSplit {
+    /// At the next split or the script's end: a split whose part was never put in place
+    /// built no mesh (the region keeps the one it had, its steps found it or were listed), and
+    /// its lines are listed.
+    fn end(self, wf: &mut Workflow, script: &str) {
+        if self.taken {
+            return;
+        }
+        let region = self.region;
+        for (line, what) in self.lines {
+            wf.unmatched.push(Unmatched {
+                script: script.to_string(),
+                line,
+                what: format!("{what} (the part outside the zone is never put in constant/{region}/polyMesh)"),
+                redundant: false,
+            });
+        }
+    }
 }
 
 /// A copy of a region's mesh, and the `topoSet` on it, waiting for `splitMeshRegions`.
