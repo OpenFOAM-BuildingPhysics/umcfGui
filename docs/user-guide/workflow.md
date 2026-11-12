@@ -505,8 +505,20 @@ faces takes the box out, since the blocks are no longer what it makes; one that 
 patches or types leaves it. The case check (`workflow.blocks`) names a box without blocks, one with a
 problem of its own, and surfaces it names that the case doesn't have; it doesn't read the
 surfaces, so a surface changed since is found by `mesh.box` with only `region`. In the desktop
-app it is *Box mesh* in the *More* group of the *Mesh* tab, a card of its JSON parameters for
-now.
+app it is *Box mesh* in the *More* group of the *Mesh* tab: a [form](desktop.md#forms) (the
+region, starting on the first with a box; its surfaces; the six margins; the cell size or the
+cells along each axis; *Replace blocks not made from the box* and *Write over a blockMeshDict
+edited by hand*), filled from the region's box when it has one. While it is open, the 3D view
+previews the box the form makes (its sides, its stations strong and its cells' lines faint, at
+most 120 along an axis; on the GPU and the CPU alike) and the card says its size, its cells and
+which side is the ground, before anything is written. The preview is of the parameters *OK*
+sends (what *Edit as JSON* kept too, one margin for all say), with the region's box for what
+they leave out, as the command takes them; what keeps it from being made (a margin missing, a
+cell size and cells both given, a value the command refuses, a region the description doesn't
+have, a surface that doesn't read) is said there instead. The surfaces' bounds are read in the
+background (the status bar shows it, *Cancel* stops it), again only after a geometry command,
+an undo or redo, or another case.
+Patches, types and the other options go through *Edit as JSON*.
 
 ### Settings
 

@@ -37,6 +37,7 @@ use umcf_render::Source;
 use umcf_render::camera::{Camera, View};
 
 pub mod bc;
+mod boxcard;
 pub mod cut;
 pub mod display;
 pub mod forms;
@@ -140,6 +141,13 @@ pub struct App {
     unlisted: bool,
     /// Why the last listing of the surfaces failed; `None` when it worked.
     listing_error: Option<String>,
+    /// The box card's line: the box's size and cells, or what keeps it from being made.
+    pub(crate) box_summary: Option<Result<String, String>>,
+    /// The surfaces' bounds the box card's preview is around, kept while they don't change.
+    pub(crate) box_bounds: Option<boxcard::Bounds>,
+    /// Goes up when a command may have changed the case's surfaces (geometry, undo, redo,
+    /// another case): the box card's bounds are read again then, not at every view change.
+    pub(crate) geometry_revision: u64,
     /// Names [`App::show_only`] was asked for while the surfaces couldn't be listed: the first
     /// listing that works shows those that are surfaces.
     waiting: Vec<String>,
@@ -294,6 +302,9 @@ impl App {
             surfaces: Vec::new(),
             unlisted: false,
             listing_error: None,
+            box_summary: None,
+            box_bounds: None,
+            geometry_revision: 0,
             waiting: Vec::new(),
             scene_error: None,
             scene_built: None,
@@ -486,6 +497,9 @@ impl App {
     fn after(&mut self, id: &str, result: Result<Outcome, umcf_engine::Error>) -> Result<Outcome, String> {
         let opens = matches!(id, "case.open" | "case.new");
         self.revision += 1;
+        if opens || id.starts_with("geometry.") || matches!(id, "edit.undo" | "edit.redo") {
+            self.geometry_revision += 1;
+        }
         let entry = match &result {
             Ok(o) => Entry { command: id.to_string(), ok: true, message: o.message.clone(), data: o.data.clone() },
             Err(e) => Entry { command: id.to_string(), ok: false, message: e.to_string(), data: Value::Null },
@@ -566,13 +580,8 @@ impl App {
     pub(crate) fn new_dialog(&self, id: &'static str, params: String) -> Dialog {
         let form = forms::spec(id).map(|spec| {
             let mut f = forms::FormState::filled(self.form_start(id));
-            f.surfaces = self
-                .session
-                .surfaces()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| p.strip_prefix("constant/triSurface/").map(str::to_string).unwrap_or(p))
-                .collect();
+            f.surfaces = self.form_surfaces();
+            f.workflow_regions = self.workflow_regions();
             f.regions = self
                 .session
                 .case()
@@ -582,10 +591,42 @@ impl App {
             if f.fill(spec, &serde_json::from_str(&params).unwrap_or_else(|_| json!({}))).is_err() {
                 let _ = f.fill(spec, &json!({}));
             }
+            // The box card starts on a region (the first with a box, else with blocks).
+            if id == "mesh.box" && f.values.get("region").is_none_or(String::is_empty) {
+                f.values.insert("region", self.box_region());
+            }
             f.initial = f.values.clone();
             f
         });
         Dialog { id, params, error: None, form }
+    }
+
+    /// The surfaces a form offers: the browser's list (listed again after each command; a
+    /// listing that failed keeps the last one, and is said in the log), by file name.
+    pub(crate) fn form_surfaces(&self) -> Vec<String> {
+        self.surfaces.iter().map(|p| p.strip_prefix("constant/triSurface/").unwrap_or(p).to_string()).collect()
+    }
+
+    /// The regions of the workflow description, in its order.
+    fn workflow_regions(&self) -> Vec<String> {
+        self.session
+            .case()
+            .and_then(|c| c.description())
+            .map(|(d, _)| d.regions.iter().map(|r| r.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The region the box card starts with: the first with a box, else with blocks, else the
+    /// first of the description.
+    fn box_region(&self) -> String {
+        let Some((d, _)) = self.session.case().and_then(|c| c.description()) else { return String::new() };
+        let first = |p: &dyn Fn(&umcf_model::description::RegionDesc) -> bool| {
+            d.regions.iter().find(|r| p(r)).map(|r| r.name.clone())
+        };
+        first(&|r| r.mesh_box.is_some())
+            .or_else(|| first(&|r| r.blocks.is_some()))
+            .or_else(|| d.regions.first().map(|r| r.name.clone()))
+            .unwrap_or_default()
     }
 
     /// The open card's form after the case changed (another case opened, a command or an undo
@@ -595,13 +636,8 @@ impl App {
         let Some(id) = self.dialog.as_ref().filter(|d| d.form.is_some()).map(|d| d.id) else { return };
         let Some(spec) = forms::spec(id) else { return };
         let start = self.form_start(id);
-        let surfaces: Vec<String> = self
-            .session
-            .surfaces()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|p| p.strip_prefix("constant/triSurface/").map(str::to_string).unwrap_or(p))
-            .collect();
+        let surfaces = self.form_surfaces();
+        let workflow_regions = self.workflow_regions();
         let regions: Vec<String> = self
             .session
             .case()
@@ -620,6 +656,12 @@ impl App {
         }
         f.surfaces = surfaces;
         f.regions = regions;
+        f.workflow_regions = workflow_regions;
+        // The box card fills its fields again from the region's box (another case, a box
+        // made since), unless something was typed in them: that stays.
+        if !f.typed() {
+            f.filled_for = None;
+        }
     }
 
     /// What a form's fields hold before anything is typed: the run controls as the case's
@@ -811,6 +853,7 @@ impl App {
         self.launch();
         // A cut that shows again (what a check found came) hides its region again.
         self.hide_again();
+        self.box_card_frame();
         if self.modal_busy() {
             self.busy_screen(ui);
             return;
@@ -2151,6 +2194,18 @@ impl App {
                                 .show(ui, |ui| {
                                     ask_file = forms::show(ui, fs, f, width, browse);
                                 });
+                            // The box card: the box the form makes, previewed in the view.
+                            if d.id == "mesh.box" {
+                                match &self.box_summary {
+                                    Some(Ok(line)) => {
+                                        ui.label(RichText::new(line).color(t.text));
+                                    }
+                                    Some(Err(e)) if !e.is_empty() => {
+                                        ui.label(RichText::new(e).color(t.text_muted));
+                                    }
+                                    _ => {}
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 egui::CollapsingHeader::new(RichText::new("All parameters").size(12.0))
                                     .id_salt("form-params-doc")
@@ -2194,6 +2249,9 @@ impl App {
                                 match serde_json::from_str::<Value>(&d.params) {
                                     Ok(v) => match f.fill(fs, &v) {
                                         Ok(()) => {
+                                            // What the JSON gives stays: a region it names
+                                            // doesn't fill the box card from its box.
+                                            f.filled_for = f.values.get("region").cloned();
                                             f.json = false;
                                             d.error = None;
                                         }

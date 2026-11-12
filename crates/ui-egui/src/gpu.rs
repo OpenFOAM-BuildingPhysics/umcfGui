@@ -1498,6 +1498,7 @@ impl Gpu {
             style.guides,
             umcf_render::raster::is_dark(background),
             style.cut_plane.as_ref(),
+            style.blocks.as_ref(),
         );
         let mut vertices: Vec<f32> = Vec::new();
         let vertex =
@@ -2626,6 +2627,38 @@ mod tests {
             assert!(differing(&cpu, &without, 6) > 0.001, "the plane is drawn on the CPU");
             assert!(differing(&image, &image_without, 6) > 0.001, "the plane is drawn on the GPU");
         }
+    }
+
+    #[test]
+    fn a_grid_of_blocks_is_drawn_as_the_cpu_view_draws_it() {
+        let scene = cut_scene();
+        let b = scene.bbox().unwrap();
+        let span = |lo: f64, hi: f64, n: usize| -> Vec<f64> {
+            (0..=n).map(|k| lo + (hi - lo) * k as f64 / n as f64).collect()
+        };
+        let pad = 0.5;
+        let (lo, hi) = (b.min - umcf_geom::Vec3::new(pad, pad, pad), b.max + umcf_geom::Vec3::new(pad, pad, pad));
+        let preview = umcf_render::guides::BlockPreview {
+            cells: [span(lo.x, hi.x, 12), span(lo.y, hi.y, 8), span(lo.z, hi.z, 6)],
+            stations: [vec![lo.x, hi.x], vec![lo.y, hi.y], vec![lo.z, hi.z]],
+        };
+        // Many thin lines: the pixels each view adds for them (on a line's border either may
+        // or may not take a pixel), as for the faces' edges.
+        let mut plain = Style::default();
+        let mut style = Style { blocks: Some(preview), ..Style::default() };
+        let Some((cpu_plain, gpu_plain)) = both(&scene, &mut plain) else { return };
+        let Some((cpu, image)) = both(&scene, &mut style) else { return };
+        let on_cpu: Vec<bool> = cpu.chunks(4).zip(cpu_plain.chunks(4)).map(|(p, q)| p != q).collect();
+        let on_gpu: Vec<bool> =
+            image.chunks(4).zip(gpu_plain.chunks(4)).map(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 6)).collect();
+        let (n_cpu, n_gpu) = (on_cpu.iter().filter(|x| **x).count(), on_gpu.iter().filter(|x| **x).count());
+        let shared = on_cpu.iter().zip(&on_gpu).filter(|(a, b)| **a && **b).count();
+        assert!(n_cpu > 500, "{n_cpu} pixels of lines on the CPU");
+        assert!(n_gpu.abs_diff(n_cpu) <= n_cpu / 5 && shared >= n_cpu * 3 / 4, "{n_cpu} {n_gpu} {shared}");
+        // Elsewhere the two agree as they do without it.
+        let off = differing(&cpu, &image, 6);
+        let base = differing(&cpu_plain, &gpu_plain, 6);
+        assert!(off <= base + 0.05, "{:.1}% of the pixels differ ({:.1}% without)", off * 100.0, base * 100.0);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use serde_json::{Map, Value, json};
 use umcf_geom::BBox;
 use umcf_geom::stl;
-use umcf_model::blocks::{Grading, Side};
+use umcf_model::blocks::Side;
 use umcf_model::description::{PATH, Role};
 use umcf_model::description_edit::PatchEdit;
 use umcf_model::mesh_box::{BoxCells, MAX_SURFACES, MeshBox, SIDES};
@@ -101,11 +101,13 @@ fn surface_name(name: &str) -> Result<String, Error> {
 
 /// The bounds of the surfaces `names`, each read as OpenFOAM would; an error naming one that
 /// isn't there, doesn't read, or has no finite point.
-fn bounds(s: &Session, names: &[String]) -> Result<BBox, Error> {
+/// `cancellable`: a cancel stops it between surfaces (the command's run; not a preview's,
+/// which a cancel left over from a job would stop).
+fn bounds(s: &Session, names: &[String], cancellable: bool) -> Result<BBox, Error> {
     let (case, fs) = s.case().zip(s.fs()).ok_or_else(|| Error::Failed("no case is open".to_string()))?;
     let mut all: Option<BBox> = None;
     for n in names {
-        if s.cancel.is_cancelled() {
+        if cancellable && s.cancel.is_cancelled() {
             return Err(Error::Cancelled { id: BOX.id.to_string() });
         }
         let rel = format!("{SURFACE_DIR}/{n}");
@@ -132,6 +134,21 @@ pub(crate) fn box_json(b: &MeshBox) -> Value {
         "cellSize": match &b.cells { BoxCells::Size(h) => json!(h), BoxCells::Counts(_) => Value::Null },
         "cells": match &b.cells { BoxCells::Counts(n) => json!(n), BoxCells::Size(_) => Value::Null },
     })
+}
+
+impl Session {
+    /// The bounds of the case's surfaces `names` (file names in constant/triSurface), each read
+    /// as OpenFOAM would and as `mesh.box` reads them: for a preview of a box around them. An
+    /// error names one that isn't there, doesn't read, or has no finite point.
+    /// `cancellable`: a cancel stops it between surfaces (run as a job, whose cancel is reset as
+    /// it starts).
+    pub fn surface_bounds(&self, names: &[String], cancellable: bool) -> Result<BBox, Error> {
+        if names.len() > MAX_SURFACES {
+            return Err(bad(format!("{} surfaces, {MAX_SURFACES} at most", names.len())));
+        }
+        let names = names.iter().map(|n| surface_name(n)).collect::<Result<Vec<_>, _>>()?;
+        bounds(self, &names, cancellable)
+    }
 }
 
 /// `mesh.box`: the region's blocks made from a box around the surfaces.
@@ -167,25 +184,10 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     o.case.box_read(region).map_err(|e| Error::Failed(format!("{}: {e}", BOX.id)))?;
     let had = r.mesh_box.clone();
     let (ground, top, by_g) = umcf_model::blocks::ground_and_top(&o.case, region);
-    // Blocks not made from the box (none there, or blocks of another shape than a box's: one
-    // span along each axis, graded 1, nothing missing, no single faces, as after a hand edit):
-    // replaced only when asked.
-    let boxlike = r.blocks.as_ref().is_some_and(|g| {
-        g.axes.iter().all(|a| {
-            a.stations.len() == 2 && a.spans.len() == 1 && a.spans.iter().all(|s| s.grading == Grading::Ratio(1.0))
-        }) && g.missing.is_empty()
-            && g.faces.is_empty()
-    });
-    // The checksum of the blocks the box last made: the blocks as it left them (a hand edit
-    // that keeps a box's shape, other stations or cells, is told too; one of the box entry
-    // itself, or of the surfaces, isn't an edit of the blocks).
-    let made_then = match (&had, &r.blocks) {
-        (Some(h), Some(g)) => match h.made {
-            Some(c) => umcf_model::blocks::shape_checksum(g) == c,
-            None => boxlike,
-        },
-        _ => false,
-    };
+    // Blocks not made from the box (none there; or not those it made: a hand edit, also one
+    // that keeps a box's shape; an edit of the box entry or of the surfaces isn't one of the
+    // blocks): replaced only when asked (umcf_model::mesh_box::made_by).
+    let made_then = r.blocks.as_ref().is_some_and(|g| umcf_model::mesh_box::made_by(had.as_ref(), g));
     let replaces = r.blocks.is_some() && !made_then;
     if replaces && !reshape {
         let why = if had.is_none() {
@@ -253,7 +255,7 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if let Some((k, m)) = b.problems().first() {
         return Err(bad(format!("{k} {m}")));
     }
-    let bbox = bounds(s, &b.surfaces)?;
+    let bbox = bounds(s, &b.surfaces, true)?;
     let at = |v: umcf_geom::Vec3| [v.x, v.y, v.z];
     let axes = b.axes(at(bbox.min), at(bbox.max), ground).map_err(bad)?;
     let made = umcf_model::blocks::BlockGrid { axes: axes.clone(), ..Default::default() };

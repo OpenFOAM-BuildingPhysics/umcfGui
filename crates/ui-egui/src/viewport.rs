@@ -125,6 +125,8 @@ pub struct Viewport {
     /// A cut's plane to draw and drag by its frame or arrow (the cut card's, set by the app
     /// each frame); `active` is the view's own.
     pub cut_plane: Option<umcf_render::guides::CutPlane>,
+    /// A grid of blocks previewed (the box card's, set by the app each frame).
+    pub blocks: Option<umcf_render::guides::BlockPreview>,
     /// The cut's plane held by the pointer: where, along its normal, it was taken.
     holding: Option<Hold>,
 }
@@ -187,6 +189,7 @@ impl Default for Viewport {
             brush: BRUSH.1,
             stroke: Vec::new(),
             cut_plane: None,
+            blocks: None,
             holding: None,
         }
     }
@@ -201,6 +204,8 @@ struct Drawn {
     guides: umcf_render::guides::Guides,
     /// The cut's plane drawn, as it is drawn (where, and whether held or under the pointer).
     cut: Option<umcf_render::guides::CutPlane>,
+    /// The grid of blocks previewed.
+    blocks: Option<umcf_render::guides::BlockPreview>,
     /// Picking faces, for the hover text.
     faces: bool,
     /// The case's revision and the layers' look (how they are drawn).
@@ -506,6 +511,7 @@ impl Viewport {
             edges: self.edges,
             guides: self.guides,
             cut: self.cut_plane.map(|c| umcf_render::guides::CutPlane { active: over || self.holding.is_some(), ..c }),
+            blocks: self.blocks.clone(),
             revision,
             dark: self.dark,
             renderer: self.renderer,
@@ -539,6 +545,7 @@ impl Viewport {
                 background: Some(self.background()),
                 guides: self.guides,
                 cut_plane: drawn.cut,
+                blocks: drawn.blocks.clone(),
             };
             // On the GPU when asked for and it can; else, or when it can't draw this, the CPU.
             use crate::gpu::NotDrawn;

@@ -13,6 +13,9 @@
 //!   over the region's extent, a little past it so that its frame shows outside the cut cells,
 //!   its frame, and an arrow along its normal from its middle, the handles a drag moves it by
 //!   ([`CutPlane::handles`]); brighter while it is held or the pointer is on it.
+//! - A grid of blocks, while it is set (the desktop app's box card): the box's edges and its
+//!   stations as strong lines, its cells' lines fainter, on the six sides of the box
+//!   ([`BlockPreview`]); hidden by what the scene shows in front of them.
 //!
 //! The spacing, the extent, the fade and the colours are ported from SolidCraft's viewport
 //! (<https://github.com/tangency-labs/solidcraft>, MIT or Apache-2.0, at commit 9325e3a:
@@ -67,6 +70,21 @@ pub struct CutPlane {
     /// Held, or the pointer on a handle: drawn brighter.
     pub active: bool,
 }
+
+/// A grid of blocks to preview (world coordinates): along each axis, where its cells' lines
+/// are (the first and the last the box's sides) and where its blocks' stations are.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BlockPreview {
+    pub cells: [Vec<f64>; 3],
+    pub stations: [Vec<f64>; 3],
+}
+
+/// The most lines of cells drawn along an axis: past it, every n-th (the stations always).
+pub const PREVIEW_LINES: usize = 120;
+
+/// The grid of blocks' colours: light over a dark background, dark over a light one.
+const BLOCKS_DARK: [u8; 3] = [120, 200, 255];
+const BLOCKS_LIGHT: [u8; 3] = [20, 90, 190];
 
 /// How far the rectangle reaches past the extent, of its half sides.
 const CUT_MARGIN: f64 = 0.15;
@@ -171,7 +189,14 @@ pub fn origin_size(half_height: f64) -> f64 {
 
 /// The guides `which` for `scene` seen by `camera`; `dark` for the colours over a dark
 /// background.
-pub fn build(scene: &Scene, camera: &Camera, which: Guides, dark: bool, cut: Option<&CutPlane>) -> Drawn {
+pub fn build(
+    scene: &Scene,
+    camera: &Camera,
+    which: Guides,
+    dark: bool,
+    cut: Option<&CutPlane>,
+    blocks: Option<&BlockPreview>,
+) -> Drawn {
     let mut out = Drawn::default();
     let f = camera.frame();
     let half_height = camera.distance * f.tan_half;
@@ -224,7 +249,61 @@ pub fn build(scene: &Scene, camera: &Camera, which: Guides, dark: bool, cut: Opt
     if let Some(h) = cut.and_then(|c| c.handles().map(|h| (h, c.active))) {
         plane(&mut out, h.0, h.1, dark, f.eye, &rel);
     }
+    if let Some(b) = blocks {
+        block_lines(&mut out, b, dark, &rel);
+    }
     out
+}
+
+/// A grid of blocks: on each of the box's six sides, the lines across it at each axis'
+/// stations (strong) and cells (faint, at most [`PREVIEW_LINES`] along an axis). Nothing for a
+/// grid without two finite stations along each axis.
+fn block_lines(out: &mut Drawn, b: &BlockPreview, dark: bool, rel: &dyn Fn(Vec3) -> [f32; 3]) {
+    let ends: Vec<(f64, f64)> = b
+        .stations
+        .iter()
+        .filter_map(|s| match (s.first(), s.last()) {
+            (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && lo < hi => Some((*lo, *hi)),
+            _ => None,
+        })
+        .collect();
+    let [(x0, x1), (y0, y1), (z0, z1)] = ends.as_slice() else { return };
+    let (lo, hi) = ([*x0, *y0, *z0], [*x1, *y1, *z1]);
+    let c = if dark { BLOCKS_DARK } else { BLOCKS_LIGHT };
+    let colour = rgb(c[0], c[1], c[2]);
+    let point = |v: [f64; 3]| Vec3::new(v[0], v[1], v[2]);
+    for a in 0..3 {
+        let (b1, b2) = ((a + 1) % 3, (a + 2) % 3);
+        // At each position along axis a: across the sides at b1's ends (along b2) and at b2's
+        // ends (along b1).
+        let mut lines = |at: f64, alpha: f32| {
+            if !(at.is_finite() && at >= lo[a] && at <= hi[a]) {
+                return;
+            }
+            for (fixed, along) in [(b1, b2), (b2, b1)] {
+                for end in [lo[fixed], hi[fixed]] {
+                    let mut p = [0.0; 3];
+                    p[a] = at;
+                    p[fixed] = end;
+                    let mut q = p;
+                    p[along] = lo[along];
+                    q[along] = hi[along];
+                    out.lines.push(Line { a: rel(point(p)), b: rel(point(q)), colour, alpha });
+                }
+            }
+        };
+        let cells = b.cells.get(a).map(Vec::as_slice).unwrap_or_default();
+        // At most PREVIEW_LINES cells between lines drawn (the positions are one more).
+        let every = cells.len().saturating_sub(1).div_ceil(PREVIEW_LINES).max(1);
+        for (k, at) in cells.iter().enumerate() {
+            if k % every == 0 {
+                lines(*at, 0.35);
+            }
+        }
+        for at in b.stations.get(a).map(Vec::as_slice).unwrap_or_default() {
+            lines(*at, 1.0);
+        }
+    }
 }
 
 /// The sides of the arrow's shaft and head.
@@ -400,7 +479,7 @@ mod tests {
         let scene = Scene::new(Vec3::new(100.0, 200.0, 0.0));
         let camera =
             Camera::fit(View::Iso, &BBox { min: Vec3::new(90.0, 190.0, 0.0), max: Vec3::new(110.0, 210.0, 10.0) }, 1.5);
-        let d = build(&scene, &camera, Guides::ALL, true, None);
+        let d = build(&scene, &camera, Guides::ALL, true, None, None);
         assert!(!d.grid.is_empty() && d.squares.len() == 3 && d.lines.len() > 12);
         // The grid on z = 0 (relative to the scene's origin, also 0 here), faded towards its ends.
         assert!(d.grid.iter().all(|l| l.a[2] == 0.0 && l.b[2] == 0.0));
@@ -408,7 +487,7 @@ mod tests {
         // The origin's xy square from the world's origin: (-100, -200) relative to the scene's.
         assert_eq!(d.squares[0].corners[0], [-100.0, -200.0, 0.0]);
         // Nothing asked, nothing drawn.
-        assert_eq!(build(&scene, &camera, Guides::default(), true, None), Drawn::default());
+        assert_eq!(build(&scene, &camera, Guides::default(), true, None, None), Drawn::default());
     }
 
     #[test]
@@ -427,12 +506,12 @@ mod tests {
         // the shaft's and the head's sides (and the head's base, seen from behind), shaded.
         let scene = Scene::new(Vec3::ZERO);
         let camera = Camera::fit(View::Iso, &extent, 1.5);
-        let d = build(&scene, &camera, Guides::default(), true, Some(&plane));
+        let d = build(&scene, &camera, Guides::default(), true, Some(&plane), None);
         assert_eq!(d.lines.len(), 4);
         let solid: Vec<&Square> = d.squares.iter().filter(|q| q.alpha == 1.0).collect();
         assert!(solid.len() >= ARROW_SIDES && solid.len() < 3 * ARROW_SIDES, "{}", solid.len());
         assert!(solid.iter().any(|q| q.colour != solid[0].colour), "shaded");
-        let held = build(&scene, &camera, Guides::default(), true, Some(&CutPlane { active: true, ..plane }));
+        let held = build(&scene, &camera, Guides::default(), true, Some(&CutPlane { active: true, ..plane }), None);
         assert!(held.squares[0].alpha > d.squares[0].alpha);
         // The head over the shaft seen from past the head's base; the shaft over the head's base
         // seen from short of it, even from the tip's side of the plane (the last square drawn:
@@ -440,7 +519,7 @@ mod tests {
         let from = |x: f64| {
             let camera =
                 Camera { target: Vec3::new(x, 10.0, 2.0), distance: 50.0, azimuth: 0.0, elevation: 0.0, fov: 30.0 };
-            let d = build(&scene, &camera, Guides::default(), true, Some(&plane));
+            let d = build(&scene, &camera, Guides::default(), true, Some(&plane), None);
             let last = *d.squares.last().unwrap();
             last.corners[2] == last.corners[3]
         };
@@ -448,5 +527,28 @@ mod tests {
         assert!(!from(4.0), "the shaft last, seen from short of the head's base");
         // A normal of zero: nothing.
         assert!(CutPlane { normal: Vec3::ZERO, ..plane }.handles().is_none());
+    }
+
+    #[test]
+    fn a_grid_of_blocks_is_drawn_on_the_sides_of_its_box() {
+        let scene = Scene::new(Vec3::ZERO);
+        let camera =
+            Camera::fit(crate::camera::View::Iso, &BBox { min: Vec3::ZERO, max: Vec3::new(10.0, 10.0, 10.0) }, 1.6);
+        let b = BlockPreview {
+            cells: [vec![0.0, 5.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
+            stations: [vec![0.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
+        };
+        let d = build(&scene, &camera, Guides::default(), true, None, Some(&b));
+        // Per axis and position: 4 lines; x has 3 cells' lines and 2 stations, y and z 2 + 2.
+        assert_eq!(d.lines.len(), 4 * (3 + 2) + 4 * (2 + 2) * 2);
+        assert!(d.lines.iter().all(|l| l.a.iter().chain(&l.b).all(|v| (0.0..=10.0).contains(v))));
+        // Many cells: thinned to PREVIEW_LINES along an axis.
+        let many: Vec<f64> = (0..=1000).map(|k| f64::from(k) / 100.0).collect();
+        let b = BlockPreview { cells: [many, vec![], vec![]], ..b };
+        let d = build(&scene, &camera, Guides::default(), true, None, Some(&b));
+        assert!(d.lines.len() <= 4 * (PREVIEW_LINES + 1 + 2) + 4 * 2 * 2, "{}", d.lines.len());
+        // A grid without a box: nothing.
+        let flat = BlockPreview { stations: [vec![0.0], vec![0.0, 1.0], vec![0.0, 1.0]], ..BlockPreview::default() };
+        assert!(build(&scene, &camera, Guides::default(), true, None, Some(&flat)).lines.is_empty());
     }
 }

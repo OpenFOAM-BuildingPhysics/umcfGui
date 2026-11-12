@@ -2039,6 +2039,7 @@ fn a_command_asked_for_at_start_up_leaves_the_first_scene_waiting() {
             crate::jobs::Work::Command { id, .. } => id.clone(),
             crate::jobs::Work::Scene { .. } => "scene".to_string(),
             crate::jobs::Work::History { .. } => "history".to_string(),
+            crate::jobs::Work::Bounds { .. } => "bounds".to_string(),
         })
         .collect();
     assert_eq!(ids, ["scene", "case.fields", "case.check"]);
@@ -2798,4 +2799,147 @@ fn a_form_follows_the_case() {
     let p =
         h.state().dialog.as_ref().unwrap().form.as_ref().unwrap().params(crate::forms::spec("control.set").unwrap());
     assert_eq!(p.unwrap(), json!({"deltaT": 5}));
+}
+
+/// The box card: filled from the region's box, the box previewed in the view (both renderers
+/// draw it from `viewport.blocks`) with its size and cells said, then made by OK.
+#[test]
+fn the_box_card_previews_the_box_and_makes_it() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-box", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+    )
+    .unwrap();
+    s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    assert_eq!(form(&h).values.get("region").map(String::as_str), Some("air"));
+    // Without margins: no preview, and the card says what it needs.
+    assert!(h.state().viewport.blocks.is_none());
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("six margins")));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("margin", "10|10|10|10|0|10".into());
+        f.values.insert("cellSize", "2".into());
+    }
+    h.run();
+    // Another command (a selection) keeps what was typed.
+    h.state_mut().act("select.clear", json!({}));
+    h.run();
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
+    let blocks = h.state().viewport.blocks.clone().unwrap_or_else(|| panic!("no preview: {:?}", h.state().box_summary));
+    // 8 .. 12 in x with 10 m around: -2 .. 22, 12 cells of 2.
+    assert_eq!(blocks.stations[0].len(), 2);
+    assert_eq!(blocks.cells[0].len(), 13, "{:?}", blocks.cells[0]);
+    let summary = h.state().box_summary.clone().unwrap().unwrap();
+    assert!(summary.contains("cells; the ground: ground"), "{summary}");
+    // OK: the box made, the card closed, the preview gone.
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    assert!(h.state().viewport.blocks.is_none());
+    let d = h.state().session().case().unwrap().description().unwrap().0;
+    assert!(d.region("air").unwrap().mesh_box.is_some());
+    // Edited as JSON, a region named there keeps the JSON's margins and cells.
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    h.get_by_label("Edit as JSON").click();
+    h.run();
+    h.state_mut().dialog.as_mut().unwrap().params =
+        r#"{"region": "street", "margin": [1, 1, 1, 1, 0, 1], "cellSize": 3}"#.into();
+    let mut last = None;
+    for _ in 0..200 {
+        h.run();
+        let now = h.get_by_label("Back to the form").rect();
+        if last == Some(now) {
+            break;
+        }
+        last = Some(now);
+    }
+    h.get_by_label("Back to the form").click();
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("region").map(String::as_str), Some("street"));
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("1|1|1|1|0|1"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("3"));
+    // The preview is of what OK sends: one margin from the JSON previews; a cell size that
+    // isn't a number, or a region the description doesn't have, doesn't.
+    let set_json = |h: &mut Harness<'_, App>, p: serde_json::Value| {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        let spec = crate::forms::spec("mesh.box").unwrap();
+        let f = d.form.as_mut().unwrap();
+        f.fill(spec, &p).unwrap();
+        f.filled_for = f.values.get("region").cloned();
+    };
+    set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": 1}));
+    h.run();
+    assert!(h.state().viewport.blocks.is_some(), "{:?}", h.state().box_summary);
+    set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": "two", "cells": null}));
+    h.run();
+    assert!(h.state().viewport.blocks.is_none());
+    set_json(&mut h, json!({"region": "air", "margin": [1, 1, 1, 1, 0, 1, "bad"], "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Margins")), "{:?}", h.state().box_summary);
+    set_json(&mut h, json!({"region": "air", "margin": -1, "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("margin")), "{:?}", h.state().box_summary);
+    set_json(&mut h, json!({"region": "nowhere", "margin": 5, "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
+    h.state_mut().dialog = None;
+    h.run();
+    // A read cancelled is read again when the card opens again.
+    let key = h.state().box_bounds.as_ref().map(|(s, r, _)| (s.clone(), *r)).unwrap();
+    h.state_mut().box_bounds = Some((key.0, key.1, Err("Reading the surfaces cancelled".into())));
+    h.run();
+    assert!(h.state().box_bounds.is_none(), "dropped when the card is closed");
+    // Opened again: filled from the region's box; untouched, it follows the case (the box
+    // undone: emptied), ticked surfaces count as typed.
+    h.state_mut().invoke("mesh.box");
+    h.run();
+    assert_eq!(form(&h).values.get("margin").map(String::as_str), Some("10|10|10|10|0|10"));
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
+    assert!(h.state().viewport.blocks.is_some());
+    assert!(!form(&h).typed());
+    // Blocks given otherwise since (the box taken out): OK needs reshape, and the card says so.
+    h.state_mut().act("mesh.block", json!({"region": "air", "x": [0, [3, 1], 30]}));
+    h.run();
+    h.run();
+    assert!(
+        matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Replace blocks not made from the box")),
+        "{:?}",
+        h.state().box_summary
+    );
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    // And the box itself undone.
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some(""), "refilled: the box undone");
+    assert!(h.state().viewport.blocks.is_none());
+    h.state_mut()
+        .dialog
+        .as_mut()
+        .unwrap()
+        .form
+        .as_mut()
+        .unwrap()
+        .lists
+        .entry("surfaces")
+        .or_default()
+        .insert("trees.stl".into());
+    assert!(form(&h).typed());
+    let _ = std::fs::remove_dir_all(&dir);
 }

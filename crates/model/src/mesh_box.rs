@@ -302,6 +302,23 @@ impl MeshBox {
     }
 }
 
+/// Whether a region's `blocks` are those its box `had` made (a box written with its `made`
+/// checksum: exactly those; one without: a box's shape, one span along each axis graded 1,
+/// nothing missing, no single faces). `false` without a box: blocks given otherwise. What a
+/// box would replace only with `reshape`: blocks there that this isn't true of.
+pub fn made_by(had: Option<&MeshBox>, blocks: &crate::blocks::BlockGrid) -> bool {
+    let Some(h) = had else { return false };
+    match h.made {
+        Some(c) => crate::blocks::shape_checksum(blocks) == c,
+        None => {
+            blocks.axes.iter().all(|a| {
+                a.stations.len() == 2 && a.spans.len() == 1 && a.spans.iter().all(|s| s.grading == Grading::Ratio(1.0))
+            }) && blocks.missing.is_empty()
+                && blocks.faces.is_empty()
+        }
+    }
+}
+
 /// Whether `name` is a file of `constant/triSurface` OpenFOAM reads as STL: no directory, not
 /// hidden, one of its STL extensions (in lower case, as OpenFOAM matches them).
 pub fn is_surface_file(name: &str) -> bool {

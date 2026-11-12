@@ -1222,6 +1222,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             guides,
             background,
             cut_plane: None,
+            blocks: None,
         },
     );
     let file = png::encode(&image);
