@@ -899,31 +899,22 @@ fn split_script(region: &str, sp: &Split, version: OfVersion) -> String {
     let zone = q(sp.zone.as_deref().unwrap_or_default());
     let rest = SPLIT_REST;
     let mut s = format!("# the cells of {of} outside the cell zone {zone}\n");
+    // Nothing is removed or written through a link (into another case, say): every directory
+    // the split's lines write to or remove from is checked before the first of them.
+    let raw_zone = sp.zone.as_deref().unwrap_or_default();
+    let shown = split_dirs(region, raw_zone, version);
+    let test: Vec<String> = split_dirs(r, &zone, version).iter().map(|l| format!("[ -L {l} ]")).collect();
+    let message = format!(
+        "region {region}: a directory the split writes to is a symbolic link ({}): nothing is removed through it",
+        shown.join(", ")
+    );
+    s.push_str(&format!("if {}\nthen\n    echo {} >&2\n    exit 1\nfi\n", test.join(" || "), q(&message)));
     s.push_str(&format!(
         "rm -rf constant/{r}/polyMesh\nmkdir -p constant/{r}\ncp -r constant/{of}/polyMesh constant/{r}/polyMesh\n"
     ));
     s.push_str(&format!(
         "rm -rf constant/{r}/polyMesh/cellZones constant/{r}/polyMesh/cellZones.gz constant/{r}/polyMesh/sets\n"
     ));
-    // Nothing is removed through a link (into another case, say): the directories the split
-    // writes to and the clean-up removes from are checked first.
-    let mut links = vec![format!("constant/{rest}"), "constant/region2".to_string(), format!("constant/{zone}")];
-    if version == OfVersion::V8 {
-        links.push(format!("system/{r}/{rest}"));
-        links.push(format!("system/{r}/{zone}"));
-    }
-    let test: Vec<String> = links.iter().map(|l| format!("[ -L {l} ]")).collect();
-    let raw_zone = sp.zone.as_deref().unwrap_or_default();
-    let mut shown = vec![format!("constant/{rest}"), "constant/region2".to_string(), format!("constant/{raw_zone}")];
-    if version == OfVersion::V8 {
-        shown.push(format!("system/{region}/{rest}"));
-        shown.push(format!("system/{region}/{raw_zone}"));
-    }
-    let message = format!(
-        "region {region}: a directory the split writes to is a symbolic link ({}): nothing is removed through it",
-        shown.join(", ")
-    );
-    s.push_str(&format!("if {}\nthen\n    echo {} >&2\n    exit 1\nfi\n", test.join(" || "), q(&message)));
     // What an earlier split left (no region is named so: see `split_ok`), so that the check
     // after this one sees only its parts.
     s.push_str(&format!("rm -rf {}\n", PARTS_LEFT));
@@ -971,6 +962,26 @@ const PARTS_LEFT: &str = "constant/region1/polyMesh constant/region2/polyMesh";
 /// number. No region of a case with a split may be named so.
 pub fn part_name(name: &str) -> bool {
     name.strip_prefix("region").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The directories a split of `region` by `zone` writes to or removes from (as given: quoted
+/// names for the script, raw ones for a message or a check): the region's own, the parts'
+/// (`region1`, `region2`, the zone) in `constant/`, and in OpenFOAM-8 their dictionaries in
+/// `system/<region>/`. None may be a symbolic link.
+pub fn split_dirs(region: &str, zone: &str, version: OfVersion) -> Vec<String> {
+    let mut dirs = vec![
+        format!("constant/{region}"),
+        format!("constant/{SPLIT_REST}"),
+        "constant/region2".to_string(),
+        format!("constant/{zone}"),
+    ];
+    if version == OfVersion::V8 {
+        dirs.push(format!("system/{region}"));
+        dirs.push(format!("system/{region}/{SPLIT_REST}"));
+        dirs.push(format!("system/{region}/region2"));
+        dirs.push(format!("system/{region}/{zone}"));
+    }
+    dirs
 }
 
 /// A copy of one region's mesh into another's, `cp -r constant/air/polyMesh

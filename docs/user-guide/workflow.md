@@ -598,10 +598,11 @@ rm -f constant/vegetation/cellToRegion constant/vegetation/cellToRegion.gz 0/veg
   mesh. The meshes of parts an earlier split left that it looks at (`constant/region1/polyMesh`,
   `constant/region2/polyMesh`) are removed before the split, so that the check sees only this one's; no region of the case may be named
   `region` and a number.
-- Nothing is removed through a symbolic link: the script stops when a directory the split
-  writes to (`constant/region1`, `constant/region2`, `constant/<zone>`, and in OpenFOAM-8
-  `system/<r>/region1` and `system/<r>/<zone>`) is one, and `workflow.scripts` writes none while
-  the case has such a link.
+- Nothing is removed or written through a symbolic link: before its first line touches
+  anything, the script stops when a directory the split writes to or removes from
+  (`constant/<r>`, `constant/region1`, `constant/region2`, `constant/<zone>`, and in OpenFOAM-8
+  `system/<r>` and its `region1`, `region2` and `<zone>`) is one, and `workflow.scripts` writes
+  none while the case has such a link (or `constant/` or `system/` is one).
 - Only what the split made is removed: the zone's mesh, the parts' directories when they are
   empty (a directory with anything else in it stays), the `cellToRegion` maps, and in
   OpenFOAM-8 the `fvSchemes` and `fvSolution` it writes for each part in `system/<r>/<part>/`.

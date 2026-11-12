@@ -336,11 +336,11 @@ fn a_split_region_is_written_for_each_version() {
     let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &split_prepare("system/air/topoSetDict"))]);
     let of12 = wf.generate(OfVersion::V12).unwrap();
     let prep = &of12[0].1;
-    let lines = "rm -rf constant/vegetation/polyMesh\n\
+    let lines = "if [ -L constant/vegetation ] || [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/vegetation, constant/region1, constant/region2, constant/trees): nothing is removed through it' >&2\n    exit 1\nfi\n\
+rm -rf constant/vegetation/polyMesh\n\
 mkdir -p constant/vegetation\n\
 cp -r constant/air/polyMesh constant/vegetation/polyMesh\n\
 rm -rf constant/vegetation/polyMesh/cellZones constant/vegetation/polyMesh/cellZones.gz constant/vegetation/polyMesh/sets\n\
-if [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/region1, constant/region2, constant/trees): nothing is removed through it' >&2\n    exit 1\nfi\n\
 rm -rf constant/region1/polyMesh constant/region2/polyMesh\n\
 runApplication -o -s vegetation topoSet -region vegetation -dict system/air/topoSetDict\n\
 runApplication -o -s vegetation splitMeshRegions -region vegetation -cellZones -overwrite -noFields\n\
@@ -360,6 +360,10 @@ runApplication -o -s vegetation createPatch -region vegetation -overwrite\n";
     let of8 = wf.generate(OfVersion::V8).unwrap();
     let prep8 = &of8[0].1;
     assert!(prep8.contains("topoSet -region vegetation -dict system/../air/topoSetDict\n"), "{prep8}");
+    assert!(
+        prep8.contains("[ -L system/vegetation ] || [ -L system/vegetation/region1 ] || [ -L system/vegetation/region2 ] || [ -L system/vegetation/trees ]"),
+        "{prep8}"
+    );
     assert!(
         prep8.contains("rm -f system/vegetation/region1/fvSchemes system/vegetation/region1/fvSchemes.gz system/vegetation/region1/fvSolution system/vegetation/region1/fvSolution.gz system/vegetation/trees/fvSchemes ")
             && prep8.contains("rmdir constant/region1 constant/trees system/vegetation/region1 system/vegetation/trees || true\n"),
