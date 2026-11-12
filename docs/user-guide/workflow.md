@@ -610,8 +610,9 @@ own (its `boundary`, `points`, `faces`, `owner` and `neighbour`). No script is w
 zone isn't known, when the zone or `region1` is the name of a region of the case (described or
 not: the clean-up works in their directories), when a region is named `region` and a number,
 when the dictionary makes other cell zones too (`splitMeshRegions -cellZones` would split those
-off as well, writing their meshes to `constant/<zone>`) or makes zones that can't be told (it
-doesn't read, or its actions use `#include` or a macro), or when the region copied isn't built before it.
+off as well, writing their meshes to `constant/<zone>`), makes zones that can't be told (it
+doesn't read, or its actions use `#include` or a macro), doesn't make the zone, or isn't there
+(the script would replace the region's mesh by the copy before `topoSet` stopped it), or when the region copied isn't built before it.
 The fields the tutorial copies into the region after the split (`cp 0/vegetation.bckp/*
 0/vegetation/`) are listed by the import and not yet written ([gaps](../gaps.md), row 8).
 
@@ -626,7 +627,8 @@ meshes, their `fvSchemes` and `fvSolution` in `system/<r>/`, the maps, and the t
 when the split wrote one. Anything else is listed, as are a copy no split follows and a `mkdir`
 no copy follows. The zone is the one the clean-up names (`system/vegetation/trees`,
 `constant/trees/polyMesh`; not a dictionary's or a region's name) when the dictionary makes it,
-else the one cell zone the dictionary makes (its `cellZoneSet` action).
+else the one cell zone the dictionary makes (its `cellZoneSet` actions, in order: a `remove`
+takes a zone away).
 
 `mesh.split` sets it: `region`, `of` (the region copied), `zone` and `dict` (default:
 `system/<of>/topoSetDict`), in place of the mesh the region had, or `remove: true` to take it
@@ -649,7 +651,7 @@ after it or whose mesh isn't built, a zone that isn't named or that the dictiona
 a dictionary that makes other zones too (or one the case doesn't have), and a zone or `region1` named as a region. In the
 desktop app it is *Split mesh* in the *More* group of the *Mesh* tab: a
 [form](desktop.md#forms) with the region, the region it is split from (only those listed before it
-offered), the cell zone (those the dictionary makes offered), the dictionary (left empty for
+whose meshes the description builds offered), the cell zone (those the dictionary makes offered), the dictionary (left empty for
 the copied region's own, so it follows *Split from*) and *Take the split out*, starting on the first split region (else the first vegetation region) and filled from
 the region's split when it has one.
 

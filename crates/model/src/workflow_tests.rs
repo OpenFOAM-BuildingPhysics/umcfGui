@@ -457,12 +457,16 @@ fn a_split_whose_clean_up_would_remove_a_region_is_refused() {
     refused(with(&|wf, _| wf.meshes.swap(0, 1)), "isn't built before it");
     refused(with(&|_, sp| sp.dict = "topoSetDict".into()), "not in a directory");
     // A dictionary that makes other zones too, or whose zones can't be told.
-    refused(
-        with(&|wf, _| wf.split_zones.push(("vegetation".into(), Some(vec!["trees".into(), "street".into()])))),
-        "other cell zones too (street)",
-    );
-    refused(with(&|wf, _| wf.split_zones.push(("vegetation".into(), None))), "can't be told");
-    assert!(with(&|wf, _| wf.split_zones.push(("vegetation".into(), Some(vec!["trees".into()])))).is_ok());
+    for (zones, says) in [
+        (DictZones::Made(vec!["trees".into(), "street".into()]), "other cell zones too (street)"),
+        (DictZones::Unclear, "can't be told"),
+        (DictZones::Missing, "isn't there"),
+        (DictZones::Made(Vec::new()), "doesn't make the cell zone trees"),
+        (DictZones::Made(vec!["bushes".into()]), "doesn't make the cell zone trees"),
+    ] {
+        refused(with(&|wf, _| wf.split_zones.push(("vegetation".into(), zones.clone()))), says);
+    }
+    assert!(with(&|wf, _| wf.split_zones.push(("vegetation".into(), DictZones::Made(vec!["trees".into()])))).is_ok());
     // A region named as splitMeshRegions names the parts outside the zone.
     refused(with(&|wf, _| wf.case_regions.push("region2".into())), "region named region2");
     // Unsafe words are refused as everywhere.
@@ -508,6 +512,14 @@ fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
     );
     assert_eq!(told(&plain), Some(vec!["trees".to_string(), "bushes".to_string()]));
     assert_eq!(told("other 1;"), Some(Vec::new()));
+    // Actions in order: a remove takes the zone away.
+    let removed = format!(
+        "actions ( {} {} {{ name other; type cellZoneSet; action remove; }} );",
+        action("trees", "cellZoneSet"),
+        action("other", "cellZoneSet"),
+    );
+    assert_eq!(told(&removed), Some(vec!["trees".to_string()]));
+    assert_eq!(zones_made(&umcf_foam_dict::Document::parse(&removed).unwrap()), ["trees"]);
     for unclear in [
         format!("#include \"more\"\n{plain}"),
         format!("actions ( {} $more );", action("trees", "cellZoneSet")),
@@ -516,6 +528,7 @@ fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
         "actions $list;".to_string(),
         format!("{plain}\nactions ( );"),
         "actions ( { name a; name trees; type cellZoneSet; } );".to_string(),
+        "actions ( { name trees; type cellZoneSet; } );".to_string(),
     ] {
         assert_eq!(told(&unclear), None, "{unclear}");
     }

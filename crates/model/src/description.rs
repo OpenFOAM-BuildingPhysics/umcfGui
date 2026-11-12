@@ -384,12 +384,16 @@ impl Description {
             .regions
             .iter()
             .filter_map(|r| match &r.mesh {
-                Some(MeshBuild::Split(sp)) => match case.dict(&sp.dict) {
-                    Some(doc) => Some((r.name.clone(), crate::workflow::zones_told(doc))),
-                    // There, or not known not to be, but not read: what it makes can't be told.
-                    None if case.exists(&sp.dict) != Some(false) => Some((r.name.clone(), None)),
-                    None => None,
-                },
+                Some(MeshBuild::Split(sp)) => {
+                    use crate::workflow::DictZones;
+                    let zones = match case.dict(&sp.dict) {
+                        Some(doc) => crate::workflow::zones_told(doc).map_or(DictZones::Unclear, DictZones::Made),
+                        None if case.exists(&sp.dict) == Some(false) => DictZones::Missing,
+                        // There, or not known not to be, but not read.
+                        None => DictZones::Unclear,
+                    };
+                    Some((r.name.clone(), zones))
+                }
                 _ => None,
             })
             .collect();

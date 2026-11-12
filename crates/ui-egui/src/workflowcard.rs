@@ -228,10 +228,16 @@ impl App {
                     options.insert("partner", regions);
                 }
                 "mesh.split" => {
-                    // Only the regions listed before it (their meshes are built first), and the
-                    // zones the dictionary makes (the one typed, else the copied region's).
-                    let before: Vec<String> =
-                        d.regions.iter().take_while(|r| r.name != region).map(|r| r.name.clone()).collect();
+                    // Only the regions listed before it whose meshes the description builds
+                    // (built first, so they can be copied), and the zones the dictionary makes
+                    // (the one typed, else the copied region's).
+                    let before: Vec<String> = d
+                        .regions
+                        .iter()
+                        .take_while(|r| r.name != region)
+                        .filter(|r| r.mesh.is_some())
+                        .map(|r| r.name.clone())
+                        .collect();
                     let of = value(f, "of");
                     let dict = match value(f, "dict") {
                         d if d.is_empty() => umcf_model::workflow::Split::default_dict(&of),

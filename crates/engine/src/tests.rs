@@ -4229,6 +4229,15 @@ fn a_splits_dictionary_makes_its_zone_alone() {
     assert!(out.message.contains("makes other cell zones too (brick)"), "{}", out.message);
     let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
     assert!(e.contains("other cell zones too (brick)"), "{e}");
+    // A dictionary the case doesn't have: no script either (it would replace the mesh first).
+    s.execute(
+        "mesh.split",
+        &json!({ "region": "vegetation", "of": "air", "zone": "trees", "dict": "system/vegetation/topoSetDict" }),
+    )
+    .unwrap();
+    let e = s.execute("workflow.scripts", &json!({ "replace": true })).unwrap_err().to_string();
+    assert!(e.contains("system/vegetation/topoSetDict isn't there"), "{e}");
+    s.execute("edit.undo", &Value::Null).unwrap();
     let out = s.execute("case.check", &Value::Null).unwrap();
     let said = out.data["diagnostics"].to_string();
     assert!(said.contains("makes others too (brick)"), "{said}");

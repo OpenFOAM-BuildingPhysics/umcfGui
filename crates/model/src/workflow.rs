@@ -52,9 +52,7 @@ pub struct Workflow {
     /// written for one that makes others than the split's zone (`splitMeshRegions -cellZones`
     /// would split those off too, writing their meshes over `constant/<zone>`). Filled by
     /// [`crate::Case::workflow`] and [`crate::description::Description::scripts`].
-    /// `None`: the dictionary is there but which zones it makes can't be told (it doesn't
-    /// read, or uses `#include` or macros): no split is written then either.
-    pub split_zones: Vec<(String, Option<Vec<String>>)>,
+    pub split_zones: Vec<(String, DictZones)>,
     serial_agglomerate: Vec<Unmatched>,
     parallel_agglomerate: bool,
 }
@@ -97,6 +95,19 @@ impl Split {
     pub fn default_dict(of: &str) -> String {
         format!("system/{of}/topoSetDict")
     }
+}
+
+/// What a split region's `topoSetDict` makes, as far as the case tells.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DictZones {
+    /// The case doesn't have it: `topoSet` would stop the script after the region's mesh was
+    /// replaced by the copy.
+    Missing,
+    /// There (or not known not to be) but which zones it makes can't be told: it doesn't read,
+    /// or uses `#include` or a macro.
+    Unclear,
+    /// The cell zones it makes.
+    Made(Vec<String>),
 }
 
 /// The name `splitMeshRegions -cellZones` gives the cells outside every zone when they are
@@ -629,13 +640,25 @@ impl Workflow {
                 "the case has a region named {n}, as splitMeshRegions names the parts outside the zone: rename it"
             ));
         }
-        if let Some((_, None)) = self.split_zones.iter().find(|(r, _)| r == region) {
-            return Err(format!(
-                "which cell zones {} makes can't be told (it doesn't read, or uses #include or a macro): splitMeshRegions would split off every one; write its actions out",
-                sp.dict
-            ));
+        match self.split_zones.iter().find(|(r, _)| r == region).map(|(_, z)| z) {
+            Some(DictZones::Missing) => {
+                return Err(format!("{} isn't there: the zone {zone} can't be made", sp.dict));
+            }
+            Some(DictZones::Unclear) => {
+                return Err(format!(
+                    "which cell zones {} makes can't be told (it doesn't read, or uses #include or a macro): splitMeshRegions would split off every one; write its actions out",
+                    sp.dict
+                ));
+            }
+            Some(DictZones::Made(made)) if !made.iter().any(|z| z == zone) => {
+                return Err(format!(
+                    "{} doesn't make the cell zone {zone}: splitMeshRegions would split nothing off; make {zone} there",
+                    sp.dict
+                ));
+            }
+            _ => {}
         }
-        if let Some((_, Some(made))) = self.split_zones.iter().find(|(r, _)| r == region) {
+        if let Some((_, DictZones::Made(made))) = self.split_zones.iter().find(|(r, _)| r == region) {
             let others: Vec<&str> = made.iter().map(String::as_str).filter(|z| *z != zone).collect();
             if !others.is_empty() {
                 return Err(format!(
@@ -1049,8 +1072,10 @@ pub fn zones_made(doc: &umcf_foam_dict::Document) -> Vec<String> {
     zones_told(doc).unwrap_or_else(|| zones_seen(doc))
 }
 
-/// The cell zones a `topoSetDict` makes, when they can be told: `None` when the file has a
-/// directive or macro, a key given twice (at its top or in an action), or `actions` isn't a list of plain dictionaries whose `name` and `type`
+/// The cell zones a `topoSetDict` makes, when they can be told (its `cellZoneSet` actions in
+/// order: a `remove` takes a zone away): `None` when the file has a directive or macro, a key
+/// given twice (at its top or in an action), a `cellZoneSet` action without one plain `action`,
+/// or `actions` isn't a list of plain dictionaries whose `name` and `type`
 /// are single words (an `#include`, a `$macro`: what OpenFOAM reads may make others).
 pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
     use umcf_foam_dict::{Item, Node};
@@ -1076,11 +1101,23 @@ pub fn zones_told(doc: &umcf_foam_dict::Document) -> Option<Vec<String>> {
             _ => None,
         };
         let (Some(kind), Some(name)) = (word("type"), word("name")) else { return None };
-        if kind == "cellZoneSet" && !out.contains(&name) {
-            out.push(name);
+        if kind == "cellZoneSet" {
+            // In order: `remove` takes the zone away, any other action leaves it made.
+            let Some(action) = word("action") else { return None };
+            apply(&mut out, name, &action);
         }
     }
     Some(out)
+}
+
+/// A `cellZoneSet` action on the zones made so far: `remove` takes `name` away, any other
+/// leaves it made (`new`, `add`, `subset`, `clear`, …: the zone is there, even empty).
+fn apply(out: &mut Vec<String>, name: String, action: &str) {
+    if action == "remove" {
+        out.retain(|z| *z != name);
+    } else if !out.contains(&name) {
+        out.push(name);
+    }
 }
 
 /// The cell zones a `topoSetDict` names in its plain `cellZoneSet` actions, what can be read.
@@ -1096,9 +1133,8 @@ fn zones_seen(doc: &umcf_foam_dict::Document) -> Vec<String> {
         };
         if word("type").as_deref() == Some("cellZoneSet")
             && let Some(name) = word("name")
-            && !out.contains(&name)
         {
-            out.push(name);
+            apply(&mut out, name, word("action").as_deref().unwrap_or("new"));
         }
     }
     out

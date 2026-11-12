@@ -1052,14 +1052,16 @@ impl Case {
                             _ => None,
                         };
                     }
-                    wf.split_zones.push((m.region.clone(), Some(made)));
+                    wf.split_zones.push((m.region.clone(), workflow::DictZones::Made(made)));
                 }
                 // There, but what it makes can't be told.
-                Some(None) => wf.split_zones.push((m.region.clone(), None)),
-                // Unless known not to be there (topoSet stops the script then): it may be one
-                // the case doesn't list (below a mesh or a later time).
-                None if self.exists(&sp.dict) != Some(false) => wf.split_zones.push((m.region.clone(), None)),
-                None => {}
+                Some(None) => wf.split_zones.push((m.region.clone(), workflow::DictZones::Unclear)),
+                // Known not to be there: no script (topoSet would stop it after the copy).
+                None if self.exists(&sp.dict) == Some(false) => {
+                    wf.split_zones.push((m.region.clone(), workflow::DictZones::Missing))
+                }
+                // Maybe one the case doesn't list (below a mesh or a later time).
+                None => wf.split_zones.push((m.region.clone(), workflow::DictZones::Unclear)),
             }
         }
         wf
