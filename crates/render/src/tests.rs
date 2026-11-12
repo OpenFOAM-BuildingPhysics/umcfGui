@@ -322,8 +322,8 @@ fn a_brush_stroke_covers_what_is_seen_under_it_or_everything_through_it() {
     // The same with both cubes half transparent (seen through, counted where they are
     // blended): still the left one only, and its ground seen through its sky.
     let mut glass = st.clone();
-    for k in 0..2 {
-        for c in 0..s.objects[k].classes.len() as u32 {
+    for (k, o) in s.objects.iter().enumerate().take(2) {
+        for c in 0..o.classes.len() as u32 {
             glass.display.insert((k, c), crate::raster::Display { mode: crate::raster::Mode::Surface, opacity: 0.5 });
         }
     }
