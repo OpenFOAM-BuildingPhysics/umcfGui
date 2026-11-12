@@ -340,6 +340,7 @@ fn a_split_region_is_written_for_each_version() {
 mkdir -p constant/vegetation\n\
 cp -r constant/air/polyMesh constant/vegetation/polyMesh\n\
 rm -rf constant/vegetation/polyMesh/cellZones constant/vegetation/polyMesh/cellZones.gz constant/vegetation/polyMesh/sets\n\
+if [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/region1, constant/region2, constant/trees): nothing is removed through it' >&2\n    exit 1\nfi\n\
 rm -rf constant/region1/polyMesh constant/region2/polyMesh\n\
 runApplication -o -s vegetation topoSet -region vegetation -dict system/air/topoSetDict\n\
 runApplication -o -s vegetation splitMeshRegions -region vegetation -cellZones -overwrite -noFields\n\
@@ -534,4 +535,43 @@ fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
     ] {
         assert_eq!(told(&unclear), None, "{unclear}");
     }
+}
+
+/// A split whose part outside the zone is never put in place builds no mesh: its lines are
+/// listed.
+#[test]
+fn a_split_never_put_in_place_builds_no_mesh() {
+    let prepare =
+        split_prepare("system/air/topoSetDict").replace("cp -r 3600/region1/polyMesh constant/vegetation/\n", "");
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &prepare)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
+    let said: Vec<&str> = wf.unmatched.iter().map(|u| u.what.as_str()).collect();
+    assert!(said.iter().any(|w| w.starts_with("splitMeshRegions") && w.contains("never put in")), "{said:?}");
+    assert!(said.iter().any(|w| w.starts_with("cp constant/air/polyMesh")), "{said:?}");
+    // The region's steps after it found no mesh: listed.
+    assert!(said.iter().any(|w| w.starts_with("changeDictionary -region vegetation")), "{said:?}");
+    // A region built before keeps that build, with its steps.
+    let earlier = prepare.replace(
+        "cp -r constant/air/polyMesh/ constant/vegetation/polyMesh\n",
+        "blockMesh -region vegetation\ncp -r constant/air/polyMesh/ constant/vegetation/polyMesh\n",
+    );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &earlier)]);
+    let veg = wf.meshes.iter().find(|m| m.region == "vegetation").unwrap();
+    assert_eq!(veg.build, MeshBuild::Block);
+    assert_eq!(veg.steps, [RegionStep::CreatePatch, RegionStep::ChangeDictionary]);
+}
+
+/// A zone the clean-up names before the part is put in is the split's.
+#[test]
+fn a_zone_named_before_the_part_is_put_in_is_kept() {
+    let prepare = split_prepare("system/air/topoSetDict")
+        .replace("rm -rf system/vegetation/trees system/vegetation/region*\n", "")
+        .replace(
+            "cp -r 3600/region1/polyMesh constant/vegetation/\n",
+            "rm -rf system/vegetation/trees system/vegetation/region*\ncp -r 3600/region1/polyMesh constant/vegetation/\n",
+        );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &prepare)]);
+    assert_eq!(wf.unmatched, []);
+    let MeshBuild::Split(sp) = &wf.meshes[1].build else { panic!("{:?}", wf.meshes) };
+    assert_eq!(sp.zone.as_deref(), Some("trees"));
 }
