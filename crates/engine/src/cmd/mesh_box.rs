@@ -6,7 +6,7 @@
 use serde_json::{Map, Value, json};
 use umcf_geom::BBox;
 use umcf_geom::stl;
-use umcf_model::blocks::{Grading, Side};
+use umcf_model::blocks::Side;
 use umcf_model::description::{PATH, Role};
 use umcf_model::description_edit::PatchEdit;
 use umcf_model::mesh_box::{BoxCells, MAX_SURFACES, MeshBox, SIDES};
@@ -184,25 +184,10 @@ fn make_box(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     o.case.box_read(region).map_err(|e| Error::Failed(format!("{}: {e}", BOX.id)))?;
     let had = r.mesh_box.clone();
     let (ground, top, by_g) = umcf_model::blocks::ground_and_top(&o.case, region);
-    // Blocks not made from the box (none there, or blocks of another shape than a box's: one
-    // span along each axis, graded 1, nothing missing, no single faces, as after a hand edit):
-    // replaced only when asked.
-    let boxlike = r.blocks.as_ref().is_some_and(|g| {
-        g.axes.iter().all(|a| {
-            a.stations.len() == 2 && a.spans.len() == 1 && a.spans.iter().all(|s| s.grading == Grading::Ratio(1.0))
-        }) && g.missing.is_empty()
-            && g.faces.is_empty()
-    });
-    // The checksum of the blocks the box last made: the blocks as it left them (a hand edit
-    // that keeps a box's shape, other stations or cells, is told too; one of the box entry
-    // itself, or of the surfaces, isn't an edit of the blocks).
-    let made_then = match (&had, &r.blocks) {
-        (Some(h), Some(g)) => match h.made {
-            Some(c) => umcf_model::blocks::shape_checksum(g) == c,
-            None => boxlike,
-        },
-        _ => false,
-    };
+    // Blocks not made from the box (none there; or not those it made: a hand edit, also one
+    // that keeps a box's shape; an edit of the box entry or of the surfaces isn't one of the
+    // blocks): replaced only when asked (umcf_model::mesh_box::made_by).
+    let made_then = r.blocks.as_ref().is_some_and(|g| umcf_model::mesh_box::made_by(had.as_ref(), g));
     let replaces = r.blocks.is_some() && !made_then;
     if replaces && !reshape {
         let why = if had.is_none() {

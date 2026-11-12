@@ -98,11 +98,25 @@ impl App {
             return Err(format!("Region {region} isn't in system/umcfWorkflow."));
         };
         let had = r.mesh_box.clone();
+        // Blocks there not made from the box: OK replaces them only with reshape (as the
+        // command).
+        let replaces = r.blocks.as_ref().is_some_and(|g| !umcf_model::mesh_box::made_by(had.as_ref(), g));
+        if replaces && params.get("reshape").and_then(Value::as_bool) != Some(true) {
+            return Err(format!(
+                "Region {region} has blocks {}: tick “Replace blocks not made from the box” to replace them.",
+                if had.is_none() { "not made from a box" } else { "edited since its box made them" }
+            ));
+        }
         let (ground, _, _) = umcf_model::blocks::ground_and_top(case, &region);
         let bad = |what: &str| format!("{what}: as OK would send it, the command refuses it");
         // The surfaces: those given, else the box's, else every surface (as the command).
         let surfaces: Vec<String> = match params.get("surfaces") {
-            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                // As the command takes a name: with or without its folder.
+                .map(|x| x.as_str().map(|n| n.strip_prefix("constant/triSurface/").unwrap_or(n).to_string()))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| bad("Surfaces"))?,
             Some(_) => return Err(bad("Surfaces")),
             None => had.as_ref().map(|b| b.surfaces.clone()).unwrap_or_else(|| self.form_surfaces()),
         };
@@ -120,7 +134,8 @@ impl App {
                 out
             }
             Some(Value::Array(a)) => {
-                let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                // Every member a number, six of them: else the command refuses it.
+                let v: Vec<f64> = a.iter().map(Value::as_f64).collect::<Option<_>>().ok_or_else(|| bad("Margins"))?;
                 match v.as_slice() {
                     // Each checked by the box itself (MeshBox::problems).
                     [a, b, c, d, e, g] => [*a, *b, *c, *d, *e, *g],
@@ -152,6 +167,11 @@ impl App {
             },
         };
         let b = MeshBox { surfaces: surfaces.clone(), margin, cells, made: None };
+        // A box the command refuses as it is (a negative margin, no cells): said before any
+        // surface is read.
+        if let Some((k, m)) = b.problems().first() {
+            return Err(format!("{k} {m}"));
+        }
         let bbox = self.box_bounds_of(&surfaces)?;
         let at = |v: umcf_geom::Vec3| [v.x, v.y, v.z];
         let axes = b.axes(at(bbox.min), at(bbox.max), ground)?;

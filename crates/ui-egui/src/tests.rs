@@ -2888,6 +2888,12 @@ fn the_box_card_previews_the_box_and_makes_it() {
     set_json(&mut h, json!({"region": "air", "margin": 5, "cellSize": "two", "cells": null}));
     h.run();
     assert!(h.state().viewport.blocks.is_none());
+    set_json(&mut h, json!({"region": "air", "margin": [1, 1, 1, 1, 0, 1, "bad"], "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Margins")), "{:?}", h.state().box_summary);
+    set_json(&mut h, json!({"region": "air", "margin": -1, "cellSize": 1}));
+    h.run();
+    assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("margin")), "{:?}", h.state().box_summary);
     set_json(&mut h, json!({"region": "nowhere", "margin": 5, "cellSize": 1}));
     h.run();
     assert!(matches!(&h.state().box_summary, Some(Err(e)) if e.contains("isn't in system/umcfWorkflow")));
@@ -2906,6 +2912,18 @@ fn the_box_card_previews_the_box_and_makes_it() {
     assert_eq!(form(&h).values.get("cellSize").map(String::as_str), Some("2"));
     assert!(h.state().viewport.blocks.is_some());
     assert!(!form(&h).typed());
+    // Blocks given otherwise since (the box taken out): OK needs reshape, and the card says so.
+    h.state_mut().act("mesh.block", json!({"region": "air", "x": [0, [3, 1], 30]}));
+    h.run();
+    h.run();
+    assert!(
+        matches!(&h.state().box_summary, Some(Err(e)) if e.contains("Replace blocks not made from the box")),
+        "{:?}",
+        h.state().box_summary
+    );
+    h.state_mut().act("edit.undo", json!({}));
+    h.run();
+    // And the box itself undone.
     h.state_mut().act("edit.undo", json!({}));
     h.run();
     h.run();
