@@ -11,15 +11,26 @@ use crate::App;
 use crate::forms::{FormState, PARTNER_PATCHES};
 
 /// The cards this fills.
-pub(crate) const CARDS: [&str; 4] = ["workflow.region", "workflow.patch", "workflow.material", "workflow.component"];
+pub(crate) const CARDS: [&str; 8] = [
+    "workflow.region",
+    "workflow.patch",
+    "workflow.material",
+    "workflow.component",
+    "material.set",
+    "case.new",
+    "region.add",
+    "workflow.settings",
+];
 
 /// What a card is filled for: the region, and the patch or material, it describes.
 pub(crate) fn fill_key(id: &str, f: &FormState) -> String {
     let v = |k: &str| f.values.get(k).cloned().unwrap_or_default();
     match id {
         "workflow.patch" => format!("{}/{}", v("region"), v("patch")),
-        "workflow.material" => format!("{}/{}", v("region"), v("material")),
+        "workflow.material" | "material.set" => format!("{}/{}", v("region"), v("material")),
         "workflow.component" => v("component"),
+        // Nothing the case says fills them.
+        "case.new" | "region.add" | "workflow.settings" => String::new(),
         _ => v("region"),
     }
 }
@@ -41,8 +52,25 @@ fn patches_of(d: &Description, r: &str) -> Vec<String> {
 /// What the description says of the patch or material the card names: its role and partner, or
 /// its model, as the fields hold them (empty for one it doesn't give); `None` when the
 /// description doesn't have it.
-fn described(id: &str, d: Option<&Description>, region: &str, f: &FormState) -> Option<Vec<(&'static str, String)>> {
+fn described(
+    id: &str,
+    case: Option<&umcf_model::Case>,
+    d: Option<&Description>,
+    region: &str,
+    f: &FormState,
+) -> Option<Vec<(&'static str, String)>> {
     let value = |k: &str| f.values.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+    // A material's coefficients, as its solid's transportProperties has them.
+    if id == "material.set" {
+        let m = case?.material_coefficients(region).into_iter().find(|m| m.name == value("material"))?;
+        let rows: Vec<String> = m
+            .coefficients
+            .iter()
+            .filter(|(k, v)| !k.contains('|') && !v.contains('|'))
+            .map(|(k, v)| format!("{k}|{v}"))
+            .collect();
+        return Some(vec![("coefficients", rows.join("\n"))]);
+    }
     let r = d?.region(region)?;
     match id {
         "workflow.region" => Some(vec![("kind", kind_name(r.kind).to_string())]),
@@ -71,7 +99,9 @@ fn card_fields(id: &str) -> &'static [&'static str] {
     match id {
         "workflow.region" => &["kind"],
         "workflow.patch" => &["role", "partner"],
-        _ => &["model"],
+        "workflow.material" => &["model"],
+        "material.set" => &["coefficients"],
+        _ => &[],
     }
 }
 
@@ -119,14 +149,15 @@ impl App {
             }
             return;
         }
-        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material") {
+        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material" | "material.set") {
             return;
         }
-        let description = self.session.case().and_then(|c| c.description()).map(|(d, _)| d);
+        let case = self.session.case();
+        let description = case.and_then(|c| c.description()).map(|(d, _)| d);
         let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()).filter(|f| !f.json) else { return };
         let region = f.values.get("region").map(|v| v.trim().to_string()).unwrap_or_default();
         // Gone from the description (an undo of adding it): what the form holds is all new.
-        let Some(now) = described(id, description.as_ref(), &region, f) else {
+        let Some(now) = described(id, case, description.as_ref(), &region, f) else {
             // What was filled in from it and not changed since goes with it.
             for k in card_fields(id) {
                 if !f.extra.contains_key(*k) && f.values.get(k) == f.initial.get(k) {
@@ -138,8 +169,12 @@ impl App {
         };
         for (k, v) in now {
             let was = f.initial.get(k).cloned().unwrap_or_default();
-            if !f.extra.contains_key(k) && f.values.get(k).is_none_or(|x| *x == was) {
+            let value = f.values.get(k).cloned().unwrap_or_default();
+            if !f.extra.contains_key(k) && value == was {
                 f.values.insert(k, v.clone());
+            } else if k == "coefficients" && !f.extra.contains_key(k) {
+                // A table: the rows not typed in follow the case, row by row.
+                f.values.insert(k, crate::forms::merge_rows(&value, &was, &v, 2));
             }
             f.initial.insert(k, v);
         }
@@ -201,6 +236,64 @@ impl App {
             models.dedup();
             options.insert("model", models);
         }
+        match id {
+            "material.set" => {
+                // The case's solids, the chosen one's materials, and the coefficients the solver
+                // reads of the chosen material's model.
+                let region = value(f, "region");
+                let solids = case
+                    .map(|c| c.regions.iter().filter(|r| r.kind == RegionKind::Solid).map(|r| r.name.clone()).collect())
+                    .unwrap_or_default();
+                let materials = case.map(|c| c.material_coefficients(&region)).unwrap_or_default();
+                let chosen = materials.iter().find(|m| m.name == value(f, "material"));
+                let names =
+                    umcf_model::material_edit::coefficient_names(version, chosen.and_then(|m| m.model.as_deref()));
+                options.insert("coefficients", names.into_iter().map(str::to_string).collect());
+                options.insert("material", materials.iter().map(|m| m.name.clone()).collect());
+                options.insert("region", solids);
+            }
+            "case.new" => {
+                // The radiation goes on a fluid or the vegetation of the table.
+                let rows = f.values.get("regions").cloned().unwrap_or_default();
+                let names = rows
+                    .split('\n')
+                    .filter_map(|r| {
+                        let mut c = r.split('|').map(str::trim);
+                        let (name, kind) = (c.next()?, c.next().unwrap_or(""));
+                        (!name.is_empty() && matches!(kind, "fluid" | "vegetation")).then(|| name.to_string())
+                    })
+                    .collect();
+                options.insert("radiation", names);
+            }
+            "region.add" => {
+                let cat = umcf_schema::catalog::catalog();
+                let mut models: Vec<String> = match version {
+                    Some(v) => cat.choices("buildingMaterialModel", v).into_iter().map(str::to_string).collect(),
+                    None => umcf_core::OfVersion::ALL
+                        .iter()
+                        .flat_map(|v| cat.choices("buildingMaterialModel", *v))
+                        .map(str::to_string)
+                        .collect(),
+                };
+                models.sort();
+                models.dedup();
+                options.insert("materials", models);
+            }
+            "workflow.settings" => {
+                let mut models: Vec<String> = match version {
+                    Some(v) => umcf_model::settings::ras_models(v).into_iter().map(str::to_string).collect(),
+                    None => umcf_core::OfVersion::ALL
+                        .iter()
+                        .flat_map(|v| umcf_model::settings::ras_models(*v))
+                        .map(str::to_string)
+                        .collect(),
+                };
+                models.sort();
+                models.dedup();
+                options.insert("turbulence", models);
+            }
+            _ => {}
+        }
         if id == "workflow.component" {
             // The air's patches: its mesh's, and those the description gives it.
             let mut names: Vec<String> = case
@@ -236,7 +329,7 @@ impl App {
                 // What the description says of the region, patch or material: shown when it
                 // has it; a name it doesn't have (a new one, or one being typed) keeps what was
                 // typed, and loses what another's filled in.
-                let found = described(id, description.as_ref(), &region, f);
+                let found = described(id, case, description.as_ref(), &region, f);
                 for k in card_fields(id) {
                     match found.as_ref().and_then(|v| v.iter().find(|(x, _)| x == k)) {
                         Some((_, v)) => {

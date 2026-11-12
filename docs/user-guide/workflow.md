@@ -590,8 +590,13 @@ umcf-cli run --case path/to/case \
   --cmd 'case.save={}'
 ```
 
-In the desktop app it is *Choose settings* in the *More* group of the *Case* tab: its card
-starts with the case's settings as its files have them.
+In the desktop app it is *Choose settings* in the *More* group of the *Case* tab, a
+[form](desktop.md#forms) that starts with the case's settings as its files have them: the time
+step, end time and write interval, the turbulence model (picked from the RAS models of the
+case's version), the temperature limit's min and max, the blending coefficients, and a case to
+take settings *From* (*Browse…*). Only what is changed is sent; the material library and the
+numerics are edited in *Edit as JSON*, and sent only when changed there. After another command
+or an undo, what wasn't changed follows the case.
 
 ### Components
 

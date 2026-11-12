@@ -31,7 +31,75 @@ fn coefficient_name(k: &str) -> bool {
     k.starts_with(|c: char| c.is_ascii_alphabetic()) && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+/// The most materials, and coefficients of a material, [`Case::material_coefficients`] lists.
+pub const MAX_LISTED: usize = 1000;
+
+/// A solid's material as its `transportProperties` lists it: its name, its model and its
+/// coefficients (the plain entries of its dictionary but its name and model, as their text).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialCoefficients {
+    pub name: String,
+    pub model: Option<String>,
+    pub coefficients: Vec<(String, String)>,
+}
+
+/// The coefficients the solver reads of a material of `model` for `version` (either version's
+/// when it isn't known): every material's, then the model's own (the catalog's), each once.
+pub fn coefficient_names(version: Option<umcf_core::OfVersion>, model: Option<&str>) -> Vec<&'static str> {
+    let versions: Vec<umcf_core::OfVersion> = match version {
+        Some(v) => vec![v],
+        None => umcf_core::OfVersion::ALL.to_vec(),
+    };
+    let mut out: Vec<&'static str> = Vec::new();
+    for v in &versions {
+        for k in crate::settings::required_coefficients(*v) {
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+    }
+    let cat = umcf_schema::catalog::catalog();
+    for s in cat.startup_keywords {
+        if s.family == "buildingMaterialModel" && Some(s.type_name) == model && !out.contains(&s.name) {
+            out.push(s.name);
+        }
+    }
+    out
+}
+
 impl Case {
+    /// The materials solid region `region` lists in `constant/<region>/transportProperties`'s
+    /// `buildingMaterials`, in its order (none without the file or the list; an item that isn't
+    /// a dictionary left out).
+    pub fn material_coefficients(&self, region: &str) -> Vec<MaterialCoefficients> {
+        let rel = format!("constant/{region}/transportProperties");
+        let Some(doc) = self.dict(&rel) else { return Vec::new() };
+        let Some(list) = doc.root.get("buildingMaterials") else { return Vec::new() };
+        let [Node::List { items, .. }] = list.value.as_slice() else { return Vec::new() };
+        // At most so many materials, and coefficients a material, of a file that may be anything.
+        items
+            .iter()
+            .take(MAX_LISTED)
+            .filter_map(|n| match n {
+                Node::Dict { body, .. } => {
+                    let text = |k: &str| body.get(k).and_then(|e| e.value_text()).map(|t| t.trim().to_string());
+                    let coefficients = body
+                        .entries()
+                        .filter(|e| !matches!(e.key(), "name" | "buildingMaterialModel") && e.dict().is_none())
+                        .filter_map(|e| Some((e.key().to_string(), e.value_text()?.trim().to_string())))
+                        .take(MAX_LISTED)
+                        .collect();
+                    Some(MaterialCoefficients {
+                        name: text("name")?,
+                        model: text("buildingMaterialModel"),
+                        coefficients,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Sets (or takes out) the coefficients `coeffs` of material `material` of solid region
     /// `region`, in its dictionary in `constant/<region>/transportProperties`'s
     /// `buildingMaterials`: a coefficient there is changed in place, a new one goes at the end

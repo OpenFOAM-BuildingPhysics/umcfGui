@@ -192,9 +192,6 @@ const SEARCH_ID: &str = "command-search";
 /// in.
 const ADD_REGION: &str = "{\n  \"region\": \"\",\n  \"kind\": \"solid\",\n  \"materials\": []\n}";
 
-/// The *Set a material's coefficients* card's parameters to start with.
-const SET_MATERIAL: &str = "{\n  \"region\": \"\",\n  \"material\": \"\",\n  \"coefficients\": { \"rho\": 1600 }\n}";
-
 /// The *Switch a component* card's parameters to start with (`patches` are the grass's).
 const SWITCH_COMPONENT: &str = "{\n  \"component\": \"temperatureLimit\",\n  \"on\": true\n}";
 
@@ -572,7 +569,6 @@ impl App {
                 "case.new" => NEW_CASE.to_string(),
                 "region.add" => ADD_REGION.to_string(),
                 "workflow.component" => SWITCH_COMPONENT.to_string(),
-                "material.set" => SET_MATERIAL.to_string(),
                 "workflow.settings" => self.settings_params(),
                 _ => "{}".to_string(),
             };
@@ -612,7 +608,22 @@ impl App {
                         _ => None,
                     }
                 });
+                // The coefficients card on the case's first solid.
+                let first = first.or_else(|| {
+                    (id == "material.set")
+                        .then(|| self.session.case())
+                        .flatten()
+                        .and_then(|c| c.regions.iter().find(|r| r.kind == umcf_model::RegionKind::Solid))
+                        .map(|r| r.name.clone())
+                });
                 if let Some(r) = first {
+                    // And on the solid's first material.
+                    if id == "material.set"
+                        && let Some(m) =
+                            self.session.case().and_then(|c| c.material_coefficients(&r).into_iter().next())
+                    {
+                        f.values.insert("material", m.name);
+                    }
                     f.values.insert("region", r);
                 }
             }
@@ -621,6 +632,7 @@ impl App {
                 f.values.insert("region", self.blocks_region());
             }
             f.initial = f.values.clone();
+            f.initial_extra = f.extra.clone();
             f
         });
         Dialog { id, params, error: None, form }
@@ -668,13 +680,44 @@ impl App {
             .case()
             .map(|c| c.regions.iter().filter(|r| r.patches.is_some()).map(|r| r.name.clone()).collect())
             .unwrap_or_default();
+        // The settings' keys the form has no field for (the material library, the numerics), as
+        // the case has them now.
+        let start_extra = (id == "workflow.settings").then(|| {
+            let mut g = forms::FormState::default();
+            if let (Some(spec), Ok(v)) = (forms::spec(id), serde_json::from_str::<Value>(&self.settings_params())) {
+                let _ = g.fill(spec, &v);
+            }
+            g.extra
+        });
         let Some(f) = self.dialog.as_mut().and_then(|d| d.form.as_mut()) else { return };
+        if let Some(now) = start_extra {
+            // Those left as they were follow the case (gone with it when it has them no more);
+            // those changed in the JSON stay.
+            let left: Vec<String> =
+                f.extra.iter().filter(|(k, v)| f.initial_extra.get(*k) == Some(*v)).map(|(k, _)| k.clone()).collect();
+            for k in left {
+                match now.get(&k) {
+                    Some(v) => f.extra.insert(k, v.clone()),
+                    None => f.extra.remove(&k),
+                };
+            }
+            for (k, v) in &now {
+                if !f.extra.contains_key(k) && !f.initial_extra.contains_key(k) {
+                    f.extra.insert(k.clone(), v.clone());
+                }
+            }
+            f.initial_extra = now;
+        }
         if spec.changed_only {
             for field in spec.fields {
                 let now = start.get(field.key).cloned().unwrap_or_default();
                 let was = f.initial.get(field.key).cloned().unwrap_or_default();
-                if f.values.get(field.key).cloned().unwrap_or_default() == was {
+                let value = f.values.get(field.key).cloned().unwrap_or_default();
+                if value == was {
                     f.values.insert(field.key, now.clone());
+                } else if let forms::Kind::Numbers(labels) | forms::Kind::NumberMap(labels) = field.kind {
+                    // Numbers side by side: those not typed in follow the case, one by one.
+                    f.values.insert(field.key, forms::merge_sides(&value, &was, &now, labels.len()));
                 }
                 f.initial.insert(field.key, now);
             }
@@ -700,6 +743,14 @@ impl App {
     /// controlDict has them (each entry's value as its text); nothing for the others.
     fn form_start(&self, id: &str) -> std::collections::BTreeMap<&'static str, String> {
         let mut out = std::collections::BTreeMap::new();
+        // The settings: as the case's files have them, in the fields' text.
+        if let (Some(spec), "workflow.settings") = (forms::spec(id), id) {
+            let mut f = forms::FormState::default();
+            if let Ok(v) = serde_json::from_str::<Value>(&self.settings_params()) {
+                let _ = f.fill(spec, &v);
+            }
+            return f.values;
+        }
         let (Some(spec), "control.set") = (forms::spec(id), id) else { return out };
         let Some(doc) = self.session.case().and_then(|c| c.dict(umcf_model::CONTROL_DICT)) else { return out };
         for f in spec.fields {
@@ -2199,6 +2250,7 @@ impl App {
         let mut clear = false;
         let mut close_results = false;
         let browse = self.pick_file.is_some();
+        let browse_folder = self.pick_folder.is_some();
         let mut ask_file: Option<forms::FileAsk> = None;
         let muted = Ink { line: t.text_muted, fill: t.accent };
         // The height a card has below the triad, down to the bottom of the view.
@@ -2258,7 +2310,7 @@ impl App {
                                     // the view, however long it is.
                                     ui.label(RichText::new(fs.intro).color(t.text_muted));
                                     ui.add_space(2.0);
-                                    ask_file = forms::show(ui, fs, f, width, browse);
+                                    ask_file = forms::show(ui, fs, f, width, browse, browse_folder);
                                 });
                             // The box card: the box the form makes, previewed in the view.
                             if previewing {
@@ -2287,7 +2339,7 @@ impl App {
                                 .on_hover_text("The parameters as text, for what the form doesn't cover")
                                 .clicked()
                             {
-                                match f.params(fs) {
+                                match f.json_view(fs) {
                                     Ok(v) => {
                                         d.params = serde_json::to_string_pretty(&v).unwrap_or_default();
                                         f.json = true;
@@ -3146,19 +3198,24 @@ impl eframe::App for Desktop {
             ui.ctx().request_repaint();
         }
         // A form's *Browse…*: the file goes into its field.
-        if let Some(ask) = self.app.file_requested.take()
-            && let Some(pick) = self.app.pick_file
-        {
+        if let Some(ask) = self.app.file_requested.take() {
             let start = self.app.session.location().map(String::from);
-            match (pick(start.as_deref(), ask.extensions, frame), self.app.dialog.as_mut()) {
+            // A folder in the folder dialog, a file in the file dialog (each where there is one).
+            let picked = match (ask.folder, self.app.pick_folder, self.app.pick_file) {
+                (true, Some(pick), _) => pick(start.as_deref(), frame),
+                (false, _, Some(pick)) => pick(start.as_deref(), ask.extensions, frame),
+                _ => Picked::Unavailable,
+            };
+            match (picked, self.app.dialog.as_mut()) {
                 (Picked::Folder(path), Some(d)) => {
                     if let Some(f) = d.form.as_mut() {
                         f.values.insert(ask.key, path);
                     }
                 }
                 (Picked::Unavailable, Some(d)) => {
+                    let what = if ask.folder { "folder" } else { "file" };
                     d.error =
-                        Some("No file dialog on this system (a desktop portal or zenity): type the path.".to_string());
+                        Some(format!("No {what} dialog on this system (a desktop portal or zenity): type the path."));
                 }
                 _ => {}
             }
