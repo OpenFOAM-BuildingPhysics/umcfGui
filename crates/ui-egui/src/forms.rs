@@ -227,6 +227,11 @@ impl FormState {
                 continue;
             }
             let text = self.values.get(f.key).map(|s| s.trim()).unwrap_or("");
+            // A value from the JSON the field can't hold, kept aside (`extra`) and the field
+            // left empty: sent as it is, for the command to say what is wrong with it.
+            if text.is_empty() && self.extra.contains_key(f.key) {
+                continue;
+            }
             let initial = self.initial.get(f.key).map(|s| s.trim()).unwrap_or("");
             if spec.changed_only && initial == text {
                 continue;
@@ -568,6 +573,10 @@ mod tests {
         f.values.insert("writePrecision", "6.5".to_string());
         assert!(f.params(spec).unwrap_err().contains("isn't a whole number"));
         f.values.insert("writePrecision", String::new());
+        // JSON a number field can't hold: sent as it is (the command refuses it by name).
+        let mut g = FormState::filled(BTreeMap::from([("deltaT", "60".to_string())]));
+        g.fill(spec, &json!({"deltaT": null, "endTime": [1]})).unwrap();
+        assert_eq!(g.params(spec).unwrap(), json!({"deltaT": null, "endTime": [1]}));
         // An entry the case has, emptied: said, not sent as nothing.
         f.values.insert("endTime", String::new());
         assert!(f.params(spec).unwrap_err().contains("dict.remove"));
