@@ -492,3 +492,65 @@ addLayersControls { relativeSizes y; finalLayerThickness 0.5; minThickness 0.25;
     assert_eq!(sn.first_layer, None, "{notes:?}");
     assert!(!notes.iter().any(|n| n.contains("aren't what the entry writes") || n.contains("absolute")), "{notes:?}");
 }
+
+#[test]
+fn the_surfaces_whose_features_a_dictionary_reads_are_read_from_it_alone() {
+    // Two inside points (no entry can hold it): the features are read all the same, by
+    // OpenFOAM-12's `file` and OpenFOAM-8's key.
+    let text = r#"
+geometry
+{
+    b { type triSurfaceMesh; file "b.stl"; }
+    "t.stlb" { type triSurfaceMesh; name t; }
+    hall { type searchableBox; min (0 0 0); max (1 1 1); }
+}
+castellatedMeshControls
+{
+    features ( { file "b.eMesh"; level 1; } { file "t.eMesh"; levels ((0 2)); } { file "b.eMesh"; level 3; } );
+    refinementSurfaces { b { level (1 1); } }
+    insidePoints ((0 0 0) (1 1 1));
+}
+"#;
+    let doc = umcf_foam_dict::Document::parse(text).unwrap();
+    assert!(import(&doc.root, "p", Some(umcf_core::OfVersion::V12)).is_err());
+    assert_eq!(features_read(&doc.root), Ok(vec!["b.stl".to_string(), "t.stlb".to_string()]));
+    // An .eMesh of no surface it names: not told.
+    let text = text.replace("{ file \"b.eMesh\"; level 3; }", "{ file \"odd.eMesh\"; level 3; }");
+    let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+    assert_eq!(features_read(&doc.root), Err(vec!["odd.eMesh".to_string()]));
+    // What can't be read in full isn't taken as none, each for its own reason.
+    let text = text.replace("odd.eMesh", "b.eMesh");
+    let reason = |t: &str| -> String {
+        let doc = umcf_foam_dict::Document::parse(t).unwrap();
+        features_read(&doc.root).err().map(|e| e.join("; ")).unwrap_or_default()
+    };
+    assert_eq!(reason(&text), "");
+    // OpenFOAM's header brings no features; another #include may.
+    let header = "#inputSyntax slash;\n#includeEtc \"caseDicts/mesh/generation/snappyHexMeshDict.cfg\"\nmeshQualityControls { #include \"meshQualityDict\" }\n";
+    assert_eq!(reason(&format!("{header}{text}")), "");
+    for (from, to, why) in [
+        ("geometry", "#include \"more\"\ngeometry", "an #include"),
+        ("geometry", "$more\ngeometry", "an #include or a $macro"),
+        ("features (", "#include \"more\"\n    features (", "an #include"),
+        ("hall {", "$g\n    hall {", "an #include"),
+        ("features (", "features $feats; unused (", "features that aren't a list"),
+        ("{ file \"b.eMesh\"; level 3; }", "$f1", "isn't { file"),
+        ("{ file \"b.eMesh\"; level 3; }", "{ level 3; }", "without a file"),
+        ("file \"b.stl\";", "file (b.stl);", "b.eMesh"),
+        ("castellatedMeshControls\n{", "castellatedMeshControls { }\ncastellatedMeshControls\n{", "given twice"),
+    ] {
+        let t = text.replacen(from, to, 1);
+        assert_ne!(t, text, "{from}");
+        let r = reason(&t);
+        assert!(r.contains(why), "{to}: {r}");
+    }
+    let many: String = (0..1001).map(|_| "{ file \"b.eMesh\"; level 1; } ").collect();
+    let t = format!(
+        "geometry {{ b {{ type triSurfaceMesh; file \"b.stl\"; }} }}\ncastellatedMeshControls {{ features ( {many}); }}"
+    );
+    assert!(reason(&t).contains("more than 1000 features"), "{}", reason(&t));
+    let boxes: String =
+        (0..1001).map(|i| format!("x{i} {{ type searchableBox; min (0 0 0); max (1 1 1); }} ")).collect();
+    let t = format!("geometry {{ {boxes} }}\ncastellatedMeshControls {{ features ( ); }}");
+    assert!(reason(&t).contains("more than 1000 surfaces and boxes"), "{}", reason(&t));
+}

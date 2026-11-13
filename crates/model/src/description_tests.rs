@@ -884,4 +884,14 @@ boundary\n(\n    towers_walls {{ type wall; faces ( (0 3 2 1) (4 5 6 7) (0 1 5 4
     let (solids, notes) = with(&rows[..1].iter().chain(&rows[2..3]).copied().collect::<Vec<_>>(), Some(&blocks));
     assert!(!notes.iter().any(|n| n.contains("is not a grid of blocks")), "{notes:?}");
     assert!(solids[0].is_empty(), "{notes:?}");
+    // Declared without faces, for snappyHexMesh to fill: the mesh is cut, the solids its.
+    let blocks = format!(
+        "{}convertToMeters 1;\nvertices ( (0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 1) (1 0 1) (1 1 1) (0 1 1) );\n\
+blocks ( hex (0 1 2 3 4 5 6 7) (2 2 2) simpleGrading (1 1 1) );\n\
+boundary\n(\n    sides {{ type wall; faces ( (0 3 2 1) (4 5 6 7) (0 1 5 4) (1 2 6 5) (2 3 7 6) (0 4 7 3) ); }}\n    towers_walls {{ type wall; faces (); }}\n    towers_base {{ type wall; faces (); }}\n);\n",
+        header("dictionary", "blockMeshDict")
+    );
+    let (solids, notes) = with(&rows[..1].iter().chain(&rows[2..3]).copied().collect::<Vec<_>>(), Some(&blocks));
+    assert!(!notes.iter().any(|n| n.contains("is not a grid of blocks")), "{notes:?}");
+    assert_eq!(solids[0], ["walls", "base"], "{notes:?}");
 }

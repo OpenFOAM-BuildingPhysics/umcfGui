@@ -5,7 +5,7 @@
 //! Each entry read is written as a dictionary again, and that dictionary reads back to the same
 //! entry (but for the solids, which come from the case's mesh), with nothing noted: what the
 //! entry holds survives the trip. A case that doesn't open fails it, and so does a run that
-//! reads no entry.
+//! reads no entry. The surfaces whose features each dictionary reads are told from it.
 
 use umcf_model::description::Description;
 use umcf_model::snappy_import;
@@ -28,6 +28,14 @@ fn the_cases_snappy_dictionaries_read_into_entries_that_read_back() {
             eprintln!("{dir}: note: {n}");
         }
         for r in &desc.regions {
+            // The surfaces whose features its own dictionary reads are told from it.
+            if let Some(path) = r.mesh.as_ref().and_then(umcf_model::snappy::dict_path)
+                && let Some(doc) = case.dict(&path)
+            {
+                let files = snappy_import::features_read(&doc.root);
+                eprintln!("{dir}: {path}: features of {files:?}");
+                assert!(files.is_ok(), "{dir}: {path}: {files:?}");
+            }
             let Some(sn) = &r.snappy else { continue };
             read += 1;
             eprintln!("{dir}: region {}: {} surfaces, {} boxes", r.name, sn.surfaces.len(), sn.boxes.len());

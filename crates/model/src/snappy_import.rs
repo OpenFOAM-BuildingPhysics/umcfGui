@@ -582,22 +582,131 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     Ok(sn)
 }
 
-/// What `surfaceFeatures` is to make the `.eMesh` files for: the regions' snappy entries and,
-/// for a region without one whose mesh `snappyHexMesh` makes from a dictionary of the case,
-/// what that dictionary reads as (it stays, and asks for its own).
-pub fn feature_sources(case: &crate::Case, d: &crate::description::Description) -> Vec<Snappy> {
-    let version = d.version.or(case.layout.version);
-    d.regions
-        .iter()
-        .filter_map(|r| match &r.snappy {
-            Some(sn) => Some(sn.clone()),
-            None => {
-                let path = crate::snappy::dict_path(r.mesh.as_ref()?)?;
-                let doc = case.dict(&path)?;
-                import(&doc.root, &path, version).ok().map(|(sn, _)| sn)
+/// The surface files `surfaceFeatures` is to make the `.eMesh` files of, each once: those the
+/// regions' snappy entries ask features of and, for a region without an entry whose mesh
+/// `snappyHexMesh` makes from a dictionary of the case (it stays, and reads its own), those
+/// whose `.eMesh` that dictionary reads, read from its `features` and `geometry` alone
+/// ([`features_read`]), whatever else it holds.
+#[derive(Debug, Default, PartialEq)]
+pub struct FeatureNeeds {
+    pub files: Vec<String>,
+    /// What can't be told: `<dictionary>: <.eMesh files>` for a dictionary that doesn't load or
+    /// reads `.eMesh` files not traced to a surface file of its geometry. While there is any,
+    /// `system/surfaceFeaturesDict` isn't written from `files`, which could leave them out.
+    pub unread: Vec<String>,
+}
+
+pub fn feature_needs(case: &crate::Case, d: &crate::description::Description) -> FeatureNeeds {
+    let mut out = FeatureNeeds::default();
+    let add = |files: Vec<String>, out: &mut FeatureNeeds| {
+        for f in files {
+            if !out.files.contains(&f) {
+                out.files.push(f);
             }
+        }
+    };
+    for r in &d.regions {
+        match &r.snappy {
+            Some(sn) => add(crate::snappy::feature_files([sn]), &mut out),
+            None => {
+                let Some(path) = r.mesh.as_ref().and_then(crate::snappy::dict_path) else { continue };
+                match case.dict(&path) {
+                    Some(doc) => match features_read(&doc.root) {
+                        Ok(files) => add(files, &mut out),
+                        Err(left) => out.unread.push(format!("{path}: {}", left.join(", "))),
+                    },
+                    None if case.exists(&path) == Some(true) => {
+                        out.unread.push(format!("{path}: it doesn't load as a dictionary"))
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The surface files whose `.eMesh` the `snappyHexMeshDict` `root` reads
+/// (`castellatedMeshControls/features`), by the files of its `geometry` (OpenFOAM-12's `file`,
+/// else the key, as OpenFOAM-8 names it): `x.stl` or `x.stlb` for `x.eMesh`. Err with the
+/// `.eMesh` files it reads that aren't traced to one (a file name `surfaceFeaturesDict` can't
+/// list), at most a few, or with why what it reads can't be told: `features` that aren't a list
+/// of dictionaries (a `$macro`), more than an entry holds, or an `#include` or `$macro` in the
+/// dictionary, its `castellatedMeshControls` or its `geometry`, which may bring features.
+pub fn features_read(root: &Dict) -> Result<Vec<String>, Vec<String>> {
+    let castellated = root.get("castellatedMeshControls").and_then(Entry::dict);
+    let geometry_dict = root.get("geometry").and_then(Entry::dict);
+    // At the top, OpenFOAM's own header (`#includeEtc` of snappyHexMeshDict.cfg, which sets
+    // no features but an empty list) and `#inputSyntax` bring none.
+    let brings = |d: &Dict| {
+        d.items.iter().any(|i| matches!(i, Item::Macro { .. }))
+            || d.directives().any(|(name, arg)| {
+                let name = name.trim_start_matches('#');
+                !(name == "inputSyntax"
+                    || name == "includeEtc"
+                        && arg.as_deref() == Some("caseDicts/mesh/generation/snappyHexMeshDict.cfg"))
+            })
+    };
+    if brings(root) || castellated.is_some_and(includes) || geometry_dict.is_some_and(includes) {
+        return Err(vec!["an #include or a $macro, which may bring features".to_string()]);
+    }
+    // Given twice, OpenFOAM merges them: what this reads (the last) may not be all.
+    for key in ["castellatedMeshControls", "geometry"] {
+        if root.keys().filter(|k| *k == key).nth(1).is_some() {
+            return Err(vec![format!("{key} given twice")]);
+        }
+    }
+    let Some(e) = castellated.and_then(|c| c.get("features")) else { return Ok(Vec::new()) };
+    let Some(items) = list(e) else { return Err(vec!["features that aren't a list".to_string()]) };
+    if items.len() > MAX_ITEMS {
+        return Err(vec![format!("more than {MAX_ITEMS} features")]);
+    }
+    let entries: Vec<&Entry> = geometry_dict.into_iter().flat_map(|g| g.entries()).collect();
+    if entries.len() > MAX_ITEMS {
+        return Err(vec![format!("more than {MAX_ITEMS} surfaces and boxes in its geometry")]);
+    }
+    // A geometry `file` that isn't one name names no file this can tell.
+    let geometry: Vec<String> = entries
+        .into_iter()
+        .filter_map(|g| match g.dict().and_then(|b| b.get("file")) {
+            Some(f) => match f.value.as_slice() {
+                [n] => atom(n).map(unescaped),
+                _ => None,
+            },
+            None => Some(entry_name(g)),
         })
-        .collect()
+        .collect();
+    let (mut files, mut left) = (Vec::new(), Vec::new());
+    for n in items {
+        let Node::Dict { body, .. } = n else {
+            left.push("a features entry that isn't { file …; }".to_string());
+            continue;
+        };
+        let Some(emesh) = body.get("file").and_then(|f| match f.value.as_slice() {
+            [n] => atom(n).map(unescaped),
+            _ => None,
+        }) else {
+            left.push("a features entry without a file".to_string());
+            continue;
+        };
+        let stem = emesh.strip_suffix(".eMesh");
+        let file = geometry.iter().find(|g| {
+            stem.is_some_and(|x| g.strip_suffix(".stl").or_else(|| g.strip_suffix(".stlb")) == Some(x))
+                && crate::snappy::file_chars_ok(g)
+                && crate::mesh_box::is_surface_file(g)
+        });
+        match file {
+            Some(f) if !files.contains(f) => files.push(f.clone()),
+            Some(_) => {}
+            None => left.push(emesh),
+        }
+    }
+    if left.is_empty() {
+        Ok(files)
+    } else {
+        left.truncate(5);
+        Err(left)
+    }
 }
 
 /// The types snappyHexMesh gives the patches of cutting surface `surface` in the

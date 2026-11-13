@@ -607,8 +607,13 @@ reads them there, and a case of regions has them only in each region's directory
 `system/surfaceFeaturesDict` is written with it, for all regions at once: it lists each surface
 whose feature edges a region's `snappy` entry asks for (`features`), once (and, for a region
 without an entry whose mesh snappyHexMesh makes from a `snappyHexMeshDict` of the case's own,
-each surface whose `.eMesh` that dictionary reads, as far as a snappy entry could hold it:
-`workflow.import` tells what it can't), and `surfaceFeatures`
+each surface whose `.eMesh` that dictionary reads, by its `features` and `geometry` alone,
+whatever else it holds; while it reads an `.eMesh` of no surface file it names, doesn't load,
+or has features that can't be read in full (`features $macro;`, an item that isn't
+`{ file …; }`, an `#include` or `$macro` that may bring them: OpenFOAM's own header,
+`#includeEtc "caseDicts/mesh/generation/snappyHexMeshDict.cfg"`, isn't one, its `features` being
+empty; `castellatedMeshControls` or `geometry` given twice; more than 1000 features or geometry
+entries), the dictionary isn't written, also with `replace`, noted), and `surfaceFeatures`
 writes their `.eMesh` files from it (the edges where faces meet at less than 150°, and the open
 and non-manifold ones), the same in OpenFOAM-8 and -12. It is generated as the
 `snappyHexMeshDict` is, with a checksum, and written again whenever `mesh.snappy` changes what it
@@ -636,8 +641,8 @@ umcf-cli run --case path/to/case \
 | `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` (a refining surface has neither: a call that gives them is refused). Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
-| `replace` | `true` writes over a `snappyHexMeshDict`, and a `surfaceFeaturesDict` that doesn't list every surface asking for features, edited by hand or not written by umcfGui (case.save keeps them in the backup) |
-| `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own, and so do the surfaces in `system/surfaceFeaturesDict` whose `.eMesh` it reads, those of it a snappy entry could hold) |
+| `replace` | `true` writes over a `snappyHexMeshDict`, and a `surfaceFeaturesDict` that doesn't list every surface asking for features, edited by hand or not written by umcfGui (case.save keeps them in the backup); not the `surfaceFeaturesDict` while a region's own `snappyHexMeshDict` reads features that can't be told |
+| `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own, and so do the surfaces in `system/surfaceFeaturesDict` whose `.eMesh` it reads; while what it reads can't be told, `system/surfaceFeaturesDict` isn't written, noted) |
 
 Before anything is written, each surface is read as OpenFOAM reads it (the call can be cancelled
 between them) and the call is refused, nothing changed, for a surface that isn't there or doesn't
@@ -683,7 +688,8 @@ feature edges, `surfaceFeatures` from the written dictionary first (and with an 
 `workflow.import` reads a region's `snappy` entry from the `snappyHexMeshDict` its
 `snappyHexMesh` step reads, where the case has one: each STL surface of its `geometry` (with the
 solids of the patches `<surface>_<solid>` it made in the region's mesh, where it made several,
-at most 1000, and the mesh isn't still the blocks' alone; OpenFOAM-12's
+at most 1000, and the mesh isn't still the blocks' alone: a patch of the blocks declared
+without faces is snappyHexMesh's to fill; OpenFOAM-12's
 form, `name { type triSurfaceMesh; file "x.stl"; }`, or OpenFOAM-8's, the key naming the file and
 `name` the surface) that cuts (`refinementSurfaces`, its `level`) or refines by distance
 (`refinementRegions`, `mode distance`), or both; each box refining the cells inside it

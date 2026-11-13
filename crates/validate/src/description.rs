@@ -187,9 +187,11 @@ fn holds(
 /// `system/surfaceFeaturesDict` against the regions' snappy entries: it lists each surface
 /// whose feature edges one asks for, as `mesh.snappy` writes it.
 fn features(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
-    let sources = umcf_model::snappy_import::feature_sources(case, d);
-    let files = sn::feature_files(sources.iter());
-    if files.is_empty() {
+    // What can't be told (a region's own dictionary reading .eMesh files of no surface it
+    // names) isn't held against the dictionary: mesh.snappy leaves it as it is then.
+    let needs = umcf_model::snappy_import::feature_needs(case, d);
+    let files = needs.files;
+    if files.is_empty() || !needs.unread.is_empty() {
         return;
     }
     let at = sn::FEATURES_DICT;

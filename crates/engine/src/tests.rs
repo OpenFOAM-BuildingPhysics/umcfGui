@@ -4696,6 +4696,22 @@ fn surfaces_with_features_are_listed_in_the_surface_features_dict() {
         assert_eq!(text, before);
         assert!(text.contains("\"buildings.stl\"") && text.contains("\"tower.stl\""), "{text}");
         assert_eq!(says(&mut s), Vec::<String>::new());
+        // Another region's call: the kept dictionary's features stay listed, also when no entry
+        // could hold that dictionary (two inside points).
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/snappyHexMeshDict.air", "path": "castellatedMeshControls/insidePoints", "value": [[0, 0, 5], [1, 1, 5]]}),
+        )
+        .unwrap();
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "vegetation", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "refine", "distance": [[1, 1]]}}}),
+        )
+        .unwrap();
+        let text = dict(&s).unwrap();
+        assert!(text.contains("\"buildings.stl\"") && text.contains("\"tower.stl\""), "{text}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
         // edit.undo takes the last call back whole.
         s.execute("edit.undo", &Value::Null).unwrap();
         assert!(dict(&s).unwrap().contains("tower.stl"));

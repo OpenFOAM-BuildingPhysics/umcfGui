@@ -143,7 +143,7 @@ pub const EXPANSION: f64 = 1.2;
 /// Whether a surface's file name can be written into a dictionary as it is: no space or quote,
 /// which OpenFOAM doesn't take in a file name, nor ; { } ( ) $ #, which would change the
 /// dictionary.
-fn file_chars_ok(file: &str) -> bool {
+pub(crate) fn file_chars_ok(file: &str) -> bool {
     !file.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '{' | '}' | '(' | ')' | '$' | '#'))
 }
 

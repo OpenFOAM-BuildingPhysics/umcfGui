@@ -1161,8 +1161,13 @@ fn import_snappy(
             // type its role gives is that of no role.
             let cutting: HashSet<&str> =
                 sn.surfaces.iter().filter(|s| s.mode == crate::snappy::Mode::Cut).map(|s| s.name.as_str()).collect();
-            let block_patches: HashSet<&str> =
-                blocks.map(|g| g.patch_names().into_iter().collect()).unwrap_or_default();
+            // The blocks' patches with faces: one declared without faces is snappyHexMesh's to fill.
+            let block_patches: HashSet<&str> = blocks
+                .map(|g| {
+                    let faceless = g.faceless();
+                    g.patch_names().into_iter().filter(|n| !faceless.contains(n)).collect()
+                })
+                .unwrap_or_default();
             // Each patch's surface and solid: the longest cutting name it is or starts with, then _
             // (looked for only as far as the longest name goes).
             let longest = cutting.iter().map(|n| n.len()).max().unwrap_or(0);
@@ -1175,7 +1180,7 @@ fn import_snappy(
                         .rev()
                         .skip_while(|(i, _)| *i > longest)
                         .filter(|(_, c)| *c == '_')
-                        .map(|(i, _)| (&p.name[..i], &p.name[i + 1..]))
+                        .filter_map(|(i, _)| Some((p.name.get(..i)?, p.name.get(i.checked_add(1)?..)?)))
                         .find(|(surface, solid)| !solid.is_empty() && cutting.contains(surface))
                         .map(|(surface, solid)| (surface, Some(solid.to_string())))
                 });
