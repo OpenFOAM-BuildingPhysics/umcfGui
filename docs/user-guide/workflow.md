@@ -577,13 +577,13 @@ air
 |---|---|
 | `inside` | a point in the cells the region keeps (snappyHexMesh's `locationInMesh`): outside every surface that cuts, inside the blocks (not in a missing block). The vegetation region is the air without the trees, so its point is outside them too, as the air's |
 | `surfaces` | by name, each surface of `constant/triSurface` the mesh is made with |
-| `file` | the surface's file: `<name>.stl` unless another is given (`.stl`, `.stlb`, `.stl.gz`, `.stlb.gz`; no space, quote, `;`, braces, parentheses, `$` or `#`, which OpenFOAM doesn't take in a file name) |
+| `file` | the surface's file: `<name>.stl` unless another is given (`.stl`, `.stlb`, `.stl.gz`, `.stlb.gz`; no space or quote, which OpenFOAM doesn't take in a file name, nor `;`, braces, parentheses, `$` or `#`, which would change the dictionary it is written into) |
 | `mode` | `cut`: the mesh ends at the surface (the buildings cut out of the air, the trees out of the vegetation), which becomes a patch of the surface's name (`<name>_<solid>` for each solid of a surface of several), its type from the patch's role as for the [blocks](#blocks) (`ground`, `coupled`, `interior`, `bottom`: `wall`); `refine`: only the cells near it are refined (the air around the trees) |
 | `level` | a cutting surface's refinement levels, the least and the most (at sharp angles), each halving the cells' size, 10 at most |
 | `distance` | the cells within each distance of the surface refined to its level, the nearest first (the distances growing, the levels not); a refining surface's, and a cutting one's besides its `level` |
 | `layers` | cells added along a cutting surface (100 at most) |
 | `features` | the level the surface's feature edges are refined to, read from `constant/triSurface/<stem>.eMesh`, which `surfaceFeatures` writes (the workflow's `features yes;`, and `system/surfaceFeaturesDict` listing the surface); an uncompressed surface only |
-| `solids` | written by `mesh.snappy` for a surface whose file has several solids: their names as OpenFOAM makes them, each a patch `<name>_<solid>` of a cutting surface, with the surface's layers and the type its own role gives (solids of different types each get their own `patchInfo`) |
+| `solids` | written by `mesh.snappy` for a cutting surface whose file has several solids: their names as OpenFOAM makes them, each a patch `<name>_<solid>` of a cutting surface, with the surface's layers and the type its own role gives (solids of different types each get their own `patchInfo`) |
 | `boxes` | by name, boxes whose cells are refined to their `level`: `min` and `max` corners |
 | `expansion` | the layers' expansion ratio (default 1.2) |
 | `firstLayer` | the first layer's thickness; without it, the thicknesses are relative to the cells (the last layer half a cell, at least a quarter) |
@@ -617,7 +617,7 @@ umcf-cli run --case path/to/case \
 |---|---|
 | `region` | a fluid or vegetation region of `system/umcfWorkflow` (required) |
 | `inside` | `[x, y, z]`; required for a region without a `snappy` entry |
-| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` unless the call gives them |
+| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` unless the call gives them. Without a `role`, a patch a surface makes that the description doesn't list yet (its file gained or lost solids) takes the role the surface's patches had, when they had one |
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
 | `replace` | `true` writes over a `snappyHexMeshDict` edited by hand or not written by umcfGui (case.save keeps it in the backup) |
@@ -634,15 +634,19 @@ split from another, or a dictionary another region's mesh reads too. What the ou
 instead: a cutting surface that isn't closed (the side snappyHexMesh keeps can't be told, and the
 mesh leaks through its holes unless the blocks' sides close them: `geometry.check` lists them), a
 cutting surface reaching past the blocks (cut at their sides) or outside them (it cuts nothing),
-a region without blocks (where the inside point and the surfaces are isn't checked), an
+a region without blocks (where the inside point and the surfaces are isn't checked), an inside point
+on a face between the blocks (snappyHexMesh may not tell which cell holds it), an
 OpenFOAM-12 case with `constant/geometry` (its snappyHexMesh reads the surfaces there, not those
 checked in `constant/triSurface`), features
 asked for while the workflow doesn't run `surfaceFeatures`, and cutting surfaces' patches the
-description doesn't list (without a role: `patch`). Each surface's solids are recorded in its
-entry as the file has them now. The outcome names the dictionary, whether it
+description doesn't list (without a role: `patch`). Each cutting surface's solids are recorded in
+its entry as the file has them now; `geometry.import`, `geometry.trees`, `geometry.repair` and
+`geometry.scale` say when a snappy entry reads the surface they change, for `mesh.snappy` to be
+run again. The outcome names the dictionary, whether it
 was written, the entry, and each surface's patches, bounds and whether it is closed. The case
 check (`workflow.snappy`) names the entry's problems, a mesh that doesn't run snappyHexMesh,
-surfaces the case doesn't have, patches the description doesn't list, features no step makes,
+surfaces the case doesn't have, patches the description doesn't list, a patch name made twice
+(two cutting surfaces, or a cutting surface and the blocks), features no step makes,
 and a `snappyHexMeshDict` that isn't what the entry writes (missing, written from another entry,
 or edited by hand); it doesn't read the surfaces. In the desktop app it is *Snappy mesh* in the
 *More* group of the *Mesh* tab: a form of the region (the first with a snappy entry to start,

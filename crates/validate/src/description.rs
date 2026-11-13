@@ -552,6 +552,20 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
     let described: HashSet<&str> = r.patches.iter().map(|p| p.name.as_str()).collect();
     let patches: Vec<String> = sn.surfaces.iter().filter(|x| x.mode == Mode::Cut).flat_map(|x| x.patches()).collect();
     let unknown: Vec<&str> = patches.iter().map(String::as_str).filter(|p| !described.contains(p)).collect();
+    // Each patch once, among the cutting surfaces' and the blocks': snappyHexMesh would put a
+    // surface's faces into a block patch of the same name.
+    let block_patches: Vec<&str> = r.blocks.as_ref().map(|g| g.patch_names()).unwrap_or_default();
+    let mut seen: HashSet<&str> = block_patches.iter().copied().collect();
+    for p in &patches {
+        if !seen.insert(p.as_str()) {
+            let whose =
+                if block_patches.contains(&p.as_str()) { "a patch of its blocks" } else { "another surface's patch" };
+            out.push(warn(
+                PATH,
+                format!("region {name}, snappy: a cutting surface makes the patch {p}, which is {whose} too: snappyHexMesh would put both in one patch"),
+            ));
+        }
+    }
     if !unknown.is_empty() {
         out.push(warn(
             PATH,

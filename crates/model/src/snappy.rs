@@ -16,8 +16,9 @@
 //! }
 //! ```
 //!
-//! A surface that `cut`s the mesh becomes a patch of the surface's name (its type from the
-//! patch's role, as the blocks' patches): the mesh ends at it, on the side of the inside point
+//! A surface that `cut`s the mesh becomes a patch of the surface's name, or for a file of several
+//! solids (recorded in `solids`) a patch `<name>_<solid>` of each (its type from the patch's
+//! role, as the blocks' patches): the mesh ends at it, on the side of the inside point
 //! (buildings cut out of the air, the trees out of the vegetation), refined to its `level`, with
 //! `layers` cells along it. One that `refine`s only refines the cells within its `distance`s of
 //! it (the air around the trees). A box refines the cells inside it.
@@ -174,7 +175,7 @@ impl Snappy {
             {
                 put(
                     format!("{at}/file"),
-                    "has a character OpenFOAM doesn't take in a file name (a space, a quote, ; { } ( ) $ #)".into(),
+                    "has a space or a quote, which OpenFOAM doesn't take in a file name, or ; { } ( ) $ #, which would change the dictionary".into(),
                 );
             } else if !is_surface_file(&s.file) {
                 put(
@@ -228,7 +229,12 @@ impl Snappy {
             let mut solids = HashSet::new();
             for solid in &s.solids {
                 if !crate::description_edit::plain_name(solid) || !solids.insert(solid.as_str()) {
-                    put(format!("{at}/solids"), format!("{solid} isn't a plain name given once"));
+                    let why = if crate::description_edit::plain_name(solid) {
+                        "is named twice"
+                    } else {
+                        "isn't a plain name (letters, digits, _ . - :, not starting with a digit): rename it in the file"
+                    };
+                    put(format!("{at}/solids"), format!("{solid} {why}"));
                     break;
                 }
             }

@@ -4460,10 +4460,35 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
             &json!({"region": "air", "surfaces": {"towers": {"mode": "refine", "distance": [[1, 1]]}}}),
         )
         .unwrap();
+        assert!(desc(&s).contains("towers { mode refine; distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["regions"][0]["snappy"]["surfaces"]["towers"]["solids"], json!([]));
+        // Cutting again, then the file of one solid: the geometry command says the entry reads it,
+        // and its patch takes the role the solids' patches had.
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"mode": "cut", "level": [1, 1]}}}))
+            .unwrap();
+        let path_src = src.join("towers.stl");
+        std::fs::write(&path_src, block_stl([50.0, 10.0, 0.0], [55.0, 15.0, 10.0], false, false)).unwrap();
+        let out = s
+            .execute(
+                "geometry.import",
+                &json!({ "path": path_src.to_str().unwrap(), "name": "towers.stl", "replace": true }),
+            )
+            .unwrap();
+        assert!(out.message.contains("the snappy entry of region air reads it"), "{}", out.message);
+        let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(out.message.contains("given the role their surface's patches had: towers coupled"), "{}", out.message);
+        assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        // A surface whose patch is a block patch's name: the case check says so too.
+        s.execute(
+            "dict.set",
+            &json!({"file": umcf_model::description::PATH, "path": "regions/air/snappy/surfaces/ground", "value": "{ file towers.stl; mode cut; level ( 1 1 ); }"}),
+        )
+        .unwrap();
+        let said = snappy_says(&mut s);
         assert!(
-            desc(&s).contains("towers { mode refine; distance ( ( 1 1 ) ); solids ( walls base ); }"),
-            "{}",
-            desc(&s)
+            said.iter().any(|m| m.contains("makes the patch ground, which is a patch of its blocks too")),
+            "{said:?}"
         );
         // Taken out, the dictionary stays.
         s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();

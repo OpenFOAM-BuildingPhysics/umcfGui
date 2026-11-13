@@ -213,6 +213,27 @@ fn load(s: &Session, rel: &str) -> Result<(std::sync::Arc<Vec<u8>>, Stl), Error>
     Ok((bytes, stl))
 }
 
+/// `; …` naming the regions whose snappy entry reads the surface `rel`
+/// (`constant/triSurface/<file>`): their snappyHexMeshDict, checks and recorded solids are of
+/// the surface as it was until mesh.snappy runs again. Empty when none does.
+fn snappy_note(s: &Session, rel: &str) -> String {
+    let Some(file) = rel.strip_prefix(&format!("{SURFACE_DIR}/")) else { return String::new() };
+    let Some((d, _)) = s.case().and_then(|c| c.description()) else { return String::new() };
+    let regions: Vec<&str> = d
+        .regions
+        .iter()
+        .filter(|r| r.snappy.as_ref().is_some_and(|sn| sn.surfaces.iter().any(|x| x.file == file)))
+        .map(|r| r.name.as_str())
+        .collect();
+    if regions.is_empty() {
+        return String::new();
+    }
+    format!(
+        "; the snappy entry of {} reads it: mesh.snappy with the region checks it again and writes its snappyHexMeshDict (its solids, patches and layers) from it as it is now",
+        regions.iter().map(|r| format!("region {r}")).collect::<Vec<_>>().join(", ")
+    )
+}
+
 fn result(message: String, mut data: Value, diags: &[Diagnostic]) -> Outcome {
     let (e, w, i, line) = tally(diags);
     if let Some(m) = data.as_object_mut() {
@@ -289,7 +310,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Import surface",
     menu: "Geometry/Import STL…",
     shortcut: None,
-    params: "path: the STL file (ASCII or binary, gzip-compressed too; required). name: its name in constant/triSurface (default: the file's own name; .stl, .stlb, .stl.gz or .stlb.gz). replace: true to replace a surface of that name. scale: a factor for the coordinates (0.001 for millimetres). The file is copied as it is, unless it is scaled or OpenFOAM can't read it as it is: then it is written again. case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). Reports what geometry.check reports.",
+    params: "path: the STL file (ASCII or binary, gzip-compressed too; required). name: its name in constant/triSurface (default: the file's own name; .stl, .stlb, .stl.gz or .stlb.gz). replace: true to replace a surface of that name. scale: a factor for the coordinates (0.001 for millimetres). The file is copied as it is, unless it is scaled or OpenFOAM can't read it as it is: then it is written again. case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). Reports what geometry.check reports. A region whose snappy entry in system/umcfWorkflow reads the surface is named in the message: mesh.snappy checks it again and writes its snappyHexMeshDict from it.",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -347,6 +368,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let (surface, diags) = store(s, &rel, out, notes)?;
     let how = if why.is_empty() { String::new() } else { format!(" ({})", why.join(", ")) };
     let message = format!("{rel}: imported from {path}{how}");
+    let message = format!("{message}{}", snappy_note(s, &rel));
     Ok(result(message, json!({ "file": rel, "rewritten": why, "surface": surface }), &diags))
 }
 
@@ -355,7 +377,7 @@ pub(super) const TREES: CommandSpec = CommandSpec {
     label: "Tree crowns",
     menu: "Geometry/Tree crowns…",
     shortcut: None,
-    params: "The trees, one of: table: a file of the case, one tree a line (x y z CD CH: the crown's base, diameter and height; a first line of these column names in any order, or none; tabs, spaces or commas); path: such a file outside the case; trees: [{\"x\": …, \"y\": …, \"z\": …, \"diameter\": …, \"height\": …}]. name: the surface in constant/triSurface (default trees.stl). solid: the surface's one region (default trees; a binary .stlb has none, and refuses it). replace: true to replace a surface of that name. Each crown is a rhombicuboctahedron of the tree's crown diameter and height standing on its z, closed and wound outward (44 triangles). case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). Reports what geometry.check reports.",
+    params: "The trees, one of: table: a file of the case, one tree a line (x y z CD CH: the crown's base, diameter and height; a first line of these column names in any order, or none; tabs, spaces or commas); path: such a file outside the case; trees: [{\"x\": …, \"y\": …, \"z\": …, \"diameter\": …, \"height\": …}]. name: the surface in constant/triSurface (default trees.stl). solid: the surface's one region (default trees; a binary .stlb has none, and refuses it). replace: true to replace a surface of that name. Each crown is a rhombicuboctahedron of the tree's crown diameter and height standing on its z, closed and wound outward (44 triangles). case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). Reports what geometry.check reports. A region whose snappy entry in system/umcfWorkflow reads the surface is named in the message: mesh.snappy checks it again and writes its snappyHexMeshDict from it.",
     enabled: needs_case,
     run: trees,
     journal: true,
@@ -455,6 +477,7 @@ fn trees(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     } else {
         (format!("{rel}: {} as crowns ({solid})", count(list.len(), "tree")), json!(solid))
     };
+    let message = format!("{message}{}", snappy_note(s, &rel));
     Ok(result(message, json!({ "file": rel, "trees": list.len(), "solid": solid, "surface": surface }), &diags))
 }
 
@@ -463,7 +486,7 @@ pub(super) const REPAIR: CommandSpec = CommandSpec {
     label: "Repair surface",
     menu: "Geometry/Repair…",
     shortcut: None,
-    params: "file: a surface of the case (required). weld: a distance in metres: each vertex within it of one before it is moved onto that one, which closes gaps narrower than that (triangles that lose their area are removed). degenerate: true to remove triangles without area, copies of others and ones with coordinates that are not numbers. orient: true to make the normals of each part consistent and point those of closed parts outward. Without weld, degenerate or orient: degenerate and orient. They run in that order. The surface is written again in its own format (which also fixes a file OpenFOAM can't read as it is); case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to).",
+    params: "file: a surface of the case (required). weld: a distance in metres: each vertex within it of one before it is moved onto that one, which closes gaps narrower than that (triangles that lose their area are removed). degenerate: true to remove triangles without area, copies of others and ones with coordinates that are not numbers. orient: true to make the normals of each part consistent and point those of closed parts outward. Without weld, degenerate or orient: degenerate and orient. They run in that order. The surface is written again in its own format (which also fixes a file OpenFOAM can't read as it is); case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). A region whose snappy entry in system/umcfWorkflow reads the surface is named in the message: mesh.snappy checks it again and writes its snappyHexMeshDict from it.",
     enabled: needs_case,
     run: repair_cmd,
     journal: true,
@@ -537,7 +560,11 @@ fn repair_cmd(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let (surface, diags) = store(s, &rel, out, Some(Vec::new()))?;
     data.insert("file".to_string(), json!(rel));
     data.insert("surface".to_string(), surface);
-    let message = if unchanged { format!("{rel}: nothing to change") } else { format!("{rel}: {}", done.join("; ")) };
+    let message = if unchanged {
+        format!("{rel}: nothing to change")
+    } else {
+        format!("{rel}: {}{}", done.join("; "), snappy_note(s, &rel))
+    };
     Ok(result(message, Value::Object(data), &diags))
 }
 
@@ -546,7 +573,7 @@ pub(super) const SCALE: CommandSpec = CommandSpec {
     label: "Scale surface",
     menu: "Geometry/Scale…",
     shortcut: None,
-    params: "file: a surface of the case (required). factor: a positive number the coordinates are multiplied by (0.001 turns millimetres into metres; required). The surface is written again in its own format; case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to).",
+    params: "file: a surface of the case (required). factor: a positive number the coordinates are multiplied by (0.001 turns millimetres into metres; required). The surface is written again in its own format; case.save writes it. A surface that is a symbolic link is not written (the save would write the file it points to). A region whose snappy entry in system/umcfWorkflow reads the surface is named in the message: mesh.snappy checks it again and writes its snappyHexMeshDict from it.",
     enabled: needs_case,
     run: scale,
     journal: true,
@@ -572,5 +599,6 @@ fn scale(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if dropped > 0 {
         message.push_str(&format!("; {}", left_out(dropped)));
     }
+    message.push_str(&snappy_note(s, &rel));
     Ok(result(message, json!({ "file": rel, "factor": factor, "surface": surface }), &diags))
 }
