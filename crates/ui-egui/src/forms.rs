@@ -696,6 +696,34 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "mesh.snappy",
+        intro: "A region meshed from the case's STL surfaces by snappyHexMesh: its snappy entry, and its snappyHexMeshDict written from it after the surfaces are checked. The surfaces and refinement boxes go in Edit as JSON: {\"surfaces\": {\"buildings\": {\"mode\": \"cut\", \"level\": [2, 3], \"layers\": 2, \"role\": \"coupled\"}}}.",
+        fields: &[
+            field("region", "Region", Kind::WorkflowRegion, "A fluid or vegetation region of system/umcfWorkflow"),
+            field(
+                "inside",
+                "Inside point",
+                Kind::Numbers(&["x", "y", "z"]),
+                "A point in the cells the region keeps (m); empty: the region's",
+            ),
+            field("expansion", "Layer expansion", Kind::Number("1.2"), "The layers' expansion ratio"),
+            field(
+                "firstLayer",
+                "First layer",
+                Kind::Number("relative"),
+                "The first layer's thickness (m); empty: relative to the cells",
+            ),
+            field(
+                "replace",
+                "Write over a snappyHexMeshDict edited by hand",
+                Kind::Flag,
+                "Save keeps the one there in the backup",
+            ),
+            field("remove", "Take the snappy entry out", Kind::Flag, "Its snappyHexMeshDict stays, the case's own"),
+        ],
+        changed_only: false,
+    },
+    Spec {
         id: "mesh.split",
         intro: "A region's mesh split from another's by a cell zone: the cells outside it (the street canyon's vegetation is the air without the trees).",
         fields: &[
@@ -2217,6 +2245,29 @@ mod tests {
         f.fill(spec, &json!({"dropSettings": false})).unwrap();
         assert!(f.passed.is_empty());
         assert_eq!(f.extra.get("dropSettings"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn a_snappy_forms_surfaces_go_as_json() {
+        let spec = spec("mesh.snappy").unwrap();
+        let mut f = FormState::default();
+        let p = json!({
+            "region": "air",
+            "inside": [1, 2, 5],
+            "firstLayer": 0.15,
+            "surfaces": {"buildings": {"mode": "cut", "level": [2, 3]}},
+            "boxes": {"street": null},
+        });
+        f.fill(spec, &p).unwrap();
+        assert_eq!(f.params(spec).unwrap(), p);
+        // The inside point is three numbers, or none (the region's).
+        f.values.insert("inside", "1|2|".to_string());
+        assert!(f.params(spec).unwrap_err().contains("Inside point: give all 3"));
+        f.values.insert("inside", String::new());
+        assert!(f.params(spec).unwrap().get("inside").is_none());
+        // Taken out: only the region goes.
+        f.values.insert("remove", "true".to_string());
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "remove": true}));
     }
 
     #[test]

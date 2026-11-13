@@ -3477,6 +3477,7 @@ fn a_command_card_stays_put_once_open() {
         "scene.snapshot",
         "workflow.region",
         "mesh.split",
+        "mesh.snappy",
     ];
     for id in ids {
         h.state_mut().dialog = None;

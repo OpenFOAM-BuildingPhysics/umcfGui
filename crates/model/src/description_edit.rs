@@ -570,6 +570,88 @@ impl Case {
         Ok(true)
     }
 
+    /// Sets `region`'s `snappy` entry of the description to `sn`, key by key: those that don't
+    /// change are left as they are, their comments with them.
+    pub fn describe_snappy(&mut self, region: &str, sn: &crate::snappy::Snappy) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        self.snappy_read(region)?;
+        let base = ["regions", region, "snappy"];
+        let there = once(doc, &base)?;
+        let mut current = None;
+        if there {
+            if doc.get(&base).is_some_and(|e| e.dict().is_none()) {
+                return Err(refuse(format!(
+                    "{PATH}: `regions/{region}/snappy` is not a dictionary: mend it by hand first"
+                )));
+            }
+            for (k, _) in sn.parts() {
+                once(doc, &[&base[..], &[k]].concat())?;
+            }
+            unended(doc, &base)?;
+            current = self.description().and_then(|(d, _)| d.region(region).and_then(|r| r.snappy.clone()));
+        }
+        let old: Vec<(&str, Option<String>)> = current.as_ref().map(|g| g.parts()).unwrap_or_default();
+        for (k, v) in sn.parts() {
+            if current.is_some() && old.iter().any(|(ok, ov)| *ok == k && *ov == v) {
+                continue;
+            }
+            let path = [&base[..], &[k]].concat();
+            match v {
+                Some(v) => self.set_inline(PATH, &path, &v)?,
+                None => {
+                    self.remove(PATH, &path)?;
+                }
+            }
+        }
+        Ok(EditReport { added: !there, ..EditReport::default() })
+    }
+
+    /// Refused, naming the first read problem, while `region`'s `snappy` entry in the
+    /// description doesn't read whole.
+    pub fn snappy_read(&self, region: &str) -> Result<()> {
+        let here = format!("regions/{region}/snappy");
+        let Some((_, problems)) = self.description() else { return Ok(()) };
+        match problems.iter().find(|p| p.at == here || p.at.starts_with(&format!("{here}/"))) {
+            Some(p) => Err(refuse(format!(
+                "the snappy entry of region {region} in {PATH} doesn't read ({}: {}): mend it by hand first",
+                p.at, p.message
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Takes the `snappy` entry out of `region` of the description (its `snappyHexMeshDict`
+    /// stays as it is, the case's own again); whether there was one.
+    pub fn undescribe_snappy(&mut self, region: &str) -> Result<bool> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region, "snappy"])? {
+            return Ok(false);
+        }
+        self.remove(PATH, &["regions", region, "snappy"])?;
+        Ok(true)
+    }
+
+    /// Sets `region`'s `mesh` entry to the steps `steps` (built in `constant/polyMesh`), in
+    /// place of the mesh it had: what `mesh.snappy` gives a region meshed by blocks alone, or
+    /// without a mesh. Refused for a mesh entry that is there more than once.
+    pub fn describe_root_mesh(&mut self, region: &str, steps: &[crate::workflow::RootStep]) -> Result<EditReport> {
+        name("region", region)?;
+        let doc = self.editable()?;
+        if !once(doc, &["regions", region])? {
+            return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
+        }
+        once(doc, &["regions", region, "mesh"])?;
+        let added = doc.get(&["regions", region, "mesh"]).is_none();
+        let value = format!("( {} )", crate::description::root_steps(steps));
+        self.set_inline(PATH, &["regions", region, "mesh"], &value)?;
+        Ok(EditReport { added, ..EditReport::default() })
+    }
+
     /// Gives `region` the mesh `sp`: split from another region's mesh by a cell zone
     /// (`mesh { from split; of …; zone …; }`), in place of the mesh it had. Refused while the
     /// region has blocks or a box (they would be left to no mesh): take them out first. What
@@ -602,10 +684,10 @@ impl Case {
             return Err(refuse(format!("region {region} is not in {PATH}: describe it first")));
         }
         once(doc, &["regions", region, "mesh"])?;
-        for (key, what) in [("blocks", "blocks"), ("box", "a box")] {
+        for (key, what) in [("blocks", "blocks"), ("box", "a box"), ("snappy", "a snappy entry")] {
             if once(doc, &["regions", region, key])? {
                 return Err(refuse(format!(
-                    "region {region} has {what} in {PATH}, which a split mesh doesn't read: take them out first (mesh.block remove: true)"
+                    "region {region} has {what} in {PATH}, which a split mesh doesn't read: take them out first (mesh.block or mesh.snappy remove: true)"
                 )));
             }
         }

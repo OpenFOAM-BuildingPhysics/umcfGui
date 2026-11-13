@@ -597,6 +597,10 @@ impl App {
             if id == "mesh.box" && f.values.get("region").is_none_or(String::is_empty) {
                 f.values.insert("region", self.box_region());
             }
+            // The snappy card on the first region with a snappy entry, else the first fluid.
+            if id == "mesh.snappy" && f.values.get("region").is_none_or(String::is_empty) {
+                f.values.insert("region", self.snappy_region());
+            }
             // The patch card on the first region of the description, the material card on its
             // first solid, the split card on its first split region.
             if f.values.get("region").is_none_or(String::is_empty) {
@@ -662,6 +666,16 @@ impl App {
 
     /// The region the box card starts with: the first with a box, else with blocks, else the
     /// first of the description.
+    fn snappy_region(&self) -> String {
+        let Some((d, _)) = self.session.case().and_then(|c| c.description()) else { return String::new() };
+        d.regions
+            .iter()
+            .find(|r| r.snappy.is_some())
+            .or_else(|| d.regions.iter().find(|r| r.kind == umcf_model::RegionKind::Fluid))
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    }
+
     fn box_region(&self) -> String {
         let Some((d, _)) = self.session.case().and_then(|c| c.description()) else { return String::new() };
         let first = |p: &dyn Fn(&umcf_model::description::RegionDesc) -> bool| {

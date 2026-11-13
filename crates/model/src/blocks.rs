@@ -1356,15 +1356,21 @@ impl BlockGrid {
             );
         }
         s.push_str("\n// ************************************************************************* //\n");
-        Ok(format!(
-            "// {GENERATED}\n// The blocks of region {region} in system/umcfWorkflow (docs/common-workflow.md).\n{CHECKSUM}{:016x} (what follows, as umcfGui wrote it)\n{s}",
-            checksum(s.as_bytes())
-        ))
+        Ok(stamped(&format!("The blocks of region {region} in system/umcfWorkflow (docs/common-workflow.md)."), &s))
     }
 }
 
 /// The header line that carries a generated file's checksum.
 const CHECKSUM: &str = "// checksum ";
+
+/// `body` as a generated file: the header saying so ([`GENERATED`]), `about`, and the checksum
+/// of `body`, which [`untouched`] checks.
+pub fn stamped(about: &str, body: &str) -> String {
+    format!(
+        "// {GENERATED}\n// {about}\n{CHECKSUM}{:016x} (what follows, as umcfGui wrote it)\n{body}",
+        checksum(body.as_bytes())
+    )
+}
 
 /// A checksum of a grid's shape: its stations, cells and gradings, missing blocks and single
 /// faces, as the description writes them (not its patches or types).

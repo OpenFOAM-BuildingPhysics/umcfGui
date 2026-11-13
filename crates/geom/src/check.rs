@@ -105,6 +105,73 @@ impl Report {
     }
 }
 
+/// Whether `p` is inside the surface `stl`, which should be closed: the parity of the
+/// triangles a ray from `p` crosses. Rays in a few fixed directions, none of them along an axis,
+/// are tried until one passes no triangle's edge or vertex and starts on none; `None` when none
+/// does (`p` on the surface, say) or `p` isn't finite. For an open surface the answer depends on
+/// the ray: [`Report::is_clean_closed`] first.
+pub fn contains(stl: &Stl, p: [f64; 3]) -> Option<bool> {
+    let o = Vec3 { x: p[0], y: p[1], z: p[2] };
+    if !o.is_finite() {
+        return None;
+    }
+    const DIRS: [[f64; 3]; 5] = [
+        [0.6123, 0.3217, 0.7219],
+        [-0.4123, 0.8317, 0.3717],
+        [0.2679, -0.6913, -0.6691],
+        [-0.7862, -0.4153, 0.4583],
+        [0.1414, 0.9899, -0.0173],
+    ];
+    'dirs: for d in DIRS {
+        let d = Vec3 { x: d[0], y: d[1], z: d[2] };
+        let mut crossings = 0usize;
+        for t in &stl.triangles {
+            if !t.is_finite() {
+                continue;
+            }
+            let [a, b, c] = t.points();
+            let (e1, e2) = (b - a, c - a);
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            let scale = e1.length() * e2.length();
+            if scale == 0.0 || det.abs() <= 1e-12 * scale {
+                // Parallel to the ray, or degenerate: a ray in its plane can't be told.
+                let n = e1.cross(e2);
+                if n.length() > 0.0 && (o - a).dot(n).abs() <= 1e-12 * n.length() * (o - a).length().max(1.0) {
+                    continue 'dirs;
+                }
+                continue;
+            }
+            let inv = 1.0 / det;
+            let s = o - a;
+            let u = s.dot(h) * inv;
+            let q = s.cross(e1);
+            let v = d.dot(q) * inv;
+            let w = 1.0 - u - v;
+            let tt = e2.dot(q) * inv;
+            const EDGE: f64 = 1e-9;
+            if u < -EDGE || v < -EDGE || w < -EDGE {
+                continue;
+            }
+            if u < EDGE || v < EDGE || w < EDGE {
+                // Through an edge or a vertex: counted once or twice, unknown.
+                if tt > -EDGE * scale.sqrt() {
+                    continue 'dirs;
+                }
+                continue;
+            }
+            if tt.abs() <= EDGE * scale.sqrt().max(1.0) {
+                return None;
+            }
+            if tt > 0.0 {
+                crossings += 1;
+            }
+        }
+        return Some(crossings % 2 == 1);
+    }
+    None
+}
+
 const OPEN: u8 = 1;
 const NON_MANIFOLD: u8 = 2;
 const INCONSISTENT: u8 = 4;

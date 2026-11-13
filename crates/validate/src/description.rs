@@ -14,6 +14,7 @@ use crate::{Diagnostic, Level};
 const CODE: &str = "workflow.description";
 const BLOCKS: &str = "workflow.blocks";
 const SPLIT: &str = "workflow.split";
+const SNAPPY: &str = "workflow.snappy";
 
 pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     let Some((d, problems)) = case.description() else { return };
@@ -96,6 +97,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
         blocks(case, r, out);
         mesh_box(case, r, out);
         split(case, &d, r, out);
+        snappy(case, &d, r, out);
         // The patches against the mesh, where the region has one.
         let Some(mesh) = cr.patches.as_ref() else { continue };
         for p in &r.patches {
@@ -494,6 +496,107 @@ fn blocks(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
         DictState::Differs { untouched: false, why, .. } => format!(
             "not what the blocks of region {name} make ({why}): edited by hand or not written by umcfGui; mesh.block with replace writes it from them, listing any patch type it changes and any patch it drops or adds, and refusing to change a wall or constraint type (symmetryPlane, empty, …) unless the call's types names the patch, or to drop such a patch unless dropPatches names it (the one there is kept in the backup when the case is saved)"
         ),
+    };
+    out.push(warn(&path, message));
+}
+
+/// A region's `snappy` entry against the case: its own problems, a mesh that doesn't run
+/// snappyHexMesh, surfaces the case doesn't have, patches the description doesn't list, feature
+/// edges no step makes, and its `snappyHexMeshDict` where it isn't what the entry writes.
+/// The surfaces themselves are read by `mesh.snappy`, which checks them before it writes.
+fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
+    use umcf_model::snappy::{Mode, dict_path};
+    let Some(sn) = &r.snappy else { return };
+    let name = &r.name;
+    let warn = |path: &str, m: String| Diagnostic::new(Level::Warning, SNAPPY, path, m).region(name);
+    let problems = sn.problems();
+    for (at, m) in &problems {
+        let at = if at.is_empty() { "snappy".to_string() } else { format!("snappy/{at}") };
+        out.push(warn(PATH, format!("region {name}, {at}: {m}")));
+    }
+    if r.kind == RegionKind::Solid {
+        out.push(warn(
+            PATH,
+            format!("region {name} is a solid: snappyHexMesh doesn't mesh solids here (blocks or extrusion)"),
+        ));
+    }
+    let path = r.mesh.as_ref().and_then(dict_path);
+    if path.is_none() {
+        out.push(warn(
+            PATH,
+            format!(
+                "region {name} has a snappy entry but its mesh doesn't run snappyHexMesh: mesh.snappy gives it the step"
+            ),
+        ));
+    }
+    let put: HashSet<&str> = case.put_paths().collect();
+    let mut missing = 0usize;
+    for x in &sn.surfaces {
+        let rel = format!("constant/triSurface/{}", x.file);
+        if case.exists(&rel) == Some(false) && !put.contains(rel.as_str()) {
+            missing += 1;
+            if missing <= MAX_SAID {
+                out.push(warn(
+                    &rel,
+                    format!("region {name}, snappy: surface {} reads {rel}, which the case doesn't have", x.name),
+                ));
+            }
+        }
+    }
+    if missing > MAX_SAID {
+        out.push(warn(
+            PATH,
+            format!("region {name}, snappy: and {} more surfaces the case doesn't have", missing - MAX_SAID),
+        ));
+    }
+    let described: HashSet<&str> = r.patches.iter().map(|p| p.name.as_str()).collect();
+    let unknown: Vec<&str> = sn
+        .surfaces
+        .iter()
+        .filter(|x| x.mode == Mode::Cut && !described.contains(x.name.as_str()))
+        .map(|x| x.name.as_str())
+        .collect();
+    if !unknown.is_empty() {
+        out.push(warn(
+            PATH,
+            format!(
+                "region {name}, snappy: the patches of {} aren't patches of the region in the description: without a role they are of type patch (mesh.snappy's role, or workflow.patch, gives one)",
+                blocks::list_some(&unknown)
+            ),
+        ));
+    }
+    if !d.features && sn.surfaces.iter().any(|x| x.features.is_some()) {
+        out.push(warn(
+            PATH,
+            format!("region {name}, snappy: features are asked for, but the workflow's features is no: surfaceFeatures doesn't run, and snappyHexMesh stops without the .eMesh files"),
+        ));
+    }
+    let Some(path) = path else { return };
+    if !problems.is_empty() {
+        return;
+    }
+    let location = path.rsplit_once('/').map_or("system", |(dir, _)| dir).to_string();
+    let want = sn.dict(name, &location, &blocks::type_lookup(r));
+    let message = match case.dict(&path) {
+        None if case.exists(&path) == Some(true) => format!(
+            "doesn't load as a dictionary: mesh.snappy can't write it from the snappy entry of region {name} until it is mended or removed"
+        ),
+        None => format!("not there: mesh.snappy writes it from the snappy entry of region {name}"),
+        Some(doc) => {
+            let have = doc.to_string();
+            if have == want {
+                return;
+            }
+            if blocks::untouched(&have) {
+                format!(
+                    "written by umcfGui from another snappy entry (or other patch roles) than region {name}'s now: mesh.snappy writes it again"
+                )
+            } else {
+                format!(
+                    "not what the snappy entry of region {name} writes: edited by hand or not written by umcfGui; mesh.snappy with replace writes it from the entry (the one there is kept in the backup when the case is saved)"
+                )
+            }
+        }
     };
     out.push(warn(&path, message));
 }

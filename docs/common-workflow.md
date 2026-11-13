@@ -51,7 +51,8 @@ Where the names are written:
 
 An OpenFOAM-style dictionary, so it travels with the case, reads with the same tools and can be
 edited by hand. What is built so far (regions, their kinds, the meshing steps as the scripts run
-them, patches with roles and partners, a solid's materials, radiation, the
+them, their blocks, a box around the surfaces, the STL surfaces snappyHexMesh meshes them with, a
+split by a cell zone, patches with roles and partners, a solid's materials, radiation, the
 components, and the solver; its import from a case, its check, its edits entry by entry, and a
 [new case](user-guide/new-case.md) made from it) is described in [the case
 workflow](user-guide/workflow.md#the-workflow-description). A sketch of where it goes (the
@@ -77,14 +78,19 @@ regions
         // Or a box around the STL surfaces its blocks are made from (`mesh.box`):
         // margins west, east, south, north, ground, top.
         box         { surfaces ( buildings.stl ); margin ( 50 50 50 50 0 60 ); cellSize 2; }
-        surfaces    { buildings { level (3 5); layers 3; role coupled; partner buildings; } }
-        patches     { west inlet; east outlet; north side; south side; ground ground; top top; }
+        // With the buildings cut out by snappyHexMesh (`mesh.snappy`; the mesh then
+        // ( blockMesh "system/air/blockMeshDict" snappyHexMesh "system/snappyHexMeshDict.air" )):
+        snappy      { inside ( 1 1 5 ); surfaces { buildings { mode cut; level ( 3 5 ); layers 3; }
+                      trees { mode refine; distance ( ( 2 4 ) ); } } }
+        patches     { west inlet; east outlet; north side; south side; ground ground; top top;
+                      buildings { role coupled; partner ( buildings buildings ); } }
     }
     vegetation
     {
         kind        vegetation;
         mesh        { from box; }           // or { from split; of air; zone trees; } (street canyon, mesh.split)
-        surfaces    { buildings { role coupled; } trees { role canopy; } }
+        snappy      { inside ( 1 1 5 ); surfaces { buildings { mode cut; level ( 3 5 ); }
+                      air_to_vegetation { file trees.stl; mode cut; level ( 2 3 ); } } }
     }
     buildings
     {
