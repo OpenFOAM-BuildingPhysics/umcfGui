@@ -22,7 +22,7 @@ pub(super) const SNAPPY: CommandSpec = CommandSpec {
     label: "Snappy mesh",
     menu: "Mesh/From the surfaces (snappyHexMesh)",
     shortcut: None,
-    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (the workflow's features yes; an uncompressed surface). role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers 100. replace: true writes over a snappyHexMeshDict edited by hand or not written by umcfGui (case.save keeps it in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't closed (the side it keeps can't be told, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, features while the workflow doesn't run surfaceFeatures, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, a patch it makes that the description doesn't list takes the role the surface's patches had (its file gained or lost solids). An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers unless the call gives them. The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
+    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (the workflow's features yes; an uncompressed surface). role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers 100. replace: true writes over a snappyHexMeshDict edited by hand or not written by umcfGui (case.save keeps it in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't closed (the side it keeps can't be told, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, features while the workflow doesn't run surfaceFeatures, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, when its file gained or lost solids, a patch it makes that the description doesn't list takes the role the patches it made before all had (not when they had a partner: those patches are listed). A block patch declared without faces (noFaces) isn't a clash: snappyHexMesh fills it. An inside point on a face between missing blocks only is refused. An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers unless the call gives them. The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
     enabled: needs_case,
     run: snappy,
     journal: true,
@@ -194,16 +194,37 @@ fn o_exists(s: &Session, p: &str) -> bool {
         .is_some_and(|c| c.exists(p) == Some(true) || c.put_paths().any(|x| x == p || x.starts_with(&format!("{p}/"))))
 }
 
-/// The missing block of `g` that `p` is in, if any (the block whose stations hold it; a point
-/// on a station is in none: [`on_station`]).
+/// The missing block of `g` that `p` is in, if any: every block whose stations hold it (two
+/// or more for a point on a station between them) is missing.
 fn missing_at(g: &blocks::BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
-    let mut at = [0usize; 3];
-    for (a, slot) in at.iter_mut().enumerate() {
+    // Along each axis the blocks that hold the coordinate: one inside its span, the two either
+    // side of a station between spans, the one at an end.
+    let mut along: [Vec<usize>; 3] = Default::default();
+    for (a, slot) in along.iter_mut().enumerate() {
         let st = &g.axes.get(a)?.stations;
         let x = *p.get(a)?;
-        *slot = st.windows(2).position(|w| matches!(w, [lo, hi] if *lo < x && x < *hi))?;
+        let spans = st.len().checked_sub(1)?;
+        *slot = (0..spans)
+            .filter(|i| matches!((st.get(*i), st.get(i + 1)), (Some(lo), Some(hi)) if *lo <= x && x <= *hi))
+            .collect();
+        if slot.is_empty() {
+            return None;
+        }
     }
-    g.missing.contains(&at).then_some(at)
+    // In a missing block only when every block that holds it is missing.
+    let mut first = None;
+    for i in &along[0] {
+        for j in &along[1] {
+            for k in &along[2] {
+                let b = [*i, *j, *k];
+                if !g.missing.contains(&b) {
+                    return None;
+                }
+                first.get_or_insert(b);
+            }
+        }
+    }
+    first
 }
 
 /// Whether `p` lies on a station of `g`'s grid: on a face between blocks (and cells).
@@ -376,6 +397,7 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     }
     let mut geometry_note = false;
     let mut roles_inherited: Vec<(String, Role)> = Vec::new();
+    let mut partnered: Vec<String> = Vec::new();
     // Each surface, read and checked.
     let mut read: Vec<Read> = Vec::new();
     for x in entry.surfaces.iter_mut() {
@@ -419,27 +441,40 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if !v8 && o_exists(s, "constant/geometry") {
         geometry_note = true;
     }
-    // A role given to a surface goes to each of its patches; without one, a patch it makes now
-    // that the description doesn't list takes the role the surface's patches had (its name's,
-    // or the one its solids' patches shared) when the file's solids changed.
+    // A role given to a surface goes to each of its patches; without one, when the file's solids
+    // changed, a patch it makes now that the description doesn't list takes the role the
+    // patches it made before shared (not a partner: a coupled patch's is its own to give).
     for x in entry.surfaces.iter().filter(|x| x.mode == Mode::Cut) {
         if roles.iter().any(|(n, _)| *n == x.name) {
             continue;
         }
-        let listed = |p: &str| r.patches.iter().find(|q| q.name == p);
-        let patches = x.patches();
-        if patches.iter().all(|p| listed(p).is_some()) {
+        let Some(was) = had.as_ref().and_then(|h| h.surfaces.iter().find(|w| w.name == x.name && w.mode == Mode::Cut))
+        else {
+            continue;
+        };
+        let (old, new) = (was.patches(), x.patches());
+        if old == new {
             continue;
         }
-        let prefix = format!("{}_", x.name);
-        let before: Vec<Option<Role>> =
-            r.patches.iter().filter(|q| q.name == x.name || q.name.starts_with(&prefix)).map(|q| q.role).collect();
-        if let Some(Some(role)) = before.first().copied()
-            && before.iter().all(|b| *b == Some(role))
-        {
-            for p in patches.iter().filter(|p| listed(p).is_none()) {
-                roles_inherited.push((p.clone(), role));
+        let listed = |p: &str| r.patches.iter().find(|q| q.name == p);
+        let before: Vec<_> = old.iter().filter_map(|p| listed(p)).collect();
+        let Some(role) = before.first().and_then(|q| q.role) else { continue };
+        if before.len() != old.len() || before.iter().any(|q| q.role != Some(role)) {
+            continue;
+        }
+        let fresh: Vec<&String> = new.iter().filter(|p| listed(p).is_none()).collect();
+        if before.iter().any(|q| q.partner.is_some()) {
+            if !fresh.is_empty() {
+                partnered.push(format!(
+                    "{} (its earlier patches are {} with a partner: workflow.patch gives each new one its role and partner)",
+                    fresh.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", "),
+                    role.name()
+                ));
             }
+            continue;
+        }
+        for p in fresh {
+            roles_inherited.push((p.clone(), role));
         }
     }
     let roles: Vec<(String, Option<Role>)> = roles
@@ -456,6 +491,9 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .chain(roles_inherited.iter().map(|(p, role)| (p.clone(), Some(*role))))
         .collect();
     let mut notes: Vec<String> = Vec::new();
+    for n in &partnered {
+        notes.push(format!("patches without a role: {n}"));
+    }
     if !roles_inherited.is_empty() {
         notes.push(format!(
             "patches given the role their surface's patches had: {}",
@@ -469,7 +507,12 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     }
     // Patch names: each once, among the cutting surfaces' and the blocks'.
     let mut seen: HashSet<&str> = HashSet::new();
-    let block_patches: Vec<&str> = r.blocks.as_ref().map(|g| g.patch_names()).unwrap_or_default();
+    // Not those the blocks declare without faces: left for a later step (snappyHexMesh) to fill.
+    let block_patches: Vec<&str> = r
+        .blocks
+        .as_ref()
+        .map(|g| g.patch_names().into_iter().filter(|n| !g.no_faces.iter().any(|x| x == n)).collect())
+        .unwrap_or_default();
     for n in &block_patches {
         seen.insert(n);
     }
@@ -733,7 +776,10 @@ mod tests {
         assert_eq!(missing_at(&g, [15.0, 5.0, 1.0]), Some([1, 0, 0]));
         assert_eq!(missing_at(&g, [5.0, 5.0, 1.0]), None);
         assert_eq!(missing_at(&g, [5.0, 5.0, 9.0]), None, "outside the grid");
-        assert_eq!(missing_at(&g, [10.0, 5.0, 1.0]), None, "on a station: in none");
+        assert_eq!(missing_at(&g, [10.0, 5.0, 1.0]), None, "between a block and a missing one");
+        let mut both = g.clone();
+        both.missing.push([1, 1, 0]);
+        assert_eq!(missing_at(&both, [15.0, 10.0, 1.0]), Some([1, 0, 0]), "between two missing blocks");
         assert!(on_station(&g, [10.0, 5.0, 1.0]));
         assert!(!on_station(&g, [15.0, 5.0, 1.0]));
     }

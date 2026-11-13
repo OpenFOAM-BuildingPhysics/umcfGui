@@ -90,6 +90,9 @@ Without `weld`, `degenerate` or `orient`, `geometry.repair` does `degenerate` an
 run in that order, and the surface is written again in its own format, as described under
 [Reading STL files](#reading-stl-files) (binary for a `.stlb`, with the triangles' attribute
 values). A repair is checked again after it runs, so what is left shows straight away.
+`geometry.import`, `geometry.trees`, `geometry.repair` and `geometry.scale` name the regions
+whose [snappy entry](workflow.md#snappy) reads the surface they change: `mesh.snappy` with the
+region checks it again and writes its `snappyHexMeshDict` from it as it is now.
 
 On the 3×3 case, `geometry.repair` removes all 2252 zero-area triangles of `walls.stl` (in the
 ground) by splitting their neighbours: `surfaceCheck` then finds

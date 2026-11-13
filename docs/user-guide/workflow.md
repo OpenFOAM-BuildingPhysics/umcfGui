@@ -617,7 +617,7 @@ umcf-cli run --case path/to/case \
 |---|---|
 | `region` | a fluid or vegetation region of `system/umcfWorkflow` (required) |
 | `inside` | `[x, y, z]`; required for a region without a `snappy` entry |
-| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` unless the call gives them. Without a `role`, a patch a surface makes that the description doesn't list yet (its file gained or lost solids) takes the role the surface's patches had, when they had one |
+| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` unless the call gives them. Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
 | `replace` | `true` writes over a `snappyHexMeshDict` edited by hand or not written by umcfGui (case.save keeps it in the backup) |
@@ -626,7 +626,7 @@ umcf-cli run --case path/to/case \
 Before anything is written, each surface is read as OpenFOAM reads it (the call can be cancelled
 between them) and the call is refused, nothing changed, for a surface that isn't there or doesn't
 read, a patch name made twice (two cutting surfaces, or a cutting surface and a patch of the
-region's blocks), an inside point outside the region's blocks or in one of their missing blocks
+region's blocks, other than one they declare without faces (`noFaces`), which snappyHexMesh fills), an inside point outside the region's blocks or in one of their missing blocks (on a face between blocks: when all of them are missing)
 (snappyHexMesh would find no cell there) or inside a closed surface that cuts (it would keep the building's inside and cut away the
 rest), a problem of the entry itself (a cutting surface without a level, levels that don't go
 down away from a surface, a box without a length along an axis, …), a solid region, a region
@@ -646,7 +646,7 @@ run again. The outcome names the dictionary, whether it
 was written, the entry, and each surface's patches, bounds and whether it is closed. The case
 check (`workflow.snappy`) names the entry's problems, a mesh that doesn't run snappyHexMesh,
 surfaces the case doesn't have, patches the description doesn't list, a patch name made twice
-(two cutting surfaces, or a cutting surface and the blocks), features no step makes,
+(two cutting surfaces, or a cutting surface and the blocks, other than a `noFaces` patch), features no step makes,
 and a `snappyHexMeshDict` that isn't what the entry writes (missing, written from another entry,
 or edited by hand); it doesn't read the surfaces. In the desktop app it is *Snappy mesh* in the
 *More* group of the *Mesh* tab: a form of the region (the first with a snappy entry to start,

@@ -4479,6 +4479,10 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
         assert!(out.message.contains("given the role their surface's patches had: towers coupled"), "{}", out.message);
         assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        // A block patch declared without faces is one snappyHexMesh fills: no clash.
+        s.execute("mesh.block", &json!({"region": "air", "noFaces": ["trees"]})).unwrap();
+        s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(snappy_says(&mut s).iter().all(|m| !m.contains("makes the patch trees")));
         // A surface whose patch is a block patch's name: the case check says so too.
         s.execute(
             "dict.set",
