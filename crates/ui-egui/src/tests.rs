@@ -2952,6 +2952,253 @@ fn the_block_card_previews_the_grid_and_makes_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The snappy card: filled from the region's snappy entry (the inside point, the surfaces and
+/// the boxes as tables), the blocks, boxes and inside point previewed in the view as typed, the
+/// tables' changes sent by name, and OK changing the entry.
+#[test]
+fn the_snappy_card_is_filled_from_the_entry_previews_it_and_sends_the_tables_changes() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-snappy", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+    )
+    .unwrap();
+    s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
+    s.execute("mesh.box", &json!({"region": "air", "margin": 10, "cellSize": 2})).unwrap();
+    s.execute(
+        "mesh.snappy",
+        &json!({
+            "region": "air",
+            "inside": [0, 12, 5],
+            "surfaces": {"trees": {"mode": "refine", "distance": [[1, 3], [3.5, 2]], "features": 2}},
+            "boxes": {"street": {"min": [0, 10, 0], "max": [20, 30, 4], "level": 1}},
+        }),
+    )
+    .unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().invoke("mesh.snappy");
+    h.run();
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    let value = |h: &Harness<'_, App>, k: &str| form(h).values.get(k).cloned().unwrap_or_default();
+    assert_eq!(value(&h, "region"), "air");
+    assert_eq!(value(&h, "inside"), "0|12|5");
+    assert_eq!(value(&h, "surfaces"), "trees|trees.stl|refine||1 3; 3.5 2||2");
+    assert_eq!(value(&h, "boxes"), "street|0 10 0|20 30 4|1");
+    // As filled, OK changes nothing in the tables.
+    let spec = crate::forms::spec("mesh.snappy").unwrap();
+    let p = form(&h).params(spec).unwrap();
+    assert!(p.get("surfaces").is_none() && p.get("boxes").is_none(), "{p}");
+    // The view: the region's blocks, the box and the inside point.
+    let preview = h.state().viewport.blocks.clone().unwrap();
+    assert_eq!(preview.stations[0], vec![-2.0, 22.0]);
+    assert_eq!(preview.refine, vec![[[0.0, 10.0, 0.0], [20.0, 30.0, 4.0]]]);
+    assert_eq!(preview.inside, Some([0.0, 12.0, 5.0]));
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(summary.contains("1 surface (0 cutting) · 1 refinement box · the inside point (0, 12, 5)"), "{summary}");
+    // Typed: the preview follows; a box that doesn't read is said, a point outside the blocks too.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("inside", "0|12|50".into());
+        f.values.insert("boxes", "street|0 10 0|20 30 6|2\nnorth|0 0|1 1 1|1".into());
+    }
+    h.run();
+    let preview = h.state().viewport.blocks.clone().unwrap();
+    assert_eq!(preview.refine, vec![[[0.0, 10.0, 0.0], [20.0, 30.0, 6.0]]]);
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(summary.contains("box north isn't shown: min `0 0` is three numbers"), "{summary}");
+    assert!(summary.contains("(0, 12, 50) is outside the region's blocks"), "{summary}");
+    // On the blocks' side (the ground) is outside, as the command takes it; one that doesn't
+    // read is said.
+    for (typed, says) in [("0|12|0", "(0, 12, 0) is outside"), ("0|x|1", "doesn't read")] {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("inside", typed.into());
+        h.run();
+        let summary = h.state().preview_summary.clone().unwrap().unwrap();
+        assert!(summary.contains(says), "{summary}");
+    }
+    // Sent by name: a cell changed, a row taken away, a row added; a box's cell emptied refused.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("inside", "0|12|5".into());
+        f.values.insert("boxes", "street|0 10 0|20 30 6|2".into());
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3||\nbig|trees.stl|cut|1 2||1|".into());
+    }
+    h.run();
+    let p = form(&h).params(spec).unwrap();
+    assert_eq!(p["boxes"], json!({"street": {"max": [20, 30, 6], "level": 2}}));
+    assert_eq!(
+        p["surfaces"],
+        json!({"trees": {"distance": [[1, 3]], "features": null}, "big": {"file": "trees.stl", "mode": "cut", "level": [1, 2], "layers": 1}})
+    );
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3; 3.5 2||2".into());
+        f.values.insert("boxes", "street|0 10 0||1".into());
+    }
+    assert!(form(&h).params(spec).unwrap_err().contains("(street): give its min, max and level"));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("boxes", String::new());
+        f.values.insert("surfaces", "trees|trees.stl|refine|2|1 x||2".into());
+    }
+    assert!(form(&h).params(spec).unwrap_err().contains("(trees): distance `1 x` is a distance and a whole level"));
+    // The form's own checks: a box's level of two, a new surface without its mode.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3; 3.5 2||2".into());
+        f.values.insert("boxes", "street|0 10 0|20 30 4|1 2".into());
+    }
+    assert!(form(&h).params(spec).unwrap_err().contains("(street): level `1 2` is one whole number"));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("boxes", "street|0 10 0|20 30 4|1".into());
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3; 3.5 2||2\nnew|trees.stl||1 1||1|".into());
+    }
+    assert!(form(&h).params(spec).unwrap_err().contains("(new): give its mode, cut or refine"));
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|||1 3; 3.5 2||2".into());
+    }
+    assert!(form(&h).params(spec).unwrap_err().contains("(trees): give its mode, cut or refine"));
+    // A box's level given null in Edit as JSON (kept by the command): left as JSON.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3; 3.5 2||2".into());
+        f.fill(spec, &json!({"region": "air", "boxes": {"street": {"level": null}}})).unwrap();
+        assert_eq!(f.values.get("boxes").map(String::as_str), Some(""));
+        assert_eq!(f.params(spec).unwrap()["boxes"], json!({"street": {"level": null}}));
+        f.extra.remove("boxes");
+        f.values.insert("boxes", "street|0 10 0|20 30 4|1".into());
+    }
+    // A row renamed: the old name taken out, the new one added with its cells. Numbers read
+    // as the inside point's (`.5`).
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "crowns|trees.stl|refine||.5 3||2".into());
+    }
+    assert_eq!(
+        form(&h).params(spec).unwrap()["surfaces"],
+        json!({"trees": null, "crowns": {"file": "trees.stl", "mode": "refine", "distance": [[0.5, 3]], "features": 2}})
+    );
+    // The entry changed by another command while a row is typed over: the cells typed stay,
+    // the others follow it.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|refine||1 3; 3.5 2||3".into());
+    }
+    h.state_mut().act("mesh.snappy", json!({"region": "air", "surfaces": {"trees": {"distance": [[2, 2]]}}}));
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert_eq!(value(&h, "surfaces"), "trees|trees.stl|refine||2 2||3");
+    assert_eq!(form(&h).params(spec).unwrap()["surfaces"], json!({"trees": {"features": 3}}));
+    // A role from Edit as JSON: the table can't show it, so it is left empty, the surfaces sent
+    // as the JSON has them, and the card says so.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.fill(spec, &json!({"region": "air", "surfaces": {"trees": {"role": "ground"}}})).unwrap();
+    }
+    h.run();
+    assert_eq!(value(&h, "surfaces"), "");
+    assert_eq!(form(&h).params(spec).unwrap()["surfaces"], json!({"trees": {"role": "ground"}}));
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(summary.starts_with("the surfaces as Edit as JSON gives them · 1 refinement box"), "{summary}");
+    // Its table isn't offered (rows typed there would be sent over the JSON, taking the
+    // entry's other surfaces out).
+    h.get_by_label("As Edit as JSON gives it: changed there");
+    // An inside point the field can't hold: said as the JSON's.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.fill(spec, &json!({"region": "air", "inside": [1, 2], "surfaces": {"trees": {"role": "ground"}}})).unwrap();
+    }
+    h.run();
+    let summary = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(summary.contains("the inside point as Edit as JSON gives it"), "{summary}");
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.extra.remove("inside");
+        f.values.insert("inside", "0|12|5".into());
+    }
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.extra.remove("surfaces");
+        f.values.insert("surfaces", "trees|trees.stl|refine||2 2||2".into());
+        f.values.insert("boxes", String::new());
+    }
+    // Another command keeps what was typed; OK takes the box out.
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "trees|trees.stl|refine||2 2||2".into());
+    }
+    h.state_mut().act("select.clear", json!({}));
+    h.run();
+    assert_eq!(value(&h, "boxes"), "");
+    assert_eq!(form(&h).params(spec).unwrap()["boxes"], json!({"street": null}));
+    h.get_by_label("OK").click();
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.error.clone()));
+    assert!(h.state().viewport.blocks.is_none());
+    let d = h.state().session().case().unwrap().description().unwrap().0;
+    let e = d.region("air").unwrap().snappy.clone().unwrap();
+    assert!(e.boxes.is_empty());
+    assert_eq!(e.surfaces.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The snappy card says an inside point in a missing block, or on a face between missing
+/// blocks only, by the command's own rule, before OK.
+#[test]
+fn the_snappy_card_says_an_inside_point_in_a_missing_block() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-snappy-missing", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+    )
+    .unwrap();
+    s.execute(
+        "mesh.block",
+        &json!({
+            "region": "air",
+            "x": [0, [5, 1], 10, [5, 1], 20, [5, 1], 30],
+            "y": [0, [5, 1], 20, [5, 1], 40],
+            "z": [0, [8, 1], 16],
+            "missing": [[0, 0, 0], [1, 0, 0]],
+            "patches": {
+                "west": "inlet", "east": "outlet", "south": "side", "north": "side",
+                "ground": "ground", "top": "top", "missing": "buildings",
+            },
+        }),
+    )
+    .unwrap();
+    let mut h = harness(App::new(s));
+    h.state_mut().invoke("mesh.snappy");
+    h.run();
+    let says = |h: &mut Harness<'_, App>, inside: &str| {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("inside", inside.into());
+        h.run();
+        h.state().preview_summary.clone().unwrap().unwrap()
+    };
+    assert!(says(&mut h, "5|10|8").contains("is in the missing block (0 0 0)"));
+    // On the face between the two missing blocks: still in one.
+    assert!(says(&mut h, "10|10|8").contains("is in the missing block"));
+    // On the face between a missing block and a kept one: the command decides (not said).
+    let kept = says(&mut h, "20|10|8");
+    assert!(!kept.contains("missing block") && kept.contains("the inside point (20, 10, 8)"), "{kept}");
+    assert!(says(&mut h, "25|20|16").contains("outside the region's blocks or on their sides"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The box card: filled from the region's box, the box previewed in the view (both renderers
 /// draw it from `viewport.blocks`) with its size and cells said, then made by OK.
 #[test]

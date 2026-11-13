@@ -201,7 +201,7 @@ fn summary(g: &BlockGrid) -> String {
 
 /// The preview of a grid: along each axis its stations, its cells' lines (at most about
 /// [`PREVIEW_LINES`]), and its missing blocks by their corners.
-fn preview(g: &BlockGrid) -> BlockPreview {
+pub(crate) fn preview(g: &BlockGrid) -> BlockPreview {
     let mut p = BlockPreview::default();
     for (k, a) in g.axes.iter().enumerate() {
         let n = a.cells().unwrap_or(u64::MAX);

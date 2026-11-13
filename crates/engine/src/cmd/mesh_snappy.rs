@@ -197,8 +197,9 @@ fn o_exists(s: &Session, p: &str) -> bool {
 }
 
 /// The missing block of `g` that `p` is in, if any: every block whose stations hold it (two
-/// or more for a point on a station between them) is missing.
-fn missing_at(g: &blocks::BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
+/// or more for a point on a station between them) is missing. The desktop's snappy card says
+/// it before *OK* by the same rule.
+pub fn missing_at(g: &blocks::BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
     // Along each axis the blocks that hold the coordinate: one inside its span, the two either
     // side of a station between spans, the one at an end.
     let mut along: [Vec<usize>; 3] = Default::default();
@@ -247,8 +248,9 @@ struct Read {
     holds_inside: Option<bool>,
 }
 
-/// A snappy entry as JSON, as the command takes it.
-pub(crate) fn snappy_json(s: &Snappy) -> Value {
+/// A snappy entry as JSON, as the command takes it (with each surface's `solids`, which it
+/// records itself).
+pub fn snappy_json(s: &Snappy) -> Value {
     let surfaces: Map<String, Value> = s
         .surfaces
         .iter()

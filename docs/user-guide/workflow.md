@@ -679,9 +679,33 @@ does, the cutting surfaces' patch types those of their roles, its other settings
 only an Info, which counts the notes the import makes on what the entry can't hold of it, lost
 when `replace` writes it), and a `system/surfaceFeaturesDict` missing, written from other entries, or
 of the case's own and not listing a surface asking for features; it doesn't read the surfaces. In the desktop app it is *Snappy mesh* in the
-*More* group of the *Mesh* tab: a form of the region (the first with a snappy entry to start,
-else the first fluid), the inside point, the layers' expansion
-and first thickness (empty: the region's; `null` in *Edit as JSON* takes either away), *replace* and *remove*; the surfaces and boxes go through *Edit as JSON*.
+*More* group of the *Mesh* tab: a [form](desktop.md#forms) of the region (the first with a
+snappy entry to start, else the first fluid), filled from its `snappy` entry when it has one: the
+inside point, two tables, the layers' expansion and first thickness (empty: the region's; `null`
+in *Edit as JSON* takes either away), *replace* and *remove*. The *Surfaces* table has a row per
+surface: its name, file (picked from the case's surfaces; empty: `<name>.stl`), mode (`cut` or
+`refine`), level (the least and the most, `2 3`; one number for both), distances and levels of a
+refining surface, the nearest first (`1 3; 3 2`), layers and feature level. The *Refinement boxes*
+table has a row per box: its name, min and max (`x y z`) and level. Only what changed from the
+entry is sent, by name, as the command merges it: a cell changed, a cell emptied as `null` (a
+box's cells are all needed), a row added with the cells given, a row taken away as `null`; a cell
+retyped to the same value (`2` for `2.0`) is unchanged, and after another command the cells not
+typed in follow the entry. A row renamed is the surface or box taken out and a new one added (a
+surface's role and solids go with the old name). The form refuses a row without a name, a name
+twice, a surface without its mode, a box with a cell empty, and a cell that doesn't read; an entry the
+table can't show (a name or file with a `|`, a name starting or ending with a space, a number that
+isn't finite, …) is counted on the card and left as it is (a row typed there is added, or, by a name the entry has, merges into that surface or replaces
+that box). An empty file is `<name>.stl`; an empty
+inside point isn't sent (the entry's stays). A
+cutting surface's patch role goes through *Describe a patch* or *Edit as JSON* (`role`): what the
+JSON gives that a table can't hold is sent as the JSON has it, the table not offered (changed in
+*Edit as JSON*); the card's line says so, and of the inside point too.
+While the card is open, the 3D view shows the region's blocks (as the *Block mesh* card previews
+them), the refinement boxes by their edges and the inside point as a small cross, in a colour of
+their own (on the GPU and the CPU alike), as they are typed, framed by them when nothing else is
+shown; the card counts the surfaces and boxes and says a box that doesn't read, an inside point
+that doesn't read, one outside the blocks or on their sides, or inside a missing block, and a
+region without blocks. The command checks the rest when *OK* runs it.
 Checked with snappyHexMesh on OpenFOAM-8 and -12: a building cut out with two layers, the cells
 around a tree and in a box refined, `checkMesh` without a failed check; with the building's
 feature edges, `surfaceFeatures` from the written dictionary first (and with an empty list).

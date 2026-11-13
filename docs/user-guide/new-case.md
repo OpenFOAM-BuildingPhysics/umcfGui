@@ -93,7 +93,10 @@ In the desktop app it is *Set a material's coefficients* in the *More* group of 
 `transportProperties` lists, and its coefficients as a table filled from the file (a row each,
 name and value; a name picked from those the solver reads of its model). Only what is changed
 is sent: a value changed or a row added sets it, a row taken away or its value emptied takes
-it out (`null`).
+it out (`null`). After another command the rows not typed in follow the file, and a row typed
+over keeps the value typed. Coefficients that *Edit as JSON* gives in a form the table can't hold
+are sent as the JSON has them, and the table isn't offered (*As Edit as JSON gives it: changed
+there*).
 
 ## The configuration
 

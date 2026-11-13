@@ -1,17 +1,19 @@
 //! The workflow description's cards (`workflow.region`, `workflow.patch`, `workflow.material`,
-//! `workflow.component`, `mesh.split`): each frame, the names their fields offer (the description's regions,
-//! a region's patches and materials, the material models of the solver, the air's patches), and
+//! `workflow.component`, `mesh.split`, `mesh.snappy`): each frame, the names their fields offer
+//! (the description's regions, a region's patches and materials, the material models of the
+//! solver, the air's patches), and
 //! what they describe filled in when it is chosen (a region's kind, a patch's role and partner,
-//! a material's model).
+//! a material's model, a region's snappy entry).
 
 use umcf_model::RegionKind;
 use umcf_model::description::Description;
 
 use crate::App;
-use crate::forms::{FormState, PARTNER_PATCHES};
+use crate::forms::{FormState, Kind, PARTNER_PATCHES};
+use serde_json::Value;
 
 /// The cards this fills.
-pub(crate) const CARDS: [&str; 9] = [
+pub(crate) const CARDS: [&str; 10] = [
     "workflow.region",
     "workflow.patch",
     "workflow.material",
@@ -21,6 +23,7 @@ pub(crate) const CARDS: [&str; 9] = [
     "region.add",
     "workflow.settings",
     "mesh.split",
+    "mesh.snappy",
 ];
 
 /// What a card is filled for: the region, and the patch or material, it describes.
@@ -91,6 +94,35 @@ fn described(
             let m = r.materials.iter().find(|m| m.name == value("material"))?;
             Some(vec![("model", m.model.clone().unwrap_or_default())])
         }
+        "mesh.snappy" => {
+            let mut json = umcf_engine::snappy_json(r.snappy.as_ref()?);
+            // The solids are the command's own record, not a field's.
+            if let Some(m) = json.get_mut("surfaces").and_then(Value::as_object_mut) {
+                for x in m.values_mut().filter_map(Value::as_object_mut) {
+                    x.remove("solids");
+                }
+            }
+            let text = crate::forms::number_text;
+            let number = |k: &str| json.get(k).filter(|v| v.is_number()).map(text).unwrap_or_default();
+            // Empty unless every coordinate is a number (one not finite is null in JSON).
+            let inside = json
+                .get("inside")
+                .and_then(Value::as_array)
+                .filter(|a| a.iter().all(Value::is_number))
+                .map(|a| a.iter().map(text).collect::<Vec<_>>().join("|"))
+                .unwrap_or_default();
+            // A name the table can't hold: the table left empty, the entry kept as it is.
+            let table = |k: &str, kind: Kind| {
+                json.get(k).and_then(|v| crate::forms::grid_text(kind, v, "")).unwrap_or_default()
+            };
+            Some(vec![
+                ("inside", inside),
+                ("expansion", number("expansion")),
+                ("firstLayer", number("firstLayer")),
+                ("surfaces", table("surfaces", Kind::SnappySurfaces)),
+                ("boxes", table("boxes", Kind::SnappyBoxes)),
+            ])
+        }
         "mesh.split" => match &r.mesh {
             // The copied region's own dictionary left empty: it follows *Split from*.
             Some(umcf_model::workflow::MeshBuild::Split(sp)) => Some(vec![
@@ -111,6 +143,16 @@ fn described(
     }
 }
 
+/// The number of columns of a table a card fills, by its field.
+fn table_width(k: &str) -> Option<usize> {
+    match k {
+        "coefficients" => Some(2),
+        "surfaces" => Some(crate::forms::SURFACE_COLS.len()),
+        "boxes" => Some(crate::forms::BOX_COLS.len()),
+        _ => None,
+    }
+}
+
 /// The fields a patch or material card fills from the description.
 fn card_fields(id: &str) -> &'static [&'static str] {
     match id {
@@ -119,6 +161,7 @@ fn card_fields(id: &str) -> &'static [&'static str] {
         "workflow.material" => &["model"],
         "material.set" => &["coefficients"],
         "mesh.split" => &["of", "zone", "dict"],
+        "mesh.snappy" => &["inside", "expansion", "firstLayer", "surfaces", "boxes"],
         _ => &[],
     }
 }
@@ -167,7 +210,10 @@ impl App {
             }
             return;
         }
-        if !matches!(id, "workflow.region" | "workflow.patch" | "workflow.material" | "material.set" | "mesh.split") {
+        if !matches!(
+            id,
+            "workflow.region" | "workflow.patch" | "workflow.material" | "material.set" | "mesh.split" | "mesh.snappy"
+        ) {
             return;
         }
         let case = self.session.case();
@@ -190,9 +236,14 @@ impl App {
             let value = f.values.get(k).cloned().unwrap_or_default();
             if !f.extra.contains_key(k) && value == was {
                 f.values.insert(k, v.clone());
-            } else if k == "coefficients" && !f.extra.contains_key(k) {
-                // A table: the rows not typed in follow the case, row by row.
-                f.values.insert(k, crate::forms::merge_rows(&value, &was, &v, 2));
+            } else if let (Some(n), false) = (table_width(k), f.extra.contains_key(k)) {
+                // A table: the cells not typed in follow the case, row by row.
+                let merged = match k {
+                    "surfaces" => crate::forms::merge_snappy_rows(Kind::SnappySurfaces, &value, &was, &v),
+                    "boxes" => crate::forms::merge_snappy_rows(Kind::SnappyBoxes, &value, &was, &v),
+                    _ => crate::forms::merge_rows(&value, &was, &v, n),
+                };
+                f.values.insert(k, merged);
             }
             f.initial.insert(k, v);
         }
