@@ -296,6 +296,7 @@ impl Description {
                 }
             }
             let blocks = mesh.and_then(|m| import_blocks(case, name, region.kind, &m.build, &patches, &mut notes));
+            let snappy = mesh.and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, &mut notes));
             // A region without a mesh: its patches are those its blocks name, without a role.
             if region.patches.is_none()
                 && let Some(g) = &blocks
@@ -315,7 +316,7 @@ impl Description {
                 materials,
                 blocks,
                 mesh_box: None,
-                snappy: None,
+                snappy,
             });
         }
         // A blockMeshDict two regions' meshes read: written from one's blocks, it would change
@@ -329,6 +330,19 @@ impl Description {
         for (p, rs) in readers.iter().filter(|(_, rs)| rs.len() > 1) {
             notes.push(format!(
                 "{p} is read by the meshes of regions {}: mesh.block writes it for none of them until each has its own",
+                rs.join(", ")
+            ));
+        }
+        // The same for a snappyHexMeshDict.
+        let mut readers: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+        for r in &regions {
+            if let Some(p) = r.mesh.as_ref().and_then(crate::snappy::dict_path) {
+                readers.entry(p).or_default().push(r.name.as_str());
+            }
+        }
+        for (p, rs) in readers.iter().filter(|(_, rs)| rs.len() > 1) {
+            notes.push(format!(
+                "{p} is read by the meshes of regions {}: mesh.snappy writes it for none of them until each has its own",
                 rs.join(", ")
             ));
         }
@@ -1112,6 +1126,51 @@ fn import_blocks(
             notes.push(format!(
                 "region {name}: {path} is not a grid of blocks ({why}): left as it is, the description has no blocks for it"
             ));
+            None
+        }
+    }
+}
+
+/// The snappy entry of region `name` read from the `snappyHexMeshDict` its mesh's
+/// `snappyHexMesh` step reads (see [`crate::snappy_import`]); what it leaves out noted.
+fn import_snappy(
+    case: &Case,
+    name: &str,
+    kind: RegionKind,
+    build: &MeshBuild,
+    patches: &[PatchDesc],
+    notes: &mut Vec<String>,
+) -> Option<crate::snappy::Snappy> {
+    let path = crate::snappy::dict_path(build)?;
+    let Some(doc) = case.dict(&path) else {
+        if case.exists(&path) == Some(true) {
+            notes.push(format!("region {name}: {path} doesn't load as a dictionary: no snappy entry read from it"));
+        }
+        return None;
+    };
+    match crate::snappy_import::import(&doc.root, &path, case.layout.version) {
+        Ok((sn, left)) => {
+            notes.extend(left.into_iter().map(|n| format!("region {name}: {n}")));
+            // The cutting surfaces' patch types against those their roles give.
+            for s in sn.surfaces.iter().filter(|s| s.mode == crate::snappy::Mode::Cut) {
+                let role = patches.iter().find(|p| p.name == s.name).and_then(|p| p.role);
+                let want = crate::blocks::patch_type(kind, role);
+                let have = crate::snappy_import::patch_type(&doc.root, &s.name, None);
+                if have != want {
+                    notes.push(format!(
+                        "region {name}: {path}: the patch of surface {} is a {have} there, but its role gives {want}: the entry writes {want}",
+                        s.name
+                    ));
+                }
+            }
+            notes.push(format!(
+                "region {name}: the snappy entry read from {path}, which stays as it is (mesh.snappy with replace writes it from the entry, with umcfGui's other settings)"
+            ));
+            Some(sn)
+        }
+        Err((why, left)) => {
+            notes.extend(left.into_iter().map(|n| format!("region {name}: {n}")));
+            notes.push(format!("region {name}: {path} gives no snappy entry ({why}): left as it is"));
             None
         }
     }

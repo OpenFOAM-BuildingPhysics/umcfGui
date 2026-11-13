@@ -246,3 +246,33 @@ fn too_many_entries_or_distances_are_refused_before_they_are_read() {
     e.surfaces[1].distance = (1..=MAX_DISTANCES + 1).map(|i| (i as f64, 1)).collect();
     assert!(e.problems().iter().any(|(a, m)| a == "surfaces/trees/distance" && m.contains("more than 100")));
 }
+
+#[test]
+fn the_surfaces_with_features_are_listed_once_for_surface_features() {
+    let a = example();
+    let mut b = example();
+    b.surfaces[0].file = "other.stl".into();
+    b.surfaces[1].features = Some(1); // compressed: surfaceFeatures names its file otherwise
+    let files = feature_files([&a, &b, &a]);
+    assert_eq!(files, ["buildings.stl", "other.stl"]);
+    let text = features_dict(&files);
+    assert!(crate::blocks::untouched(&text), "{text}");
+    let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+    assert_eq!(doc.to_string(), text, "it reads back as it is");
+    let listed = features_listed(&doc.root);
+    assert_eq!(listed, files.iter().cloned().collect());
+    assert!(text.contains("includedAngle   150;"), "{text}");
+    // OpenFOAM-8's form of a dictionary per surface is read too.
+    let doc =
+        umcf_foam_dict::Document::parse("a { surfaces ( \"x.stl\" ); includedAngle 120; }\nb { surfaces ( y.stl ); }")
+            .unwrap();
+    assert_eq!(features_listed(&doc.root), ["x.stl".to_string(), "y.stl".to_string()].into_iter().collect());
+    // With a list at the top, surfaceFeatures reads only that one.
+    let doc = umcf_foam_dict::Document::parse("surfaces ( a.stl );\nb { surfaces ( b.stl ); }").unwrap();
+    assert_eq!(features_listed(&doc.root), ["a.stl".to_string()].into_iter().collect());
+    // A file name the dictionary can't hold (an entry with problems) isn't listed.
+    let mut bad = example();
+    bad.surfaces[0].file = "x\"y;.stl".into();
+    assert_eq!(feature_files([&bad]), Vec::<String>::new());
+    assert_eq!(features_dict(&[]).matches(".stl").count(), 0);
+}

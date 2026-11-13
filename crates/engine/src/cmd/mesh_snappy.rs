@@ -22,7 +22,7 @@ pub(super) const SNAPPY: CommandSpec = CommandSpec {
     label: "Snappy mesh",
     menu: "Mesh/From the surfaces (snappyHexMesh)",
     shortcut: None,
-    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (the workflow's features yes; an uncompressed surface). role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers and distances 100, surfaces and boxes 1000. replace: true writes over a snappyHexMeshDict edited by hand or not written by umcfGui (case.save keeps it in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't one closed surface (open edges, or edges of more than two triangles, as where its solids share faces: whether the inside point is inside it isn't checked, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, features while the workflow doesn't run surfaceFeatures, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, when its file gained or lost solids, a patch it makes that the description doesn't list takes the role the patches it made before all had (not when they had a partner: the new patches are then listed in the outcome). A block patch declared without faces (noFaces) isn't a clash: snappyHexMesh fills it. An inside point on a face between missing blocks only is refused. An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers (a refining surface has neither). The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
+    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (an uncompressed surface): system/surfaceFeaturesDict is written listing the surfaces of every region's snappy entry that ask for features (generated, with a checksum; one edited by hand or not written by umcfGui is left, noted for the surfaces it doesn't list, unless replace), and the workflow given features yes;. role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers and distances 100, surfaces and boxes 1000. replace: true writes over a snappyHexMeshDict, and a surfaceFeaturesDict that doesn't list every surface asking for features, edited by hand or not written by umcfGui (case.save keeps them in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own; system/surfaceFeaturesDict follows the other regions' entries). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't one closed surface (open edges, or edges of more than two triangles, as where its solids share faces: whether the inside point is inside it isn't checked, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, system/surfaceFeaturesDict written or features yes given, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, when its file gained or lost solids, a patch it makes that the description doesn't list takes the role the patches it made before all had (not when they had a partner: the new patches are then listed in the outcome). A block patch declared without faces (noFaces) isn't a clash: snappyHexMesh fills it. An inside point on a face between missing blocks only is refused. An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers (a refining surface has neither). The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
     enabled: needs_case,
     run: snappy,
     journal: true,
@@ -278,6 +278,71 @@ pub(crate) fn snappy_json(s: &Snappy) -> Value {
     })
 }
 
+/// Brings `system/surfaceFeaturesDict` and the description's `features` in line with the
+/// regions' snappy entries `entries` (as they are after the call): the dictionary written to
+/// list the surfaces that ask for feature edges (over one umcfGui wrote, or with `replace` over
+/// any; one edited by hand is otherwise left, noted for the files it doesn't list), and
+/// `features yes` given when one asks. Whether the dictionary was written.
+fn sync_features(
+    o: &mut crate::Opened,
+    entries: &[&Snappy],
+    replace: bool,
+    notes: &mut Vec<String>,
+) -> Result<bool, Error> {
+    let files = sn::feature_files(entries.iter().copied());
+    let at = sn::FEATURES_DICT;
+    let text = sn::features_dict(&files);
+    let write = match o.case.dict(at) {
+        Some(doc) => {
+            let old = doc.to_string();
+            if old == text {
+                false
+            } else if blocks::untouched(&old) {
+                true
+            } else {
+                // The case's own: kept while it lists every surface asking for features.
+                let listed = sn::features_listed(&doc.root);
+                let missing: Vec<&str> =
+                    files.iter().filter(|f| !listed.contains(f.as_str())).map(String::as_str).collect();
+                if missing.is_empty() {
+                    false
+                } else if replace {
+                    true
+                } else {
+                    notes.push(format!(
+                        "{at} was edited by hand or not written by umcfGui and doesn't list {}: surfaceFeatures makes no .eMesh for them (replace: true writes it from the snappy entries)",
+                        blocks::list_some(&missing)
+                    ));
+                    false
+                }
+            }
+        }
+        None if o.case.exists(at) == Some(true) => {
+            if !files.is_empty() {
+                notes.push(format!("{at} is there but doesn't load as a dictionary: it isn't written over"));
+            }
+            false
+        }
+        None => !files.is_empty(),
+    };
+    if write {
+        o.case.put_dict(o.fs.as_ref(), at, &text).map_err(|e| match e {
+            umcf_model::Error::IsLink(_) => Error::Failed(format!("{at} is a symbolic link: it isn't written over")),
+            e => e.into(),
+        })?;
+        let listing = if files.is_empty() { "no surface".to_string() } else { files.join(", ") };
+        notes.push(format!("{at} written, listing the surfaces whose features are asked for: {listing}"));
+    }
+    let on = o.case.description().is_some_and(|(d, _)| d.features);
+    if !files.is_empty() && !on {
+        o.case.describe_features(true)?;
+        notes.push(format!(
+            "features yes in {PATH}: surfaceFeatures runs first (workflow.scripts writes it into Allprepare)"
+        ));
+    }
+    Ok(write)
+}
+
 fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let allowed = ["region", "inside", "surfaces", "boxes", "expansion", "firstLayer", "replace", "remove"];
     let p = Params::new(SNAPPY.id, p, &allowed)?;
@@ -294,7 +359,7 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         return Err(Error::Failed(format!("region {region} is not in {PATH}: workflow.region adds it")));
     };
     let r = r.clone();
-    let features_run = d.features;
+    let entries: Vec<(String, Option<Snappy>)> = d.regions.iter().map(|x| (x.name.clone(), x.snappy.clone())).collect();
     let v8 = d.version.or(o.case.layout.version) == Some(umcf_core::OfVersion::V8);
     let others: Vec<(String, Option<MeshBuild>)> =
         d.regions.iter().filter(|x| x.name != region).map(|x| (x.name.clone(), x.mesh.clone())).collect();
@@ -305,10 +370,19 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         if !o.case.undescribe_snappy(region)? {
             return Err(failed(format!("region {region} has no snappy entry in {PATH}")));
         }
-        let message = format!(
+        let rest: Vec<&Snappy> = entries.iter().filter(|(n, _)| n != region).filter_map(|(_, x)| x.as_ref()).collect();
+        let mut notes = Vec::new();
+        sync_features(o, &rest, false, &mut notes)?;
+        let mut message = format!(
             "{PATH}: the snappy entry of region {region} taken out (its snappyHexMeshDict stays as it is, the case's own)"
         );
-        return Ok(Outcome::new(message, json!({ "region": region, "file": PATH, "snappy": Value::Null })));
+        for n in &notes {
+            message.push_str(&format!("; {n}"));
+        }
+        return Ok(Outcome::new(
+            message,
+            json!({ "region": region, "file": PATH, "snappy": Value::Null, "notes": notes }),
+        ));
     }
     if r.kind == umcf_model::RegionKind::Solid {
         return Err(failed(format!(
@@ -606,11 +680,6 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             }
         }
     }
-    if entry.surfaces.iter().any(|x| x.features.is_some()) && !features_run {
-        notes.push(format!(
-            "features are asked for, but the workflow's features is no: surfaceFeatures doesn't run, so the .eMesh files aren't made (features yes; in {PATH}, and system/surfaceFeaturesDict listing the surfaces)"
-        ));
-    }
     // The roles, then the patch types the dictionary is written with.
     let mut with = r.clone();
     for (name, role) in &roles {
@@ -671,6 +740,9 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if described {
         o.case.describe_snappy(region, &entry)?;
     }
+    let all: Vec<&Snappy> =
+        entries.iter().filter_map(|(n, x)| if n == region { Some(&entry) } else { x.as_ref() }).collect();
+    let features_written = sync_features(o, &all, replace, &mut notes)?;
     if write {
         o.case.put_dict(o.fs.as_ref(), &path, &text).map_err(|e| match e {
             umcf_model::Error::IsLink(_) => Error::Failed(format!("{path} is a symbolic link: it isn't written over")),
@@ -756,6 +828,7 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "replaced": hand,
             "described": described,
             "meshChanged": new_mesh.is_some(),
+            "featuresWritten": features_written,
             "snappy": snappy_json(&entry),
             "surfaces": surfaces,
             "notes": notes,
