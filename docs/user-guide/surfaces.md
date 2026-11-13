@@ -179,9 +179,11 @@ umcf-cli run --case path/to/case --cmd 'geometry.repair={"file": "walls.stl"}' -
 
 - Only STL is read. OBJ, VTK and the other formats OpenFOAM reads in `constant/triSurface` are
   not checked.
-- Whether a surface lies inside the background mesh, and whether `snappyHexMesh` needs it
-  closed (a cell zone, an `inside` refinement), is not checked yet: that comes with the meshing
-  set-up checks.
+- `geometry.check` doesn't look at the meshing: whether a surface lies inside the background
+  mesh, is closed where snappyHexMesh cuts with it, or holds the inside point is checked by
+  [`mesh.snappy`](workflow.md#snappy) for the surfaces of a region's snappy entry (a cutting
+  surface reaching past the blocks or outside them, or not closed, is noted there). A cell zone
+  or an `inside` refinement made from a surface isn't checked yet.
 - A surface is read whole, up to 1 GB (decompressed) and 10 million triangles. Checking 5
   million triangles takes about 5 s and 1 GB of memory. Each change keeps its own copy of the
   file's bytes in memory for undo, up to the 100 steps undo keeps: repairing a large surface

@@ -617,7 +617,7 @@ umcf-cli run --case path/to/case \
 |---|---|
 | `region` | a fluid or vegetation region of `system/umcfWorkflow` (required) |
 | `inside` | `[x, y, z]`; required for a region without a `snappy` entry |
-| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` unless the call gives them. Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
+| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` (a refining surface has neither: a call that gives them is refused). Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
 | `replace` | `true` writes over a `snappyHexMeshDict` edited by hand or not written by umcfGui (case.save keeps it in the backup) |
@@ -632,8 +632,10 @@ between blocks: in all of them), where snappyHexMesh would find no cell, an insi
 closed surface that cuts (it would keep the building's inside and cut away the rest), a problem of the entry itself (a cutting surface without a level, levels that don't go
 down away from a surface, a box without a length along an axis, …), a solid region, a region
 split from another, or a dictionary another region's mesh reads too. What the outcome notes
-instead: a cutting surface that isn't closed (the side snappyHexMesh keeps can't be told, and the
-mesh leaks through its holes unless the blocks' sides close them: `geometry.check` lists them), a
+instead: a cutting surface that isn't one closed surface (open edges, or edges of more than two
+triangles, as where its solids share faces: whether the inside point is inside it isn't checked,
+and the mesh leaks through any holes unless the blocks' sides close them; `geometry.check` lists
+them), a
 cutting surface reaching past the blocks (cut at their sides) or outside them (it cuts nothing),
 a region without blocks (where the inside point and the surfaces are isn't checked), an inside point
 on a face between the blocks (snappyHexMesh may not tell which cell holds it), an
@@ -652,7 +654,7 @@ and a `snappyHexMeshDict` that isn't what the entry writes (missing, written fro
 or edited by hand); it doesn't read the surfaces. In the desktop app it is *Snappy mesh* in the
 *More* group of the *Mesh* tab: a form of the region (the first with a snappy entry to start,
 else the first fluid), the inside point, the layers' expansion
-and first thickness, *replace* and *remove*; the surfaces and boxes go through *Edit as JSON*.
+and first thickness (empty: the region's; `null` in *Edit as JSON* takes either away), *replace* and *remove*; the surfaces and boxes go through *Edit as JSON*.
 Checked with snappyHexMesh on OpenFOAM-8 and -12: a building cut out with two layers, the cells
 around a tree and in a box refined, `checkMesh` without a failed check.
 

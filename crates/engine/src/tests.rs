@@ -4341,6 +4341,11 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         assert!(e.contains("cuts the mesh but has no level"), "{e}");
         let e = err(&mut s, json!({"region": "air", "inside": [15, 15, 5], "surfaces": {"buildings": buildings}}));
         assert!(e.contains("is inside surface buildings"), "{e}");
+        let e = err(
+            &mut s,
+            json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"trees": {"mode": "refine", "distance": 5}}}),
+        );
+        assert!(e.contains("surfaces.trees.distance isn't of its kind"), "{e}");
         let e = err(&mut s, json!({"region": "air", "inside": [0, 0, 500], "surfaces": {"buildings": buildings}}));
         assert!(e.contains("outside the region's blocks"), "{e}");
         let e = err(
@@ -4376,7 +4381,11 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         assert_eq!(out.data["surfaces"][0]["closed"], true);
         assert_eq!(out.data["surfaces"][1]["closed"], false);
         assert!(
-            out.data["notes"].as_array().unwrap().iter().all(|n| !n.as_str().unwrap().contains("isn't closed")),
+            out.data["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| !n.as_str().unwrap().contains("isn't one closed surface")),
             "a refining surface needn't be closed: {}",
             out.data["notes"]
         );
@@ -4424,7 +4433,11 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
                 &json!({"region": "air", "surfaces": {"trees": {"mode": "cut", "level": [1, 2], "distance": null}, "buildings": {"layers": null}}}),
             )
             .unwrap();
-        assert!(out.message.contains("surface trees (constant/triSurface/trees.stl) isn't closed"), "{}", out.message);
+        assert!(
+            out.message.contains("surface trees (constant/triSurface/trees.stl) isn't one closed surface"),
+            "{}",
+            out.message
+        );
         assert!(desc(&s).contains("buildings { mode cut; level ( 2 3 ); }"), "{}", desc(&s));
         // A hand edit is kept unless replace.
         s.execute("dict.set", &json!({"file": path, "path": "snapControls/nSmoothPatch", "value": 5})).unwrap();

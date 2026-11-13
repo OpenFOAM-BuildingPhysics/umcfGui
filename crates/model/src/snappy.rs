@@ -281,27 +281,14 @@ impl Snappy {
     /// The keys of the entry with their values as the description writes them; `None` for a
     /// key it leaves out.
     pub fn parts(&self) -> Vec<(&'static str, Option<String>)> {
-        let surfaces = (!self.surfaces.is_empty()).then(|| {
-            let items: Vec<String> =
-                self.surfaces.iter().map(|s| format!("{} {}", word(&s.name), surface_text(s))).collect();
-            format!("{{ {} }}", items.join(" "))
-        });
-        let boxes = (!self.boxes.is_empty()).then(|| {
-            let items: Vec<String> = self
-                .boxes
-                .iter()
-                .map(|b| {
-                    format!(
-                        "{} {{ min {}; max {}; level {}; }}",
-                        word(&b.name),
-                        point_text(&b.min),
-                        point_text(&b.max),
-                        b.level
-                    )
-                })
-                .collect();
-            format!("{{ {} }}", items.join(" "))
-        });
+        let whole = |key: &str| {
+            let items = self.items(key);
+            (!items.is_empty()).then(|| {
+                let items: Vec<String> = items.iter().map(|(n, t)| format!("{} {t}", word(n))).collect();
+                format!("{{ {} }}", items.join(" "))
+            })
+        };
+        let (surfaces, boxes) = (whole("surfaces"), whole("boxes"));
         vec![
             ("inside", Some(point_text(&self.inside))),
             ("surfaces", surfaces),
@@ -309,6 +296,23 @@ impl Snappy {
             ("expansion", self.expansion.map(number)),
             ("firstLayer", self.first_layer.map(number)),
         ]
+    }
+
+    /// The entries of its `surfaces` or `boxes` (`key`), each its name and its value as the
+    /// description writes it (`{ mode cut; … }`): what an edit of one changes alone.
+    pub fn items(&self, key: &str) -> Vec<(String, String)> {
+        match key {
+            "surfaces" => self.surfaces.iter().map(|s| (s.name.clone(), surface_text(s))).collect(),
+            "boxes" => self
+                .boxes
+                .iter()
+                .map(|b| {
+                    let t = format!("{{ min {}; max {}; level {}; }}", point_text(&b.min), point_text(&b.max), b.level);
+                    (b.name.clone(), t)
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// The `snappy` entry as the description writes it, indented by `indent`.

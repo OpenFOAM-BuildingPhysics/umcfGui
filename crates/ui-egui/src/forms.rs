@@ -706,12 +706,17 @@ static SPECS: &[Spec] = &[
                 Kind::Numbers(&["x", "y", "z"]),
                 "A point in the cells the region keeps (m); empty: the region's",
             ),
-            field("expansion", "Layer expansion", Kind::Number("1.2"), "The layers' expansion ratio"),
+            field(
+                "expansion",
+                "Layer expansion",
+                Kind::Number("the region's"),
+                "The layers' expansion ratio; empty: the region's (1.2 when it has none; null in Edit as JSON takes it away)",
+            ),
             field(
                 "firstLayer",
                 "First layer",
-                Kind::Number("relative"),
-                "The first layer's thickness (m); empty: relative to the cells",
+                Kind::Number("the region's"),
+                "The first layer's thickness (m); empty: the region's (relative to the cells when it has none; null in Edit as JSON takes it away)",
             ),
             field(
                 "replace",

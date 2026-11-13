@@ -600,6 +600,29 @@ impl Case {
                 continue;
             }
             let path = [&base[..], &[k]].concat();
+            // Surfaces and boxes that are there already: each changed alone, the others (their
+            // comments and layout with them) left as they are.
+            let had_items = current.as_ref().map(|c| c.items(k)).unwrap_or_default();
+            let in_place = matches!(k, "surfaces" | "boxes")
+                && v.is_some()
+                && !had_items.is_empty()
+                && self.editable()?.get(&path).is_some_and(|e| e.dict().is_some());
+            if in_place {
+                let now = sn.items(k);
+                for (n, _) in &now {
+                    once(self.editable()?, &[&path[..], &[n.as_str()]].concat())?;
+                }
+                for (n, t) in &now {
+                    if had_items.iter().any(|(hn, ht)| hn == n && ht == t) {
+                        continue;
+                    }
+                    self.set_inline(PATH, &[&path[..], &[n.as_str()]].concat(), t)?;
+                }
+                for (n, _) in had_items.iter().filter(|(hn, _)| !now.iter().any(|(nn, _)| nn == hn)) {
+                    self.remove(PATH, &[&path[..], &[n.as_str()]].concat())?;
+                }
+                continue;
+            }
             match v {
                 Some(v) => self.set_inline(PATH, &path, &v)?,
                 None => {
