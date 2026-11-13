@@ -583,10 +583,11 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
 }
 
 /// The surface files `surfaceFeatures` is to make the `.eMesh` files of, each once: those the
-/// regions' snappy entries ask features of and, for a region without an entry whose mesh
-/// `snappyHexMesh` makes from a dictionary of the case (it stays, and reads its own), those
-/// whose `.eMesh` that dictionary reads, read from its `features` and `geometry` alone
-/// ([`features_read`]), whatever else it holds.
+/// regions' snappy entries ask features of and, for a region whose mesh `snappyHexMesh` makes
+/// from a dictionary of the case's own (not one umcfGui generated from the entry, which asks
+/// for the entry's: one edited by hand, or one an entry holds only in part, as an import leaves
+/// it), those whose `.eMesh` that dictionary reads, read from its `features` and `geometry`
+/// alone ([`features_read`]), whatever else it holds.
 #[derive(Debug, Default, PartialEq)]
 pub struct FeatureNeeds {
     pub files: Vec<String>,
@@ -606,21 +607,20 @@ pub fn feature_needs(case: &crate::Case, d: &crate::description::Description) ->
         }
     };
     for r in &d.regions {
-        match &r.snappy {
-            Some(sn) => add(crate::snappy::feature_files([sn]), &mut out),
-            None => {
-                let Some(path) = r.mesh.as_ref().and_then(crate::snappy::dict_path) else { continue };
-                match case.dict(&path) {
-                    Some(doc) => match features_read(&doc.root) {
-                        Ok(files) => add(files, &mut out),
-                        Err(left) => out.unread.push(format!("{path}: {}", left.join(", "))),
-                    },
-                    None if case.exists(&path) == Some(true) => {
-                        out.unread.push(format!("{path}: it doesn't load as a dictionary"))
-                    }
-                    None => {}
-                }
+        if let Some(sn) = &r.snappy {
+            add(crate::snappy::feature_files([sn]), &mut out);
+        }
+        let Some(path) = r.mesh.as_ref().and_then(crate::snappy::dict_path) else { continue };
+        match case.dict(&path) {
+            Some(doc) if r.snappy.is_some() && crate::blocks::untouched(&doc.to_string()) => {}
+            Some(doc) => match features_read(&doc.root) {
+                Ok(files) => add(files, &mut out),
+                Err(left) => out.unread.push(format!("{path}: {}", left.join(", "))),
+            },
+            None if case.exists(&path) == Some(true) => {
+                out.unread.push(format!("{path}: it doesn't load as a dictionary"))
             }
+            None => {}
         }
     }
     out
@@ -682,6 +682,11 @@ pub fn features_read(root: &Dict) -> Result<Vec<String>, Vec<String>> {
             left.push("a features entry that isn't { file …; }".to_string());
             continue;
         };
+        // An #include or $macro in the item may give it another file.
+        if includes(body) {
+            left.push("a features entry with an #include or a $macro".to_string());
+            continue;
+        }
         let Some(emesh) = body.get("file").and_then(|f| match f.value.as_slice() {
             [n] => atom(n).map(unescaped),
             _ => None,

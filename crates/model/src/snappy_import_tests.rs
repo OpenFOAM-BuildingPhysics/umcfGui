@@ -536,6 +536,7 @@ castellatedMeshControls
         ("features (", "features $feats; unused (", "features that aren't a list"),
         ("{ file \"b.eMesh\"; level 3; }", "$f1", "isn't { file"),
         ("{ file \"b.eMesh\"; level 3; }", "{ level 3; }", "without a file"),
+        ("{ file \"b.eMesh\"; level 3; }", "{ file \"b.eMesh\"; level 3; #include \"c\" }", "with an #include"),
         ("file \"b.stl\";", "file (b.stl);", "b.eMesh"),
         ("castellatedMeshControls\n{", "castellatedMeshControls { }\ncastellatedMeshControls\n{", "given twice"),
     ] {

@@ -606,11 +606,12 @@ reads them there, and a case of regions has them only in each region's directory
 
 `system/surfaceFeaturesDict` is written with it, for all regions at once: it lists each surface
 whose feature edges a region's `snappy` entry asks for (`features`), once (and, for a region
-without an entry whose mesh snappyHexMesh makes from a `snappyHexMeshDict` of the case's own,
-each surface whose `.eMesh` that dictionary reads, by its `features` and `geometry` alone,
+whose mesh snappyHexMesh makes from a `snappyHexMeshDict` of the case's own, not one umcfGui wrote
+from the entry (one edited by hand, or one an entry holds only in part, as `workflow.import`
+leaves it, or one left by `remove`), each surface whose `.eMesh` that dictionary reads, by its `features` and `geometry` alone,
 whatever else it holds; while it reads an `.eMesh` of no surface file it names, doesn't load,
 or has features that can't be read in full (`features $macro;`, an item that isn't
-`{ file …; }`, an `#include` or `$macro` that may bring them: OpenFOAM's own header,
+`{ file …; }` or has an `#include` or `$macro` of its own, an `#include` or `$macro` that may bring them: OpenFOAM's own header,
 `#includeEtc "caseDicts/mesh/generation/snappyHexMeshDict.cfg"`, isn't one, its `features` being
 empty; `castellatedMeshControls` or `geometry` given twice; more than 1000 features or geometry
 entries), the dictionary isn't written, also with `replace`, noted), and `surfaceFeatures`

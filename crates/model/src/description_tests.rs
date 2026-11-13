@@ -895,3 +895,33 @@ boundary\n(\n    sides {{ type wall; faces ( (0 3 2 1) (4 5 6 7) (0 1 5 4) (1 2 
     assert!(!notes.iter().any(|n| n.contains("is not a grid of blocks")), "{notes:?}");
     assert_eq!(solids[0], ["walls", "base"], "{notes:?}");
 }
+
+#[test]
+fn the_features_a_case_s_own_dictionary_reads_are_needed_also_when_an_entry_holds_it_in_part() {
+    let prepare = PREPARE.replace(
+        "blockMesh\nmv constant/polyMesh",
+        "blockMesh\nsnappyHexMesh -overwrite -dict system/snappyHexMeshDict.veg\nmv constant/polyMesh",
+    );
+    // `big` is scaled: the entry leaves it out, its features with it; the dictionary stays.
+    let dict = r#"
+geometry
+{
+    towers { type triSurfaceMesh; file "towers.stl"; }
+    big { type triSurfaceMesh; file "big.stl"; scale 2; }
+}
+castellatedMeshControls
+{
+    features ( { file "towers.eMesh"; level 1; } { file "big.eMesh"; level 2; } );
+    refinementSurfaces { towers { level (1 1); } big { level (1 1); } }
+    locationInMesh (0 0 0);
+}
+"#;
+    let fs = canyon().with("Allprepare", prepare).with("system/snappyHexMeshDict.veg", dict);
+    let c = Case::open(&fs).unwrap();
+    let (d, notes) = Description::import(&c);
+    let sn = d.region("vegetation").unwrap().snappy.as_ref().unwrap();
+    assert_eq!(sn.surfaces.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["towers"], "{notes:?}");
+    let needs = crate::snappy_import::feature_needs(&c, &d);
+    assert_eq!(needs.files, ["towers.stl", "big.stl"]);
+    assert!(needs.unread.is_empty());
+}
