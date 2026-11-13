@@ -336,7 +336,8 @@ fn a_split_region_is_written_for_each_version() {
     let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &split_prepare("system/air/topoSetDict"))]);
     let of12 = wf.generate(OfVersion::V12).unwrap();
     let prep = &of12[0].1;
-    let lines = "rm -rf constant/vegetation/polyMesh\n\
+    let lines = "if [ -L constant/vegetation ] || [ -L constant/region1 ] || [ -L constant/region2 ] || [ -L constant/trees ] || [ -L 0/vegetation ]\nthen\n    echo 'region vegetation: a directory the split writes to is a symbolic link (constant/vegetation, constant/region1, constant/region2, constant/trees, 0/vegetation): nothing is removed through it' >&2\n    exit 1\nfi\n\
+rm -rf constant/vegetation/polyMesh\n\
 mkdir -p constant/vegetation\n\
 cp -r constant/air/polyMesh constant/vegetation/polyMesh\n\
 rm -rf constant/vegetation/polyMesh/cellZones constant/vegetation/polyMesh/cellZones.gz constant/vegetation/polyMesh/sets\n\
@@ -359,6 +360,10 @@ runApplication -o -s vegetation createPatch -region vegetation -overwrite\n";
     let of8 = wf.generate(OfVersion::V8).unwrap();
     let prep8 = &of8[0].1;
     assert!(prep8.contains("topoSet -region vegetation -dict system/../air/topoSetDict\n"), "{prep8}");
+    assert!(
+        prep8.contains("[ -L system/vegetation ] || [ -L system/vegetation/region1 ] || [ -L system/vegetation/region2 ] || [ -L system/vegetation/trees ]"),
+        "{prep8}"
+    );
     assert!(
         prep8.contains("rm -f system/vegetation/region1/fvSchemes system/vegetation/region1/fvSchemes.gz system/vegetation/region1/fvSolution system/vegetation/region1/fvSolution.gz system/vegetation/trees/fvSchemes ")
             && prep8.contains("rmdir constant/region1 constant/trees system/vegetation/region1 system/vegetation/trees || true\n"),
@@ -534,4 +539,59 @@ fn the_zones_a_dictionary_makes_are_told_from_plain_actions() {
     ] {
         assert_eq!(told(&unclear), None, "{unclear}");
     }
+}
+
+/// A split whose part outside the zone is never put in place builds no mesh: its lines are
+/// listed.
+#[test]
+fn a_split_never_put_in_place_builds_no_mesh() {
+    let prepare =
+        split_prepare("system/air/topoSetDict").replace("cp -r 3600/region1/polyMesh constant/vegetation/\n", "");
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &prepare)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
+    let said: Vec<&str> = wf.unmatched.iter().map(|u| u.what.as_str()).collect();
+    assert!(said.iter().any(|w| w.starts_with("splitMeshRegions") && w.contains("never put in")), "{said:?}");
+    assert!(said.iter().any(|w| w.starts_with("cp constant/air/polyMesh")), "{said:?}");
+    // The region's steps after it found no mesh: listed.
+    assert!(said.iter().any(|w| w.starts_with("changeDictionary -region vegetation")), "{said:?}");
+    // A region built before keeps that build, with its steps.
+    let earlier = prepare.replace(
+        "cp -r constant/air/polyMesh/ constant/vegetation/polyMesh\n",
+        "blockMesh -region vegetation\ncp -r constant/air/polyMesh/ constant/vegetation/polyMesh\n",
+    );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &earlier)]);
+    let veg = wf.meshes.iter().find(|m| m.region == "vegetation").unwrap();
+    assert_eq!(veg.build, MeshBuild::Block);
+    assert_eq!(veg.steps, [RegionStep::CreatePatch, RegionStep::ChangeDictionary]);
+}
+
+/// A zone the clean-up names before the part is put in is the split's.
+#[test]
+fn a_zone_named_before_the_part_is_put_in_is_kept() {
+    let prepare = split_prepare("system/air/topoSetDict")
+        .replace("rm -rf system/vegetation/trees system/vegetation/region*\n", "")
+        .replace(
+            "cp -r 3600/region1/polyMesh constant/vegetation/\n",
+            "rm -rf system/vegetation/trees system/vegetation/region*\ncp -r 3600/region1/polyMesh constant/vegetation/\n",
+        );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &prepare)]);
+    assert_eq!(wf.unmatched, []);
+    let MeshBuild::Split(sp) = &wf.meshes[1].build else { panic!("{:?}", wf.meshes) };
+    assert_eq!(sp.zone.as_deref(), Some("trees"));
+}
+
+/// The part is taken from where the split wrote it: a time directory without `-overwrite`,
+/// constant/ with it; a copy from elsewhere (an older mesh) doesn't take it.
+#[test]
+fn a_split_is_taken_from_where_it_wrote_its_parts() {
+    let overwrite = split_prepare("system/air/topoSetDict").replace("-cellZones\n", "-cellZones -overwrite\n");
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &overwrite)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
+    assert!(wf.unmatched.iter().any(|u| u.what.starts_with("cp 3600/region1/polyMesh")), "{:?}", wf.unmatched);
+    let timed = split_prepare("system/air/topoSetDict").replace(
+        "cp -r 3600/region1/polyMesh constant/vegetation/\n",
+        "mv constant/region1/polyMesh constant/vegetation/polyMesh\n",
+    );
+    let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &timed)]);
+    assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
 }
