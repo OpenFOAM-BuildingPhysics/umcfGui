@@ -49,6 +49,7 @@ use umcf_foam_dict::{Document, Entry, Node, unquote};
 
 use crate::blocks::BlockGrid;
 use crate::mesh_box::MeshBox;
+use crate::snappy::Snappy;
 use crate::workflow::{MeshBuild, Radiation, RegionMesh, RegionStep, RootStep, Split, Workflow};
 use crate::{Case, Patch, RegionKind};
 
@@ -151,6 +152,9 @@ pub struct RegionDesc {
     /// The box around the case's surfaces its blocks were made from ([`crate::mesh_box`]);
     /// `None`: none (the blocks are given as they are, or there are none).
     pub mesh_box: Option<MeshBox>,
+    /// The surfaces, boxes and inside point its `snappyHexMeshDict` is written from
+    /// ([`crate::snappy`]); `None`: not described (the dictionary is the case's own).
+    pub snappy: Option<Snappy>,
 }
 
 /// The components a case has that its regions don't tell (the air, the solids' heat and
@@ -311,6 +315,7 @@ impl Description {
                 materials,
                 blocks,
                 mesh_box: None,
+                snappy: None,
             });
         }
         // A blockMeshDict two regions' meshes read: written from one's blocks, it would change
@@ -442,6 +447,9 @@ impl Description {
             }
             if let Some(b) = &r.mesh_box {
                 s.push_str(&b.entry("        "));
+            }
+            if let Some(sn) = &r.snappy {
+                s.push_str(&sn.entry("        "));
             }
             if !r.steps.is_empty() {
                 let _ = writeln!(s, "        steps       ( {} );", region_steps(&r.steps));
@@ -666,7 +674,7 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn root_steps(steps: &[RootStep]) -> String {
+pub(crate) fn root_steps(steps: &[RootStep]) -> String {
     let mut out = Vec::new();
     for st in steps {
         match st {
@@ -834,6 +842,7 @@ fn read_region(
         materials: Vec::new(),
         blocks: None,
         mesh_box: None,
+        snappy: None,
     };
     let mut kind = None;
     let mut materials_given = false;
@@ -871,6 +880,10 @@ fn read_region(
             "box" => match e.dict() {
                 Some(b) => r.mesh_box = MeshBox::read(b, &here, problem),
                 None => problem(&here, "is a dictionary: { surfaces ( … ); margin ( … ); cellSize …; }".into()),
+            },
+            "snappy" => match e.dict() {
+                Some(b) => r.snappy = Snappy::read(b, &here, problem),
+                None => problem(&here, "is a dictionary: { inside ( … ); surfaces { … }; }".into()),
             },
             "steps" => match list(e).map(read_steps) {
                 Some(Ok(steps)) => r.steps = steps,

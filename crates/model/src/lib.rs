@@ -55,6 +55,7 @@ pub mod region_add;
 pub mod results;
 pub mod script;
 pub mod settings;
+pub mod snappy;
 pub mod tables;
 pub mod workflow;
 

@@ -43,6 +43,7 @@ L2  schema      catalog of solver types and keywords (generated in part by xtask
                 the workflow description, its edits, the settings a case chooses (settings),
                 a region's grid of blocks and its blockMeshDict, written and imported (blocks),
                 a box around the surfaces its blocks are made from (mesh_box),
+                the STL surfaces snappyHexMesh meshes a region with and its dictionary (snappy),
                 a new case's files (new_case), a region added to a case (region_add)
 L3  validate    case diagnostics (missing dicts, region/patch coupling mismatches, unknown types)
     post        probes, time series, slices, residual/log parsing, derived quantities the solver writes
@@ -116,7 +117,7 @@ The workflow the GUI supports end to end:
    - dropping degenerate triangles;
    - making normals consistent;
    - scaling.
-2. **Set up the mesh** (`mesh.setup`, `mesh.block`, `mesh.box`, `mesh.split`, `mesh.refine`, `mesh.layers`): typed views
+2. **Set up the mesh** (`mesh.setup`, `mesh.block`, `mesh.box`, `mesh.snappy`, `mesh.split`, `mesh.refine`, `mesh.layers`): typed views
    in `model` over `blockMeshDict`, `snappyHexMeshDict` and `surfaceFeaturesDict`, edited
    losslessly like every other dictionary. The keyword set differs per OpenFOAM version
    (`insidePoint` vs `locationInMesh`), so `schema` profiles decide which ones are used. Before

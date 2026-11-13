@@ -479,3 +479,61 @@ fn a_region_is_split_from_another_and_the_split_taken_out() {
     assert!(c.describe_split("canopy", &sp("trees", "system/air/topoSetDict")).is_err());
     assert_eq!(text(&c), now);
 }
+
+/// A snappy entry's surfaces and boxes change one by one: a comment by hand in another surface
+/// stays, as do the entries the change doesn't touch.
+#[test]
+fn a_snappy_surface_changes_alone() {
+    use crate::snappy::{Mode, RefineBox, Snappy, Surface};
+    let (fs, mut c) = described();
+    let region = read(&c).regions[0].name.clone();
+    let surface = |name: &str, level: u32| Surface {
+        name: name.into(),
+        file: format!("{name}.stl"),
+        mode: Mode::Cut,
+        level: Some((level, level)),
+        distance: Vec::new(),
+        layers: 0,
+        features: None,
+        solids: Vec::new(),
+    };
+    let mut sn = Snappy {
+        inside: [1.0, 1.0, 1.0],
+        surfaces: vec![surface("a", 1), surface("b", 1)],
+        boxes: vec![RefineBox { name: "x".into(), min: [0.0; 3], max: [1.0; 3], level: 1 }],
+        expansion: None,
+        first_layer: None,
+    };
+    c.describe_snappy(&region, &sn).unwrap();
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+    // Comments by hand in surface b and in the box.
+    let t = text(&c).replace("b { mode cut;", "b { /* my b */ mode cut;").replace("x { min", "x { /* my box */ min");
+    assert!(t.contains("/* my b */") && t.contains("/* my box */"), "{t}");
+    c.put_description(&fs, &t, true).unwrap();
+    // Surface a changes, one is added, the box stays: b's and the box's comments with them.
+    sn.surfaces[0].level = Some((2, 3));
+    sn.surfaces.push(surface("c", 1));
+    c.describe_snappy(&region, &sn).unwrap();
+    let after = text(&c);
+    assert!(after.contains("/* my b */") && after.contains("/* my box */"), "{after}");
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+    // Surface a taken out: b's comment still there.
+    sn.surfaces.remove(0);
+    c.describe_snappy(&region, &sn).unwrap();
+    let after = text(&c);
+    assert!(after.contains("/* my b */"), "{after}");
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+    // Every box taken out: the key goes.
+    sn.boxes.clear();
+    c.describe_snappy(&region, &sn).unwrap();
+    assert!(!text(&c).contains("boxes"), "{}", text(&c));
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+    // An empty boxes dictionary with a comment by hand: a box added keeps the comment.
+    let t = text(&c).replacen("    surfaces", "    boxes      { /* to come */ }\n            surfaces", 1);
+    c.put_description(&fs, &t, true).unwrap();
+    sn.boxes.push(RefineBox { name: "y".into(), min: [0.0; 3], max: [2.0; 3], level: 2 });
+    c.describe_snappy(&region, &sn).unwrap();
+    let after = text(&c);
+    assert!(after.contains("/* to come */"), "{after}");
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+}

@@ -674,3 +674,39 @@ fn bvh_finds_hits_on_the_edges_of_flat_boxes() {
     }
     assert!(checked > 200, "{checked}");
 }
+
+#[test]
+fn a_point_is_inside_a_closed_surface_by_the_crossings() {
+    use crate::check::contains;
+    // A cube from 0 to 1, as twelve triangles.
+    let v = |x: f32, y: f32, z: f32| [x, y, z];
+    let quads = [
+        [v(0., 0., 0.), v(0., 1., 0.), v(1., 1., 0.), v(1., 0., 0.)],
+        [v(0., 0., 1.), v(1., 0., 1.), v(1., 1., 1.), v(0., 1., 1.)],
+        [v(0., 0., 0.), v(1., 0., 0.), v(1., 0., 1.), v(0., 0., 1.)],
+        [v(0., 1., 0.), v(0., 1., 1.), v(1., 1., 1.), v(1., 1., 0.)],
+        [v(0., 0., 0.), v(0., 0., 1.), v(0., 1., 1.), v(0., 1., 0.)],
+        [v(1., 0., 0.), v(1., 1., 0.), v(1., 1., 1.), v(1., 0., 1.)],
+    ];
+    let mut triangles = Vec::new();
+    for q in quads {
+        for t in [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] {
+            triangles.push(crate::stl::Triangle { vertices: t, normal: [0.0; 3], solid: 0 });
+        }
+    }
+    let cube = crate::stl::Stl {
+        format: crate::stl::Format::Binary,
+        solids: Vec::new(),
+        triangles,
+        notes: Vec::new(),
+        openfoam: None,
+        header_solid: false,
+    };
+    assert_eq!(contains(&cube, [0.5, 0.5, 0.5]), Some(true));
+    // On a diagonal of every face's triangles: the first rays pass edges.
+    assert_eq!(contains(&cube, [0.25, 0.25, 0.25]), Some(true));
+    assert_eq!(contains(&cube, [2.0, 0.5, 0.5]), Some(false));
+    assert_eq!(contains(&cube, [-3.0, -3.0, -3.0]), Some(false));
+    assert_eq!(contains(&cube, [0.5, 0.5, 1.0]), None, "on the surface");
+    assert_eq!(contains(&cube, [f64::NAN, 0.0, 0.0]), None);
+}

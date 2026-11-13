@@ -249,6 +249,7 @@ fn odd_names_come_back_as_they_were() {
                 materials: vec![MaterialDesc { name: odd.into(), model: Some(odd.into()) }],
                 blocks: None,
                 mesh_box: None,
+                snappy: None,
             }],
             features: false,
             radiation: Some(Radiation {
@@ -725,6 +726,7 @@ fn a_split_mesh_is_written_and_read_back() {
                     materials: Vec::new(),
                     blocks: None,
                     mesh_box: None,
+                    snappy: None,
                 },
                 RegionDesc {
                     name: "vegetation".into(),
@@ -735,6 +737,7 @@ fn a_split_mesh_is_written_and_read_back() {
                     materials: Vec::new(),
                     blocks: None,
                     mesh_box: None,
+                    snappy: None,
                 },
             ],
             ..Description::default()

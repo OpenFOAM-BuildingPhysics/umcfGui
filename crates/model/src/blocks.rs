@@ -634,6 +634,16 @@ impl BlockGrid {
         out
     }
 
+    /// The patches it names that no face of its boundary carries: those declared without faces
+    /// (`noFaces`) and given none, for a later step to fill.
+    pub fn faceless(&self) -> HashSet<&str> {
+        if self.no_faces.is_empty() {
+            return HashSet::new();
+        }
+        let carried: HashSet<&str> = self.boundary().into_values().filter_map(|(_, n)| n).collect();
+        self.no_faces.iter().map(String::as_str).filter(|n| !carried.contains(n)).collect()
+    }
+
     /// Every face on the boundary of the blocks with its side and its patch (`None`: none
     /// named; `defaultFaces` when so named).
     pub fn boundary(&self) -> BTreeMap<BlockFace, (Side, Option<&str>)> {
@@ -1356,15 +1366,21 @@ impl BlockGrid {
             );
         }
         s.push_str("\n// ************************************************************************* //\n");
-        Ok(format!(
-            "// {GENERATED}\n// The blocks of region {region} in system/umcfWorkflow (docs/common-workflow.md).\n{CHECKSUM}{:016x} (what follows, as umcfGui wrote it)\n{s}",
-            checksum(s.as_bytes())
-        ))
+        Ok(stamped(&format!("The blocks of region {region} in system/umcfWorkflow (docs/common-workflow.md)."), &s))
     }
 }
 
 /// The header line that carries a generated file's checksum.
 const CHECKSUM: &str = "// checksum ";
+
+/// `body` as a generated file: the header saying so ([`GENERATED`]), `about`, and the checksum
+/// of `body`, which [`untouched`] checks.
+pub fn stamped(about: &str, body: &str) -> String {
+    format!(
+        "// {GENERATED}\n// {about}\n{CHECKSUM}{:016x} (what follows, as umcfGui wrote it)\n{body}",
+        checksum(body.as_bytes())
+    )
+}
 
 /// A checksum of a grid's shape: its stations, cells and gradings, missing blocks and single
 /// faces, as the description writes them (not its patches or types).

@@ -4263,3 +4263,289 @@ fn a_split_isnt_written_over_what_the_case_has() {
         assert!(out.data["scriptsError"].as_str().unwrap().contains(says), "{extra}: {}", out.data["scriptsError"]);
     }
 }
+
+/// A box from `lo` to `hi` as an STL file, its normals outward; `open`: its top left out;
+/// `solids`: an ASCII file whose bottom is a solid of its own (`base`, the rest `walls`).
+fn block_stl(lo: [f32; 3], hi: [f32; 3], open: bool, solids: bool) -> Vec<u8> {
+    use umcf_geom::stl::{Format, Stl, Triangle};
+    let p = |i: usize| {
+        let c = |a: usize| if (i >> a) & 1 == 1 { hi[a] } else { lo[a] };
+        [c(0), c(1), c(2)]
+    };
+    // Bottom, top, then the sides.
+    let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    let mut triangles = Vec::new();
+    for (k, q) in quads.into_iter().enumerate() {
+        if open && k == 1 {
+            continue;
+        }
+        for t in [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] {
+            let solid = if solids && k == 0 { 1 } else { 0 };
+            triangles.push(Triangle { vertices: t.map(p), normal: [0.0; 3], solid });
+        }
+    }
+    let (format, names) = if solids {
+        (Format::Ascii, vec!["walls".to_string(), "base".to_string()])
+    } else {
+        (Format::Binary, Vec::new())
+    };
+    Stl { format, solids: names, triangles, notes: Vec::new(), openfoam: None, header_solid: false }.to_bytes()
+}
+
+#[test]
+fn a_region_meshed_from_its_surfaces_by_snappy() {
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-snappy-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        let src = dir.with_extension("stl-sources");
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        let import = |s: &mut Session, name: &str, bytes: Vec<u8>| {
+            let path = src.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            s.execute("geometry.import", &json!({ "path": path.to_str().unwrap(), "name": name, "replace": true }))
+                .unwrap();
+        };
+        import(&mut s, "buildings.stl", block_stl([10.0, 10.0, 0.0], [20.0, 20.0, 15.0], false, false));
+        import(&mut s, "trees.stl", block_stl([30.0, 10.0, 0.0], [34.0, 14.0, 6.0], true, false));
+        s.execute("mesh.box", &json!({"region": "air", "margin": 20, "cellSize": 2})).unwrap();
+        let desc = |s: &Session| {
+            let t = s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string();
+            t.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+        };
+        let region = |s: &Session| s.case().unwrap().description().unwrap().0.region("air").cloned().unwrap();
+        let err = |s: &mut Session, p: Value| s.execute("mesh.snappy", &p).unwrap_err().to_string();
+        let snappy_says = |s: &mut Session| -> Vec<String> {
+            let check = s.execute("case.check", &Value::Null).unwrap();
+            check.data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "workflow.snappy")
+                .map(|d| d["message"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        let buildings = json!({"mode": "cut", "level": [2, 3], "layers": 2, "role": "coupled"});
+
+        let e = err(&mut s, json!({"region": "air", "surfaces": {"buildings": buildings}}));
+        assert!(e.contains("give inside"), "{e}");
+        let e = err(&mut s, json!({"region": "street", "inside": [1, 1, 1], "surfaces": {"buildings": buildings}}));
+        assert!(e.contains("is a solid"), "{e}");
+        let e =
+            err(&mut s, json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": {"level": [1, 2]}}}));
+        assert!(e.contains("give its mode"), "{e}");
+        let e = err(&mut s, json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "cut"}}}));
+        assert!(e.contains("cuts the mesh but has no level"), "{e}");
+        let e = err(&mut s, json!({"region": "air", "inside": [15, 15, 5], "surfaces": {"buildings": buildings}}));
+        assert!(e.contains("is inside surface buildings"), "{e}");
+        let e = err(
+            &mut s,
+            json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"trees": {"mode": "refine", "distance": 5}}}),
+        );
+        assert!(e.contains("surfaces.trees.distance isn't of its kind"), "{e}");
+        let e = err(&mut s, json!({"region": "air", "inside": [0, 0, 500], "surfaces": {"buildings": buildings}}));
+        assert!(e.contains("outside the region's blocks"), "{e}");
+        let e = err(
+            &mut s,
+            json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"gone": {"mode": "cut", "level": [1, 1]}}}),
+        );
+        assert!(e.contains("there is no surface constant/triSurface/gone.stl"), "{e}");
+        let e = err(
+            &mut s,
+            json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"ground": {"file": "buildings.stl", "mode": "cut", "level": [1, 1]}}}),
+        );
+        assert!(e.contains("makes the patch ground, which is a patch of the region's blocks"), "{e}");
+        assert!(region(&s).snappy.is_none(), "nothing is changed by a refused call");
+
+        let out = s
+            .execute(
+                "mesh.snappy",
+                &json!({
+                    "region": "air",
+                    "inside": [0, 0, 5],
+                    "surfaces": {
+                        "buildings": buildings,
+                        "trees": {"mode": "refine", "distance": [[1, 3], [3, 2]]},
+                    },
+                    "boxes": {"street": {"min": [0, 0, 0], "max": [40, 30, 4], "level": 1}},
+                }),
+            )
+            .unwrap();
+        let path = "system/snappyHexMeshDict.air";
+        assert_eq!(out.data["file"], path);
+        assert_eq!(out.data["written"], true);
+        assert_eq!(out.data["meshChanged"], true);
+        assert_eq!(out.data["surfaces"][0]["closed"], true);
+        assert_eq!(out.data["surfaces"][1]["closed"], false);
+        assert!(
+            out.data["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| !n.as_str().unwrap().contains("isn't one closed surface")),
+            "a refining surface needn't be closed: {}",
+            out.data["notes"]
+        );
+        let r = region(&s);
+        assert_eq!(
+            r.mesh,
+            Some(umcf_model::workflow::MeshBuild::Root(vec![
+                umcf_model::workflow::RootStep::BlockMesh("system/air/blockMeshDict".into()),
+                umcf_model::workflow::RootStep::SnappyHexMesh(path.into()),
+            ]))
+        );
+        assert!(
+            r.patches.iter().any(|q| q.name == "buildings" && q.role == Some(umcf_model::description::Role::Coupled))
+        );
+        let text = desc(&s);
+        assert!(text.contains("buildings { mode cut; level ( 2 3 ); layers 2; }"), "{text}");
+        assert!(text.contains("trees { mode refine; distance ( ( 1 3 ) ( 3 2 ) ); }"), "{text}");
+        let dict = s.case().unwrap().dict(path).unwrap().to_string();
+        assert!(umcf_model::blocks::untouched(&dict), "{dict}");
+        assert!(dict.contains("patchInfo { type wall; }"), "{dict}");
+        assert!(dict.contains("locationInMesh ( 0 0 5 );"), "{dict}");
+        // OpenFOAM-8's snappyHexMesh reads the root schemes: given ones, OpenFOAM-12's not.
+        for f in ["system/fvSchemes", "system/fvSolution"] {
+            assert_eq!(s.case().unwrap().dict(f).is_some(), version == 8, "{f}");
+        }
+        if version == 8 {
+            assert!(out.message.contains("system/fvSchemes written"), "{}", out.message);
+        }
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["regions"][0]["snappy"]["surfaces"]["trees"]["mode"], "refine");
+        // The scripts run blockMesh and snappyHexMesh from the two dictionaries.
+        let scripts = s.execute("workflow.show", &json!({"scripts": true})).unwrap();
+        let all = scripts.data.to_string();
+        assert!(all.contains("blockMesh -dict system/air/blockMeshDict"), "{all}");
+        assert!(all.contains("snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air"), "{all}");
+
+        assert_eq!(snappy_says(&mut s), Vec::<String>::new());
+        // Again with nothing new: nothing to write.
+        let again = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert_eq!(again.data["written"], false, "{}", again.message);
+        // An open surface that cuts is noted; a key given null is taken away.
+        let out = s
+            .execute(
+                "mesh.snappy",
+                &json!({"region": "air", "surfaces": {"trees": {"mode": "cut", "level": [1, 2], "distance": null}, "buildings": {"layers": null}}}),
+            )
+            .unwrap();
+        assert!(
+            out.message.contains("surface trees (constant/triSurface/trees.stl) isn't one closed surface"),
+            "{}",
+            out.message
+        );
+        assert!(desc(&s).contains("buildings { mode cut; level ( 2 3 ); }"), "{}", desc(&s));
+        // A hand edit is kept unless replace.
+        s.execute("dict.set", &json!({"file": path, "path": "snapControls/nSmoothPatch", "value": 5})).unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("edited by hand")), "{said:?}");
+        let e = err(&mut s, json!({"region": "air", "inside": [1, 1, 5]}));
+        assert!(e.contains("edited by hand"), "{e}");
+        let out = s.execute("mesh.snappy", &json!({"region": "air", "inside": [1, 1, 5], "replace": true})).unwrap();
+        assert_eq!(out.data["replaced"], true);
+        // A surface of two solids makes a patch of each.
+        import(&mut s, "towers.stl", block_stl([50.0, 10.0, 0.0], [55.0, 15.0, 10.0], false, true));
+        let out = s
+            .execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"mode": "cut", "level": [1, 1]}}}))
+            .unwrap();
+        assert_eq!(out.data["surfaces"][2]["patches"], json!(["towers_walls", "towers_base"]));
+        assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); solids ( walls base ); }"), "{}", desc(&s));
+        // A role goes to each of its patches; layers to each.
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"layers": 1, "role": "coupled"}}}))
+            .unwrap();
+        let r = region(&s);
+        for p in ["towers_walls", "towers_base"] {
+            assert!(
+                r.patches.iter().any(|q| q.name == p && q.role == Some(umcf_model::description::Role::Coupled)),
+                "{p}"
+            );
+        }
+        assert!(!r.patches.iter().any(|q| q.name == "towers"));
+        let dict = s.case().unwrap().dict(path).unwrap().to_string();
+        assert!(dict.contains("towers_base { nSurfaceLayers 1; }"), "{dict}");
+        // Switched to refining: its level and layers go with it.
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "air", "surfaces": {"towers": {"mode": "refine", "distance": [[1, 1]]}}}),
+        )
+        .unwrap();
+        assert!(desc(&s).contains("towers { mode refine; distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        let show = s.execute("workflow.show", &Value::Null).unwrap();
+        assert_eq!(show.data["description"]["regions"][0]["snappy"]["surfaces"]["towers"]["solids"], json!([]));
+        // Cutting again, then the file of one solid: the geometry command says the entry reads it,
+        // and its patch takes the role the solids' patches had.
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"mode": "cut", "level": [1, 1]}}}))
+            .unwrap();
+        let path_src = src.join("towers.stl");
+        std::fs::write(&path_src, block_stl([50.0, 10.0, 0.0], [55.0, 15.0, 10.0], false, false)).unwrap();
+        let out = s
+            .execute(
+                "geometry.import",
+                &json!({ "path": path_src.to_str().unwrap(), "name": "towers.stl", "replace": true }),
+            )
+            .unwrap();
+        assert!(out.message.contains("the snappy entry of region air reads it"), "{}", out.message);
+        let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(out.message.contains("given the role their surface's patches had: towers coupled"), "{}", out.message);
+        assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        // A surface whose patch is coupled to a partner: the solids' new patches get no role,
+        // and are listed.
+        let huts = src.join("huts.stl");
+        let put_huts = |s: &mut Session, solids: bool| {
+            std::fs::write(&huts, block_stl([60.0, 10.0, 0.0], [64.0, 14.0, 4.0], false, solids)).unwrap();
+            s.execute(
+                "geometry.import",
+                &json!({ "path": huts.to_str().unwrap(), "name": "huts.stl", "replace": true }),
+            )
+            .unwrap();
+        };
+        put_huts(&mut s, false);
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "air", "surfaces": {"huts": {"mode": "cut", "level": [1, 1], "role": "coupled"}}}),
+        )
+        .unwrap();
+        s.execute(
+            "workflow.patch",
+            &json!({"region": "air", "patch": "huts", "partner": {"region": "street", "patch": "huts"}}),
+        )
+        .unwrap();
+        put_huts(&mut s, true);
+        let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(
+            out.message.contains(
+                "patches without a role: huts_walls, huts_base (its earlier patches are coupled with a partner"
+            ),
+            "{}",
+            out.message
+        );
+        let r = region(&s);
+        assert!(r.patches.iter().all(|q| !q.name.starts_with("huts_")), "no role given");
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"huts": null}})).unwrap();
+        // A block patch declared without faces is one snappyHexMesh fills: no clash.
+        s.execute("mesh.block", &json!({"region": "air", "noFaces": ["trees"]})).unwrap();
+        s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(snappy_says(&mut s).iter().all(|m| !m.contains("makes the patch trees")));
+        // A surface whose patch is a block patch's name: the case check says so too.
+        s.execute(
+            "dict.set",
+            &json!({"file": umcf_model::description::PATH, "path": "regions/air/snappy/surfaces/ground", "value": "{ file towers.stl; mode cut; level ( 1 1 ); }"}),
+        )
+        .unwrap();
+        let said = snappy_says(&mut s);
+        assert!(
+            said.iter().any(|m| m.contains("makes the patch ground, which is a patch of its blocks too")),
+            "{said:?}"
+        );
+        // Taken out, the dictionary stays.
+        s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();
+        assert!(region(&s).snappy.is_none());
+        assert!(s.case().unwrap().dict(path).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}

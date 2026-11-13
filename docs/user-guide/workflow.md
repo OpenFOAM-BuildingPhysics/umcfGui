@@ -178,6 +178,7 @@ settings
 | `mesh` | `blocks` (`blockMesh -region`), the steps that build it in `constant/polyMesh` before it is moved to the region (`blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one), or `{ from split; of air; zone trees; }`: [split](#split) from another region's mesh by a cell zone |
 | `blocks` | the grid of blocks the region's `blockMeshDict` is written from ([below](#blocks)) |
 | `box` | the box around the STL surfaces its blocks are made from ([below](#box)) |
+| `snappy` | the STL surfaces snappyHexMesh makes its mesh with, refinement boxes and the inside point ([below](#snappy)) |
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
@@ -544,6 +545,118 @@ have, a surface that doesn't read) is said there instead. The surfaces' bounds a
 background (the status bar shows it, *Cancel* stops it), again only after a geometry command,
 an undo or redo, or another case.
 Patches, types and the other options go through *Edit as JSON*.
+
+### Snappy
+
+A region meshed from the case's STL surfaces by snappyHexMesh, from a background of
+[blocks](#blocks) (a [box](#box) around the surfaces, say): its `snappy` entry says which
+surfaces it is made with and how, and its `snappyHexMeshDict` is written from it.
+
+```c++
+air
+{
+    kind        fluid;
+    mesh        ( blockMesh "system/air/blockMeshDict" snappyHexMesh "system/snappyHexMeshDict.air" );
+    blocks      { … }
+    snappy
+    {
+        inside     ( 1 1 5 );               // locationInMesh: a point in the cells the region keeps
+        surfaces
+        {
+            buildings { mode cut; level ( 2 3 ); layers 2; features 3; }   // buildings.stl
+            trees     { file trees.stl; mode refine; distance ( ( 1 3 ) ( 3 2 ) ); }
+        }
+        boxes      { street { min ( 0 0 0 ); max ( 40 30 4 ); level 1; } }
+        expansion  1.2;
+        firstLayer 0.15;
+    }
+}
+```
+
+| Key | What |
+|---|---|
+| `inside` | a point in the cells the region keeps (snappyHexMesh's `locationInMesh`): outside every surface that cuts, inside the blocks (not in a missing block). The vegetation region is the air without the trees, so its point is outside them too, as the air's |
+| `surfaces` | by name, each surface of `constant/triSurface` the mesh is made with (1000 surfaces and boxes at most) |
+| `file` | the surface's file: `<name>.stl` unless another is given (`.stl`, `.stlb`, `.stl.gz`, `.stlb.gz`; no space or quote, which OpenFOAM doesn't take in a file name, nor `;`, braces, parentheses, `$` or `#`, which would change the dictionary it is written into) |
+| `mode` | `cut`: the mesh ends at the surface (the buildings cut out of the air, the trees out of the vegetation), which becomes a patch of the surface's name (`<name>_<solid>` for each solid of a surface of several), its type from the patch's role as for the [blocks](#blocks) (`ground`, `coupled`, `interior`, `bottom`: `wall`); `refine`: only the cells near it are refined (the air around the trees) |
+| `level` | a cutting surface's refinement levels, the least and the most (at sharp angles), each halving the cells' size, 10 at most |
+| `distance` | the cells within each distance of the surface refined to its level, the nearest first (the distances growing, the levels not; 100 at most); a refining surface's, and a cutting one's besides its `level` |
+| `layers` | cells added along a cutting surface (100 at most) |
+| `features` | the level the surface's feature edges are refined to, read from `constant/triSurface/<stem>.eMesh`, which `surfaceFeatures` writes (the workflow's `features yes;`, and `system/surfaceFeaturesDict` listing the surface); an uncompressed surface only |
+| `solids` | written by `mesh.snappy` for a cutting surface whose file has several solids: their names as OpenFOAM makes them, each a patch `<name>_<solid>` of a cutting surface, with the surface's layers and the type its own role gives (solids of different types each get their own `patchInfo`) |
+| `boxes` | by name, boxes whose cells are refined to their `level`: `min` and `max` corners |
+| `expansion` | the layers' expansion ratio (default 1.2) |
+| `firstLayer` | the first layer's thickness; without it, the thicknesses are relative to the cells (the last layer half a cell, at least a quarter) |
+
+The dictionary written is self-contained: castellated and, with a surface that cuts, snapped,
+with layers where a surface has them, the feature edges snapped explicitly when a surface has
+them, OpenFOAM's own mesh quality settings (`#includeEtc
+"caseDicts/mesh/generation/meshQualityDict.cfg"`), and the rest as OpenFOAM's
+`snappyHexMeshDict.cfg` gives it. Like a [`blockMeshDict`](#blocks) written from the blocks it
+says it is generated, with a checksum.
+
+`mesh.snappy` sets a region's `snappy` entry, checks its surfaces and writes the dictionary its
+`snappyHexMesh` step names. A region meshed by blocks alone (`mesh blocks;`), or without a mesh,
+is given the steps `( blockMesh "system/<region>/blockMeshDict" snappyHexMesh
+"system/snappyHexMeshDict.<region>" )`, built in `constant/polyMesh` and moved to the region; one
+built by steps without `snappyHexMesh` gets it after them. In an OpenFOAM-8 case,
+`system/fvSchemes` and `system/fvSolution` are written where the case has none: snappyHexMesh
+reads them there, and a case of regions has them only in each region's directory.
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'mesh.box={"region": "air", "margin": 20, "cellSize": 2}' \
+  --cmd 'mesh.snappy={"region": "air", "inside": [1, 1, 5],
+    "surfaces": {"buildings": {"mode": "cut", "level": [2, 3], "layers": 2, "role": "coupled"},
+                 "trees": {"mode": "refine", "distance": [[1, 3], [3, 2]]}},
+    "boxes": {"street": {"min": [0, 0, 0], "max": [40, 30, 4], "level": 1}}}' \
+  --cmd 'workflow.scripts={}' --cmd 'case.save={}'
+```
+
+| Parameter | What |
+|---|---|
+| `region` | a fluid or vegetation region of `system/umcfWorkflow` (required) |
+| `inside` | `[x, y, z]`; required for a region without a `snappy` entry |
+| `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` (a refining surface has neither: a call that gives them is refused). Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
+| `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
+| `expansion`, `firstLayer` | numbers; `null` takes either away |
+| `replace` | `true` writes over a `snappyHexMeshDict` edited by hand or not written by umcfGui (case.save keeps it in the backup) |
+| `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own) |
+
+Before anything is written, each surface is read as OpenFOAM reads it (the call can be cancelled
+between them) and the call is refused, nothing changed, for a surface that isn't there or doesn't
+read, a patch name made twice (two cutting surfaces, or a cutting surface and a patch of the
+region's blocks, other than one they declare without faces (`noFaces`), which snappyHexMesh
+fills), an inside point outside the region's blocks or in one of their missing blocks (on a face
+between blocks: in all of them), where snappyHexMesh would find no cell, an inside point inside a
+closed surface that cuts (it would keep the building's inside and cut away the rest), a problem of the entry itself (a cutting surface without a level, levels that don't go
+down away from a surface, a box without a length along an axis, …), a solid region, a region
+split from another, or a dictionary another region's mesh reads too. What the outcome notes
+instead: a cutting surface that isn't one closed surface (open edges, or edges of more than two
+triangles, as where its solids share faces: whether the inside point is inside it isn't checked,
+and the mesh leaks through any holes unless the blocks' sides close them; `geometry.check` lists
+them), a
+cutting surface reaching past the blocks (cut at their sides) or outside them (it cuts nothing),
+a region without blocks (where the inside point and the surfaces are isn't checked), an inside point
+on a face between the blocks (snappyHexMesh may not tell which cell holds it), an
+OpenFOAM-12 case with `constant/geometry` (its snappyHexMesh reads the surfaces there, not those
+checked in `constant/triSurface`), features
+asked for while the workflow doesn't run `surfaceFeatures`, and cutting surfaces' patches the
+description doesn't list (without a role: `patch`). Each cutting surface's solids are recorded in
+its entry as the file has them now; `geometry.import`, `geometry.trees`, `geometry.repair` and
+`geometry.scale` say when a snappy entry reads the surface they change, for `mesh.snappy` to be
+run again. The outcome names the dictionary, whether it
+was written, the entry, and each surface's patches, bounds and whether it is closed. The case
+check (`workflow.snappy`) names the entry's problems, a mesh that doesn't run snappyHexMesh,
+surfaces the case doesn't have, patches the description doesn't list, a patch name made twice
+(two cutting surfaces, or a cutting surface and the blocks, other than a `noFaces` patch), features no step makes,
+and a `snappyHexMeshDict` that isn't what the entry writes (missing, written from another entry,
+or edited by hand); it doesn't read the surfaces. In the desktop app it is *Snappy mesh* in the
+*More* group of the *Mesh* tab: a form of the region (the first with a snappy entry to start,
+else the first fluid), the inside point, the layers' expansion
+and first thickness (empty: the region's; `null` in *Edit as JSON* takes either away), *replace* and *remove*; the surfaces and boxes go through *Edit as JSON*.
+Checked with snappyHexMesh on OpenFOAM-8 and -12: a building cut out with two layers, the cells
+around a tree and in a box refined, `checkMesh` without a failed check.
 
 ### Split
 

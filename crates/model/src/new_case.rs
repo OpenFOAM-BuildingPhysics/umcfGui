@@ -191,6 +191,7 @@ pub fn make(spec: &NewCase) -> Result<Made> {
                 materials: r.materials.clone(),
                 blocks: None,
                 mesh_box: None,
+                snappy: None,
             })
             .collect(),
         features: false,
