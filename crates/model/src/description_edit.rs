@@ -603,9 +603,10 @@ impl Case {
             // Surfaces and boxes that are there already: each changed alone, the others (their
             // comments and layout with them) left as they are.
             let had_items = current.as_ref().map(|c| c.items(k)).unwrap_or_default();
+            // (also an empty one: a comment by hand inside it stays.)
             let in_place = matches!(k, "surfaces" | "boxes")
                 && v.is_some()
-                && !had_items.is_empty()
+                && current.is_some()
                 && self.editable()?.get(&path).is_some_and(|e| e.dict().is_some());
             if in_place {
                 let now = sn.items(k);

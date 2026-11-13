@@ -528,4 +528,12 @@ fn a_snappy_surface_changes_alone() {
     c.describe_snappy(&region, &sn).unwrap();
     assert!(!text(&c).contains("boxes"), "{}", text(&c));
     assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+    // An empty boxes dictionary with a comment by hand: a box added keeps the comment.
+    let t = text(&c).replacen("    surfaces", "    boxes      { /* to come */ }\n            surfaces", 1);
+    c.put_description(&fs, &t, true).unwrap();
+    sn.boxes.push(RefineBox { name: "y".into(), min: [0.0; 3], max: [2.0; 3], level: 2 });
+    c.describe_snappy(&region, &sn).unwrap();
+    let after = text(&c);
+    assert!(after.contains("/* to come */"), "{after}");
+    assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
 }
