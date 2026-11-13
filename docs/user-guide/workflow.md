@@ -626,9 +626,10 @@ umcf-cli run --case path/to/case \
 Before anything is written, each surface is read as OpenFOAM reads it (the call can be cancelled
 between them) and the call is refused, nothing changed, for a surface that isn't there or doesn't
 read, a patch name made twice (two cutting surfaces, or a cutting surface and a patch of the
-region's blocks, other than one they declare without faces (`noFaces`), which snappyHexMesh fills), an inside point outside the region's blocks or in one of their missing blocks (on a face
-between blocks, in all of them), where snappyHexMesh would find no cell or inside a closed surface that cuts (it would keep the building's inside and cut away the
-rest), a problem of the entry itself (a cutting surface without a level, levels that don't go
+region's blocks, other than one they declare without faces (`noFaces`), which snappyHexMesh
+fills), an inside point outside the region's blocks or in one of their missing blocks (on a face
+between blocks: in all of them), where snappyHexMesh would find no cell, an inside point inside a
+closed surface that cuts (it would keep the building's inside and cut away the rest), a problem of the entry itself (a cutting surface without a level, levels that don't go
 down away from a surface, a box without a length along an axis, …), a solid region, a region
 split from another, or a dictionary another region's mesh reads too. What the outcome notes
 instead: a cutting surface that isn't closed (the side snappyHexMesh keeps can't be told, and the
