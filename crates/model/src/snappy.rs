@@ -140,6 +140,13 @@ pub struct Snappy {
 /// The layers' expansion ratio when none is given.
 pub const EXPANSION: f64 = 1.2;
 
+/// Whether a surface's file name can be written into a dictionary as it is: no space or quote,
+/// which OpenFOAM doesn't take in a file name, nor ; { } ( ) $ #, which would change the
+/// dictionary.
+pub(crate) fn file_chars_ok(file: &str) -> bool {
+    !file.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '{' | '}' | '(' | ')' | '$' | '#'))
+}
+
 fn point_text(p: &[f64; 3]) -> String {
     format!("( {} {} {} )", number(p[0]), number(p[1]), number(p[2]))
 }
@@ -172,10 +179,7 @@ impl Snappy {
             if !names.insert(s.name.as_str()) {
                 put(at.clone(), "is named twice".into());
             }
-            if s.file
-                .chars()
-                .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '{' | '}' | '(' | ')' | '$' | '#'))
-            {
+            if !file_chars_ok(&s.file) {
                 put(
                     format!("{at}/file"),
                     "has a space or a quote, which OpenFOAM doesn't take in a file name, or ; { } ( ) $ #, which would change the dictionary".into(),
@@ -231,6 +235,9 @@ impl Snappy {
                     break;
                 }
                 last = Some((*d, *l));
+            }
+            if s.solids.len() > MAX_ITEMS {
+                put(format!("{at}/solids"), format!("are more than {MAX_ITEMS}"));
             }
             let mut solids = HashSet::new();
             for solid in &s.solids {
@@ -741,6 +748,67 @@ pub fn dict_path(build: &MeshBuild) -> Option<String> {
 /// regions as OpenFOAM names them (the solids' names made into words).
 pub fn patch_names(name: &str, regions: &[String]) -> Vec<String> {
     if regions.len() <= 1 { vec![name.to_string()] } else { regions.iter().map(|r| format!("{name}_{r}")).collect() }
+}
+
+/// The dictionary `surfaceFeatures` reads: which surfaces it finds feature edges in.
+pub const FEATURES_DICT: &str = "system/surfaceFeaturesDict";
+
+/// The surfaces' files whose feature edges the regions' `snappy` entries ask for (`features`),
+/// each once, in the order of the regions and their surfaces: what `system/surfaceFeaturesDict`
+/// lists. A file whose name couldn't be written into it (an entry with problems, which the case
+/// check names) is left out.
+pub fn feature_files<'a>(entries: impl IntoIterator<Item = &'a Snappy>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for sn in entries {
+        for s in sn.surfaces.iter().filter(|s| {
+            s.features.is_some() && s.emesh().is_some() && file_chars_ok(&s.file) && is_surface_file(&s.file)
+        }) {
+            if !out.contains(&s.file) {
+                out.push(s.file.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The `system/surfaceFeaturesDict` that lists `files`, generated as the `snappyHexMeshDict`s
+/// are: `surfaceFeatures` writes each one's feature edges to `constant/triSurface/<stem>.eMesh`
+/// (the edges where its faces meet at less than 150°, and its open and non-manifold edges),
+/// which those dictionaries read. The same in OpenFOAM-8 and -12.
+pub fn features_dict(files: &[String]) -> String {
+    let mut s = String::from(
+        "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"system\";\n    object      surfaceFeaturesDict;\n}\n\nsurfaces\n(\n",
+    );
+    for f in files {
+        let _ = writeln!(s, "    \"{f}\"");
+    }
+    s.push_str(");\n\nincludedAngle   150;\n\nsubsetFeatures\n{\n    nonManifoldEdges yes;\n    openEdges        yes;\n}\n\nwriteObj        no;\n\n// ************************************************************************* //\n");
+    stamped(
+        "The surfaces of the snappy entries in system/umcfWorkflow that ask for features (docs/common-workflow.md).",
+        &s,
+    )
+}
+
+/// The files a `surfaceFeaturesDict` lists in its `surfaces`: at the top, or, when it has none
+/// there, in a dictionary of their own each (the form for surfaces with settings of their own),
+/// as `surfaceFeatures` reads them.
+pub fn features_listed(root: &Dict) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut take = |e: &umcf_foam_dict::Entry| {
+        if let Some(items) = list(e) {
+            out.extend(items.iter().filter_map(atom).map(unescaped));
+        }
+    };
+    if let Some(e) = root.get("surfaces") {
+        take(e);
+        return out;
+    }
+    for e in root.entries() {
+        if let Some(e) = e.dict().and_then(|d| d.get("surfaces")) {
+            take(e);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

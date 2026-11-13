@@ -676,6 +676,16 @@ impl Case {
         Ok(EditReport { added, ..EditReport::default() })
     }
 
+    /// Sets the description's `features` (whether `surfaceFeatures` runs first) to `on`: what
+    /// `mesh.snappy` turns on for a surface that asks for feature edges.
+    pub fn describe_features(&mut self, on: bool) -> Result<EditReport> {
+        let doc = self.editable()?;
+        once(doc, &["features"])?;
+        let added = doc.get(&["features"]).is_none();
+        self.set_inline(PATH, &["features"], if on { "yes" } else { "no" })?;
+        Ok(EditReport { added, ..EditReport::default() })
+    }
+
     /// Gives `region` the mesh `sp`: split from another region's mesh by a cell zone
     /// (`mesh { from split; of …; zone …; }`), in place of the mesh it had. Refused while the
     /// region has blocks or a box (they would be left to no mesh): take them out first. What

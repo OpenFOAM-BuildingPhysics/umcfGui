@@ -56,6 +56,7 @@ pub mod results;
 pub mod script;
 pub mod settings;
 pub mod snappy;
+pub mod snappy_import;
 pub mod tables;
 pub mod workflow;
 

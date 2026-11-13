@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use umcf_model::blocks::{self, DEFAULT_FACES, DictState, Side};
 use umcf_model::description::{CaseMaterial, Description, PATH, RegionDesc, Role, case_materials, materials_file};
+use umcf_model::snappy as sn;
 use umcf_model::workflow::{MeshBuild, SPLIT_REST, part_name, zones_made, zones_told};
 use umcf_model::{Case, RegionKind};
 
@@ -137,6 +138,94 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
             );
         }
     }
+    features(case, &d, out);
+}
+
+/// Whether the `snappyHexMeshDict` `root` holds what the entry `sn` of region `r` does, read
+/// as `workflow.import` reads it (the solids, which only the surfaces' files tell, aside), with
+/// the cutting surfaces' patch types its roles give: `Some` with the number of its parts the
+/// entry can't hold (lost when `mesh.snappy` writes it with `replace`) when it does.
+fn holds(
+    root: &umcf_foam_dict::Dict,
+    path: &str,
+    sn: &umcf_model::snappy::Snappy,
+    r: &RegionDesc,
+    version: Option<umcf_core::OfVersion>,
+) -> Option<usize> {
+    let (mut got, left) = umcf_model::snappy_import::import(root, path, version).ok()?;
+    let mut want = sn.clone();
+    for s in got.surfaces.iter_mut().chain(want.surfaces.iter_mut()) {
+        s.solids.clear();
+    }
+    // The default expansion, given or not, is the same.
+    for x in [&mut got, &mut want] {
+        if x.expansion == Some(umcf_model::snappy::EXPANSION) {
+            x.expansion = None;
+        }
+    }
+    if got != want {
+        return None;
+    }
+    // Each cutting surface's patch types, as snappyHexMesh gives them.
+    if umcf_model::snappy_import::single_region_off(root) {
+        return None;
+    }
+    let type_of = blocks::type_lookup(r);
+    for s in sn.surfaces.iter().filter(|s| s.mode == umcf_model::snappy::Mode::Cut) {
+        let there = umcf_model::snappy_import::PatchTypes::read(root, &s.name);
+        for (i, patch) in s.patches().iter().enumerate() {
+            let solid = s.solids.get(i).map(String::as_str);
+            if there.of(solid) != type_of(patch) {
+                return None;
+            }
+        }
+    }
+    // Each note is something the entry doesn't hold.
+    Some(left.len())
+}
+
+/// `system/surfaceFeaturesDict` against the regions' snappy entries: it lists each surface
+/// whose feature edges one asks for, as `mesh.snappy` writes it.
+fn features(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
+    // What can't be told (a region's own dictionary reading .eMesh files of no surface it
+    // names) isn't held against the dictionary: mesh.snappy leaves it as it is then.
+    let needs = umcf_model::snappy_import::feature_needs(case, d);
+    let files = needs.files;
+    if files.is_empty() || !needs.unread.is_empty() {
+        return;
+    }
+    let at = sn::FEATURES_DICT;
+    let message = match case.dict(at) {
+        None if case.exists(at) == Some(true) => {
+            "doesn't load as a dictionary: surfaceFeatures can't make the .eMesh files the snappy entries (and the regions' own snappyHexMeshDicts) ask for"
+                .to_string()
+        }
+        None => format!(
+            "not there, but the snappy entries (or a region's own snappyHexMeshDict) ask for the features of {}: mesh.snappy writes it (with replace when a region's snappyHexMeshDict is the case's own)",
+            files.join(", ")
+        ),
+        Some(doc) => {
+            let have = doc.to_string();
+            if have == sn::features_dict(&files) {
+                return;
+            }
+            if blocks::untouched(&have) {
+                "written by umcfGui from other snappy entries than now: mesh.snappy writes it again".to_string()
+            } else {
+                let listed = sn::features_listed(&doc.root);
+                let missing: Vec<&str> =
+                    files.iter().filter(|f| !listed.contains(f.as_str())).map(String::as_str).collect();
+                if missing.is_empty() {
+                    return;
+                }
+                format!(
+                    "edited by hand or not written by umcfGui, and doesn't list {}, whose features the snappy entries (or a region's own snappyHexMeshDict) ask for: surfaceFeatures makes no .eMesh for them (mesh.snappy with replace writes it)",
+                    blocks::list_some(&missing)
+                )
+            }
+        }
+    };
+    out.push(Diagnostic::new(Level::Warning, SNAPPY, at, message));
 }
 
 fn kind(k: RegionKind) -> &'static str {
@@ -611,6 +700,26 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
                 format!(
                     "written by umcfGui from another snappy entry (or other patch roles) than region {name}'s now: mesh.snappy writes it again"
                 )
+            } else if let Some(left) = holds(&doc.root, &path, sn, r, d.version.or(case.layout.version)) {
+                // The case's own, as workflow.import read the entry from it: not a disagreement.
+                let lost = match left {
+                    0 => String::new(),
+                    n => format!(
+                        ", losing what the entry can't hold of it ({n} notes in workflow.import: other geometry, levels per solid, layer sizes, …)"
+                    ),
+                };
+                out.push(
+                    Diagnostic::new(
+                        Level::Info,
+                        SNAPPY,
+                        &path,
+                        format!(
+                            "the case's own (edited by hand or not written by umcfGui), holding what the snappy entry of region {name} does, its other settings its own: mesh.snappy with replace writes it from the entry{lost}"
+                        ),
+                    )
+                    .region(name),
+                );
+                return;
             } else {
                 format!(
                     "not what the snappy entry of region {name} writes: edited by hand or not written by umcfGui; mesh.snappy with replace writes it from the entry (the one there is kept in the backup when the case is saved)"

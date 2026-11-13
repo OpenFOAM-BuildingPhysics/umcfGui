@@ -43,7 +43,8 @@ L2  schema      catalog of solver types and keywords (generated in part by xtask
                 the workflow description, its edits, the settings a case chooses (settings),
                 a region's grid of blocks and its blockMeshDict, written and imported (blocks),
                 a box around the surfaces its blocks are made from (mesh_box),
-                the STL surfaces snappyHexMesh meshes a region with and its dictionary (snappy),
+                the STL surfaces snappyHexMesh meshes a region with, its dictionary and the
+                surfaceFeaturesDict (snappy), read from a case's snappyHexMeshDict (snappy_import),
                 a new case's files (new_case), a region added to a case (region_add)
 L3  validate    case diagnostics (missing dicts, region/patch coupling mismatches, unknown types)
     post        probes, time series, slices, residual/log parsing, derived quantities the solver writes

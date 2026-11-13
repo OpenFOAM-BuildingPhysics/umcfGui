@@ -4440,9 +4440,41 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         );
         assert!(desc(&s).contains("buildings { mode cut; level ( 2 3 ); }"), "{}", desc(&s));
         // A hand edit is kept unless replace.
+        // The default expansion given: the same dictionary.
+        s.execute("mesh.snappy", &json!({"region": "air", "expansion": 1.2})).unwrap();
         s.execute("dict.set", &json!({"file": path, "path": "snapControls/nSmoothPatch", "value": 5})).unwrap();
         let said = snappy_says(&mut s);
-        assert!(said.iter().any(|m| m.contains("edited by hand")), "{said:?}");
+        assert!(said.iter().any(|m| m.contains("holding what the snappy entry of region air does")), "{said:?}");
+        // Another patch type than the role's disagrees with it.
+        s.execute(
+            "dict.set",
+            &json!({"file": path, "path": "castellatedMeshControls/refinementSurfaces/buildings/patchInfo/type", "value": "patch"}),
+        )
+        .unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("not what the snappy entry of region air writes")), "{said:?}");
+        s.execute(
+            "dict.set",
+            &json!({"file": path, "path": "castellatedMeshControls/refinementSurfaces/buildings/patchInfo/type", "value": "wall"}),
+        )
+        .unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("holding what the snappy entry of region air does")), "{said:?}");
+        // singleRegionName off (as OpenFOAM's switch reads it) names the patches otherwise.
+        s.execute("dict.set", &json!({"file": path, "path": "singleRegionName", "value": "n"})).unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("not what the snappy entry of region air writes")), "{said:?}");
+        s.execute("dict.set", &json!({"file": path, "path": "singleRegionName", "value": "y"})).unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("holding what the snappy entry of region air does")), "{said:?}");
+        // An edit to what the entry holds disagrees with it.
+        s.execute(
+            "dict.set",
+            &json!({"file": path, "path": "castellatedMeshControls/locationInMesh", "value": [2, 2, 5]}),
+        )
+        .unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("not what the snappy entry of region air writes")), "{said:?}");
         let e = err(&mut s, json!({"region": "air", "inside": [1, 1, 5]}));
         assert!(e.contains("edited by hand"), "{e}");
         let out = s.execute("mesh.snappy", &json!({"region": "air", "inside": [1, 1, 5], "replace": true})).unwrap();
@@ -4545,6 +4577,149 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();
         assert!(region(&s).snappy.is_none());
         assert!(s.case().unwrap().dict(path).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+#[test]
+fn surfaces_with_features_are_listed_in_the_surface_features_dict() {
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-features-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        let src = dir.with_extension("stl-sources");
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        for (name, lo, hi) in [
+            ("buildings.stl", [10.0, 10.0, 0.0], [20.0, 20.0, 15.0]),
+            ("tower.stl", [30.0, 10.0, 0.0], [34.0, 14.0, 20.0]),
+        ] {
+            let path = src.join(name);
+            std::fs::write(&path, block_stl(lo, hi, false, false)).unwrap();
+            s.execute("geometry.import", &json!({ "path": path.to_str().unwrap(), "name": name, "replace": true }))
+                .unwrap();
+        }
+        s.execute("mesh.box", &json!({"region": "air", "margin": 20, "cellSize": 2})).unwrap();
+        let at = umcf_model::snappy::FEATURES_DICT;
+        let dict = |s: &Session| s.case().unwrap().dict(at).map(|d| d.to_string());
+        let features_on = |s: &Session| s.case().unwrap().description().unwrap().0.features;
+        let says = |s: &mut Session| -> Vec<String> {
+            let check = s.execute("case.check", &Value::Null).unwrap();
+            check.data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "workflow.snappy" && d["path"] == at)
+                .map(|d| d["message"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(!features_on(&s));
+
+        // A link where the dictionary goes: refused, and nothing of the call kept.
+        #[cfg(unix)]
+        {
+            let link = dir.join("system/surfaceFeaturesDict");
+            std::os::unix::fs::symlink(dir.join("system/controlDict"), &link).unwrap();
+            let desc_before = s.case().unwrap().description().map(|(d, _)| d.write());
+            let e = s
+                .execute(
+                    "mesh.snappy",
+                    &json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "cut", "level": [1, 2], "features": 1}}}),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("is a symbolic link"), "{e}");
+            assert_eq!(s.case().unwrap().description().map(|(d, _)| d.write()), desc_before);
+            assert!(s.case().unwrap().dict("system/snappyHexMeshDict.air").is_none());
+            std::fs::remove_file(&link).unwrap();
+        }
+        // Without features, no dictionary.
+        let out = s
+            .execute(
+                "mesh.snappy",
+                &json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "cut", "level": [1, 2]}}}),
+            )
+            .unwrap();
+        assert_eq!(out.data["featuresWritten"], false);
+        assert!(dict(&s).is_none());
+        // With them: listed, and surfaceFeatures run first.
+        let out = s
+            .execute(
+                "mesh.snappy",
+                &json!({"region": "air", "surfaces": {"buildings": {"features": 3}, "tower": {"mode": "cut", "level": [1, 1], "features": 2}}}),
+            )
+            .unwrap();
+        assert_eq!(out.data["featuresWritten"], true, "{}", out.message);
+        assert!(out.message.contains("features yes in system/umcfWorkflow"), "{}", out.message);
+        let text = dict(&s).unwrap();
+        assert!(umcf_model::blocks::untouched(&text), "{text}");
+        assert!(text.contains("surfaces\n(\n    \"buildings.stl\"\n    \"tower.stl\"\n);"), "{text}");
+        assert!(features_on(&s));
+        let scripts = s.execute("workflow.show", &json!({"scripts": true})).unwrap().data.to_string();
+        assert!(scripts.contains("runApplication -o surfaceFeatures"), "{scripts}");
+        let snappy = s.case().unwrap().dict("system/snappyHexMeshDict.air").unwrap().to_string();
+        assert!(snappy.contains("{ file \"tower.eMesh\"; level 2; }"), "{snappy}");
+        assert_eq!(says(&mut s), Vec::<String>::new());
+        // Again: nothing new.
+        let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert_eq!(out.data["featuresWritten"], false);
+        // One fewer: the dictionary follows.
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"tower": {"features": null}}})).unwrap();
+        assert!(!dict(&s).unwrap().contains("tower.stl"));
+        // Edited by hand: kept, and what it doesn't list noted, until replace.
+        s.execute("dict.set", &json!({"file": at, "path": "includedAngle", "value": 120})).unwrap();
+        assert_eq!(says(&mut s), Vec::<String>::new(), "it lists what is asked for");
+        let out = s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"tower": {"features": 1}}})).unwrap();
+        assert_eq!(out.data["featuresWritten"], false);
+        assert!(out.message.contains("doesn't list tower.stl"), "{}", out.message);
+        let said = says(&mut s);
+        assert!(said.iter().any(|m| m.contains("doesn't list tower.stl")), "{said:?}");
+        let out = s.execute("mesh.snappy", &json!({"region": "air", "replace": true})).unwrap();
+        assert_eq!(out.data["featuresWritten"], true);
+        assert_eq!(says(&mut s), Vec::<String>::new());
+        // A stale one umcfGui wrote is found by the check.
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/umcfWorkflow", "path": "regions/air/snappy/surfaces/tower/file", "value": "buildings.stl"}),
+        )
+        .unwrap();
+        let said = says(&mut s);
+        assert!(said.iter().any(|m| m.contains("mesh.snappy writes it again")), "{said:?}");
+        // The entry taken out: its snappyHexMeshDict stays, and so do the surfaces it asks
+        // features of.
+        let before = dict(&s).unwrap();
+        let out = s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();
+        assert!(!out.message.contains(&format!("{at} written")), "{}", out.message);
+        let text = dict(&s).unwrap();
+        assert_eq!(text, before);
+        assert!(text.contains("\"buildings.stl\"") && text.contains("\"tower.stl\""), "{text}");
+        assert_eq!(says(&mut s), Vec::<String>::new());
+        // Another region's call: the kept dictionary's features stay listed, also when no entry
+        // could hold that dictionary (two inside points).
+        s.execute(
+            "dict.set",
+            &json!({"file": "system/snappyHexMeshDict.air", "path": "castellatedMeshControls/insidePoints", "value": [[0, 0, 5], [1, 1, 5]]}),
+        )
+        .unwrap();
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "vegetation", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "refine", "distance": [[1, 1]]}}}),
+        )
+        .unwrap();
+        let text = dict(&s).unwrap();
+        assert!(text.contains("\"buildings.stl\"") && text.contains("\"tower.stl\""), "{text}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // edit.undo takes the last call back whole.
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert!(dict(&s).unwrap().contains("tower.stl"));
+        // One of the case's own that lists every surface is kept, also with replace.
+        s.execute("dict.set", &json!({"file": at, "path": "includedAngle", "value": 175})).unwrap();
+        let out = s.execute("mesh.snappy", &json!({"region": "air", "replace": true})).unwrap();
+        assert_eq!(out.data["featuresWritten"], false, "{}", out.message);
+        assert!(dict(&s).unwrap().contains("includedAngle   175") || dict(&s).unwrap().contains("includedAngle 175"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&src);
     }
