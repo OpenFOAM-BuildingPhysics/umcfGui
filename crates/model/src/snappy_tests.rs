@@ -219,3 +219,30 @@ fn a_file_name_the_dictionary_cant_hold_is_a_problem() {
         assert!(s.problems().iter().any(|(a, _)| a == "surfaces/buildings/file"), "{bad}");
     }
 }
+
+#[test]
+fn too_many_entries_or_distances_are_refused_before_they_are_read() {
+    let many: String = (0..=MAX_ITEMS).map(|i| format!("s{i} {{ mode cut; level ( 1 1 ); }} ")).collect();
+    let (s, p) = read(&format!("snappy {{ inside ( 0 0 1 ); surfaces {{ {many} }} }}"));
+    assert!(s.is_none());
+    assert!(p.iter().any(|p| p.contains("names more than 1000 surfaces and boxes")), "{p:?}");
+    // Surfaces and boxes together: the boxes are refused once both pass the limit.
+    let half = |k: &str, body: &str| -> String { (0..600).map(|i| format!("{k}{i} {{ {body} }} ")).collect() };
+    let (s, p) = read(&format!(
+        "snappy {{ inside ( 0 0 1 ); surfaces {{ {} }} boxes {{ {} }} }}",
+        half("s", "mode cut; level ( 1 1 );"),
+        half("b", "min ( 0 0 0 ); max ( 1 1 1 ); level 1;")
+    ));
+    assert!(s.is_none());
+    assert!(p.iter().any(|p| p.starts_with("snappy/boxes: names more than 1000")), "{p:?}");
+    // The read message gives the limit as MAX_DISTANCES is.
+    assert_eq!(MAX_DISTANCES, 100, "the read message says 100: change it with the limit");
+    let pairs: String = (1..=MAX_DISTANCES + 1).map(|i| format!("( {i} 1 ) ")).collect();
+    let (s, p) =
+        read(&format!("snappy {{ inside ( 0 0 1 ); surfaces {{ t {{ mode refine; distance ( {pairs}); }} }} }}"));
+    assert!(s.is_none());
+    assert!(p.iter().any(|p| p.starts_with("snappy/surfaces/t/distance") && p.contains("at most 100")), "{p:?}");
+    let mut e = example();
+    e.surfaces[1].distance = (1..=MAX_DISTANCES + 1).map(|i| (i as f64, 1)).collect();
+    assert!(e.problems().iter().any(|(a, m)| a == "surfaces/trees/distance" && m.contains("more than 100")));
+}

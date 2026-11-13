@@ -576,11 +576,11 @@ air
 | Key | What |
 |---|---|
 | `inside` | a point in the cells the region keeps (snappyHexMesh's `locationInMesh`): outside every surface that cuts, inside the blocks (not in a missing block). The vegetation region is the air without the trees, so its point is outside them too, as the air's |
-| `surfaces` | by name, each surface of `constant/triSurface` the mesh is made with |
+| `surfaces` | by name, each surface of `constant/triSurface` the mesh is made with (1000 surfaces and boxes at most) |
 | `file` | the surface's file: `<name>.stl` unless another is given (`.stl`, `.stlb`, `.stl.gz`, `.stlb.gz`; no space or quote, which OpenFOAM doesn't take in a file name, nor `;`, braces, parentheses, `$` or `#`, which would change the dictionary it is written into) |
 | `mode` | `cut`: the mesh ends at the surface (the buildings cut out of the air, the trees out of the vegetation), which becomes a patch of the surface's name (`<name>_<solid>` for each solid of a surface of several), its type from the patch's role as for the [blocks](#blocks) (`ground`, `coupled`, `interior`, `bottom`: `wall`); `refine`: only the cells near it are refined (the air around the trees) |
 | `level` | a cutting surface's refinement levels, the least and the most (at sharp angles), each halving the cells' size, 10 at most |
-| `distance` | the cells within each distance of the surface refined to its level, the nearest first (the distances growing, the levels not); a refining surface's, and a cutting one's besides its `level` |
+| `distance` | the cells within each distance of the surface refined to its level, the nearest first (the distances growing, the levels not; 100 at most); a refining surface's, and a cutting one's besides its `level` |
 | `layers` | cells added along a cutting surface (100 at most) |
 | `features` | the level the surface's feature edges are refined to, read from `constant/triSurface/<stem>.eMesh`, which `surfaceFeatures` writes (the workflow's `features yes;`, and `system/surfaceFeaturesDict` listing the surface); an uncompressed surface only |
 | `solids` | written by `mesh.snappy` for a cutting surface whose file has several solids: their names as OpenFOAM makes them, each a patch `<name>_<solid>` of a cutting surface, with the surface's layers and the type its own role gives (solids of different types each get their own `patchInfo`) |

@@ -43,6 +43,9 @@ pub const MAX_LAYERS: u32 = 100;
 /// The most surfaces and boxes a region's `snappy` may name.
 pub const MAX_ITEMS: usize = 1_000;
 
+/// The most distances a surface may refine by.
+pub const MAX_DISTANCES: usize = 100;
+
 /// How a surface takes part in the mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -205,6 +208,9 @@ impl Snappy {
             }
             if s.layers > MAX_LAYERS {
                 put(format!("{at}/layers"), format!("are {MAX_LAYERS} at most"));
+            }
+            if s.distance.len() > MAX_DISTANCES {
+                put(format!("{at}/distance"), format!("lists more than {MAX_DISTANCES} distances"));
             }
             let mut last: Option<(f64, u32)> = None;
             for (d, l) in &s.distance {
@@ -451,6 +457,7 @@ impl Snappy {
         let mut expansion = None;
         let mut first_layer = None;
         let mut ok = true;
+        let mut listed = 0usize;
         let mut seen = HashSet::new();
         non_entries(body, at, problem);
         for e in body.entries() {
@@ -473,6 +480,13 @@ impl Snappy {
                         continue;
                     };
                     non_entries(d, &here, problem);
+                    // Counted before any is read: no more are built than an entry may have.
+                    listed = listed.saturating_add(d.entries().count());
+                    if listed > MAX_ITEMS {
+                        ok = false;
+                        problem(&here, format!("names more than {MAX_ITEMS} surfaces and boxes"));
+                        continue;
+                    }
                     let mut names = HashSet::new();
                     for item in d.entries() {
                         let name = entry_name(item);
@@ -601,24 +615,25 @@ fn read_surface(name: &str, body: &Dict, at: &str, problem: &mut impl FnMut(&str
                 _ => Some("is ( least most ): two whole numbers"),
             },
             "distance" => {
-                let pairs: Option<Vec<(f64, u32)>> = list(e).and_then(|items| {
-                    items
-                        .iter()
-                        .map(|n| match n {
-                            Node::List { items, .. } => match items.as_slice() {
-                                [d, l] => node_number(d).zip(level_of(l)),
+                let pairs: Option<Vec<(f64, u32)>> =
+                    list(e).filter(|items| items.len() <= MAX_DISTANCES).and_then(|items| {
+                        items
+                            .iter()
+                            .map(|n| match n {
+                                Node::List { items, .. } => match items.as_slice() {
+                                    [d, l] => node_number(d).zip(level_of(l)),
+                                    _ => None,
+                                },
                                 _ => None,
-                            },
-                            _ => None,
-                        })
-                        .collect()
-                });
+                            })
+                            .collect()
+                    });
                 match pairs {
                     Some(p) if !p.is_empty() => {
                         s.distance = p;
                         None
                     }
-                    _ => Some("is ( ( distance level ) … )"),
+                    _ => Some("is ( ( distance level ) … ), at most 100 of them"),
                 }
             }
             "layers" | "features" => match e.value.as_slice() {
