@@ -560,7 +560,10 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
     let block_patches: Vec<&str> = r
         .blocks
         .as_ref()
-        .map(|g| g.patch_names().into_iter().filter(|n| !g.no_faces.iter().any(|x| x == n)).collect())
+        .map(|g| {
+            let faceless = g.faceless();
+            g.patch_names().into_iter().filter(|n| !faceless.contains(n)).collect()
+        })
         .unwrap_or_default();
     let mut seen: HashSet<&str> = block_patches.iter().copied().collect();
     for p in &patches {

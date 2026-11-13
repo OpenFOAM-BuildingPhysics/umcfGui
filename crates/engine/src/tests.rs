@@ -4479,6 +4479,40 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
         assert!(out.message.contains("given the role their surface's patches had: towers coupled"), "{}", out.message);
         assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); distance ( ( 1 1 ) ); }"), "{}", desc(&s));
+        // A surface whose patch is coupled to a partner: the solids' new patches get no role,
+        // and are listed.
+        let huts = src.join("huts.stl");
+        let put_huts = |s: &mut Session, solids: bool| {
+            std::fs::write(&huts, block_stl([60.0, 10.0, 0.0], [64.0, 14.0, 4.0], false, solids)).unwrap();
+            s.execute(
+                "geometry.import",
+                &json!({ "path": huts.to_str().unwrap(), "name": "huts.stl", "replace": true }),
+            )
+            .unwrap();
+        };
+        put_huts(&mut s, false);
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "air", "surfaces": {"huts": {"mode": "cut", "level": [1, 1], "role": "coupled"}}}),
+        )
+        .unwrap();
+        s.execute(
+            "workflow.patch",
+            &json!({"region": "air", "patch": "huts", "partner": {"region": "street", "patch": "huts"}}),
+        )
+        .unwrap();
+        put_huts(&mut s, true);
+        let out = s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();
+        assert!(
+            out.message.contains(
+                "patches without a role: huts_walls, huts_base (its earlier patches are coupled with a partner"
+            ),
+            "{}",
+            out.message
+        );
+        let r = region(&s);
+        assert!(r.patches.iter().all(|q| !q.name.starts_with("huts_")), "no role given");
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"huts": null}})).unwrap();
         // A block patch declared without faces is one snappyHexMesh fills: no clash.
         s.execute("mesh.block", &json!({"region": "air", "noFaces": ["trees"]})).unwrap();
         s.execute("mesh.snappy", &json!({"region": "air"})).unwrap();

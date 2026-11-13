@@ -636,6 +636,13 @@ impl BlockGrid {
 
     /// Every face on the boundary of the blocks with its side and its patch (`None`: none
     /// named; `defaultFaces` when so named).
+    /// The patches it names that no face of its boundary carries: those declared without faces
+    /// (`noFaces`) and given none, for a later step to fill.
+    pub fn faceless(&self) -> HashSet<&str> {
+        let carried: HashSet<&str> = self.boundary().into_values().filter_map(|(_, n)| n).collect();
+        self.no_faces.iter().map(String::as_str).filter(|n| !carried.contains(n)).collect()
+    }
+
     pub fn boundary(&self) -> BTreeMap<BlockFace, (Side, Option<&str>)> {
         let mut given: HashMap<BlockFace, &str> = HashMap::new();
         for (name, faces) in &self.faces {
