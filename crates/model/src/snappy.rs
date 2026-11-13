@@ -86,9 +86,18 @@ pub struct Surface {
     /// The level its feature edges are refined to (`surfaceFeatures` writes them to
     /// `constant/triSurface/<stem>.eMesh`); `None`: not.
     pub features: Option<u32>,
+    /// The solids of its file, as OpenFOAM names them, when it has more than one: a cutting
+    /// surface then makes a patch `<name>_<solid>` of each. Written by `mesh.snappy` from the
+    /// file; empty for a surface of one solid.
+    pub solids: Vec<String>,
 }
 
 impl Surface {
+    /// The patches it makes when it cuts: its name, or `<name>_<solid>` for each of its solids.
+    pub fn patches(&self) -> Vec<String> {
+        patch_names(&self.name, &self.solids)
+    }
+
     /// The file a surface named `name` reads unless it names another.
     pub fn default_file(name: &str) -> String {
         format!("{name}.stl")
@@ -159,7 +168,15 @@ impl Snappy {
             if !names.insert(s.name.as_str()) {
                 put(at.clone(), "is named twice".into());
             }
-            if !is_surface_file(&s.file) {
+            if s.file
+                .chars()
+                .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '{' | '}' | '(' | ')' | '$' | '#'))
+            {
+                put(
+                    format!("{at}/file"),
+                    "has a character OpenFOAM doesn't take in a file name (a space, a quote, ; { } ( ) $ #)".into(),
+                );
+            } else if !is_surface_file(&s.file) {
                 put(
                     format!("{at}/file"),
                     format!(
@@ -208,6 +225,16 @@ impl Snappy {
                 }
                 last = Some((*d, *l));
             }
+            let mut solids = HashSet::new();
+            for solid in &s.solids {
+                if !crate::description_edit::plain_name(solid) || !solids.insert(solid.as_str()) {
+                    put(format!("{at}/solids"), format!("{solid} isn't a plain name given once"));
+                    break;
+                }
+            }
+            if s.solids.len() == 1 {
+                put(format!("{at}/solids"), "are listed only for a surface of several".into());
+            }
             if let Some(f) = s.features {
                 if f > MAX_LEVEL {
                     put(format!("{at}/features"), format!("is a level, {MAX_LEVEL} at most"));
@@ -243,12 +270,6 @@ impl Snappy {
             put("firstLayer".into(), "is a thickness above 0".into());
         }
         out
-    }
-
-    /// The patches the cutting surfaces make, by surface name (a surface of several solids
-    /// makes `<name>_<solid>` instead: [`patch_names`]).
-    pub fn cut_names(&self) -> Vec<&str> {
-        self.surfaces.iter().filter(|s| s.mode == Mode::Cut).map(|s| s.name.as_str()).collect()
     }
 
     /// The keys of the entry with their values as the description writes them; `None` for a
@@ -338,12 +359,27 @@ impl Snappy {
         s.push_str("    );\n\n    refinementSurfaces\n    {\n");
         for sf in &cut {
             let (lo, hi) = sf.level.unwrap_or((0, 0));
-            let _ = writeln!(
-                s,
-                "        {}\n        {{\n            level ({lo} {hi});\n            patchInfo {{ type {}; }}\n        }}",
-                word(&sf.name),
-                type_of(&sf.name)
-            );
+            let patches = sf.patches();
+            let types: Vec<String> = patches.iter().map(|p| type_of(p)).collect();
+            let _ = write!(s, "        {}\n        {{\n            level ({lo} {hi});\n", word(&sf.name));
+            match types.first() {
+                Some(t) if types.iter().all(|x| x == t) => {
+                    let _ = writeln!(s, "            patchInfo {{ type {t}; }}");
+                }
+                _ => {
+                    // Solids of other types: each its own patchInfo.
+                    s.push_str("            regions\n            {\n");
+                    for (solid, t) in sf.solids.iter().zip(&types) {
+                        let _ = writeln!(
+                            s,
+                            "                {} {{ level ({lo} {hi}); patchInfo {{ type {t}; }} }}",
+                            word(solid)
+                        );
+                    }
+                    s.push_str("            }\n");
+                }
+            }
+            s.push_str("        }\n");
         }
         s.push_str("    }\n\n    refinementRegions\n    {\n");
         for sf in self.surfaces.iter().filter(|sf| !sf.distance.is_empty()) {
@@ -387,7 +423,9 @@ impl Snappy {
         let _ = writeln!(s, "    expansionRatio      {};", number(self.expansion.unwrap_or(EXPANSION)));
         s.push_str("    layers\n    {\n");
         for sf in &layered {
-            let _ = writeln!(s, "        {} {{ nSurfaceLayers {}; }}", word(&sf.name), sf.layers);
+            for p in sf.patches() {
+                let _ = writeln!(s, "        {} {{ nSurfaceLayers {}; }}", word(&p), sf.layers);
+            }
         }
         s.push_str("    }\n    featureAngle              100;\n    slipFeatureAngle          30;\n    nLayerIter                50;\n    nRelaxedIter              20;\n    nRelaxIter                5;\n    nGrow                     0;\n    nSmoothSurfaceNormals     1;\n    nSmoothNormals            3;\n    nSmoothThickness          10;\n    maxFaceThicknessRatio     0.5;\n    maxThicknessToMedialRatio 0.3;\n    minMedialAxisAngle        90;\n    nMedialAxisIter           10;\n    nBufferCellsNoExtrude     0;\n}\n\n");
         s.push_str("meshQualityControls\n{\n    #includeEtc \"caseDicts/mesh/generation/meshQualityDict.cfg\"\n}\n\nmergeTolerance 1e-6;\n\n// ************************************************************************* //\n");
@@ -491,6 +529,10 @@ fn surface_text(s: &Surface) -> String {
     if let Some(f) = s.features {
         let _ = write!(t, " features {f};");
     }
+    if !s.solids.is_empty() {
+        let items: Vec<String> = s.solids.iter().map(|x| word(x)).collect();
+        let _ = write!(t, " solids ( {} );", items.join(" "));
+    }
     t.push_str(" }");
     t
 }
@@ -515,6 +557,7 @@ fn read_surface(name: &str, body: &Dict, at: &str, problem: &mut impl FnMut(&str
         distance: Vec::new(),
         layers: 0,
         features: None,
+        solids: Vec::new(),
     };
     let mut ok = true;
     let mut mode = None;
@@ -580,8 +623,23 @@ fn read_surface(name: &str, body: &Dict, at: &str, problem: &mut impl FnMut(&str
                 }
                 _ => Some("is a whole number"),
             },
+            "solids" => {
+                let names: Option<Vec<String>> = list(e).and_then(|items| {
+                    (items.len() <= MAX_ITEMS).then(|| items.iter().map(|n| atom(n).map(unescaped)).collect())?
+                });
+                match names {
+                    Some(n) => {
+                        s.solids = n;
+                        None
+                    }
+                    None => Some("is ( <solid> … ): the solids of the surface's file"),
+                }
+            }
             _ => {
-                problem(&here, "isn't a key of a surface: file, mode, level, distance, layers or features".into());
+                problem(
+                    &here,
+                    "isn't a key of a surface: file, mode, level, distance, layers, features or solids".into(),
+                );
                 None
             }
         };

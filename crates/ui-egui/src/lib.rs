@@ -664,8 +664,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The region the box card starts with: the first with a box, else with blocks, else the
-    /// first of the description.
+    /// The region the snappy card starts on: the first with a snappy entry, else the first fluid.
     fn snappy_region(&self) -> String {
         let Some((d, _)) = self.session.case().and_then(|c| c.description()) else { return String::new() };
         d.regions
@@ -676,6 +675,8 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The region the box card starts with: the first with a box, else with blocks, else the
+    /// first of the description.
     fn box_region(&self) -> String {
         let Some((d, _)) = self.session.case().and_then(|c| c.description()) else { return String::new() };
         let first = |p: &dyn Fn(&umcf_model::description::RegionDesc) -> bool| {

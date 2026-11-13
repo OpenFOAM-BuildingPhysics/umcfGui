@@ -550,12 +550,8 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
         ));
     }
     let described: HashSet<&str> = r.patches.iter().map(|p| p.name.as_str()).collect();
-    let unknown: Vec<&str> = sn
-        .surfaces
-        .iter()
-        .filter(|x| x.mode == Mode::Cut && !described.contains(x.name.as_str()))
-        .map(|x| x.name.as_str())
-        .collect();
+    let patches: Vec<String> = sn.surfaces.iter().filter(|x| x.mode == Mode::Cut).flat_map(|x| x.patches()).collect();
+    let unknown: Vec<&str> = patches.iter().map(String::as_str).filter(|p| !described.contains(p)).collect();
     if !unknown.is_empty() {
         out.push(warn(
             PATH,

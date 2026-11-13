@@ -20,15 +20,17 @@ fn example() -> Snappy {
                 distance: Vec::new(),
                 layers: 3,
                 features: Some(4),
+                solids: Vec::new(),
             },
             Surface {
                 name: "trees".into(),
-                file: "my trees.stl.gz".into(),
+                file: "my_trees.stl.gz".into(),
                 mode: Mode::Refine,
                 level: None,
                 distance: vec![(2.0, 4), (4.5, 2)],
                 layers: 0,
                 features: None,
+                solids: Vec::new(),
             },
         ],
         boxes: vec![RefineBox { name: "street".into(), min: [0.0, -1.0, 0.0], max: [100.0, 50.0, 10.0], level: 2 }],
@@ -127,7 +129,7 @@ fn the_dictionary_is_what_snappy_hex_mesh_reads() {
     assert_eq!(w(&["castellatedMesh"]).as_deref(), Some("true"));
     assert_eq!(w(&["snap"]).as_deref(), Some("true"));
     assert_eq!(w(&["addLayers"]).as_deref(), Some("true"));
-    assert_eq!(w(&["geometry", "trees", "file"]).as_deref(), Some("\"my trees.stl.gz\""));
+    assert_eq!(w(&["geometry", "trees", "file"]).as_deref(), Some("\"my_trees.stl.gz\""));
     assert_eq!(w(&["geometry", "street", "type"]).as_deref(), Some("searchableBox"));
     let c = ["castellatedMeshControls"];
     assert!(doc.get(&[c[0], "refinementSurfaces", "buildings"]).is_some());
@@ -174,4 +176,46 @@ fn the_dictionary_is_the_one_the_snappy_step_names() {
     ]);
     assert_eq!(dict_path(&m).as_deref(), Some("system/snappyHexMeshDict.air"));
     assert_eq!(dict_path(&MeshBuild::Block), None);
+}
+
+#[test]
+fn a_surface_of_several_solids_has_a_patch_and_layers_for_each() {
+    let mut s = example();
+    s.surfaces[0].solids = vec!["roof".into(), "wall".into()];
+    assert!(s.problems().is_empty(), "{:?}", s.problems());
+    let (back, problems) = read(&s.entry(""));
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(back, Some(s.clone()));
+    // The same type for both: one patchInfo; the layers on each patch.
+    let text = s.dict("air", "system", &|_| "wall".into());
+    let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+    let w = |path: &[&str]| doc.get(path).and_then(|e| e.words()).map(|w| w.join(" "));
+    let l = "addLayersControls";
+    assert_eq!(w(&[l, "layers", "buildings_roof", "nSurfaceLayers"]).as_deref(), Some("3"));
+    assert_eq!(w(&[l, "layers", "buildings_wall", "nSurfaceLayers"]).as_deref(), Some("3"));
+    assert!(doc.get(&[l, "layers", "buildings"]).is_none());
+    let rs = ["castellatedMeshControls", "refinementSurfaces", "buildings"];
+    assert_eq!(w(&[rs[0], rs[1], rs[2], "patchInfo", "type"]).as_deref(), Some("wall"));
+    // Other types: each solid its own.
+    let text = s.dict("air", "system", &|p| if p == "buildings_roof" { "patch".into() } else { "wall".into() });
+    let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+    let w = |path: &[&str]| doc.get(path).and_then(|e| e.words()).map(|w| w.join(" "));
+    assert!(doc.get(&[rs[0], rs[1], rs[2], "patchInfo"]).is_none(), "{text}");
+    assert_eq!(w(&[rs[0], rs[1], rs[2], "regions", "roof", "patchInfo", "type"]).as_deref(), Some("patch"));
+    assert_eq!(w(&[rs[0], rs[1], rs[2], "regions", "wall", "patchInfo", "type"]).as_deref(), Some("wall"));
+    assert!(text.contains("wall { level (3 5); patchInfo { type wall; } }"), "{text}");
+    // One solid listed, or one twice: a problem.
+    s.surfaces[0].solids = vec!["roof".into()];
+    assert!(s.problems().iter().any(|(a, _)| a == "surfaces/buildings/solids"));
+    s.surfaces[0].solids = vec!["roof".into(), "roof".into()];
+    assert!(s.problems().iter().any(|(a, _)| a == "surfaces/buildings/solids"));
+}
+
+#[test]
+fn a_file_name_the_dictionary_cant_hold_is_a_problem() {
+    for bad in ["my trees.stl", "x\".stl", "a;b.stl", "a{.stl", "$x.stl", "#x.stl", "a(1).stl"] {
+        let mut s = example();
+        s.surfaces[0].file = bad.into();
+        assert!(s.problems().iter().any(|(a, _)| a == "surfaces/buildings/file"), "{bad}");
+    }
 }

@@ -4440,6 +4440,31 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
             .execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"mode": "cut", "level": [1, 1]}}}))
             .unwrap();
         assert_eq!(out.data["surfaces"][2]["patches"], json!(["towers_walls", "towers_base"]));
+        assert!(desc(&s).contains("towers { mode cut; level ( 1 1 ); solids ( walls base ); }"), "{}", desc(&s));
+        // A role goes to each of its patches; layers to each.
+        s.execute("mesh.snappy", &json!({"region": "air", "surfaces": {"towers": {"layers": 1, "role": "coupled"}}}))
+            .unwrap();
+        let r = region(&s);
+        for p in ["towers_walls", "towers_base"] {
+            assert!(
+                r.patches.iter().any(|q| q.name == p && q.role == Some(umcf_model::description::Role::Coupled)),
+                "{p}"
+            );
+        }
+        assert!(!r.patches.iter().any(|q| q.name == "towers"));
+        let dict = s.case().unwrap().dict(path).unwrap().to_string();
+        assert!(dict.contains("towers_base { nSurfaceLayers 1; }"), "{dict}");
+        // Switched to refining: its level and layers go with it.
+        s.execute(
+            "mesh.snappy",
+            &json!({"region": "air", "surfaces": {"towers": {"mode": "refine", "distance": [[1, 1]]}}}),
+        )
+        .unwrap();
+        assert!(
+            desc(&s).contains("towers { mode refine; distance ( ( 1 1 ) ); solids ( walls base ); }"),
+            "{}",
+            desc(&s)
+        );
         // Taken out, the dictionary stays.
         s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();
         assert!(region(&s).snappy.is_none());

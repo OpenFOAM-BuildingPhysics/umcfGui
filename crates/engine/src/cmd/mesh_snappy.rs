@@ -22,7 +22,7 @@ pub(super) const SNAPPY: CommandSpec = CommandSpec {
     label: "Snappy mesh",
     menu: "Mesh/From the surfaces (snappyHexMesh)",
     shortcut: None,
-    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (the workflow's features yes; an uncompressed surface). role: the role given to the patch of a cutting surface in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers 100. replace: true writes over a snappyHexMeshDict edited by hand or not written by umcfGui (case.save keeps it in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks or inside a closed cutting surface; noted for a cutting surface that isn't closed (the side it keeps can't be told, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, and features while the workflow doesn't run surfaceFeatures. The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
+    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (the workflow's features yes; an uncompressed surface). role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. Levels are 10 at most, layers 100. replace: true writes over a snappyHexMeshDict edited by hand or not written by umcfGui (case.save keeps it in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space, a quote, ; { } ( ) $ or #; noted for a cutting surface that isn't closed (the side it keeps can't be told, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, features while the workflow doesn't run surfaceFeatures, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each surface's solids are recorded in its entry (solids), a cutting surface's layers and type given to each <name>_<solid> patch. A surface switched to refine loses its level and layers unless the call gives them. The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
     enabled: needs_case,
     run: snappy,
     journal: true,
@@ -81,6 +81,7 @@ fn merge_surfaces(list: &mut Vec<Surface>, v: &Value) -> Result<Vec<(String, Opt
             distance: Vec::new(),
             layers: 0,
             features: None,
+            solids: Vec::new(),
         });
         let fresh = !list.iter().any(|x| x.name == *name);
         if fresh && !c.contains_key("mode") {
@@ -138,6 +139,9 @@ fn merge_surfaces(list: &mut Vec<Surface>, v: &Value) -> Result<Vec<(String, Opt
         if s.mode == Mode::Refine && !c.contains_key("level") {
             s.level = None;
         }
+        if s.mode == Mode::Refine && !c.contains_key("layers") {
+            s.layers = 0;
+        }
         match list.iter_mut().find(|x| x.name == *name) {
             Some(slot) => *slot = s,
             None => list.push(s),
@@ -182,6 +186,23 @@ fn merge_boxes(list: &mut Vec<RefineBox>, v: &Value) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Whether `p` is a path of the open case, on disk or put.
+fn o_exists(s: &Session, p: &str) -> bool {
+    s.case()
+        .is_some_and(|c| c.exists(p) == Some(true) || c.put_paths().any(|x| x == p || x.starts_with(&format!("{p}/"))))
+}
+
+/// The missing block of `g` that `p` is in, if any (the block whose stations hold it).
+fn missing_at(g: &blocks::BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
+    let mut at = [0usize; 3];
+    for (a, slot) in at.iter_mut().enumerate() {
+        let st = &g.axes.get(a)?.stations;
+        let x = *p.get(a)?;
+        *slot = st.windows(2).position(|w| matches!(w, [lo, hi] if *lo <= x && x <= *hi))?;
+    }
+    g.missing.contains(&at).then_some(at)
 }
 
 /// What one surface is, read.
@@ -346,9 +367,10 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             list.join("; ")
         )));
     }
+    let mut geometry_note = false;
     // Each surface, read and checked.
     let mut read: Vec<Read> = Vec::new();
-    for x in &entry.surfaces {
+    for x in entry.surfaces.iter_mut() {
         if s.cancel.is_cancelled() {
             return Err(Error::Cancelled { id: SNAPPY.id.to_string() });
         }
@@ -361,18 +383,52 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         let report = check::analyse(&surface);
         let closed = report.open_edges == 0 && report.non_manifold_edges == 0 && report.triangles > 0;
         let holds_inside = if x.mode == Mode::Cut && closed { check::contains(&surface, entry.inside) } else { None };
-        let solids: Vec<String> = if report.region_count > 1 { report.regions.clone() } else { Vec::new() };
+        if report.region_count > report.regions.len() {
+            return Err(failed(format!("{rel} has {} solids, more than can be listed", report.region_count)));
+        }
+        // The solids as the file has them now, each a patch of a cutting surface.
+        x.solids = if report.region_count > 1 { report.regions.clone() } else { Vec::new() };
         read.push(Read {
             name: x.name.clone(),
             file: rel,
             mode: x.mode,
             bounds: report.bbox,
             closed,
-            patches: if x.mode == Mode::Cut { sn::patch_names(&x.name, &solids) } else { Vec::new() },
+            patches: if x.mode == Mode::Cut { x.patches() } else { Vec::new() },
             holds_inside,
         });
     }
+    let problems = entry.problems();
+    if !problems.is_empty() {
+        let list: Vec<String> =
+            problems.iter().map(|(at, m)| if at.is_empty() { m.clone() } else { format!("{at}: {m}") }).collect();
+        return Err(failed(format!(
+            "the surfaces' solids give the snappy entry of region {region} problems, nothing is changed: {}",
+            list.join("; ")
+        )));
+    }
+    if !v8 && o_exists(s, "constant/geometry") {
+        geometry_note = true;
+    }
+    // A role given to a surface goes to each of its patches.
+    let roles: Vec<(String, Option<Role>)> = roles
+        .iter()
+        .flat_map(|(n, role)| {
+            entry
+                .surfaces
+                .iter()
+                .filter(|x| x.name == *n)
+                .flat_map(|x| x.patches())
+                .map(|p| (p, *role))
+                .collect::<Vec<_>>()
+        })
+        .collect();
     let mut notes: Vec<String> = Vec::new();
+    if geometry_note {
+        notes.push(format!(
+            "the case has constant/geometry, where OpenFOAM-12's snappyHexMesh reads the surfaces instead of {SURFACE_DIR}: those checked here aren't the ones it meshes with"
+        ));
+    }
     // Patch names: each once, among the cutting surfaces' and the blocks'.
     let mut seen: HashSet<&str> = HashSet::new();
     let block_patches: Vec<&str> = r.blocks.as_ref().map(|g| g.patch_names()).unwrap_or_default();
@@ -405,6 +461,15 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let pt = |q: [f64; 3]| format!("({} {} {})", blocks::number(q[0]), blocks::number(q[1]), blocks::number(q[2]));
     match &extent {
         Some((lo, hi)) => {
+            if let Some(b) = r.blocks.as_ref().and_then(|g| missing_at(g, inside)) {
+                return Err(failed(format!(
+                    "the inside point {} is in the missing block ({} {} {}) of the region's blocks: snappyHexMesh would find no cell there",
+                    pt(inside),
+                    b[0],
+                    b[1],
+                    b[2]
+                )));
+            }
             if (0..3).any(|a| !(lo[a] < inside[a] && inside[a] < hi[a])) {
                 return Err(failed(format!(
                     "the inside point {} is outside the region's blocks, {} to {}: snappyHexMesh would find no cell there",
@@ -603,4 +668,26 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "notes": notes,
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use umcf_model::blocks::{Axis, BlockGrid, Grading, Span};
+
+    #[test]
+    fn a_point_in_a_missing_block_is_found() {
+        let axis = |st: Vec<f64>| Axis {
+            spans: (1..st.len()).map(|_| Span { cells: 2, grading: Grading::Ratio(1.0) }).collect(),
+            stations: st,
+        };
+        let g = BlockGrid {
+            axes: [axis(vec![0.0, 10.0, 20.0]), axis(vec![0.0, 10.0, 20.0]), axis(vec![0.0, 5.0])],
+            missing: vec![[1, 0, 0]],
+            ..Default::default()
+        };
+        assert_eq!(missing_at(&g, [15.0, 5.0, 1.0]), Some([1, 0, 0]));
+        assert_eq!(missing_at(&g, [5.0, 5.0, 1.0]), None);
+        assert_eq!(missing_at(&g, [5.0, 5.0, 9.0]), None, "outside the grid");
+    }
 }
