@@ -92,11 +92,13 @@ In the desktop app it is *Set a material's coefficients* in the *More* group of 
 [form](desktop.md#forms) starting on the case's first solid and its first material: the material picked from those its
 `transportProperties` lists, and its coefficients as a table filled from the file (a row each,
 name and value; a name picked from those the solver reads of its model). Only what is changed
-is sent: a value changed or a row added sets it, a row taken away or its value emptied takes
-it out (`null`). After another command the rows not typed in follow the file, and a row typed
-over keeps the value typed. Coefficients that *Edit as JSON* gives in a form the table can't hold
-are sent as the JSON has them, and the table isn't offered (*As Edit as JSON gives it: changed
-there*).
+is sent: a value changed or a row added sets it, a row taken away or its value emptied takes it out
+(`null`). After another command the rows not typed in follow the file, and a row typed over keeps
+the value typed (a row added that the file gained meanwhile: as typed, an empty value taking it
+out); with the material gone from the file, or another chosen that it doesn't have, only the rows
+typed over or added stay, sent as new. Coefficients that *Edit as JSON* gives in a form the table
+can't hold are sent as the JSON has them, and the table isn't offered (*As Edit as JSON gives it:
+changed there*).
 
 ## The configuration
 

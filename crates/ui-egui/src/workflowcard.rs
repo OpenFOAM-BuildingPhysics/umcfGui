@@ -143,12 +143,27 @@ fn described(
     }
 }
 
-/// The number of columns of a table a card fills, by its field.
-fn table_width(k: &str) -> Option<usize> {
+/// A field `k` (not held as JSON) whose entry is gone (taken away, or another one chosen that
+/// doesn't have it): emptied as filled; a table typed in keeps only its rows typed over or added,
+/// to be sent as new. The caller resets `initial`.
+fn undescribed(f: &mut FormState, k: &'static str) {
+    let was = f.initial.get(k).cloned().unwrap_or_default();
+    let value = f.values.get(k).cloned().unwrap_or_default();
+    if value == was {
+        f.values.insert(k, String::new());
+    } else if let Some(merged) = merge_table(k, &value, &was, "") {
+        f.values.insert(k, merged);
+    }
+}
+
+/// A table a card fills (by its field) typed in (`value`), filled from `was`, put over the case
+/// as it is `now` ([`crate::forms::merge_rows`]); `None` for a field that isn't a table.
+fn merge_table(k: &str, value: &str, was: &str, now: &str) -> Option<String> {
+    use crate::forms::{merge_rows, merge_snappy_rows};
     match k {
-        "coefficients" => Some(2),
-        "surfaces" => Some(crate::forms::SURFACE_COLS.len()),
-        "boxes" => Some(crate::forms::BOX_COLS.len()),
+        "coefficients" => Some(merge_rows(value, was, now, 2)),
+        "surfaces" => Some(merge_snappy_rows(Kind::SnappySurfaces, value, was, now)),
+        "boxes" => Some(merge_snappy_rows(Kind::SnappyBoxes, value, was, now)),
         _ => None,
     }
 }
@@ -224,8 +239,8 @@ impl App {
         let Some(now) = described(id, case, description.as_ref(), &region, f) else {
             // What was filled in from it and not changed since goes with it.
             for k in card_fields(id) {
-                if !f.extra.contains_key(*k) && f.values.get(k) == f.initial.get(k) {
-                    f.values.insert(k, String::new());
+                if !f.extra.contains_key(*k) {
+                    undescribed(f, k);
                 }
                 f.initial.insert(k, String::new());
             }
@@ -236,13 +251,10 @@ impl App {
             let value = f.values.get(k).cloned().unwrap_or_default();
             if !f.extra.contains_key(k) && value == was {
                 f.values.insert(k, v.clone());
-            } else if let (Some(n), false) = (table_width(k), f.extra.contains_key(k)) {
+            } else if !f.extra.contains_key(k)
+                && let Some(merged) = merge_table(k, &value, &was, &v)
+            {
                 // A table: the cells not typed in follow the case, row by row.
-                let merged = match k {
-                    "surfaces" => crate::forms::merge_snappy_rows(Kind::SnappySurfaces, &value, &was, &v),
-                    "boxes" => crate::forms::merge_snappy_rows(Kind::SnappyBoxes, &value, &was, &v),
-                    _ => crate::forms::merge_rows(&value, &was, &v, n),
-                };
                 f.values.insert(k, merged);
             }
             f.initial.insert(k, v);
@@ -428,8 +440,13 @@ impl App {
                             f.initial.insert(k, v.clone());
                         }
                         None => {
-                            if f.values.get(k) == f.initial.get(k) {
-                                f.values.insert(k, String::new());
+                            if f.extra.contains_key(*k) {
+                                // Held as JSON: emptied only as filled.
+                                if f.values.get(k) == f.initial.get(k) {
+                                    f.values.insert(k, String::new());
+                                }
+                            } else {
+                                undescribed(f, k);
                             }
                             f.initial.insert(k, String::new());
                         }

@@ -687,25 +687,32 @@ surface: its name, file (picked from the case's surfaces; empty: `<name>.stl`), 
 `refine`), level (the least and the most, `2 3`; one number for both), distances and levels of a
 refining surface, the nearest first (`1 3; 3 2`), layers and feature level. The *Refinement boxes*
 table has a row per box: its name, min and max (`x y z`) and level. Only what changed from the
-entry is sent, by name, as the command merges it: a cell changed, a cell emptied as `null` (a
-box's cells are all needed), a row added with the cells given, a row taken away as `null`; a cell
-retyped to the same value (`2` for `2.0`) is unchanged, and after another command the cells not
-typed in follow the entry. A row renamed is the surface or box taken out and a new one added (a
-surface's role and solids go with the old name). The form refuses a row without a name, a name
-twice, a surface without its mode, a box with a cell empty, and a cell that doesn't read; an entry the
-table can't show (a name or file with a `|`, a name starting or ending with a space, a number that
-isn't finite, …) is counted on the card and left as it is (a row typed there is added, or, by a name the entry has, merges into that surface or replaces
-that box). An empty file is `<name>.stl`; an empty
-inside point isn't sent (the entry's stays). A
-cutting surface's patch role goes through *Describe a patch* or *Edit as JSON* (`role`): what the
-JSON gives that a table can't hold is sent as the JSON has it, the table not offered (changed in
-*Edit as JSON*); the card's line says so, and of the inside point too.
+entry is sent, by name, as the command merges it: a cell changed, a cell emptied as `null` (a box's
+cells are all needed), a row added with the cells given, a row taken away as `null`; a cell retyped
+to the same value (`2` for `2.0`, an empty file for `<name>.stl`) is unchanged, and after another
+command the cells not typed in follow the entry (a row added that the entry gained meanwhile: the
+entry's in the cells left empty). If another command takes the entry away while the card is open,
+or a region without one is chosen, only the rows typed over or added stay, to be sent as new (a
+region with an entry chosen fills the tables from it). A name typed twice is kept for *OK* to
+refuse while its first row stays (with the first gone, when it was typed over or added). A row
+renamed is the surface or box taken out and a new one added (a surface's role and solids go with
+the old name). The form refuses a row without a name, a name twice, a surface without its mode, a
+box with a cell empty, and a cell that doesn't read; an entry the table can't show (a name or file
+with a `|`, a name, file or mode starting or ending with a space, a number that isn't finite, …) is
+counted on the card and left as it is (a row typed there is added, or, by a name the entry has,
+merges into that surface or replaces that box). An empty file is `<name>.stl`; an empty inside
+point isn't sent (the entry's stays). A cutting surface's patch role goes through *Describe a
+patch* or *Edit as JSON* (`role`): what the JSON gives that a table can't hold (also a row the
+table hasn't, without a surface's mode or a box's min, max and level) is sent as the JSON has it,
+the table not offered (changed in *Edit as JSON*); the card's line says so, and of the inside point
+too.
 While the card is open, the 3D view shows the region's blocks (as the *Block mesh* card previews
 them), the refinement boxes by their edges and the inside point as a small cross, in a colour of
 their own (on the GPU and the CPU alike), as they are typed, framed by them when nothing else is
 shown; the card counts the surfaces and boxes and says a box that doesn't read, an inside point
 that doesn't read, one outside the blocks or on their sides, or inside a missing block, and a
-region without blocks. The command checks the rest when *OK* runs it.
+region without blocks; tables of more than the command's 1000 rows (surfaces and boxes together)
+are counted, not read or drawn. The command checks the rest when *OK* runs it.
 Checked with snappyHexMesh on OpenFOAM-8 and -12: a building cut out with two layers, the cells
 around a tree and in a box refined, `checkMesh` without a failed check; with the building's
 feature edges, `surfaceFeatures` from the written dictionary first (and with an empty list).

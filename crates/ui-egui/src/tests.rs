@@ -2962,7 +2962,11 @@ fn the_snappy_card_is_filled_from_the_entry_previews_it_and_sends_the_tables_cha
     let mut s = Session::with_backup(".umcfgui/backup/test");
     s.execute(
         "case.new",
-        &json!({"path": dir.to_str().unwrap(), "version": 12, "regions": [{"name": "air", "kind": "fluid"}]}),
+        &json!({
+            "path": dir.to_str().unwrap(),
+            "version": 12,
+            "regions": [{"name": "air", "kind": "fluid"}, {"name": "solid", "kind": "solid"}],
+        }),
     )
     .unwrap();
     s.execute("geometry.trees", &json!({"trees": [{"x": 10, "y": 20, "z": 0, "diameter": 4, "height": 6}]})).unwrap();
@@ -3016,6 +3020,21 @@ fn the_snappy_card_is_filled_from_the_entry_previews_it_and_sends_the_tables_cha
         h.run();
         let summary = h.state().preview_summary.clone().unwrap().unwrap();
         assert!(summary.contains(says), "{summary}");
+    }
+    // Tables past the command's limit (surfaces and boxes together) aren't read each frame:
+    // said, the boxes not drawn; at the limit, read.
+    for (n, says, drawn) in [
+        (999, "1 surface (0 cutting) · 999 refinement boxes", 999),
+        (1000, "1 surface and 1000 refinement boxes: more than the 1000 the command takes, not shown", 0),
+    ] {
+        let many: Vec<String> = (0..n).map(|i| format!("b{i}|0 0 0|1 1 1|1")).collect();
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("boxes", many.join("\n"));
+        h.run();
+        let summary = h.state().preview_summary.clone().unwrap().unwrap();
+        assert!(summary.contains(says), "{summary}");
+        let blocks = h.state().viewport.blocks.clone().unwrap();
+        assert!(!blocks.cells[0].is_empty(), "the region's blocks still shown");
+        assert_eq!(blocks.refine.len(), drawn);
     }
     // Sent by name: a cell changed, a row taken away, a row added; a box's cell emptied refused.
     {
@@ -3151,6 +3170,50 @@ fn the_snappy_card_is_filled_from_the_entry_previews_it_and_sends_the_tables_cha
     let e = d.region("air").unwrap().snappy.clone().unwrap();
     assert!(e.boxes.is_empty());
     assert_eq!(e.surfaces.len(), 1);
+    // A second surface, the card opened again.
+    h.state_mut().act(
+        "mesh.snappy",
+        json!({"region": "air", "surfaces": {"crowns": {"file": "trees.stl", "mode": "refine", "distance": [[1, 1]]}}}),
+    );
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    h.state_mut().invoke("mesh.snappy");
+    h.run();
+    assert_eq!(value(&h, "surfaces"), "crowns|trees.stl|refine||1 1||\ntrees|trees.stl|refine||2 2||2");
+    {
+        let f = h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap();
+        f.values.insert("surfaces", "crowns|trees.stl|refine||1 1||\ntrees|trees.stl|refine||2 2||3".into());
+    }
+    // A region chosen that has no snappy entry (solid): only the row typed over stays, the rows
+    // not typed in aren't carried over to it; the region chosen again, filled from its entry.
+    let typed = "crowns|trees.stl|refine||1 1||\ntrees|trees.stl|refine||2 2||3";
+    for (region, surfaces) in [
+        ("solid", "trees|trees.stl|refine||2 2||3"),
+        ("air", "crowns|trees.stl|refine||1 1||\ntrees|trees.stl|refine||2 2||2"),
+    ] {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("region", region.into());
+        h.run();
+        assert_eq!(value(&h, "surfaces"), surfaces, "{region}");
+    }
+    h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert("surfaces", typed.into());
+    // The entry taken out by another command while a row is typed over: that row stays, to be
+    // sent as new; the rows not typed in go with the entry.
+    h.state_mut().act("mesh.snappy", json!({"region": "air", "remove": true}));
+    for _ in 0..20 {
+        h.run();
+        if !h.state().working() {
+            break;
+        }
+    }
+    assert_eq!(value(&h, "surfaces"), "trees|trees.stl|refine||2 2||3");
+    assert_eq!(
+        form(&h).params(spec).unwrap()["surfaces"],
+        json!({"trees": {"file": "trees.stl", "mode": "refine", "distance": [[2, 2]], "features": 3}})
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
