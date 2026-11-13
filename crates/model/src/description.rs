@@ -41,7 +41,7 @@
 //! reconstruct yes;
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use umcf_core::OfVersion;
@@ -296,7 +296,8 @@ impl Description {
                 }
             }
             let blocks = mesh.and_then(|m| import_blocks(case, name, region.kind, &m.build, &patches, &mut notes));
-            let snappy = mesh.and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, &mut notes));
+            let snappy = mesh
+                .and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, blocks.as_ref(), &mut notes));
             // A region without a mesh: its patches are those its blocks name, without a role.
             if region.patches.is_none()
                 && let Some(g) = &blocks
@@ -1139,6 +1140,7 @@ fn import_snappy(
     kind: RegionKind,
     build: &MeshBuild,
     patches: &[PatchDesc],
+    blocks: Option<&BlockGrid>,
     notes: &mut Vec<String>,
 ) -> Option<crate::snappy::Snappy> {
     let path = crate::snappy::dict_path(build)?;
@@ -1149,17 +1151,92 @@ fn import_snappy(
         return None;
     };
     match crate::snappy_import::import(&doc.root, &path, case.layout.version) {
-        Ok((sn, left)) => {
+        Ok((mut sn, left)) => {
             notes.extend(left.into_iter().map(|n| format!("region {name}: {n}")));
-            // The cutting surfaces' patch types against those their roles give.
-            for s in sn.surfaces.iter().filter(|s| s.mode == crate::snappy::Mode::Cut) {
-                let role = patches.iter().find(|p| p.name == s.name).and_then(|p| p.role);
-                let want = crate::blocks::patch_type(kind, role);
-                let have = crate::snappy_import::patch_type(&doc.root, &s.name, None);
-                if have != want {
+            // The patches each cutting surface made: the one of its name, else a patch
+            // <surface>_<solid> for each solid, going to the surface of the longest name it
+            // starts with; their solids the entry then lists (not when the blocks name such a
+            // patch too: the mesh is then the blocks', not yet cut). Their types against those
+            // their roles give, noted once a surface. A surface not meshed yet has no patch: the
+            // type its role gives is that of no role.
+            let cutting: HashSet<&str> =
+                sn.surfaces.iter().filter(|s| s.mode == crate::snappy::Mode::Cut).map(|s| s.name.as_str()).collect();
+            let block_patches: HashSet<&str> =
+                blocks.map(|g| g.patch_names().into_iter().collect()).unwrap_or_default();
+            // Each patch's surface and solid: the longest cutting name it is or starts with, then _
+            // (looked for only as far as the longest name goes).
+            let longest = cutting.iter().map(|n| n.len()).max().unwrap_or(0);
+            let mut made_by: HashMap<String, Vec<(&PatchDesc, Option<String>)>> = HashMap::new();
+            for p in patches {
+                let whole = cutting.contains(p.name.as_str()).then_some((p.name.as_str(), None));
+                let owner = whole.or_else(|| {
+                    p.name
+                        .char_indices()
+                        .rev()
+                        .skip_while(|(i, _)| *i > longest)
+                        .filter(|(_, c)| *c == '_')
+                        .map(|(i, _)| (&p.name[..i], &p.name[i + 1..]))
+                        .find(|(surface, solid)| !solid.is_empty() && cutting.contains(surface))
+                        .map(|(surface, solid)| (surface, Some(solid.to_string())))
+                });
+                if let Some((surface, solid)) = owner {
+                    made_by.entry(surface.to_string()).or_default().push((p, solid));
+                }
+            }
+            for s in sn.surfaces.iter_mut().filter(|s| s.mode == crate::snappy::Mode::Cut) {
+                let mut made = made_by.remove(&s.name).unwrap_or_default();
+                if made.iter().any(|(_, solid)| solid.is_none()) {
+                    made.retain(|(_, solid)| solid.is_none());
+                } else if !made.is_empty() {
+                    let solids: Vec<String> = made.iter().filter_map(|(_, x)| x.clone()).collect();
+                    if made.iter().any(|(p, _)| block_patches.contains(p.name.as_str())) {
+                        made.clear();
+                    } else if solids.len() > crate::snappy::MAX_ITEMS {
+                        notes.push(format!(
+                            "region {name}: surface {} made more than {} patches in the mesh: its solids aren't listed in the entry",
+                            s.name,
+                            crate::snappy::MAX_ITEMS
+                        ));
+                    } else if solids.len() > 1
+                        && solids.iter().all(|x| crate::description_edit::plain_name(x))
+                        && solids.iter().collect::<HashSet<_>>().len() == solids.len()
+                    {
+                        s.solids = solids;
+                    }
+                }
+                let mut differ: Vec<&str> = Vec::new();
+                let mut types: Vec<(String, String)> = Vec::new();
+                let checks: Vec<(&str, Option<&str>, Option<Role>)> = if made.is_empty() {
+                    vec![(s.name.as_str(), None, None)]
+                } else {
+                    made.iter().map(|(p, x)| (p.name.as_str(), x.as_deref(), p.role)).collect()
+                };
+                let types_there = crate::snappy_import::PatchTypes::read(&doc.root, &s.name);
+                for (patch, solid, role) in checks {
+                    let want = crate::blocks::patch_type(kind, role);
+                    let have = types_there.of(solid);
+                    if have != want {
+                        differ.push(patch);
+                        if types.len() < 3 && !types.iter().any(|t| t.0 == have && t.1 == want) {
+                            types.push((have, want.to_string()));
+                        }
+                    }
+                }
+                if !differ.is_empty() {
+                    let how: Vec<String> = types
+                        .iter()
+                        .take(3)
+                        .map(|(have, want)| format!("a {have} there, but its role gives {want}"))
+                        .collect();
                     notes.push(format!(
-                        "region {name}: {path}: the patch of surface {} is a {have} there, but its role gives {want}: the entry writes {want}",
-                        s.name
+                        "region {name}: {path}: {} of surface {}: {}: the entry writes the role's",
+                        if differ.len() == 1 {
+                            format!("patch {}", differ[0])
+                        } else {
+                            format!("{} patches ({})", differ.len(), crate::blocks::list_some(&differ))
+                        },
+                        s.name,
+                        how.join("; ")
                     ));
                 }
             }

@@ -276,3 +276,23 @@ fn the_surfaces_with_features_are_listed_once_for_surface_features() {
     assert_eq!(feature_files([&bad]), Vec::<String>::new());
     assert_eq!(features_dict(&[]).matches(".stl").count(), 0);
 }
+
+#[test]
+fn more_solids_than_an_entry_lists_are_a_problem() {
+    let s = Surface {
+        name: "b".into(),
+        file: "b.stl".into(),
+        mode: Mode::Cut,
+        level: Some((1, 1)),
+        distance: Vec::new(),
+        layers: 0,
+        features: None,
+        solids: (0..=MAX_ITEMS).map(|i| format!("s{i}")).collect(),
+    };
+    let sn = Snappy { inside: [0.0; 3], surfaces: vec![s], boxes: Vec::new(), expansion: None, first_layer: None };
+    assert!(
+        sn.problems().iter().any(|(at, m)| at == "surfaces/b/solids" && m.contains("more than")),
+        "{:?}",
+        sn.problems()
+    );
+}

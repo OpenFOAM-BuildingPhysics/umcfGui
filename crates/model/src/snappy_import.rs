@@ -3,6 +3,8 @@
 //! and feature levels, the boxes that refine, the inside point, the layers' expansion and first
 //! thickness), with a note for each part it can't. The dictionary itself is left as it is.
 
+use std::collections::{HashMap, HashSet};
+
 use umcf_foam_dict::{Dict, Entry, Item, Node};
 
 use crate::blocks::{node_count, node_number};
@@ -50,6 +52,31 @@ fn includes(d: &Dict) -> bool {
 /// name.
 fn pattern(e: &Entry) -> bool {
     e.key.text.starts_with('"') || e.key.text.contains(['*', '|', '(', '[', '?'])
+}
+
+/// An OpenFOAM switch as `Switch` reads it: `true`/`yes`/`on`/`y`/`t`/`any`,
+/// `false`/`no`/`off`/`n`/`f`/`none`, or a whole number (0 is off); `None` for anything else.
+pub fn switch(word: &str) -> Option<bool> {
+    match word {
+        "true" | "yes" | "on" | "y" | "t" | "any" => Some(true),
+        "false" | "no" | "off" | "n" | "f" | "none" => Some(false),
+        _ => word.parse::<i64>().ok().map(|n| n != 0),
+    }
+}
+
+/// Whether `singleRegionName` is off, so that snappyHexMesh names even a surface of one solid
+/// `<surface>_<solid>`.
+pub fn single_region_off(root: &Dict) -> bool {
+    switch_of(root, "singleRegionName") == Some(false)
+}
+
+/// The switch `key` of `d`, if it reads as one.
+fn switch_of(d: &Dict, key: &str) -> Option<bool> {
+    let e = d.get(key)?;
+    single(e).as_deref().and_then(switch).or_else(|| match e.value.as_slice() {
+        [n] => node_number(n).filter(|x| x.fract() == 0.0).map(|x| x != 0.0),
+        _ => None,
+    })
 }
 
 fn number_of(d: &Dict, key: &str) -> Option<f64> {
@@ -107,7 +134,7 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     } else {
         return Err("it names no inside point (locationInMesh)".into());
     };
-    if root.get("singleRegionName").and_then(single).is_some_and(|v| matches!(v.as_str(), "false" | "no" | "off")) {
+    if single_region_off(root) {
         notes.push(format!(
             "{path}: singleRegionName is off, so a surface of one solid makes the patch <surface>_<solid>: the entry names it <surface>"
         ));
@@ -228,6 +255,27 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
                             "{path}: surface {name} has levels or types per solid (regions): the entry gives each solid the surface's level, and its patch the type of its role"
                         ));
                     }
+                    // patchInfo beyond its type (inGroups, …), the surface's or a solid's.
+                    let info_keys = |d: &Dict| -> Vec<String> {
+                        d.get("patchInfo")
+                            .and_then(Entry::dict)
+                            .map(|p| p.keys().filter(|k| *k != "type").map(str::to_string).collect())
+                            .unwrap_or_default()
+                    };
+                    let mut info = info_keys(c);
+                    for r in
+                        c.get("regions").and_then(Entry::dict).into_iter().flat_map(|r| r.entries()).take(MAX_ITEMS)
+                    {
+                        info.extend(r.dict().map(info_keys).unwrap_or_default());
+                    }
+                    info.sort();
+                    info.dedup();
+                    if !info.is_empty() {
+                        notes.push(format!(
+                            "{path}: surface {name}'s patchInfo gives {} besides the type, which the entry doesn't hold: left out",
+                            info.into_iter().take(5).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
                     let other: Vec<&str> =
                         c.keys().filter(|k| !matches!(*k, "level" | "patchInfo" | "regions")).take(5).collect();
                     if !other.is_empty() {
@@ -331,7 +379,7 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     }
     // The layers, by the patches each cutting surface makes.
     let layers_controls = root.get("addLayersControls").and_then(Entry::dict);
-    let layers_on = root.get("addLayers").and_then(single).is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on"));
+    let layers_on = switch_of(root, "addLayers") == Some(true);
     if root.get("addLayers").is_none() && includes(root) {
         notes.push(format!("{path}: addLayers isn't given in it (an #include may give it): its layers aren't taken"));
     }
@@ -415,9 +463,12 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     if let Some(ld) = layers_controls {
         if let Some(e) = number_of(ld, "expansionRatio") {
             expansion = (e != EXPANSION).then_some(e);
+        } else if ld.get("expansionRatio").is_some() {
+            notes.push(format!(
+                "{path}: its expansionRatio isn't a number (a macro?): left out, the entry's is {EXPANSION}"
+            ));
         }
-        let relative =
-            ld.get("relativeSizes").and_then(single).is_none_or(|v| matches!(v.as_str(), "true" | "yes" | "on"));
+        let relative = ld.get("relativeSizes").is_none() || switch_of(ld, "relativeSizes") == Some(true);
         // The sizes the entry writes: relative, the last layer half a cell and at least a
         // quarter; absolute, the first layer's thickness and a tenth of it at least.
         let layered = surfaces.iter().any(|s| s.layers > 0);
@@ -469,35 +520,59 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     }
     let mut sn = Snappy { inside, surfaces, boxes, expansion, first_layer };
     // A surface or box the entry can't hold is left out, the rest kept.
-    let problems = sn.problems();
-    let of = |key: &str, name: &str| {
-        let at = format!("{key}/{name}");
-        problems
-            .iter()
-            .filter(|(p, _)| *p == at || p.starts_with(&format!("{at}/")))
+    // Each item's problems on its own (a name with a / can't stand for another's), and a name
+    // given twice (surfaces and boxes share them) noted once: every item of it left out.
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for n in sn.surfaces.iter().map(|s| &s.name).chain(sn.boxes.iter().map(|b| &b.name)) {
+        *count.entry(n.clone()).or_default() += 1;
+    }
+    let mut twice: HashSet<String> = HashSet::new();
+    let mut named_once = |name: &str, notes: &mut Vec<String>| {
+        if count.get(name).is_some_and(|&c| c > 1) {
+            if twice.insert(name.to_string()) {
+                notes.push(format!(
+                    "{path}: {name} names more than one surface or box (they share their names): each left out"
+                ));
+            }
+            false
+        } else {
+            true
+        }
+    };
+    let alone = |surfaces: Vec<Surface>, boxes: Vec<RefineBox>| {
+        Snappy { inside: sn.inside, surfaces, boxes, expansion: None, first_layer: None }
+            .problems()
+            .into_iter()
+            .filter(|(p, _)| p.starts_with("surfaces/") || p.starts_with("boxes/"))
             .map(|(p, m)| format!("{p}: {m}"))
             .collect::<Vec<_>>()
     };
     let mut kept = Vec::new();
     for s in std::mem::take(&mut sn.surfaces) {
-        let why = of("surfaces", &s.name);
+        if !named_once(&s.name, notes) {
+            continue;
+        }
+        let why = alone(vec![s.clone()], Vec::new());
         if why.is_empty() {
             kept.push(s);
         } else {
             notes.push(format!("{path}: surface {} can't be held by the entry ({}): left out", s.name, why.join("; ")));
         }
     }
-    sn.surfaces = kept;
-    let mut kept = Vec::new();
+    let mut kept_boxes = Vec::new();
     for b in std::mem::take(&mut sn.boxes) {
-        let why = of("boxes", &b.name);
+        if !named_once(&b.name, notes) {
+            continue;
+        }
+        let why = alone(Vec::new(), vec![b.clone()]);
         if why.is_empty() {
-            kept.push(b);
+            kept_boxes.push(b);
         } else {
             notes.push(format!("{path}: box {} can't be held by the entry ({}): left out", b.name, why.join("; ")));
         }
     }
-    sn.boxes = kept;
+    sn.surfaces = kept;
+    sn.boxes = kept_boxes;
     let problems = sn.problems();
     if !problems.is_empty() {
         let list: Vec<String> =
@@ -507,31 +582,74 @@ fn read(root: &Dict, path: &str, version: Option<OfVersion>, notes: &mut Vec<Str
     Ok(sn)
 }
 
-/// The type snappyHexMesh gives the patch of cutting surface `surface` in the
-/// `snappyHexMeshDict` `root` (of its solid `solid`, for a surface of several): its own
-/// `regions` entry's `patchInfo`, the surface's, else `wall`. With no solid given, a `regions` of
-/// one entry is that solid's.
-pub fn patch_type(root: &Dict, surface: &str, solid: Option<&str>) -> String {
-    let body = root
-        .get("castellatedMeshControls")
-        .and_then(Entry::dict)
-        .and_then(|d| d.get("refinementSurfaces"))
-        .and_then(Entry::dict)
-        .and_then(|d| d.get(surface))
-        .and_then(Entry::dict);
-    let type_in = |d: &Dict| d.get("patchInfo").and_then(Entry::dict).and_then(|p| p.get("type")).and_then(single);
-    let regions = body.and_then(|b| b.get("regions")).and_then(Entry::dict);
-    let own = match solid {
-        Some(x) => regions.and_then(|r| r.get(x)).and_then(Entry::dict),
-        None => regions.and_then(|r| {
-            let mut it = r.entries();
-            match (it.next(), it.next()) {
-                (Some(e), None) => e.dict(),
-                _ => None,
+/// What `surfaceFeatures` is to make the `.eMesh` files for: the regions' snappy entries and,
+/// for a region without one whose mesh `snappyHexMesh` makes from a dictionary of the case,
+/// what that dictionary reads as (it stays, and asks for its own).
+pub fn feature_sources(case: &crate::Case, d: &crate::description::Description) -> Vec<Snappy> {
+    let version = d.version.or(case.layout.version);
+    d.regions
+        .iter()
+        .filter_map(|r| match &r.snappy {
+            Some(sn) => Some(sn.clone()),
+            None => {
+                let path = crate::snappy::dict_path(r.mesh.as_ref()?)?;
+                let doc = case.dict(&path)?;
+                import(&doc.root, &path, version).ok().map(|(sn, _)| sn)
             }
-        }),
-    };
-    own.and_then(type_in).or_else(|| body.and_then(type_in)).unwrap_or_else(|| "wall".to_string())
+        })
+        .collect()
+}
+
+/// The types snappyHexMesh gives the patches of cutting surface `surface` in the
+/// `snappyHexMeshDict` `root`, read once: [`PatchTypes::of`] a solid.
+pub struct PatchTypes {
+    surface: Option<String>,
+    solids: HashMap<String, String>,
+    only: Option<String>,
+}
+
+impl PatchTypes {
+    pub fn read(root: &Dict, surface: &str) -> Self {
+        let body = root
+            .get("castellatedMeshControls")
+            .and_then(Entry::dict)
+            .and_then(|d| d.get("refinementSurfaces"))
+            .and_then(Entry::dict)
+            .and_then(|d| d.get(surface))
+            .and_then(Entry::dict);
+        let type_in = |d: &Dict| d.get("patchInfo").and_then(Entry::dict).and_then(|p| p.get("type")).and_then(single);
+        let regions = body.and_then(|b| b.get("regions")).and_then(Entry::dict);
+        // A later entry of the same solid over an earlier one, as OpenFOAM reads them.
+        let mut solids = HashMap::new();
+        let mut count = 0;
+        for (key, e) in regions.into_iter().flat_map(|r| r.keys().zip(r.entries())) {
+            count += 1;
+            match e.dict().and_then(type_in) {
+                Some(t) => solids.insert(key.to_string(), t),
+                None => solids.remove(key),
+            };
+        }
+        let only = if count == 1 { solids.values().next().cloned() } else { None };
+        PatchTypes { surface: body.and_then(type_in), solids, only }
+    }
+
+    /// The type of solid `solid`'s patch (`None`: the surface's one patch): its own `regions`
+    /// entry's `patchInfo`, the surface's, else `wall`. With no solid given, a `regions` of one
+    /// entry is that solid's.
+    pub fn of(&self, solid: Option<&str>) -> String {
+        let own = match solid {
+            Some(x) => self.solids.get(x),
+            None => self.only.as_ref(),
+        };
+        own.or(self.surface.as_ref()).cloned().unwrap_or_else(|| "wall".to_string())
+    }
+}
+
+/// The type snappyHexMesh gives the patch of cutting surface `surface` in the
+/// `snappyHexMeshDict` `root` (of its solid `solid`, for a surface of several): see
+/// [`PatchTypes::of`].
+pub fn patch_type(root: &Dict, surface: &str, solid: Option<&str>) -> String {
+    PatchTypes::read(root, surface).of(solid)
 }
 
 #[cfg(test)]

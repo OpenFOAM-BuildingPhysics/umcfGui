@@ -380,3 +380,115 @@ addLayersControls { layers { b_roof { nSurfaceLayers 3; } h { nSurfaceLayers 1; 
     assert_eq!(patch_type(&doc.root, "b", None), "wall");
     assert_eq!(patch_type(&doc.root, "h", None), "wall");
 }
+
+#[test]
+fn switches_are_read_as_openfoam_reads_them() {
+    for (w, want) in [("y", Some(true)), ("t", Some(true)), ("on", Some(true)), ("1", Some(true))] {
+        assert_eq!(switch(w), want, "{w}");
+    }
+    for (w, want) in [("n", Some(false)), ("f", Some(false)), ("none", Some(false)), ("0", Some(false))] {
+        assert_eq!(switch(w), want, "{w}");
+    }
+    assert_eq!(switch("maybe"), None);
+    // `singleRegionName 0;` and `addLayers 1;` as numbers; `relativeSizes n;` is absolute, so
+    // the first layer is 0.3 m and its sizes are what the entry writes.
+    let text = r#"
+addLayers 1;
+singleRegionName 0;
+geometry { b { type triSurfaceMesh; file "b.stl"; } }
+castellatedMeshControls { refinementSurfaces { b { level (1 1); } } locationInMesh (0 0 0); }
+addLayersControls { relativeSizes n; firstLayerThickness 0.3; minThickness 0.03; layers { b { nSurfaceLayers 2; } } }
+"#;
+    let doc = umcf_foam_dict::Document::parse(text).unwrap();
+    assert!(single_region_off(&doc.root));
+    let (sn, notes) = import(&doc.root, "p", None).unwrap();
+    assert_eq!(sn.surfaces[0].layers, 2, "{notes:?}");
+    assert_eq!(sn.first_layer, Some(0.3), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("aren't what the entry writes")), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("addLayers is off")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("singleRegionName is off")), "{notes:?}");
+}
+
+#[test]
+fn patch_info_beyond_its_type_is_noted() {
+    let text = r#"
+geometry { b { type triSurfaceMesh; file "b.stl"; } }
+castellatedMeshControls
+{
+    refinementSurfaces
+    {
+        b
+        {
+            level (1 1);
+            patchInfo { type wall; inGroups (buildings); }
+            regions { roof { patchInfo { type wall; transform none; } } }
+        }
+    }
+    locationInMesh (0 0 0);
+}
+"#;
+    let (_, notes) = imported(text).unwrap();
+    assert!(notes.iter().any(|n| n.contains("patchInfo gives inGroups, transform besides the type")), "{notes:?}");
+}
+
+#[test]
+fn each_item_is_held_or_left_out_on_its_own() {
+    // `b/roof` isn't a name the entry takes: it alone is left out, not `b`.
+    let text = r#"
+geometry
+{
+    b { type triSurfaceMesh; file "b.stl"; }
+    "b/roof" { type triSurfaceMesh; file "r.stl"; }
+}
+castellatedMeshControls
+{
+    refinementSurfaces { b { level (1 1); } "b/roof" { level (1 1); } }
+    locationInMesh (0 0 0);
+}
+"#;
+    let (sn, notes) = imported(text).unwrap();
+    assert_eq!(sn.surfaces.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"], "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("surface b/roof can't be held")), "{notes:?}");
+    // A name given to many items (OpenFOAM-8's `name`): noted once, each left out, the rest kept.
+    let long = "n".repeat(1000);
+    let mut geometry = String::from("k { type triSurfaceMesh; file \"k.stl\"; }\n");
+    for i in 0..200 {
+        geometry.push_str(&format!("\"s{i}.stl\" {{ type triSurfaceMesh; name {long}; }}\n"));
+    }
+    let text = format!(
+        "geometry {{ {geometry} }}\ncastellatedMeshControls {{ refinementSurfaces {{ k {{ level (1 1); }} {long} {{ level (1 1); }} }} locationInMesh (0 0 0); }}\n"
+    );
+    let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+    let (sn, notes) = import(&doc.root, "p", Some(umcf_core::OfVersion::V8)).unwrap();
+    assert_eq!(sn.surfaces.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["k"], "{notes:?}");
+    let twice: Vec<&String> = notes.iter().filter(|n| n.contains("names more than one surface or box")).collect();
+    assert_eq!(twice.len(), 1);
+    assert!(notes.iter().map(String::len).sum::<usize>() < 20_000, "the notes stay small");
+}
+
+#[test]
+fn an_expansion_ratio_that_isnt_a_number_is_noted() {
+    let text = r#"
+ratio 1.3;
+addLayers true;
+geometry { b { type triSurfaceMesh; file "b.stl"; } }
+castellatedMeshControls { refinementSurfaces { b { level (1 1); } } locationInMesh (0 0 0); }
+addLayersControls { expansionRatio $ratio; layers { b { nSurfaceLayers 2; } } }
+"#;
+    let (sn, notes) = imported(text).unwrap();
+    assert_eq!(sn.expansion, None);
+    assert!(notes.iter().any(|n| n.contains("its expansionRatio isn't a number")), "{notes:?}");
+}
+
+#[test]
+fn relative_sizes_given_as_any_switch_are_relative() {
+    let text = r#"
+addLayers true;
+geometry { b { type triSurfaceMesh; file "b.stl"; } }
+castellatedMeshControls { refinementSurfaces { b { level (1 1); } } locationInMesh (0 0 0); }
+addLayersControls { relativeSizes y; finalLayerThickness 0.5; minThickness 0.25; layers { b { nSurfaceLayers 2; } } }
+"#;
+    let (sn, notes) = imported(text).unwrap();
+    assert_eq!(sn.first_layer, None, "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("aren't what the entry writes") || n.contains("absolute")), "{notes:?}");
+}

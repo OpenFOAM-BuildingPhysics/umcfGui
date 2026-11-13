@@ -605,7 +605,10 @@ built by steps without `snappyHexMesh` gets it after them. In an OpenFOAM-8 case
 reads them there, and a case of regions has them only in each region's directory.
 
 `system/surfaceFeaturesDict` is written with it, for all regions at once: it lists each surface
-whose feature edges a region's `snappy` entry asks for (`features`), once, and `surfaceFeatures`
+whose feature edges a region's `snappy` entry asks for (`features`), once (and, for a region
+without an entry whose mesh snappyHexMesh makes from a `snappyHexMeshDict` of the case's own,
+each surface whose `.eMesh` that dictionary reads, as far as a snappy entry could hold it:
+`workflow.import` tells what it can't), and `surfaceFeatures`
 writes their `.eMesh` files from it (the edges where faces meet at less than 150°, and the open
 and non-manifold ones), the same in OpenFOAM-8 and -12. It is generated as the
 `snappyHexMeshDict` is, with a checksum, and written again whenever `mesh.snappy` changes what it
@@ -634,7 +637,7 @@ umcf-cli run --case path/to/case \
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
 | `replace` | `true` writes over a `snappyHexMeshDict`, and a `surfaceFeaturesDict` that doesn't list every surface asking for features, edited by hand or not written by umcfGui (case.save keeps them in the backup) |
-| `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own; `system/surfaceFeaturesDict` follows the other regions' entries) |
+| `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own, and so do the surfaces in `system/surfaceFeaturesDict` whose `.eMesh` it reads, those of it a snappy entry could hold) |
 
 Before anything is written, each surface is read as OpenFOAM reads it (the call can be cancelled
 between them) and the call is refused, nothing changed, for a surface that isn't there or doesn't
@@ -678,7 +681,9 @@ around a tree and in a box refined, `checkMesh` without a failed check; with the
 feature edges, `surfaceFeatures` from the written dictionary first (and with an empty list).
 
 `workflow.import` reads a region's `snappy` entry from the `snappyHexMeshDict` its
-`snappyHexMesh` step reads, where the case has one: each STL surface of its `geometry` (OpenFOAM-12's
+`snappyHexMesh` step reads, where the case has one: each STL surface of its `geometry` (with the
+solids of the patches `<surface>_<solid>` it made in the region's mesh, where it made several,
+at most 1000, and the mesh isn't still the blocks' alone; OpenFOAM-12's
 form, `name { type triSurfaceMesh; file "x.stl"; }`, or OpenFOAM-8's, the key naming the file and
 `name` the surface) that cuts (`refinementSurfaces`, its `level`) or refines by distance
 (`refinementRegions`, `mode distance`), or both; each box refining the cells inside it
@@ -687,8 +692,7 @@ form, `name { type triSurfaceMesh; file "x.stl"; }`, or OpenFOAM-8's, the key na
 surfaces' `.eMesh` files (`levels` before `level`, as OpenFOAM reads them; a refinement by
 distance from the edges, `levels ((1.5 5))`: the nearest's level, noted); the layers of the cutting
 surfaces' patches (a `<surface>_<solid>` patch going to the surface of the longest name it
-starts with, noted: the entry gives them to every patch of the surface, whose solids aren't read
-here; when `addLayers` is on; patches of one surface with different numbers: the most,
+starts with, noted: the entry gives them to every patch of the surface; when `addLayers` is on; patches of one surface with different numbers: the most,
 noted); the inside point, as the case's version takes it (OpenFOAM-12: `insidePoints` of one
 point, else `insidePoint`, else `locationInMesh`; OpenFOAM-8: `locationInMesh` only), the
 expansion ratio and, with absolute sizes, the first layer's thickness. What the entry can't hold is noted and left out: other
@@ -698,8 +702,11 @@ neither cuts nor refines, a surface making a `faceZone` or `cellZone` (it doesn'
 its refinement by distance alone is kept), layer sizes other than those the entry writes
 (`finalLayerThickness 0.5` and `minThickness 0.25`, or a tenth of the first layer), an expansion
 ratio below 1, a cutting surface's patch type other than its role's (`patchInfo`, the
-surface's or its solid's: the entry writes the role's), `singleRegionName false` (the entry's
-patches are named as with it on), a surface or box the entry would refuse (a file that isn't STL, such as
+surface's or its solid's, against each patch it makes, `<surface>_<solid>` for each solid: the
+entry writes the role's), `patchInfo` beyond its type (`inGroups`), `singleRegionName false` (the entry's
+patches are named as with it on; switches are read as OpenFOAM reads them, `y`, `n`, `0` and `1`
+too), an `expansionRatio` that isn't a number (a `$macro`), a name given to more than one surface
+or box (each is left out), a surface or box the entry would refuse (a file that isn't STL, such as
 `.obj`, a level above 10, a name OpenFOAM doesn't take: the others are kept), levels or types
 per solid (`regions`), surfaces, regions and layers named by a pattern (`"walls.*"`), a
 patch's layer settings of its own (`expansionRatio` in its `layers` entry), outside points, an `#include` or

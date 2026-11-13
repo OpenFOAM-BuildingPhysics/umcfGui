@@ -167,18 +167,15 @@ fn holds(
         return None;
     }
     // Each cutting surface's patch types, as snappyHexMesh gives them.
-    if root
-        .get("singleRegionName")
-        .and_then(|e| e.words())
-        .is_some_and(|w| matches!(w.as_slice(), ["false" | "no" | "off"]))
-    {
+    if umcf_model::snappy_import::single_region_off(root) {
         return None;
     }
     let type_of = blocks::type_lookup(r);
     for s in sn.surfaces.iter().filter(|s| s.mode == umcf_model::snappy::Mode::Cut) {
+        let there = umcf_model::snappy_import::PatchTypes::read(root, &s.name);
         for (i, patch) in s.patches().iter().enumerate() {
-            let solid = s.solids.get(i).filter(|_| s.solids.len() > 1).map(String::as_str);
-            if umcf_model::snappy_import::patch_type(root, &s.name, solid) != type_of(patch) {
+            let solid = s.solids.get(i).map(String::as_str);
+            if there.of(solid) != type_of(patch) {
                 return None;
             }
         }
@@ -190,18 +187,19 @@ fn holds(
 /// `system/surfaceFeaturesDict` against the regions' snappy entries: it lists each surface
 /// whose feature edges one asks for, as `mesh.snappy` writes it.
 fn features(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
-    let files = sn::feature_files(d.regions.iter().filter_map(|r| r.snappy.as_ref()));
+    let sources = umcf_model::snappy_import::feature_sources(case, d);
+    let files = sn::feature_files(sources.iter());
     if files.is_empty() {
         return;
     }
     let at = sn::FEATURES_DICT;
     let message = match case.dict(at) {
         None if case.exists(at) == Some(true) => {
-            "doesn't load as a dictionary: surfaceFeatures can't make the .eMesh files the snappy entries ask for"
+            "doesn't load as a dictionary: surfaceFeatures can't make the .eMesh files the snappy entries (and the regions' own snappyHexMeshDicts) ask for"
                 .to_string()
         }
         None => format!(
-            "not there, but the snappy entries ask for the features of {}: mesh.snappy writes it (with replace when a region's snappyHexMeshDict is the case's own)",
+            "not there, but the snappy entries (or a region's own snappyHexMeshDict) ask for the features of {}: mesh.snappy writes it (with replace when a region's snappyHexMeshDict is the case's own)",
             files.join(", ")
         ),
         Some(doc) => {
@@ -219,7 +217,7 @@ fn features(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
                     return;
                 }
                 format!(
-                    "edited by hand or not written by umcfGui, and doesn't list {}, whose features the snappy entries ask for: surfaceFeatures makes no .eMesh for them (mesh.snappy with replace writes it)",
+                    "edited by hand or not written by umcfGui, and doesn't list {}, whose features the snappy entries (or a region's own snappyHexMeshDict) ask for: surfaceFeatures makes no .eMesh for them (mesh.snappy with replace writes it)",
                     blocks::list_some(&missing)
                 )
             }

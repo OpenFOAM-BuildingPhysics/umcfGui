@@ -778,3 +778,110 @@ fn a_split_mesh_that_doesnt_read_is_named() {
         assert_eq!(m.is_some(), read_still, "{mesh}: {m:?}");
     }
 }
+
+#[test]
+fn a_snappy_surface_s_patch_types_are_held_against_their_roles() {
+    let prepare = PREPARE.replace(
+        "blockMesh\nmv constant/polyMesh",
+        "blockMesh\nsnappyHexMesh -overwrite -dict system/snappyHexMeshDict.veg\nmv constant/polyMesh",
+    );
+    let dict = r#"
+geometry { towers { type triSurfaceMesh; file "towers.stl"; } }
+castellatedMeshControls
+{
+    refinementSurfaces
+    {
+        towers { level (1 1); patchInfo { type wall; } regions { base { patchInfo { type patch; } } } }
+    }
+    locationInMesh (0 0 0);
+}
+"#;
+    let fs = canyon().with("Allprepare", prepare).with("system/snappyHexMeshDict.veg", dict).with(
+        "constant/vegetation/polyMesh/boundary",
+        boundary(&[("towers_walls", "wall", ""), ("towers_base", "wall", ""), ("top", "patch", "")]),
+    );
+    let c = Case::open(&fs).unwrap();
+    let (d, notes) = Description::import(&c);
+    // The solids are those of the patches the surface made, so that its patches are those.
+    let sn = d.region("vegetation").unwrap().snappy.as_ref().unwrap();
+    assert_eq!(sn.surfaces[0].solids, ["walls", "base"], "{notes:?}");
+    assert_eq!(sn.surfaces[0].patches(), ["towers_walls", "towers_base"]);
+    // Each <surface>_<solid> patch against its own type there: the walls take the surface's
+    // wall, the base its own patch, and neither has a role, which gives patch.
+    let typed: Vec<&String> = notes.iter().filter(|n| n.contains("but its role gives")).collect();
+    assert_eq!(typed.len(), 1, "{notes:?}");
+    assert!(
+        typed[0].contains("patch towers_walls of surface towers: a wall there, but its role gives patch"),
+        "{notes:?}"
+    );
+
+    // More solids than an entry lists: noted, none listed; the notes on their types one.
+    let many: Vec<String> = (0..1001).map(|i| format!("towers_s{i}")).collect();
+    let rows: Vec<(&str, &str, &str)> = many.iter().map(|n| (n.as_str(), "wall", "")).collect();
+    let c = Case::open(&fs.clone().with("constant/vegetation/polyMesh/boundary", boundary(&rows))).unwrap();
+    let (d, notes) = Description::import(&c);
+    let sn = d.region("vegetation").unwrap().snappy.as_ref().unwrap();
+    assert!(sn.surfaces[0].solids.is_empty());
+    assert!(notes.iter().any(|n| n.contains("made more than 1000 patches")), "{notes:?}");
+    let typed: Vec<&String> = notes.iter().filter(|n| n.contains("but its role gives")).collect();
+    assert_eq!(typed.len(), 1);
+    assert!(typed[0].contains("1001 patches (towers_s0, towers_s1"), "{}", typed[0]);
+    assert!(Description::read(&Document::parse(&d.write()).unwrap()).1.is_empty(), "it reads back");
+}
+
+#[test]
+fn a_snappy_surface_s_solids_come_from_the_patches_it_made_alone() {
+    let prepare = PREPARE.replace(
+        "blockMesh\nmv constant/polyMesh",
+        "blockMesh\nsnappyHexMesh -overwrite -dict system/snappyHexMeshDict.veg\nmv constant/polyMesh",
+    );
+    let dict = r#"
+geometry
+{
+    towers { type triSurfaceMesh; file "towers.stl"; }
+    towers_big { type triSurfaceMesh; file "big.stl"; }
+}
+castellatedMeshControls
+{
+    refinementSurfaces { towers { level (1 1); } towers_big { level (1 1); } }
+    locationInMesh (0 0 0);
+}
+"#;
+    let with = |rows: &[(&str, &str, &str)], blocks: Option<&str>| {
+        let mut fs = canyon()
+            .with("Allprepare", prepare.clone())
+            .with("system/snappyHexMeshDict.veg", dict)
+            .with("constant/vegetation/polyMesh/boundary", boundary(rows));
+        if let Some(b) = blocks {
+            fs = fs.with("system/blockMeshDict.veg", b.to_string());
+        }
+        let (d, notes) = Description::import(&Case::open(&fs).unwrap());
+        let sn = d.region("vegetation").unwrap().snappy.clone().unwrap();
+        (sn.surfaces.iter().map(|s| s.solids.clone()).collect::<Vec<_>>(), notes)
+    };
+    // Each patch goes to the longest surface name it starts with.
+    let rows = [
+        ("towers_walls", "wall", ""),
+        ("towers_big_x", "wall", ""),
+        ("towers_base", "wall", ""),
+        ("towers_big_y", "wall", ""),
+    ];
+    let (solids, notes) = with(&rows, None);
+    assert_eq!(solids, [vec!["walls", "base"], vec!["x", "y"]], "{notes:?}");
+    // A patch of the surface's own name: no solids.
+    let (solids, _) = with(&[("towers", "wall", ""), ("towers_walls", "wall", ""), ("towers_base", "wall", "")], None);
+    assert!(solids[0].is_empty());
+    // A patch listed twice: not solids an entry takes.
+    let (solids, _) = with(&[("towers_a", "wall", ""), ("towers_a", "wall", ""), ("towers_b", "wall", "")], None);
+    assert!(solids[0].is_empty());
+    // Patches the blocks make: the mesh isn't cut yet.
+    let blocks = format!(
+        "{}convertToMeters 1;\nvertices ( (0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 1) (1 0 1) (1 1 1) (0 1 1) );\n\
+blocks ( hex (0 1 2 3 4 5 6 7) (2 2 2) simpleGrading (1 1 1) );\n\
+boundary\n(\n    towers_walls {{ type wall; faces ( (0 3 2 1) (4 5 6 7) (0 1 5 4) ); }}\n    towers_base {{ type wall; faces ( (1 2 6 5) (2 3 7 6) (0 4 7 3) ); }}\n);\n",
+        header("dictionary", "blockMeshDict")
+    );
+    let (solids, notes) = with(&rows[..1].iter().chain(&rows[2..3]).copied().collect::<Vec<_>>(), Some(&blocks));
+    assert!(!notes.iter().any(|n| n.contains("is not a grid of blocks")), "{notes:?}");
+    assert!(solids[0].is_empty(), "{notes:?}");
+}

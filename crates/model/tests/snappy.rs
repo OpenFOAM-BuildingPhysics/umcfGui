@@ -3,7 +3,9 @@
 //! without it. What is read and noted is printed (`--nocapture`).
 //!
 //! Each entry read is written as a dictionary again, and that dictionary reads back to the same
-//! entry, with nothing noted: what the entry holds survives the trip.
+//! entry (but for the solids, which come from the case's mesh), with nothing noted: what the
+//! entry holds survives the trip. A case that doesn't open fails it, and so does a run that
+//! reads no entry.
 
 use umcf_model::description::Description;
 use umcf_model::snappy_import;
@@ -17,7 +19,10 @@ fn the_cases_snappy_dictionaries_read_into_entries_that_read_back() {
     let mut read = 0;
     for dir in cases.split(':').filter(|d| !d.is_empty()) {
         let options = umcf_model::OpenOptions { field_bytes: 0, ..Default::default() };
-        let Ok(case) = umcf_model::Case::open_with(&umcf_core::DirFs::new(dir), options) else { continue };
+        let case = match umcf_model::Case::open_with(&umcf_core::DirFs::new(dir), options) {
+            Ok(c) => c,
+            Err(e) => panic!("{dir}: doesn't open: {e}"),
+        };
         let (desc, notes) = Description::import(&case);
         for n in notes.iter().filter(|n| n.contains("snappy")) {
             eprintln!("{dir}: note: {n}");
@@ -31,9 +36,14 @@ fn the_cases_snappy_dictionaries_read_into_entries_that_read_back() {
             let (back, left) = snappy_import::import(&doc.root, "system/snappyHexMeshDict", case.layout.version)
                 .map_err(|e| e.0)
                 .unwrap();
-            assert_eq!(&back, sn, "{dir}: region {}", r.name);
+            let mut want = sn.clone();
+            for s in &mut want.surfaces {
+                s.solids.clear();
+            }
+            assert_eq!(back, want, "{dir}: region {}", r.name);
             assert_eq!(left, Vec::<String>::new(), "{dir}: region {}", r.name);
         }
     }
     eprintln!("{read} snappy entries read");
+    assert!(read > 0, "UMCF_CASES gives no case with a snappy entry");
 }

@@ -236,6 +236,9 @@ impl Snappy {
                 }
                 last = Some((*d, *l));
             }
+            if s.solids.len() > MAX_ITEMS {
+                put(format!("{at}/solids"), format!("are more than {MAX_ITEMS}"));
+            }
             let mut solids = HashSet::new();
             for solid in &s.solids {
                 if !crate::description_edit::plain_name(solid) || !solids.insert(solid.as_str()) {

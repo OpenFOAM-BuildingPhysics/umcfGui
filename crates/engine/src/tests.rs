@@ -4460,6 +4460,13 @@ fn a_region_meshed_from_its_surfaces_by_snappy() {
         .unwrap();
         let said = snappy_says(&mut s);
         assert!(said.iter().any(|m| m.contains("holding what the snappy entry of region air does")), "{said:?}");
+        // singleRegionName off (as OpenFOAM's switch reads it) names the patches otherwise.
+        s.execute("dict.set", &json!({"file": path, "path": "singleRegionName", "value": "n"})).unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("not what the snappy entry of region air writes")), "{said:?}");
+        s.execute("dict.set", &json!({"file": path, "path": "singleRegionName", "value": "y"})).unwrap();
+        let said = snappy_says(&mut s);
+        assert!(said.iter().any(|m| m.contains("holding what the snappy entry of region air does")), "{said:?}");
         // An edit to what the entry holds disagrees with it.
         s.execute(
             "dict.set",
@@ -4610,6 +4617,24 @@ fn surfaces_with_features_are_listed_in_the_surface_features_dict() {
         };
         assert!(!features_on(&s));
 
+        // A link where the dictionary goes: refused, and nothing of the call kept.
+        #[cfg(unix)]
+        {
+            let link = dir.join("system/surfaceFeaturesDict");
+            std::os::unix::fs::symlink(dir.join("system/controlDict"), &link).unwrap();
+            let desc_before = s.case().unwrap().description().map(|(d, _)| d.write());
+            let e = s
+                .execute(
+                    "mesh.snappy",
+                    &json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": {"mode": "cut", "level": [1, 2], "features": 1}}}),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("is a symbolic link"), "{e}");
+            assert_eq!(s.case().unwrap().description().map(|(d, _)| d.write()), desc_before);
+            assert!(s.case().unwrap().dict("system/snappyHexMeshDict.air").is_none());
+            std::fs::remove_file(&link).unwrap();
+        }
         // Without features, no dictionary.
         let out = s
             .execute(
@@ -4662,16 +4687,14 @@ fn surfaces_with_features_are_listed_in_the_surface_features_dict() {
         .unwrap();
         let said = says(&mut s);
         assert!(said.iter().any(|m| m.contains("mesh.snappy writes it again")), "{said:?}");
-        // The entry taken out: the dictionary lists none.
+        // The entry taken out: its snappyHexMeshDict stays, and so do the surfaces it asks
+        // features of.
+        let before = dict(&s).unwrap();
         let out = s.execute("mesh.snappy", &json!({"region": "air", "remove": true})).unwrap();
-        assert!(
-            out.message
-                .contains(&format!("{at} written, listing the surfaces whose features are asked for: no surface")),
-            "{}",
-            out.message
-        );
+        assert!(!out.message.contains(&format!("{at} written")), "{}", out.message);
         let text = dict(&s).unwrap();
-        assert!(text.contains("surfaces\n(\n);"), "{text}");
+        assert_eq!(text, before);
+        assert!(text.contains("\"buildings.stl\"") && text.contains("\"tower.stl\""), "{text}");
         assert_eq!(says(&mut s), Vec::<String>::new());
         // edit.undo takes the last call back whole.
         s.execute("edit.undo", &Value::Null).unwrap();
