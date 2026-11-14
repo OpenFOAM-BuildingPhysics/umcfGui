@@ -58,8 +58,9 @@ umcf-gui path/to/case --size 1440x900 --screenshot shot.png
   fields*,
   *Workflow description*, *Write workflow description*, *Describe a region*, *Describe a patch*,
   *Describe a material*, *Choose settings* (its card starts with the case's settings) and
-  *Write the scripts* on *Case*, *Tree crowns* on *Geometry*, *Box mesh*, *Snappy mesh* (the
-  [surfaces and boxes](workflow.md#snappy) through *Edit as JSON*) and *Split mesh* on *Mesh*.
+  *Write the scripts* on *Case*, *Tree crowns* on *Geometry*, *Box mesh*, *Snappy mesh* (with
+  tables of the region's [surfaces and boxes](workflow.md#snappy), and its boxes and inside
+  point shown in the 3D view) and *Split mesh* on *Mesh*.
 - **Search commands** (Ctrl+P or F1): every command, filtered as you type; Enter runs the first
   that can run, or opens its card when it asks for parameters, as its ribbon button does.
 - **The browser** (left): the case's regions and their patches (type and number of faces), and

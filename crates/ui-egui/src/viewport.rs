@@ -337,8 +337,8 @@ impl Viewport {
 
     /// Frames the scene from `view`.
     pub fn fit(&mut self, scene: &Scene, view: View, aspect: f64) {
-        // An empty scene (only a grid previewed): framed by the grid.
-        let grid = || self.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::bbox);
+        // An empty scene (only a preview): framed by it.
+        let grid = || self.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::extent);
         if let Some(b) = scene.bbox().or_else(grid) {
             self.camera = Some(Camera::fit(view, &b, aspect));
         }

@@ -16,6 +16,9 @@
 //! - A grid of blocks, while it is set (the desktop app's box card): the box's edges and its
 //!   stations as strong lines, its cells' lines fainter, on the six sides of the box
 //!   ([`BlockPreview`]); hidden by what the scene shows in front of them.
+//! - With it, or alone, while snappyHexMesh is set up (the desktop app's snappy card): the
+//!   refinement boxes by their edges, and the inside point as a cross of three short lines
+//!   along the axes, sized with the view, in their own colour; hidden as the grid is.
 //!
 //! The spacing, the extent, the fade and the colours are ported from SolidCraft's viewport
 //! (<https://github.com/tangency-labs/solidcraft>, MIT or Apache-2.0, at commit 9325e3a:
@@ -80,6 +83,11 @@ pub struct BlockPreview {
     /// Blocks left out (the buildings), each by its two corners: drawn by their edges, the
     /// first [`PREVIEW_BOXES`].
     pub missing: Vec<[[f64; 3]; 2]>,
+    /// Refinement boxes, each by its two corners: drawn by their edges, the first
+    /// [`PREVIEW_BOXES`].
+    pub refine: Vec<[[f64; 3]; 2]>,
+    /// The inside point (snappyHexMesh's `locationInMesh`): drawn as a cross.
+    pub inside: Option<[f64; 3]>,
 }
 
 impl BlockPreview {
@@ -94,7 +102,39 @@ impl BlockPreview {
         let ((x0, x1), (y0, y1), (z0, z1)) = (end(0)?, end(1)?, end(2)?);
         Some(BBox { min: Vec3::new(x0, y0, z0), max: Vec3::new(x1, y1, z1) })
     }
+
+    /// What the preview draws, to frame it: the grid's box, the refinement boxes and the
+    /// inside point (a metre around it), those within [`PREVIEW_REACH`] of the origin (a view
+    /// can't be framed around more); `None` for nothing.
+    pub fn extent(&self) -> Option<BBox> {
+        let finite = |p: &[f64; 3]| p.iter().all(|x| x.is_finite() && x.abs() <= PREVIEW_REACH);
+        let v = |p: &[f64; 3]| Vec3::new(p[0], p[1], p[2]);
+        let mut corners: Vec<Vec3> = Vec::new();
+        let near = |p: Vec3| finite(&[p.x, p.y, p.z]);
+        if let Some(b) = self.bbox().filter(|b| near(b.min) && near(b.max)) {
+            corners.extend([b.min, b.max]);
+        }
+        for [p, q] in self.refine.iter().take(PREVIEW_BOXES).filter(|[p, q]| finite(p) && finite(q)) {
+            corners.extend([v(p), v(q)]);
+        }
+        if let Some(p) = self.inside.filter(finite) {
+            let one = Vec3::new(1.0, 1.0, 1.0);
+            corners.extend([v(&p) - one, v(&p) + one]);
+        }
+        let first = *corners.first()?;
+        let (min, max) = corners.iter().fold((first, first), |(lo, hi), c| {
+            (
+                Vec3::new(lo.x.min(c.x), lo.y.min(c.y), lo.z.min(c.z)),
+                Vec3::new(hi.x.max(c.x), hi.y.max(c.y), hi.z.max(c.z)),
+            )
+        });
+        Some(BBox { min, max })
+    }
 }
+
+/// How far from the origin a preview's corner may be to be drawn, and to frame the view by it
+/// (m): past it, its lines aren't finite in the GPU's `f32`.
+pub const PREVIEW_REACH: f64 = 1e9;
 
 /// The most lines of cells drawn along an axis: past it, every n-th (the stations always).
 pub const PREVIEW_LINES: usize = 120;
@@ -105,6 +145,11 @@ pub const PREVIEW_BOXES: usize = 2000;
 /// The grid of blocks' colours: light over a dark background, dark over a light one.
 const BLOCKS_DARK: [u8; 3] = [120, 200, 255];
 const BLOCKS_LIGHT: [u8; 3] = [20, 90, 190];
+/// The refinement boxes' and the inside point's colours, as the grid's.
+const REFINE_DARK: [u8; 3] = [255, 140, 220];
+const REFINE_LIGHT: [u8; 3] = [170, 30, 130];
+/// The inside point's cross: each arm this much of the origin's squares' side.
+const INSIDE_ARM: f64 = 0.6;
 
 /// How far the rectangle reaches past the extent, of its half sides.
 const CUT_MARGIN: f64 = 0.15;
@@ -271,8 +316,45 @@ pub fn build(
     }
     if let Some(b) = blocks {
         block_lines(&mut out, b, dark, &rel);
+        snappy_lines(&mut out, b, dark, origin_size(half_height) * INSIDE_ARM, &rel);
     }
     out
+}
+
+/// A box's twelve edges, by its two corners; nothing for one not finite.
+fn box_edges(out: &mut Drawn, [p, q]: &[[f64; 3]; 2], colour: [f32; 3], rel: &dyn Fn(Vec3) -> [f32; 3]) {
+    // Beyond PREVIEW_REACH a corner would not be finite in f32 for the GPU: left out by both.
+    if !(p.iter().chain(q).all(|x| x.is_finite() && x.abs() <= PREVIEW_REACH)) {
+        return;
+    }
+    for a in 0..3 {
+        let (b1, b2) = ((a + 1) % 3, (a + 2) % 3);
+        for (u, v) in [(p[b1], p[b2]), (p[b1], q[b2]), (q[b1], p[b2]), (q[b1], q[b2])] {
+            let mut from = [0.0; 3];
+            from[a] = p[a];
+            from[b1] = u;
+            from[b2] = v;
+            let mut to = from;
+            to[a] = q[a];
+            let point = |v: [f64; 3]| Vec3::new(v[0], v[1], v[2]);
+            out.lines.push(Line { a: rel(point(from)), b: rel(point(to)), colour, alpha: 1.0 });
+        }
+    }
+}
+
+/// The refinement boxes (at most [`PREVIEW_BOXES`]) and the inside point's cross, its arms
+/// `arm` long; drawn with or without a grid.
+fn snappy_lines(out: &mut Drawn, b: &BlockPreview, dark: bool, arm: f64, rel: &dyn Fn(Vec3) -> [f32; 3]) {
+    let c = if dark { REFINE_DARK } else { REFINE_LIGHT };
+    let colour = rgb(c[0], c[1], c[2]);
+    for r in b.refine.iter().take(PREVIEW_BOXES) {
+        box_edges(out, r, colour, rel);
+    }
+    let Some(p) = b.inside.filter(|p| p.iter().all(|x| x.is_finite() && x.abs() <= PREVIEW_REACH)) else { return };
+    let p = Vec3::new(p[0], p[1], p[2]);
+    for d in [Vec3::new(arm, 0.0, 0.0), Vec3::new(0.0, arm, 0.0), Vec3::new(0.0, 0.0, arm)] {
+        out.lines.push(Line { a: rel(p - d), b: rel(p + d), colour, alpha: 1.0 });
+    }
 }
 
 /// A grid of blocks: on each of the box's six sides, the lines across it at each axis'
@@ -325,22 +407,8 @@ fn block_lines(out: &mut Drawn, b: &BlockPreview, dark: bool, rel: &dyn Fn(Vec3)
         }
     }
     // Each missing block's twelve edges, inside the box.
-    for [p, q] in b.missing.iter().take(PREVIEW_BOXES) {
-        if !(p.iter().chain(q).all(|x| x.is_finite())) {
-            continue;
-        }
-        for a in 0..3 {
-            let (b1, b2) = ((a + 1) % 3, (a + 2) % 3);
-            for (u, v) in [(p[b1], p[b2]), (p[b1], q[b2]), (q[b1], p[b2]), (q[b1], q[b2])] {
-                let mut from = [0.0; 3];
-                from[a] = p[a];
-                from[b1] = u;
-                from[b2] = v;
-                let mut to = from;
-                to[a] = q[a];
-                out.lines.push(Line { a: rel(point(from)), b: rel(point(to)), colour, alpha: 1.0 });
-            }
-        }
+    for m in b.missing.iter().take(PREVIEW_BOXES) {
+        box_edges(out, m, colour, rel);
     }
 }
 
@@ -576,6 +644,7 @@ mod tests {
             cells: [vec![0.0, 5.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
             stations: [vec![0.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
             missing: vec![],
+            ..BlockPreview::default()
         };
         let d = build(&scene, &camera, Guides::default(), true, None, Some(&b));
         // Per axis and position: 4 lines; x has 3 cells' lines and 2 stations, y and z 2 + 2.
@@ -599,5 +668,59 @@ mod tests {
         // A grid without a box: nothing.
         let flat = BlockPreview { stations: [vec![0.0], vec![0.0, 1.0], vec![0.0, 1.0]], ..BlockPreview::default() };
         assert!(build(&scene, &camera, Guides::default(), true, None, Some(&flat)).lines.is_empty());
+    }
+
+    #[test]
+    fn refinement_boxes_and_the_inside_point_are_drawn_with_or_without_a_grid() {
+        let scene = Scene::new(Vec3::new(1.0, 2.0, 3.0));
+        let camera =
+            Camera::fit(crate::camera::View::Iso, &BBox { min: Vec3::ZERO, max: Vec3::new(10.0, 10.0, 10.0) }, 1.6);
+        let alone = BlockPreview {
+            refine: vec![[[0.0, 0.0, 0.0], [2.0, 3.0, 4.0]], [[f64::NAN, 0.0, 0.0], [1.0, 1.0, 1.0]]],
+            inside: Some([5.0, 5.0, 5.0]),
+            ..BlockPreview::default()
+        };
+        let d = build(&scene, &camera, Guides::default(), true, None, Some(&alone));
+        // The box's 12 edges (the one not finite left out) and the cross's 3 arms.
+        assert_eq!(d.lines.len(), 12 + 3);
+        let cross = &d.lines[12..];
+        // Centred on the point (relative to the scene's origin), along x, y and z.
+        for (k, l) in cross.iter().enumerate() {
+            let mid: Vec<f32> = (0..3).map(|i| (l.a[i] + l.b[i]) / 2.0).collect();
+            assert_eq!(mid, vec![4.0, 3.0, 2.0]);
+            assert!((0..3).all(|i| (i == k) == (l.a[i] != l.b[i])), "{l:?}");
+        }
+        // The box from (0, 0, 0) to (2, 3, 4), relative.
+        assert!(
+            d.lines[..12].iter().flat_map(|l| [l.a, l.b]).all(|p| (p[0] == -1.0 || p[0] == 1.0)
+                && (p[1] == -2.0 || p[1] == 1.0)
+                && (p[2] == -3.0 || p[2] == 1.0))
+        );
+        // Coloured apart from the grid, light and dark.
+        let light = build(&scene, &camera, Guides::default(), false, None, Some(&alone));
+        assert_ne!(light.lines[0].colour, d.lines[0].colour);
+        // A point not finite: no cross; with a grid, after its lines.
+        let none = BlockPreview { inside: Some([f64::INFINITY, 0.0, 0.0]), ..alone.clone() };
+        assert_eq!(build(&scene, &camera, Guides::default(), true, None, Some(&none)).lines.len(), 12);
+        let grid = BlockPreview {
+            cells: [vec![0.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
+            stations: [vec![0.0, 10.0], vec![0.0, 10.0], vec![0.0, 10.0]],
+            ..alone
+        };
+        let g = build(&scene, &camera, Guides::default(), true, None, Some(&grid));
+        assert_eq!(g.lines.len(), 4 * 4 * 3 + 12 + 3);
+        // Framed: the grid, the boxes and the point; the box not finite left out.
+        let e = grid.extent().unwrap();
+        assert_eq!((e.min, e.max), (Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0)));
+        let e = BlockPreview { inside: Some([20.0, 5.0, 5.0]), ..BlockPreview::default() }.extent().unwrap();
+        assert_eq!((e.min, e.max), (Vec3::new(19.0, 4.0, 4.0), Vec3::new(21.0, 6.0, 6.0)));
+        assert!(BlockPreview::default().extent().is_none());
+        // Too far to frame: left out.
+        let far = BlockPreview { refine: vec![[[-1e308, 0.0, 0.0], [1e308, 1.0, 1.0]]], ..BlockPreview::default() };
+        assert!(far.extent().is_none());
+        // Nor drawn, by either renderer.
+        let far = BlockPreview { inside: Some([1e39, 0.0, 0.0]), ..far };
+        assert!(build(&scene, &camera, Guides::default(), true, None, Some(&far)).lines.is_empty());
+        assert_ne!(g.lines[0].colour, g.lines[4 * 4 * 3].colour);
     }
 }

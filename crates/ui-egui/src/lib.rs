@@ -50,6 +50,7 @@ pub mod patch;
 pub mod results;
 pub mod ribbon;
 pub mod ribbon_fit;
+mod snappycard;
 pub mod theme;
 pub mod viewport;
 mod workflowcard;
@@ -921,7 +922,7 @@ impl App {
     pub(crate) fn fit(&mut self, view: Option<View>) {
         // Only a grid previewed: framed by it.
         if self.nothing_shown()
-            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::bbox)
+            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::extent)
         {
             let (az, el) = match view {
                 Some(v) => v.angles(),
@@ -1837,10 +1838,10 @@ impl App {
             let text = RichText::new("Open a case (Ctrl+O) to see it here.").size(15.0).color(muted);
             ui.put(rect, egui::Label::new(text));
         } else if self.nothing_shown()
-            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::bbox)
+            && let Some(b) = self.viewport.blocks.as_ref().and_then(umcf_render::guides::BlockPreview::extent)
         {
-            // Only a grid previewed (the block card on a case without a mesh or surfaces): drawn
-            // on its own, around it.
+            // Only a preview (the block or snappy card on a case without a mesh or surfaces):
+            // drawn on its own, around it.
             let scene = umcf_render::Scene::new(b.centre());
             let entries = self.view_display();
             let display = umcf_engine::display_style(&scene, &entries);
@@ -2347,9 +2348,9 @@ impl App {
                     match (&mut d.form, form_spec) {
                         // The command's form.
                         (Some(f), Some(fs)) if !f.json => {
-                            // Below the fields: the links and buttons, and the box or block
-                            // card's lines saying its grid (up to three).
-                            let previewing = d.id == "mesh.box" || d.id == "mesh.block";
+                            // Below the fields: the links and buttons, and the box, block or
+                            // snappy card's lines saying what it previews (up to three).
+                            let previewing = matches!(d.id, "mesh.box" | "mesh.block" | "mesh.snappy");
                             let below = if previewing { 250.0 } else { 190.0 };
                             egui::ScrollArea::vertical()
                                 .id_salt("form-body")
@@ -2361,7 +2362,7 @@ impl App {
                                     ui.add_space(2.0);
                                     ask_file = forms::show(ui, fs, f, width, browse, browse_folder);
                                 });
-                            // The box card: the box the form makes, previewed in the view.
+                            // The box, block and snappy cards: what the view previews, said.
                             if previewing {
                                 match &self.preview_summary {
                                     Some(Ok(line)) => {

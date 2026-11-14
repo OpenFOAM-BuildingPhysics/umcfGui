@@ -81,6 +81,183 @@ pub(crate) enum Kind {
     /// Numbers by name, one per key (a blending layer's coefficients): those given, as an
     /// object.
     NumberMap(&'static [&'static str]),
+    /// A snappy entry's surfaces, a row each ([`SURFACE_COLS`]), filled from the region's
+    /// entry: sent as [`Kind::Coefficients`] is, by name: a row changed with the cells changed
+    /// (one emptied as `null`), a row added with its cells given, a row taken away as `null`.
+    SnappySurfaces,
+    /// A snappy entry's refinement boxes, a row each ([`BOX_COLS`]), sent as
+    /// [`Kind::SnappySurfaces`] (a box's cells all given).
+    SnappyBoxes,
+}
+
+/// The columns of a [`Kind::SnappySurfaces`] row, by the key each sets (the name first).
+pub(crate) const SURFACE_COLS: [&str; 7] = ["name", "file", "mode", "level", "distance", "layers", "features"];
+/// The columns of a [`Kind::SnappyBoxes`] row.
+pub(crate) const BOX_COLS: [&str; 4] = ["name", "min", "max", "level"];
+
+/// A snappy table's columns.
+fn snappy_cols(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::SnappySurfaces => &SURFACE_COLS,
+        Kind::SnappyBoxes => &BOX_COLS,
+        _ => &[],
+    }
+}
+
+/// A number's text, a whole one without its `.0` (`2`, not `2.0`).
+pub(crate) fn number_text(v: &Value) -> String {
+    match v.as_f64() {
+        Some(x) if v.is_f64() && x.fract() == 0.0 && x.abs() < 1e15 => format!("{x:.0}"),
+        _ => as_text(v),
+    }
+}
+
+/// A value with its numbers as `f64`, so that `2` and `2.0` compare the same.
+fn by_value(v: Value) -> Value {
+    match v {
+        Value::Number(n) => n.as_f64().map_or(Value::Number(n), |x| json!(x)),
+        Value::Array(a) => Value::Array(a.into_iter().map(by_value).collect()),
+        other => other,
+    }
+}
+
+/// Whether two texts of a snappy table's cell of column `key` in row `name` say the same, as OK
+/// takes them (`2` and `2.0`, `1 3` and `1, 3`): an empty file is the default, `<name>.stl`, and
+/// a surface's level of one number is both (`2` is `2 2`; a box's level is one number).
+fn same_snappy(kind: Kind, key: &str, name: &str, a: &str, b: &str) -> bool {
+    let as_file = |c: &str| if key == "file" && c.is_empty() { format!("{name}.stl") } else { c.to_string() };
+    let (a, b) = (as_file(a), as_file(b));
+    let pair = kind == Kind::SnappySurfaces && key == "level";
+    let read =
+        |t: &str| snappy_cell_json(key, t).map(|v| if pair && v.is_number() { json!([v, v]) } else { v }).map(by_value);
+    a == b
+        || match (read(&a), read(&b)) {
+            (Ok(x), Ok(y)) if !a.is_empty() && !b.is_empty() => x == y,
+            _ => false,
+        }
+}
+
+/// A cell of a snappy table from its JSON (`key` its column); `None` for a value it can't hold.
+fn snappy_cell_text(kind: Kind, key: &str, v: &Value) -> Option<String> {
+    let whole = |x: &Value| x.as_u64().map(|n| n.to_string());
+    // A table cell is trimmed: a padded one (`" c.stl "`) would be sent changed.
+    let plain = |t: &str| (!t.contains([PARTS, ROWS]) && t.trim() == t).then(|| t.to_string());
+    match (key, v) {
+        ("level" | "distance" | "layers" | "features", Value::Null) => Some(String::new()),
+        ("file" | "mode", Value::String(t)) => plain(t),
+        ("file", Value::Null) => Some(String::new()),
+        // A surface's level, the least and the most (a box's is one number).
+        ("level", Value::Array(a)) if kind == Kind::SnappySurfaces && a.len() == 2 => {
+            Some(format!("{} {}", whole(a.first()?)?, whole(a.get(1)?)?))
+        }
+        // A box's level.
+        ("level", x) => whole(x),
+        ("layers", x) if x.as_u64() == Some(0) => Some(String::new()),
+        ("layers" | "features", x) => whole(x),
+        ("distance", Value::Array(a)) => {
+            let pairs: Option<Vec<String>> = a
+                .iter()
+                .map(|p| {
+                    let p = p.as_array().filter(|p| p.len() == 2)?;
+                    let d = p.first().filter(|d| d.is_number())?;
+                    Some(format!("{} {}", number_text(d), whole(p.get(1)?)?))
+                })
+                .collect();
+            pairs.map(|p| p.join("; "))
+        }
+        ("min" | "max", Value::Array(a)) if a.len() == 3 && a.iter().all(Value::is_number) => {
+            Some(a.iter().map(number_text).collect::<Vec<_>>().join(" "))
+        }
+        _ => None,
+    }
+}
+
+/// A box by its two corners.
+pub(crate) type Corners = [[f64; 3]; 2];
+
+/// The refinement boxes of a [`Kind::SnappyBoxes`] field's text, by name: each its corners,
+/// or what keeps it from being read.
+pub(crate) fn snappy_boxes(text: &str) -> Vec<(String, Result<Corners, String>)> {
+    let corner = |t: &str, key: &str| -> Result<[f64; 3], String> {
+        let v = snappy_cell_json(key, t)?;
+        let n: Vec<f64> = v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        match n.as_slice() {
+            [x, y, z] if n.iter().all(|c| c.is_finite()) => Ok([*x, *y, *z]),
+            _ => Err(format!("{key} `{t}` is three numbers, x y z")),
+        }
+    };
+    table_rows(text, BOX_COLS.len())
+        .into_iter()
+        .map(|r| {
+            let cell = |k: usize| r.get(k).map(String::as_str).unwrap_or("");
+            let lo = corner(cell(1), "min");
+            let hi = corner(cell(2), "max");
+            (cell(0).to_string(), lo.and_then(|lo| hi.map(|hi| [lo, hi])))
+        })
+        .collect()
+}
+
+/// The inside point of a [`Kind::Numbers`] field's text, when its three parts are numbers.
+pub(crate) fn point_of(text: &str) -> Option<[f64; 3]> {
+    let p: Option<Vec<f64>> =
+        parts(text, 3).iter().map(|t| t.trim().parse::<f64>().ok().filter(|x| x.is_finite())).collect();
+    match p.as_deref() {
+        Some([x, y, z]) if text.matches(PARTS).count() == 2 => Some([*x, *y, *z]),
+        _ => None,
+    }
+}
+
+/// The JSON of a snappy table's cell (`key` its column, `t` not empty); what it should be.
+fn snappy_cell_json(key: &str, t: &str) -> Result<Value, String> {
+    let words: Vec<&str> = t.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).collect();
+    let whole = |w: &str| w.parse::<u32>().ok();
+    // As the inside point's fields read them (`.5`, `5.`, `1e2`), finite.
+    let number = |w: &str| {
+        serde_json::from_str::<Value>(w)
+            .ok()
+            .filter(Value::is_number)
+            .or_else(|| w.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| json!(x)))
+    };
+    match key {
+        "file" | "mode" => Ok(json!(t)),
+        "level" | "layers" | "features" if words.len() == 1 => words
+            .first()
+            .and_then(|w| whole(w))
+            .map(|n| json!(n))
+            .ok_or_else(|| format!("{key} `{t}` isn't a whole number")),
+        // A surface's level: the least and the most.
+        "level" if words.len() == 2 => {
+            match (words.first().and_then(|w| whole(w)), words.get(1).and_then(|w| whole(w))) {
+                (Some(a), Some(b)) => Ok(json!([a, b])),
+                _ => Err(format!("level `{t}` is two whole numbers, the least and the most")),
+            }
+        }
+        "distance" => {
+            let mut out = Vec::new();
+            for pair in t.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+                let w: Vec<&str> =
+                    pair.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).collect();
+                match w.as_slice() {
+                    [d, l] => match (number(d), whole(l)) {
+                        (Some(d), Some(l)) => out.push(json!([d, l])),
+                        _ => return Err(format!("distance `{pair}` is a distance and a whole level")),
+                    },
+                    _ => return Err(format!("distance `{pair}` is a distance and a level (`2 4; 4 2`)")),
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        "min" | "max" => {
+            let n: Option<Vec<Value>> = words.iter().map(|w| number(w)).collect();
+            match n {
+                Some(n) if n.len() == 3 => Ok(Value::Array(n)),
+                _ => Err(format!("{key} `{t}` is three numbers, x y z")),
+            }
+        }
+        "level" => Err(format!("level `{t}` is one or two whole numbers")),
+        "layers" | "features" => Err(format!("{key} `{t}` is a whole number")),
+        _ => Err(format!("{key} `{t}` isn't what it takes")),
+    }
 }
 
 /// The parameters that name what a command acts on, kept with `remove: true`.
@@ -104,6 +281,8 @@ fn sent_when_changed(kind: Kind) -> bool {
             | Kind::Model
             | Kind::Partner
             | Kind::Coefficients
+            | Kind::SnappySurfaces
+            | Kind::SnappyBoxes
     )
 }
 
@@ -118,12 +297,22 @@ fn cell(t: &str) -> String {
     t.replace([PARTS, ROWS], "")
 }
 
-/// The rows of a table field's text (blank ones left out), each its cells.
-fn table_rows(text: &str, n: usize) -> Vec<Vec<String>> {
+/// Whether a row of a table field's text is blank.
+fn blank_row(r: &str) -> bool {
+    r.chars().all(|c| c == PARTS || c.is_whitespace())
+}
+
+/// The number of rows of a table field's text (blank ones left out), counted without making them.
+pub(crate) fn table_row_count(text: &str) -> usize {
+    text.split(ROWS).filter(|r| !blank_row(r)).count()
+}
+
+/// The rows of a table field's text (blank ones left out), each its `n` cells.
+pub(crate) fn table_rows(text: &str, n: usize) -> Vec<Vec<String>> {
     text.split(ROWS)
-        .filter(|r| !r.chars().all(|c| c == PARTS || c.is_whitespace()))
+        .filter(|r| !blank_row(r))
         .map(|r| {
-            let mut v: Vec<String> = r.split(PARTS).map(|c| c.trim().to_string()).collect();
+            let mut v: Vec<String> = r.split(PARTS).take(n).map(|c| c.trim().to_string()).collect();
             v.resize(n, String::new());
             v
         })
@@ -318,6 +507,66 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
             }
             Some(rows.iter().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string()))
         }
+        Kind::SnappySurfaces | Kind::SnappyBoxes => {
+            // Over what the card was filled with, by name: a row given null taken away, its
+            // keys given set.
+            let cols = snappy_cols(kind);
+            let m = v.as_object()?;
+            // Each row, `None` once taken away, found by name (looked up, not searched).
+            let mut rows: Vec<Option<Vec<String>>> = table_rows(start, cols.len()).into_iter().map(Some).collect();
+            let mut index: BTreeMap<String, usize> = BTreeMap::new();
+            for (i, r) in rows.iter().enumerate() {
+                index.entry(r.as_ref().and_then(|r| r.first()).cloned().unwrap_or_default()).or_insert(i);
+            }
+            for (name, x) in m {
+                // A name the table's trimmed cells would change (` b`): kept as JSON.
+                if name.is_empty() || name.contains([PARTS, ROWS]) || name.trim() != name {
+                    return None;
+                }
+                let at = index.get(name).copied();
+                let o = match (x, at) {
+                    (Value::Null, Some(i)) => {
+                        *rows.get_mut(i)? = None;
+                        index.remove(name);
+                        continue;
+                    }
+                    // Nothing to take away here: kept as the JSON has it, sent so.
+                    (Value::Null, None) => return None,
+                    (Value::Object(o), _) => o,
+                    _ => return None,
+                };
+                let i = match at {
+                    Some(i) => i,
+                    // A row the table doesn't have, without what a new one needs (a change to
+                    // an entry's row it can't show): kept as JSON, for the command to merge.
+                    None if (kind == Kind::SnappySurfaces && !o.contains_key("mode"))
+                        || (kind == Kind::SnappyBoxes
+                            && !["min", "max", "level"].iter().all(|k| o.contains_key(*k))) =>
+                    {
+                        return None;
+                    }
+                    None => {
+                        let mut row = vec![String::new(); cols.len()];
+                        if let Some(first) = row.first_mut() {
+                            first.clone_from(name);
+                        }
+                        rows.push(Some(row));
+                        index.insert(name.clone(), rows.len() - 1);
+                        rows.len() - 1
+                    }
+                };
+                for (k, x) in o {
+                    // A box's key given null (left as it was by the command): kept as JSON.
+                    if kind == Kind::SnappyBoxes && x.is_null() {
+                        return None;
+                    }
+                    let col = cols.iter().skip(1).position(|c| c == k)? + 1;
+                    let text = snappy_cell_text(kind, k, x)?;
+                    *rows.get_mut(i)?.as_mut()?.get_mut(col)? = text;
+                }
+            }
+            Some(rows.iter().flatten().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string()))
+        }
         Kind::NumberMap(keys) => {
             let m = v.as_object()?;
             if !m.keys().all(|k| keys.contains(&k.as_str())) || !m.values().all(numeric) {
@@ -370,29 +619,98 @@ pub(crate) fn merge_json(value: Option<&Value>, was: Option<&Value>, now: Option
 
 /// A table's text typed in (`value`), filled from `was`, put over the case as it is `now`, row
 /// by row by its first cell: a row not typed in (as it was filled) takes the case's, one typed
-/// stays, one taken away stays away, one added stays.
+/// over keeps the cells typed and takes the case's for the others, one taken away stays away,
+/// one added stays (with an empty value as given: `null`, taken out).
+///
+/// With a row gone from the case, the row goes too unless it was typed over.
+///
+/// A name typed twice: the first merged, the others kept as typed while the first stays (for OK
+/// to refuse), or, with the first gone, when typed over or added.
 pub(crate) fn merge_rows(value: &str, was: &str, now: &str, n: usize) -> String {
-    let (v, w, m) = (table_rows(value, n), table_rows(was, n), table_rows(now, n));
-    let find = |t: &[Vec<String>], k: &str| t.iter().find(|r| r.first().map(String::as_str) == Some(k)).cloned();
+    merge_rows_by(value, was, now, n, false, &|_, _, a, b| a == b)
+}
+
+/// [`merge_rows`] for a [`Kind::SnappySurfaces`] or [`Kind::SnappyBoxes`] table: a cell retyped
+/// to the same value (`2, 3` for `2 3`, an empty file for `<name>.stl`) is left as filled, as OK
+/// takes it, so it follows the case.
+pub(crate) fn merge_snappy_rows(kind: Kind, value: &str, was: &str, now: &str) -> String {
+    let cols = snappy_cols(kind);
+    merge_rows_by(value, was, now, cols.len(), true, &|name, k, a, b| {
+        cols.get(k).is_some_and(|key| same_snappy(kind, key, name, a, b))
+    })
+}
+
+/// [`merge_rows`], two cells of column `c` in row `name` the same when `same(name, c, a, b)`;
+/// `fill_added`: see the added row below.
+fn merge_rows_by(
+    value: &str,
+    was: &str,
+    now: &str,
+    n: usize,
+    fill_added: bool,
+    same: &dyn Fn(&str, usize, &str, &str) -> bool,
+) -> String {
+    let (all, w, m) = (table_rows(value, n), table_rows(was, n), table_rows(now, n));
+    let name_of = |r: &[String]| r.first().cloned().unwrap_or_default();
+    // A name typed twice: the first merged, the others kept as typed (at the end), for OK to
+    // refuse.
+    let mut names = BTreeSet::new();
+    let (v, again): (Vec<Vec<String>>, Vec<Vec<String>>) = all.into_iter().partition(|r| names.insert(name_of(r)));
+    // Rows by name, the first of each (looked up, not searched: a long table pasted in stays quick).
+    let by_name = |t: &[Vec<String>]| {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for r in t {
+            out.entry(name_of(r)).or_insert_with(|| r.clone());
+        }
+        out
+    };
+    let (typed, filled) = (by_name(&v), by_name(&w));
     let mut out: Vec<Vec<String>> = Vec::new();
     for row in &m {
-        let k = row.first().map(String::as_str).unwrap_or("");
-        match (find(&v, k), find(&w, k)) {
+        let name = name_of(row);
+        out.push(match (typed.get(&name), filled.get(&name)) {
             // Taken away by the user.
-            (None, Some(_)) => {}
-            (Some(typed), Some(filled)) if typed != filled => out.push(typed),
-            // Added by the user, the case gaining it meanwhile: the user's.
-            (Some(typed), None) => out.push(typed),
-            _ => out.push(row.clone()),
+            (None, Some(_)) => continue,
+            // Typed over: each cell typed stays, each left as filled takes the case's.
+            (Some(t), Some(f)) if t != f => t
+                .iter()
+                .zip(f)
+                .zip(row)
+                .enumerate()
+                .map(|(c, ((t, f), now))| if same(&name, c, t, f) { now.clone() } else { t.clone() })
+                .collect(),
+            // Added by the user, the case gaining it meanwhile: the user's; with `fill_added`
+            // (where an empty cell of a new row is left out, not taken out), the case's in the
+            // cells left empty.
+            (Some(t), None) => t
+                .iter()
+                .zip(row)
+                .map(|(t, now)| if fill_added && t.is_empty() { now.clone() } else { t.clone() })
+                .collect(),
+            _ => row.clone(),
+        });
+    }
+    // Added, or typed over (a cell retyped to the same isn't).
+    let mine = |row: &[String]| {
+        let name = name_of(row);
+        filled.get(&name).is_none_or(|f| row.iter().zip(f).enumerate().any(|(c, (t, f))| !same(&name, c, t, f)))
+    };
+    let in_case: BTreeSet<String> = m.iter().map(|r| name_of(r)).collect();
+    for row in &v {
+        // Added or typed over, a row the case has taken away since: the user's, kept.
+        if mine(row) && !in_case.contains(&name_of(row)) {
+            out.push(row.clone());
         }
     }
-    for row in &v {
-        let k = row.first().map(String::as_str).unwrap_or("");
-        let added = find(&w, k).is_none();
-        // Typed over a row the case has taken away since: the user's, kept.
-        let edited = find(&w, k).is_some_and(|filled| filled != *row);
-        if (added || edited) && find(&m, k).is_none() {
-            out.push(row.clone());
+    // A name typed again: kept beside its first; with the first gone (not typed in, the case
+    // took it away), by the same rule as a row of its own.
+    let kept_names: BTreeSet<String> = out.iter().map(|r| name_of(r)).collect();
+    let mut kept_again: BTreeSet<String> = BTreeSet::new();
+    for row in again {
+        let name = name_of(&row);
+        if kept_names.contains(&name) || kept_again.contains(&name) || mine(&row) {
+            kept_again.insert(name);
+            out.push(row);
         }
     }
     out.iter().map(|r| r.join(&PARTS.to_string())).collect::<Vec<_>>().join(&ROWS.to_string())
@@ -515,6 +833,71 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
                     && !now.iter().any(|r| r.first() == Some(k))
                 {
                     m.insert(k.clone(), Value::Null);
+                }
+            }
+            Ok((!m.is_empty()).then_some(Value::Object(m)))
+        }
+        Kind::SnappySurfaces | Kind::SnappyBoxes => {
+            let cols = snappy_cols(f.kind);
+            let (now, then) = (table_rows(text, cols.len()), table_rows(was, cols.len()));
+            // Looked up by name, not searched (a long table pasted in stays quick).
+            let mut filled: BTreeMap<&str, &Vec<String>> = BTreeMap::new();
+            for w in &then {
+                filled.entry(w.first().map_or("", String::as_str)).or_insert(w);
+            }
+            let typed: BTreeSet<&str> = now.iter().map(|r| r.first().map_or("", String::as_str)).collect();
+            let mut m = Map::new();
+            let mut seen = BTreeSet::new();
+            for r in &now {
+                let name = r.first().map(String::as_str).unwrap_or("");
+                if name.is_empty() {
+                    return Err(format!("{}: a row without its name", f.label));
+                }
+                if !seen.insert(name) {
+                    return Err(format!("{}: {name} is given twice", f.label));
+                }
+                let before = filled.get(name);
+                let mut o = Map::new();
+                for (k, key) in cols.iter().enumerate().skip(1) {
+                    let t = r.get(k).map(String::as_str).unwrap_or("");
+                    let old = before.and_then(|b| b.get(k)).map(String::as_str);
+                    if old.is_some_and(|o| same_snappy(f.kind, key, name, o, t)) {
+                        continue;
+                    }
+                    if t.is_empty() {
+                        if *key == "mode" {
+                            return Err(format!("{} ({name}): give its mode, cut or refine", f.label));
+                        }
+                        if f.kind == Kind::SnappyBoxes {
+                            return Err(format!("{} ({name}): give its min, max and level", f.label));
+                        }
+                        // Emptied: taken away (a new row's empty cells: left out).
+                        if before.is_some() {
+                            o.insert((*key).to_string(), Value::Null);
+                        }
+                        continue;
+                    }
+                    let mut v = snappy_cell_json(key, t).map_err(|e| format!("{} ({name}): {e}", f.label))?;
+                    // A surface's level of one number: the least and the most; a box's is one.
+                    if f.kind == Kind::SnappySurfaces && *key == "level" && v.is_number() {
+                        v = json!([v, v]);
+                    }
+                    if f.kind == Kind::SnappyBoxes && *key == "level" && !v.is_number() {
+                        return Err(format!("{} ({name}): level `{t}` is one whole number", f.label));
+                    }
+                    o.insert((*key).to_string(), v);
+                }
+                if before.is_none() && f.kind == Kind::SnappySurfaces && !o.contains_key("mode") {
+                    return Err(format!("{} ({name}): give its mode, cut or refine", f.label));
+                }
+                if before.is_none() || !o.is_empty() {
+                    m.insert(name.to_string(), Value::Object(o));
+                }
+            }
+            // A row taken away: taken out.
+            for k in filled.keys() {
+                if !typed.contains(k) {
+                    m.insert((*k).to_string(), Value::Null);
                 }
             }
             Ok((!m.is_empty()).then_some(Value::Object(m)))
@@ -697,26 +1080,38 @@ static SPECS: &[Spec] = &[
     },
     Spec {
         id: "mesh.snappy",
-        intro: "A region meshed from the case's STL surfaces by snappyHexMesh: its snappy entry, and its snappyHexMeshDict written from it after the surfaces are checked. The surfaces and refinement boxes go in Edit as JSON: {\"surfaces\": {\"buildings\": {\"mode\": \"cut\", \"level\": [2, 3], \"layers\": 2, \"role\": \"coupled\"}}}.",
+        intro: "A region meshed from the case's STL surfaces by snappyHexMesh: its snappy entry, and its snappyHexMeshDict written from it after the surfaces are checked. While the card is open the 3D view shows the region's blocks, the refinement boxes and the inside point.",
         fields: &[
             field("region", "Region", Kind::WorkflowRegion, "A fluid or vegetation region of system/umcfWorkflow"),
             field(
                 "inside",
                 "Inside point",
                 Kind::Numbers(&["x", "y", "z"]),
-                "A point in the cells the region keeps (m); empty: the region's",
+                "A point in the cells the region keeps (m), shown in the 3D view; filled from the region's snappy entry; empty: not sent (the entry's stays)",
+            ),
+            field(
+                "surfaces",
+                "Surfaces",
+                Kind::SnappySurfaces,
+                "The STL surfaces it cuts at or refines near, a row each, filled from the region's snappy entry. File: in constant/triSurface (empty: <name>.stl). Mode: cut (the mesh ends at it, a patch of its name) or refine (only the cells near it). Level: the least and the most (`2 3`; one number for both) of a cutting surface. Distance: a refining surface's distances and levels, the nearest first (`2 4; 4 2`). Layers: cells added along a cutting surface. Features: the level its feature edges are refined to. A cell emptied takes it away, a row taken away the surface; a row renamed is the surface taken out and a new one added (its role and solids go with the old name). A patch's role: Describe a patch, or Edit as JSON (the table is then not offered, the surfaces sent as the JSON has them)",
+            ),
+            field(
+                "boxes",
+                "Refinement boxes",
+                Kind::SnappyBoxes,
+                "Boxes whose cells are refined to their level, a row each (min and max: x y z, m; level: one whole number), shown in the 3D view; filled from the region's snappy entry. Every cell is needed; a row taken away takes the box out, a row renamed is the box taken out and a new one added",
             ),
             field(
                 "expansion",
                 "Layer expansion",
                 Kind::Number("the region's"),
-                "The layers' expansion ratio; empty: the region's (1.2 when it has none; null in Edit as JSON takes it away)",
+                "The layers' expansion ratio; filled from the region's entry; empty: left as the region's (1.2 when it has none; null in Edit as JSON takes it away)",
             ),
             field(
                 "firstLayer",
                 "First layer",
                 Kind::Number("the region's"),
-                "The first layer's thickness (m); empty: the region's (relative to the cells when it has none; null in Edit as JSON takes it away)",
+                "The first layer's thickness (m); filled from the region's entry; empty: left as the region's (relative to the cells when it has none; null in Edit as JSON takes it away)",
             ),
             field(
                 "replace",
@@ -1618,12 +2013,20 @@ pub(crate) fn show(
                         }
                     }
                 }
-                Kind::RegionRows | Kind::MaterialRows | Kind::Coefficients => {
+                Kind::RegionRows
+                | Kind::MaterialRows
+                | Kind::Coefficients
+                | Kind::SnappySurfaces
+                | Kind::SnappyBoxes => {
                     let label = ui.label(f.label);
                     if !f.tip.is_empty() {
                         label.on_hover_text(f.tip);
                     }
                     let offered = form.options.get(f.key).cloned().unwrap_or_default();
+                    // What Edit as JSON gave that a table sent by its changes can't hold: sent
+                    // as it is, so the table isn't offered (rows typed would be sent over it,
+                    // the entry's other rows taken out).
+                    let held = sent_when_changed(f.kind) && form.extra.contains_key(f.key);
                     let text = form.values.entry(f.key).or_default();
                     let cols: Vec<Col<'_>> = match f.kind {
                         Kind::RegionRows => vec![
@@ -1634,11 +2037,30 @@ pub(crate) fn show(
                         Kind::MaterialRows => {
                             vec![Col::Text("Cell zone", 90.0, "brick"), Col::Pick("Model", 130.0, &offered)]
                         }
+                        Kind::SnappySurfaces => vec![
+                            Col::Text("Name", 76.0, "buildings"),
+                            Col::Pick("File", 120.0, &form.surfaces),
+                            Col::Choice("Mode", 58.0, &["cut", "refine"]),
+                            Col::Text("Level", 40.0, ""),
+                            Col::Text("Distance", 64.0, ""),
+                            Col::Text("Layers", 40.0, ""),
+                            Col::Text("Features", 40.0, ""),
+                        ],
+                        Kind::SnappyBoxes => vec![
+                            Col::Text("Name", 70.0, "street"),
+                            Col::Text("Min", 96.0, "x y z"),
+                            Col::Text("Max", 96.0, "x y z"),
+                            Col::Text("Level", 40.0, "2"),
+                        ],
                         _ => {
                             vec![Col::Pick("Coefficient", 106.0, &offered), Col::Text("Value", 66.0, "none: out")]
                         }
                     };
-                    ui.vertical(|ui| table(ui, (spec.id, f.key), text, &cols));
+                    if held {
+                        ui.label(RichText::new("As Edit as JSON gives it: changed there").weak());
+                    } else {
+                        ui.vertical(|ui| table(ui, (spec.id, f.key), text, &cols));
+                    }
                 }
                 Kind::Axis | Kind::Missing(_) | Kind::Sides(_) => {
                     let label = ui.label(f.label);
@@ -1821,7 +2243,9 @@ pub(crate) fn show(
                         | Kind::Partner
                         | Kind::RegionRows
                         | Kind::MaterialRows
-                        | Kind::Coefficients => {}
+                        | Kind::Coefficients
+                        | Kind::SnappySurfaces
+                        | Kind::SnappyBoxes => {}
                     }
                 }
             }
@@ -1953,7 +2377,7 @@ fn block_parts(row: &str) -> Vec<&str> {
 
 /// The number of stations an axis' table gives (its rows not blank).
 fn stations(text: &str) -> usize {
-    text.split(ROWS).filter(|r| !r.chars().all(|c| c == PARTS || c.is_whitespace())).count()
+    table_row_count(text)
 }
 
 /// The rows of a table shown at most, past which it is edited as text.
@@ -2253,6 +2677,39 @@ mod tests {
     }
 
     #[test]
+    fn a_snappy_table_keeps_as_json_what_its_rows_cant_hold() {
+        // A name its trimmed cells would change, a key that isn't a column: kept as JSON.
+        assert_eq!(grid_text(Kind::SnappySurfaces, &json!({" b": {"mode": "cut"}}), ""), None);
+        assert_eq!(grid_text(Kind::SnappySurfaces, &json!({"b": {"role": "ground"}}), ""), None);
+        // A padded file or mode the trimmed cell would send changed: kept as JSON.
+        assert_eq!(grid_text(Kind::SnappySurfaces, &json!({"b": {"file": " c.stl "}}), "b|b.stl|cut|||| "), None);
+        assert_eq!(grid_text(Kind::SnappySurfaces, &json!({"b": {"mode": "cut "}}), ""), None);
+        // A box's level of two numbers (a surface's is): kept as JSON, for the command.
+        let street = json!({"s": {"min": [0, 0, 0], "max": [1, 1, 1], "level": [2, 3]}});
+        assert_eq!(grid_text(Kind::SnappyBoxes, &street, ""), None);
+        // A change to a row the table doesn't have (an entry it can't show): kept as JSON.
+        assert_eq!(grid_text(Kind::SnappyBoxes, &json!({"s": {"level": 3}}), ""), None);
+        assert_eq!(grid_text(Kind::SnappySurfaces, &json!({"t": {"level": [2, 3]}}), ""), None);
+        assert_eq!(
+            grid_text(Kind::SnappySurfaces, &json!({"b": {"mode": "cut", "level": [1, 2]}}), "").as_deref(),
+            Some("b||cut|1 2|||")
+        );
+        // A cell's error says what the column takes.
+        assert_eq!(snappy_cell_json("layers", "2 3").unwrap_err(), "layers `2 3` is a whole number");
+        assert_eq!(snappy_cell_json("level", "1 2 3").unwrap_err(), "level `1 2 3` is one or two whole numbers");
+        assert_eq!(snappy_cell_json("layers", "2,").unwrap(), json!(2));
+        // An empty file is `<name>.stl`: emptied from it, or left empty over it, unchanged.
+        let spec = spec("mesh.snappy").unwrap();
+        let field = spec.fields.iter().find(|f| f.key == "surfaces").unwrap();
+        assert_eq!(grid_json(field, "b||cut|1 2|||", "b|b.stl|cut|1 2|||").unwrap(), None);
+        assert_eq!(grid_json(field, "b|b.stl|cut|1 2|||", "b||cut|1 2|||").unwrap(), None);
+        assert_eq!(
+            grid_json(field, "b||cut|1 2|||", "b|c.stl|cut|1 2|||").unwrap(),
+            Some(json!({"b": {"file": null}}))
+        );
+    }
+
+    #[test]
     fn a_snappy_forms_surfaces_go_as_json() {
         let spec = spec("mesh.snappy").unwrap();
         let mut f = FormState::default();
@@ -2539,5 +2996,51 @@ mod tests {
         assert_eq!(merge_rows("rho|1600\nmu|5", "rho|1600\nmu|3", "rho|1600", 2), "rho|1600\nmu|5");
         // A row added that the case gained meanwhile: the user's value.
         assert_eq!(merge_rows("rho|1600\nwcap|5", "rho|1600", "rho|1600\nwcap|2", 2), "rho|1600\nwcap|5");
+        // A row of several cells typed over: the cells typed stay, the others follow the case.
+        assert_eq!(merge_rows("b|cut|2 3|3", "b|cut|2 3|2", "b|cut|4 4|2", 4), "b|cut|4 4|3");
+        // A snappy cell retyped to the same value follows the case as well.
+        assert_eq!(
+            merge_snappy_rows(Kind::SnappySurfaces, "b|b.stl|cut|2, 3|||", "b|b.stl|cut|2 3|||", "b|b.stl|cut|4 4|||"),
+            "b|b.stl|cut|4 4|||"
+        );
+        // An emptied file is `<name>.stl` here too: another command's file is followed, not
+        // sent back to the default.
+        assert_eq!(
+            merge_snappy_rows(Kind::SnappySurfaces, "b||cut|2 3|||", "b|b.stl|cut|2 3|||", "b|c.stl|cut|2 3|||"),
+            "b|c.stl|cut|2 3|||"
+        );
+        // A row only retyped to the same that the case took away meanwhile: gone with it, not
+        // sent back as a new surface.
+        assert_eq!(merge_snappy_rows(Kind::SnappySurfaces, "b|b.stl|cut|2, 3|||", "b|b.stl|cut|2 3|||", ""), "");
+        // A name typed twice: the first merged (it follows the case, or goes with it), the
+        // others kept as typed, for OK to refuse.
+        let twice = "s|0 0 0|1 1 1|1\ns|0 0 0|2 2 2|1\nt|0 0 0|1 1 1|1";
+        let was = "s|0 0 0|1 1 1|1\nt|0 0 0|1 1 1|1";
+        assert_eq!(merge_snappy_rows(Kind::SnappyBoxes, twice, was, ""), "s|0 0 0|2 2 2|1");
+        assert_eq!(
+            merge_snappy_rows(Kind::SnappyBoxes, twice, was, "s|0 0 0|1 1 1|2\nt|0 0 0|1 1 1|1"),
+            "s|0 0 0|1 1 1|2\nt|0 0 0|1 1 1|1\ns|0 0 0|2 2 2|1"
+        );
+        // Its first gone with the case: a copy as it was filled goes too, one typed over stays.
+        let copy = "s|0 0 0|1 1 1|1\ns|0 0 0|1 1 1|1";
+        assert_eq!(merge_snappy_rows(Kind::SnappyBoxes, copy, "s|0 0 0|1 1 1|1", ""), "");
+        // The coefficients: with the material gone, only the rows typed over or added stay; a
+        // row added empty (taken out) that the file gained stays empty.
+        assert_eq!(merge_rows("rho|1600\nmu|5\nwcap|2", "rho|1600\nmu|3", "", 2), "mu|5\nwcap|2");
+        assert_eq!(merge_rows("rho|1600\nwcap|", "rho|1600", "rho|1600\nwcap|2", 2), "rho|1600\nwcap|");
+        // A box's level of two numbers isn't its one (refused at OK, not taken as unchanged).
+        assert!(!same_snappy(Kind::SnappyBoxes, "level", "s", "2 2", "2"));
+        assert!(same_snappy(Kind::SnappySurfaces, "level", "s", "2 2", "2"));
+        // A row added that the case gained meanwhile: the cells left empty take the case's
+        // (not sent as taken away).
+        assert_eq!(
+            merge_snappy_rows(Kind::SnappySurfaces, "c|c.stl|refine||2 2||", "", "c|c.stl|refine||1 1||3"),
+            "c|c.stl|refine||2 2||3"
+        );
+        // One typed over: kept.
+        assert_eq!(
+            merge_snappy_rows(Kind::SnappySurfaces, "b|b.stl|cut|2 4|||", "b|b.stl|cut|2 3|||", ""),
+            "b|b.stl|cut|2 4|||"
+        );
     }
 }

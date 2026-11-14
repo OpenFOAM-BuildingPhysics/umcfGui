@@ -2630,7 +2630,7 @@ mod tests {
     }
 
     #[test]
-    fn a_grid_of_blocks_is_drawn_as_the_cpu_view_draws_it() {
+    fn a_grid_of_blocks_its_refinement_boxes_and_inside_point_are_drawn_as_the_cpu_view_draws_them() {
         let scene = cut_scene();
         let b = scene.bbox().unwrap();
         let span = |lo: f64, hi: f64, n: usize| -> Vec<f64> {
@@ -2643,6 +2643,9 @@ mod tests {
             stations: [vec![lo.x, hi.x], vec![lo.y, hi.y], vec![lo.z, hi.z]],
             // A missing block, drawn by its edges.
             missing: vec![[[lo.x, lo.y, lo.z], [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, (lo.z + hi.z) / 2.0]]],
+            // A refinement box and the inside point's cross (the snappy card), in their colour.
+            refine: vec![[[(lo.x + hi.x) / 2.0, lo.y, lo.z], [hi.x, (lo.y + hi.y) / 2.0, hi.z]]],
+            inside: Some([(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, hi.z]),
         };
         // Many thin lines: the pixels each view adds for them (on a line's border either may
         // or may not take a pixel), as for the faces' edges.
