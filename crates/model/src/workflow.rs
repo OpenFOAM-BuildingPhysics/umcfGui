@@ -306,7 +306,8 @@ impl Workflow {
         let mut kept: Vec<Kept> = Vec::new();
         // (With the directory made and marked for it, as the generated scripts do.)
         let mut cleared: Option<Cleared> = None;
-        // Directories a mkdir made that are still there: a copy into one nests in it.
+        // Directories where a background could be kept (`constant/polyMesh.*`) that a mkdir made
+        // and are still there: a copy into one nests in it.
         let mut made_now: Vec<String> = Vec::new();
         // The restore of a kept background the mesh being built starts from: its line, step and
         // directory, and the lines of the copy should it be removed before that mesh is moved to
@@ -799,18 +800,18 @@ impl Workflow {
                 _ => &[],
             };
             made_now.retain(|m| !gone_paths.iter().any(|p| takes(p, m, false, false, &glob_calls)));
-            // With the directories above each (`mkdir -p a/b` makes `a` too; recorded either way,
-            // only compared with where a background is kept).
+            // Where a background could be kept that mkdir made, also as one above the path it
+            // was given (`mkdir -p constant/polyMesh.bckp/spare`): only those are compared, so
+            // only those are recorded, one name of at most [`GLOB_MAX`] bytes per path.
             if let StepKind::MakeDir { paths } = &st.kind {
                 for p in paths {
-                    let mut m = String::new();
-                    for part in parts(p) {
-                        if !m.is_empty() {
-                            m.push('/');
-                        }
-                        m.push_str(part);
-                        if !made_now.contains(&m) && made_now.len() < MAX_MADE {
-                            made_now.push(m.clone());
+                    let mut ps = parts(p);
+                    if let (Some("constant"), Some(name)) = (ps.next(), ps.next())
+                        && name.len() <= GLOB_MAX
+                    {
+                        let m = format!("constant/{name}");
+                        if keep_dir(&m) && !made_now.contains(&m) && made_now.len() < MAX_MADE {
+                            made_now.push(m);
                         }
                     }
                 }
@@ -1792,9 +1793,13 @@ pub fn background_ok<'a>(
 /// kept background's directory name is at most this long too.
 const GLOB_MAX: usize = 255;
 
+/// The longest path of a removal or move the reading matches against a kept copy (Linux's
+/// `PATH_MAX`); a longer one answers [`takes`]'s doubt.
+const PATH_MAX: usize = 4096;
+
 /// The most pattern matches a script's reading makes; after them, [`takes`] answers its doubt
-/// (a kept copy counts as gone, a made directory as still there): with [`GLOB_MAX`] it bounds
-/// the work.
+/// (a kept copy counts as gone, a made directory as still there): with [`GLOB_MAX`] and
+/// [`PATH_MAX`] it bounds the work.
 const GLOB_CALLS: usize = 10_000;
 
 /// The parts of a script's path, as the shell finds it: without `.` and empty parts
@@ -1809,9 +1814,13 @@ fn parts(p: &str) -> impl Iterator<Item = &str> {
 /// `dir/*`). Inside, the parts down to `dir` must be written out, as a pattern there
 /// (`constant/*/polyMesh`) names the copy only through a file it may not hold. An absolute path
 /// (or one starting with `..`) is outside the case. Where it can't tell (a `..` part further
-/// in, a part over [`GLOB_MAX`] bytes, or past [`GLOB_CALLS`] pattern matches) it answers
-/// `doubt`: what errs on the safe side for the caller.
+/// in, a part over [`GLOB_MAX`] bytes, a path over [`PATH_MAX`] bytes, or past [`GLOB_CALLS`]
+/// pattern matches) it answers `doubt`: what errs on the safe side for the caller.
 fn takes(path: &str, dir: &str, inside: bool, doubt: bool, calls: &std::cell::Cell<usize>) -> bool {
+    // Longer than a path the system takes (`rm` fails on it): bounds the work for each copy.
+    if path.len() > PATH_MAX {
+        return doubt;
+    }
     let (p, d): (Vec<&str>, Vec<&str>) = (parts(path).collect(), parts(dir).collect());
     if path.starts_with('/') || p.first() == Some(&"..") {
         return false;
@@ -1966,7 +1975,8 @@ struct Cleared {
     marked: bool,
 }
 
-/// The most directories made by mkdir the reading follows.
+/// The most directories made by mkdir the reading follows (each a `constant/polyMesh.*` name
+/// of at most [`GLOB_MAX`] bytes, whatever the depth of the path mkdir was given).
 const MAX_MADE: usize = 10_000;
 
 /// Script lines and their steps, as listed when they don't fit.

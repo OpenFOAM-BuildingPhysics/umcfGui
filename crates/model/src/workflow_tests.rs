@@ -974,6 +974,23 @@ snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n";
         let found = wf.meshes.get(1).and_then(|m| m.build.background());
         assert_eq!(found, keep.then_some("air"), "{script}\n{:?}", wf.unmatched);
     }
+    // A deep path given to mkdir (hostile input): only where a background could be kept is
+    // recorded, the copy into it still nests.
+    // (Every prefix of 10 000 parts of 255 bytes kept would be about 13 GB.)
+    let part = format!("{}/", "a".repeat(255));
+    let deep = format!("mkdir -p constant/polyMesh.bckp/{}x\n", part.repeat(10_000));
+    let script = made_first.replace("mkdir -p constant/polyMesh.bckp\n", &deep);
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+    assert!(lines(&wf).contains(&3), "{:?}", lines(&wf));
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // A removal longer than a path the system takes: in doubt, the copy counts as gone.
+    let long = format!(
+        "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
+rm -rf constant/x/{}\ncp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n",
+        part.repeat(20)
+    );
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &long)]);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
     // Cleaned up and made again, but not marked, then the mesh itself copied in: nests, not a
     // keep; marked and its contents copied in (the generated form): a keep.
     let unmarked = "#!/bin/sh\nblockMesh\nrm -rf constant/polyMesh.bckp\nmkdir -p constant/polyMesh.bckp\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
