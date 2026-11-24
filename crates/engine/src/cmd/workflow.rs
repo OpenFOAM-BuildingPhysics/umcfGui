@@ -755,6 +755,142 @@ fn scripts(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     Ok(Outcome::new(message, json!({ "version": version.to_string(), "changed": changed, "scripts": texts })))
 }
 
+pub(super) const DICTIONARIES: CommandSpec = CommandSpec {
+    id: "workflow.dictionaries",
+    label: "Write the dictionaries",
+    menu: "Case/Workflow/Write the dictionaries",
+    shortcut: None,
+    params: "region: one region (default: every region). replace: true to write over a dictionary edited by hand or not written by umcfGui (case.save keeps a backup of each). Writes, from system/umcfWorkflow and for its OpenFOAM version (the case's when it names none), each region's system/<region>/changeDictionaryDict whose steps run changeDictionary: every patch with a partner, mappedWall to it when its role is a wall's (ground, coupled, interior, bottom) and mapped (mappedPatch in OpenFOAM-8) when it is an open side's (inlet, outlet, side, top, sky), with neighbourRegion and neighbourPatch (OpenFOAM-8: sampleMode nearestPatchFace, sampleRegion, samplePatch) and a uniform offset of (0 0 0); a fluid's and a solid's patches paired by method nearest (OpenFOAM-12), a vegetation patch and its twin without; the vegetation region's canopy mapped to the air's cells (mappedInternal, offsetMode normal, distance 0; OpenFOAM-8: mappedWall, sampleMode nearestCell), the air being the fluid region its other patches are coupled to, else the radiation's lai region, else the only fluid region. Patches without a partner are left as the mesh makes them. Generated, with a checksum: one written by umcfGui and unchanged since is written over without replace. Refused, writing none: a description with problems (workflow.show lists them), a patch with a partner but no role, a partner region the description doesn't have, a canopy with a partner or with no air to map to, a region named that the description doesn't have or whose steps don't run changeDictionary, a dictionary there that doesn't load (or a directory: mend or remove it), one that is a symbolic link or the same file as another dictionary, and, without replace, one there that differs and wasn't written by umcfGui. The outcome lists what was written, written over by hand edits, and left as it was, and notes a region with coupled patches whose steps don't run changeDictionary. case.save writes them; edit.undo takes them back.",
+    enabled: needs_case,
+    run: dictionaries,
+    journal: true,
+    undoable: true,
+    reads_only: false,
+};
+
+/// `workflow.dictionaries`: the dictionaries generated from the description.
+fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
+    use umcf_model::coupling;
+    let p = Params::new(DICTIONARIES.id, p, &["region", "replace"])?;
+    let replace = p.bool("replace")?.unwrap_or(false);
+    let only = p.str("region")?.map(str::to_string);
+    let o = s.opened_mut()?;
+    let Some((d, problems)) = o.case.description() else {
+        return Err(Error::Failed(format!(
+            "the case has no {PATH} (or it doesn't load): workflow.import writes one from the case first"
+        )));
+    };
+    if let Some(first) = problems.first() {
+        return Err(Error::Failed(format!(
+            "{PATH} has {} ({}: {}): mend it first, as the dictionaries would leave out what can't be read (workflow.show lists them)",
+            count(problems.len(), "problem"),
+            first.at,
+            first.message
+        )));
+    }
+    let Some(version) = d.version.or(o.case.layout.version) else {
+        return Err(Error::Failed(format!(
+            "{PATH} names no OpenFOAM version, and the case's can't be told: set version 8 or 12"
+        )));
+    };
+    if let Some(name) = &only {
+        match d.region(name) {
+            None => return Err(Error::Failed(format!("region {name} isn't in {PATH}"))),
+            Some(r) if !coupling::runs(r) => {
+                return Err(Error::Failed(format!(
+                    "the steps of region {name} in {PATH} don't run changeDictionary: it has no dictionary to write"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    let mut notes = Vec::new();
+    let mut texts = Vec::new();
+    for r in d.regions.iter().filter(|r| only.as_ref().is_none_or(|n| *n == r.name)) {
+        if !coupling::runs(r) {
+            if r.patches.iter().any(|q| q.partner.is_some()) {
+                notes.push(format!(
+                    "region {} has coupled patches, but its steps don't run changeDictionary: its dictionary isn't written",
+                    r.name
+                ));
+            }
+            continue;
+        }
+        let text = coupling::dict(&d, &r.name, version)
+            .map_err(|e| Error::Failed(format!("{}: {e}: no dictionary is written", DICTIONARIES.id)))?;
+        texts.push((coupling::dict_path(&r.name), text));
+    }
+    let limit = o.case.options().dict_bytes;
+    // What is there now: the same, one umcfGui wrote (written over), or another (by hand).
+    let mut written = Vec::new();
+    let mut by_hand = Vec::new();
+    let mut same = Vec::new();
+    for (path, text) in &texts {
+        if text.len() as u64 > limit {
+            return Err(Error::Failed(format!(
+                "{path} would be {} bytes, more than the case reads as a dictionary ({limit}): no dictionary is written",
+                text.len()
+            )));
+        }
+        match o.case.dict(path) {
+            Some(doc) => {
+                let old = doc.to_string();
+                if old == *text {
+                    same.push(path.clone());
+                } else if umcf_model::blocks::untouched(&old) {
+                    written.push(path.clone());
+                } else {
+                    by_hand.push(path.clone());
+                }
+            }
+            // A file there that doesn't load (or a directory): not written over, even with replace.
+            None if o.case.exists(path) == Some(true) => {
+                return Err(Error::Failed(format!(
+                    "{path} is there but doesn't load as a dictionary (or is a directory): mend or remove it first: no dictionary is written"
+                )));
+            }
+            None => written.push(path.clone()),
+        }
+    }
+    if !by_hand.is_empty() && !replace {
+        return Err(Error::Failed(format!(
+            "{} {} edited by hand or not written by umcfGui: pass \"replace\": true to write over {} (case.save keeps a backup of each): no dictionary is written",
+            by_hand.join(", "),
+            if by_hand.len() == 1 { "was" } else { "were" },
+            if by_hand.len() == 1 { "it" } else { "them" }
+        )));
+    }
+    for (path, text) in &texts {
+        if same.contains(path) {
+            continue;
+        }
+        o.case.put_dict(o.fs.as_ref(), path, text).map_err(|e| match e {
+            umcf_model::Error::IsLink(_) => Error::Failed(format!(
+                "{path} is a symbolic link (to another file or nothing): it isn't written over: no dictionary is written"
+            )),
+            umcf_model::Error::IsDict(_) => Error::Failed(format!(
+                "{path} is the same file as another of the case's dictionaries: it isn't written over: no dictionary is written"
+            )),
+            e => e.into(),
+        })?;
+    }
+    let changed: Vec<&String> = written.iter().chain(&by_hand).collect();
+    let message = if texts.is_empty() {
+        format!("no region's steps in {PATH} run changeDictionary: no dictionary to write")
+    } else if changed.is_empty() {
+        format!("the dictionaries are as {PATH} has them already, for {version}: nothing to write")
+    } else {
+        format!(
+            "{}: written from {PATH}, for {version}",
+            changed.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+        )
+    };
+    Ok(Outcome::new(
+        message,
+        json!({ "version": version.to_string(), "written": written, "replaced": by_hand, "unchanged": same, "notes": notes }),
+    ))
+}
+
 /// The outcome of an edit: the message, and the description as it is now.
 pub(crate) fn edited(s: &Session, message: String, r: &EditReport) -> Result<Outcome, Error> {
     let (d, problems) = s.case().and_then(umcf_model::Case::description).unwrap_or_default();

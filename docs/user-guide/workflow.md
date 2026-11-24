@@ -129,13 +129,68 @@ The `workflow` example of the `umcf-model` crate
 (`cargo run -p umcf-model --example workflow -- <case> [--write]`) still writes them from the
 case's own scripts, read as above, without a description.
 
+## Writing the dictionaries
+
+`workflow.dictionaries` writes, from the [workflow description](#the-workflow-description) and
+for its OpenFOAM version, the dictionaries the scripts' steps read that carry only names and
+types. So far that is each region's `system/<region>/changeDictionaryDict`, for a region whose
+steps run `changeDictionary` (the others of [gaps](../gaps.md) row 4 follow). It types the
+patches by their roles and points them at their partners, as the
+[coupling rules](../case-requirements.md#coupling-rules) say:
+
+| Patch | OpenFOAM-12 | OpenFOAM-8 |
+|---|---|---|
+| a wall with a partner (`ground`, `coupled`, `interior`, `bottom`) | `mappedWall`, `neighbourRegion`, `neighbourPatch` | `mappedWall`, `sampleMode nearestPatchFace`, `sampleRegion`, `samplePatch` |
+| an open side with a partner (`inlet`, `outlet`, `side`, `top`, `sky`: the vegetation region's sides and top) | `mapped`, the same | `mappedPatch`, the same |
+| the vegetation region's `canopy` | `mappedInternal`, `neighbourRegion` the air, `offsetMode normal; distance 0;` | `mappedWall`, `sampleMode nearestCell`, `sampleRegion` the air |
+
+- Every mapped patch has `offsetMode uniform; offset (0 0 0);`. A fluid's patch and a solid's
+  are paired by the nearest face (`method nearest` in OpenFOAM-12), as the 3×3 cases do; a
+  vegetation patch and its air twin, made from the same mesh, take no `method`. The air the
+  canopy maps to is the fluid region the vegetation's other patches are coupled to, else the
+  radiation's `lai` region, else the only fluid region.
+- Patches without a partner (and not the canopy) aren't in it: the mesh's steps type them.
+  `changeDictionary` adds keys to a patch rather than replacing it, so keys the mesh already
+  had stay (a vegetation region split from the air keeps the air patches' `neighbourPatch` on
+  its `mappedInternal` patches, which OpenFOAM-12 doesn't read).
+- Refused, writing none: a description with problems, a patch with a partner but no role (which
+  can't tell a wall from an open side: `workflow.patch` gives it one), a partner region the
+  description doesn't have, a canopy with a partner or with no air to map to.
+- Generated, with a checksum: one umcfGui wrote and nobody changed since is written over as the
+  description changes. One edited by hand or not written by umcfGui is written over only with
+  `replace: true`; `case.save` keeps it in `.umcfgui/backup/` and `edit.undo` takes the write
+  back. One that doesn't load (or a directory there), a symbolic link and one that is the same
+  file as another dictionary aren't written over, and nothing is written then. `region` writes
+  one region's only; a region with coupled patches whose steps don't run `changeDictionary` is
+  noted.
+- The case check (`workflow.change-dictionary`) says when one is missing, doesn't load, was
+  written from other roles or partners, or is the case's own and maps a patch otherwise (its
+  type, or the region and patch it maps to: OpenFOAM-12's older `sampleRegion` and
+  `samplePatch` count) or changes a patch the description doesn't map; the case's own that maps
+  them as the description does is fine, its other settings its own. It isn't checked while the
+  description has problems. A patch mapped only through a pattern (`"air_to_.*"`) or a group
+  in the case's own is said not to be there.
+
+```sh
+umcf-cli run --case path/to/case --cmd 'workflow.import={}' \
+  --cmd 'workflow.dictionaries={"replace":true}' --cmd 'case.save={}'
+```
+
+On the three 3×3 cases (OpenFOAM-8 and -12) the dictionaries written from the imported
+description map every patch as the cases' own do. On the street canyon with vegetation
+(`streetCanyon_CFDHAM_veg`), `Allprepare` run with them makes the same meshes as with the
+tutorial's own: byte for byte in OpenFOAM-8; in OpenFOAM-12 with `method nearest` added to the
+air's and solids' pairs, and `Allrun` then gives the same fields.
+
 ## The workflow description
 
 The workflow is also kept in the case itself, as `system/umcfWorkflow`: an OpenFOAM-style
 dictionary that names each region with its kind, how its mesh is built and the steps after it,
 each patch with its role and partner, the radiation pre-processing and the solver. It is the
 first piece of [the common workflow](../common-workflow.md): the scripts are written from it
-(`workflow.scripts`, [above](#writing-the-scripts)), and the dictionaries are to be.
+(`workflow.scripts`, [above](#writing-the-scripts)), and so are the dictionaries that only carry
+names and types (`workflow.dictionaries`, [above](#writing-the-dictionaries); so far each
+region's `changeDictionaryDict`).
 
 ```c++
 version     12;
@@ -213,7 +268,9 @@ is the vegetation patch that maps to the air's cells; the air's inlet, outlet an
 from the patch's own velocity condition, not one given by a group or a pattern
 (`atmBoundaryLayerInletVelocity`, `inletOutlet`, `slip`); `top`, `ground`, `interior`, `bottom`
 and `sides` from their names; the vegetation region's patches
-take their air twin's role, the open sides and the top becoming `sky`. What it can't tell is
+take their air twin's role, the open sides and the top becoming `sky` (one mapped to its twin
+whose role isn't told, as the tutorials' empty `buildings`, is `coupled` when it is a
+`mappedWall` and `sky` when it is `mapped` or `mappedPatch`). What it can't tell is
 listed and left without a role. Each region's [blocks](#blocks) are read from the
 `blockMeshDict` its mesh reads, when that is a grid of blocks, and its [snappy](#snappy) entry
 from the `snappyHexMeshDict` its `snappyHexMesh` step reads; the import writes nothing but the
@@ -1094,4 +1151,5 @@ goes through *Edit as JSON*: `"role": null`, sent as given). *Back to the form* 
 again from what the JSON names, as the description has it then, with the JSON over it; a value
 a field can't hold (a name that isn't text) is kept and sent as it is, for the command to
 refuse. *Write workflow description*
-and *Write the scripts* are forms of their *replace* checkbox.
+and *Write the scripts* are forms of their *replace* checkbox; *Write the dictionaries* has the
+region (left to choose: every region) and *replace*.
