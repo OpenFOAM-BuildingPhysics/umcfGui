@@ -317,6 +317,42 @@ fn hostile_scripts_are_read_within_limits() {
     // Subshells alone still stop at MAX_WORK.
     let s = parse("Allrun", &"(\n)\n".repeat(600_000));
     assert!(s.truncated);
+    // A long literal word is cut at MAX_VALUE, not resolved, and not kept whole.
+    let s = parse("Allprepare", &format!("mkdir -p constant/{}\n", "é".repeat(1 << 20)));
+    let paths = |s: &Script| -> usize {
+        s.steps
+            .iter()
+            .map(|st| match &st.kind {
+                StepKind::MakeDir { paths } => paths.iter().map(String::len).sum(),
+                _ => 0,
+            })
+            .sum()
+    };
+    assert!(s.steps.len() == 1 && s.steps.iter().all(|st| st.unresolved), "{:?}", s.steps.len());
+    assert!(paths(&s) <= MAX_VALUE, "{}", paths(&s));
+    // A loop repeating a long word copies it each pass: reading stops at MAX_EXPANDED.
+    let word = "a".repeat(60_000);
+    let s = parse("Allprepare", &format!("for i in {}; do mkdir -p constant/{word}; done\n", words(2000)));
+    assert!(s.truncated && paths(&s) <= MAX_EXPANDED, "{} {}", s.steps.len(), paths(&s));
+    assert!(!s.steps.is_empty());
+    // Charged word by word as they are expanded: one command of 2000 words of 60 kB stops
+    // before it is expanded whole, and keeps no step.
+    let x = format!("x={word}\n");
+    let s = parse("Allprepare", &format!("{x}mkdir {}\n", "$x ".repeat(2000)));
+    assert!(s.truncated && s.steps.is_empty(), "{}", s.steps.len());
+    // The same in a `for` list, also with a word that isn't resolved at its end.
+    let s = parse("Allprepare", &format!("{x}for v in {}$(c); do blockMesh; done\n", "$x ".repeat(2000)));
+    assert!(s.truncated && s.steps.is_empty(), "{}", s.steps.len());
+    // An empty word costs too: 100 000 passes of 10 000 empty operands stop early.
+    let loops = format!("for a in {w}; do for b in {w}; do for c in {w}; do\n", w = words(47));
+    let s = parse("Allprepare", &format!("e=\n{loops}mkdir {}\ndone; done; done\n", "$e ".repeat(10_000)));
+    assert!(s.truncated && s.steps.len() < 200, "{}", s.steps.len());
+    // A redirection target is charged as well.
+    let s = parse("Allrun", &format!("{x}for i in {}; do echo > $x; done\n", words(2000)));
+    assert!(s.truncated, "{}", s.steps.len());
+    // Many prefixes before a command are taken off at once (not one by one from the front).
+    let s = parse("Allrun", &format!("{}blockMesh\n", "time ".repeat(500_000)));
+    assert!(!s.truncated && s.steps.len() == 1, "{}", s.steps.len());
     // Within the limits nothing is cut.
     let s = parse("Allrun", "for i in a b; do for j in c d; do blockMesh -region $i$j; done; done\n");
     assert!(!s.truncated && s.steps.len() == 4);

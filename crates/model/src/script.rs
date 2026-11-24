@@ -22,8 +22,8 @@ pub struct Script {
     pub shebang: bool,
     /// The first line, when it is not a `#!` line but looks like a broken one (`$#!/bin/sh`).
     pub first_line: String,
-    /// Reading stopped at a limit ([`MAX_DEPTH`], [`MAX_WORK`], [`MAX_STEPS`]): the steps are the
-    /// script's first ones only.
+    /// Reading stopped at a limit ([`MAX_DEPTH`], [`MAX_WORK`], [`MAX_STEPS`],
+    /// [`MAX_EXPANDED`]): the steps are the script's first ones only.
     pub truncated: bool,
 }
 
@@ -34,8 +34,15 @@ pub const MAX_WORK: usize = 1_000_000;
 /// Most steps a script is read into.
 pub const MAX_STEPS: usize = 100_000;
 /// Longest variable value or expanded word kept (`x=$x$x` in a loop would double without end);
-/// a longer one is not resolved.
+/// a longer one is cut there and not resolved.
 pub const MAX_VALUE: usize = 64 << 10;
+/// Most bytes of expanded words a script's reading makes, each word counted with
+/// [`WORD_COST`] more (a loop repeating a long word, or many short ones, copies them each pass):
+/// past it, reading stops.
+pub const MAX_EXPANDED: usize = 64 << 20;
+/// What a word costs beyond its bytes, towards [`MAX_EXPANDED`] (its string and the copies a
+/// step keeps of it): an empty word is not free.
+pub const WORD_COST: usize = 64;
 /// Most bytes all variable names and values hold together; past it a value is not resolved.
 pub const MAX_VARS: usize = 1 << 20;
 
@@ -641,6 +648,9 @@ struct Env {
     depth: usize,
     /// Commands visited so far.
     work: usize,
+    /// Bytes of the words expanded so far, with [`WORD_COST`] each (past [`MAX_EXPANDED`],
+    /// reading stops).
+    expanded: usize,
     /// A limit was reached: reading stopped.
     truncated: bool,
 }
@@ -691,33 +701,72 @@ fn expand(w: &Word, env: &Env) -> (String, bool) {
     let mut out = String::new();
     let mut ok = true;
     for p in &w.parts {
-        if out.len() > MAX_VALUE {
-            return (out, false);
-        }
-        match p {
-            Part::Lit(s) => out.push_str(s),
+        let piece = match p {
+            Part::Lit(s) => std::borrow::Cow::Borrowed(s.as_str()),
             Part::Var(v, _) => match env.vars.get(v) {
                 Some(Some(s)) => {
-                    out.push_str(s);
                     if env.globs.contains(v) {
                         ok = false;
                     }
+                    std::borrow::Cow::Borrowed(s.as_str())
                 }
                 _ => {
                     ok = false;
-                    out.push_str(&format!("${{{v}}}"));
+                    std::borrow::Cow::Owned(format!("${{{v}}}"))
                 }
             },
             Part::Unknown => {
                 ok = false;
-                out.push_str("$(…)");
+                std::borrow::Cow::Borrowed("$(…)")
             }
+        };
+        if !push_within(&mut out, &piece, MAX_VALUE) {
+            return (out, false);
         }
     }
-    if out.len() > MAX_VALUE {
-        ok = false;
-    }
     (out, ok)
+}
+
+/// Appends `s` to `out` while `out` stays within `max` bytes; false when it had to be cut (at a
+/// character's boundary).
+fn push_within(out: &mut String, s: &str, max: usize) -> bool {
+    let room = max.saturating_sub(out.len());
+    if s.len() <= room {
+        out.push_str(s);
+        return true;
+    }
+    let mut end = room;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.push_str(s.get(..end).unwrap_or_default());
+    false
+}
+
+/// Words, expanded one by one and charged to [`MAX_EXPANDED`] as they are (each its bytes and
+/// [`WORD_COST`]); `None` once past it, reading stopped, before the rest is expanded.
+fn expand_all(ws: &[Word], env: &mut Env) -> Option<Vec<(String, bool)>> {
+    let mut out = Vec::new();
+    for w in ws {
+        for (s, ok) in expand_words(w, env) {
+            if !env.charge(s.len() + WORD_COST) {
+                return None;
+            }
+            out.push((s, ok));
+        }
+    }
+    Some(out)
+}
+
+impl Env {
+    /// Charges `bytes` of expanded words to [`MAX_EXPANDED`]; false (reading stopped) past it.
+    fn charge(&mut self, bytes: usize) -> bool {
+        self.expanded = self.expanded.saturating_add(bytes);
+        if self.expanded > MAX_EXPANDED {
+            self.truncated = true;
+        }
+        !self.truncated
+    }
 }
 
 fn first_word(c: &Cmd) -> Option<String> {
@@ -789,19 +838,20 @@ fn exec_block(cmds: &[Cmd], i: &mut usize, env: &mut Env, ctx: Ctx, out: &mut Ve
                 // `for x in a b c`: the values, if all are resolved; a glob (`processor*`) is
                 // bound as its pattern, marked unresolved.
                 let values: Option<Vec<(String, bool)>> = match c.words.get(2).and_then(Word::literal).as_deref() {
-                    Some("in") => c
-                        .words
-                        .get(3..)
-                        .unwrap_or(&[])
-                        .iter()
-                        .flat_map(|w| expand_words(w, env))
-                        .map(|(s, ok)| {
-                            ok.then(|| {
-                                let glob = s.contains(['*', '?', '[']);
-                                (s, glob)
+                    Some("in") => {
+                        let Some(list) = expand_all(c.words.get(3..).unwrap_or(&[]), env) else {
+                            *i = cmds.len();
+                            return;
+                        };
+                        list.into_iter()
+                            .map(|(s, ok)| {
+                                ok.then(|| {
+                                    let glob = s.contains(['*', '?', '[']);
+                                    (s, glob)
+                                })
                             })
-                        })
-                        .collect(),
+                            .collect()
+                    }
                     _ => None,
                 };
                 let body = block(cmds, i, "done", env);
@@ -1125,7 +1175,7 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
         _ => {}
     }
     let ctx = Ctx { conditional: ctx.conditional || c.or };
-    let mut words: Vec<(String, bool)> = c.words.iter().flat_map(|w| expand_words(w, env)).collect();
+    let Some(mut words) = expand_all(&c.words, env) else { return };
     // Assignments: alone they set variables; before a command they only set its environment.
     let assigns = words.iter().take_while(|(w, _)| w.split_once('=').is_some_and(|(n, _)| valid_name(n))).count();
     if assigns == words.len() {
@@ -1146,9 +1196,8 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
         return;
     }
     words.drain(..assigns);
-    while words.first().is_some_and(|(w, _)| PREFIX.contains(&w.as_str())) {
-        words.remove(0);
-    }
+    let prefixes = words.iter().take_while(|(w, _)| PREFIX.contains(&w.as_str())).count();
+    words.drain(..prefixes);
     let Some((head, head_ok)) = words.first().cloned() else {
         writes(c, env, ctx, out);
         return;
@@ -1271,9 +1320,12 @@ fn run_one(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
 }
 
 /// Redirection targets: the files exist after the command.
-fn writes(c: &Cmd, env: &Env, ctx: Ctx, out: &mut Vec<Step>) {
+fn writes(c: &Cmd, env: &mut Env, ctx: Ctx, out: &mut Vec<Step>) {
     for w in &c.writes {
         let (p, ok) = expand(w, env);
+        if !env.charge(p.len() + WORD_COST) {
+            return;
+        }
         if p != "/dev/null" {
             out.push(step(c.line, StepKind::Write { path: normal(&p) }, ctx, !ok || env.lost));
         }
