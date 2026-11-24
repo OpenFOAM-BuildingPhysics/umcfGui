@@ -4724,3 +4724,178 @@ fn surfaces_with_features_are_listed_in_the_surface_features_dict() {
         let _ = std::fs::remove_dir_all(&src);
     }
 }
+
+/// The vegetation meshed from the air's background mesh (the windAroundBuildings chain): its
+/// steps, the checks against the air's blocks, the scripts, and back to a blockMesh of its own.
+#[test]
+fn a_region_meshed_from_another_regions_background() {
+    use umcf_model::workflow::{MeshBuild, RootStep};
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-background-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        let src = dir.with_extension("stl-sources");
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        for (name, bytes) in [
+            ("buildings.stl", block_stl([10.0, 10.0, 0.0], [20.0, 20.0, 15.0], false, false)),
+            ("trees.stl", block_stl([30.0, 10.0, 1.0], [34.0, 14.0, 6.0], false, false)),
+        ] {
+            let path = src.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            s.execute("geometry.import", &json!({ "path": path.to_str().unwrap(), "name": name, "replace": true }))
+                .unwrap();
+        }
+        s.execute("mesh.box", &json!({"region": "air", "margin": 20, "cellSize": 2})).unwrap();
+        let cut = |level: u32| json!({"mode": "cut", "level": [level, level]});
+        s.execute("mesh.snappy", &json!({"region": "air", "inside": [0, 0, 5], "surfaces": {"buildings": cut(2)}}))
+            .unwrap();
+        let err = |s: &mut Session, p: Value| s.execute("mesh.snappy", &p).unwrap_err().to_string();
+        let mesh = |s: &Session, r: &str| s.case().unwrap().description().unwrap().0.region(r).unwrap().mesh.clone();
+        let veg = |extra: Value| {
+            let mut p = json!({"region": "vegetation", "inside": [0, 0, 5], "surfaces": {"trees": cut(3)}});
+            if let (Some(m), Value::Object(x)) = (p.as_object_mut(), extra) {
+                m.extend(x);
+            }
+            p
+        };
+        // Not a region built before it by steps of its own starting with blockMesh.
+        let e = err(&mut s, veg(json!({"background": "street"})));
+        assert!(
+            e.contains("can't start from the background of street: street isn't built before it (or has no mesh)"),
+            "{e}"
+        );
+        let e = err(&mut s, veg(json!({"background": "roof"})));
+        assert!(e.contains("roof isn't a region of system/umcfWorkflow"), "{e}");
+        let e = err(&mut s, veg(json!({"background": "x".repeat(300)})));
+        assert!(e.contains("background is the name of a region"), "{e}");
+        let e = err(&mut s, veg(json!({"background": "vegetation"})));
+        assert!(e.contains("its own background"), "{e}");
+        // An empty name: its own blockMesh, as null (the vegetation has no blocks).
+        s.execute("mesh.snappy", &veg(json!({"background": " "}))).unwrap();
+        assert_eq!(
+            mesh(&s, "vegetation"),
+            Some(MeshBuild::Root(vec![
+                RootStep::BlockMesh("system/vegetation/blockMeshDict".into()),
+                RootStep::SnappyHexMesh("system/snappyHexMeshDict.vegetation".into())
+            ]))
+        );
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert_eq!(mesh(&s, "vegetation"), None);
+        // A region named as the directory the background is kept in.
+        s.execute("workflow.region", &json!({"region": "polyMesh.background.air", "kind": "fluid"})).unwrap();
+        let e = err(&mut s, veg(json!({"background": "air"})));
+        assert!(e.contains("a region named polyMesh.background.air, where it is kept"), "{e}");
+        s.execute("edit.undo", &Value::Null).unwrap();
+        let e = err(&mut s, veg(json!({"background": 3})));
+        assert!(e.contains("background is the name of a region, or null"), "{e}");
+        let e = err(&mut s, json!({"region": "air", "background": "vegetation"}));
+        assert!(e.contains("vegetation isn't built before it"), "{e}");
+        // The vegetation has no blocks: the air's are those checked.
+        let e = err(&mut s, veg(json!({"background": "air", "inside": [0, 0, 500]})));
+        assert!(e.contains("outside the blocks of region air, whose background it starts from"), "{e}");
+        assert_eq!(mesh(&s, "vegetation"), None, "nothing is changed by a refused call");
+
+        let out = s.execute("mesh.snappy", &veg(json!({"background": "air"}))).unwrap();
+        assert!(
+            out.data["notes"]
+                .to_string()
+                .contains("( background air snappyHexMesh system/snappyHexMeshDict.vegetation )"),
+            "{}",
+            out.data["notes"]
+        );
+        assert!(!out.data["notes"].to_string().contains("has no blocks"), "{}", out.data["notes"]);
+        assert_eq!(
+            mesh(&s, "vegetation"),
+            Some(MeshBuild::Root(vec![
+                RootStep::Background("air".into()),
+                RootStep::SnappyHexMesh("system/snappyHexMeshDict.vegetation".into())
+            ]))
+        );
+        let show = s.execute("workflow.show", &json!({"scripts": true})).unwrap();
+        assert_eq!(show.data["description"]["regions"][2]["mesh"][0], json!({"step": "background", "of": "air"}));
+        let prep = show.data["scripts"].to_string();
+        assert!(prep.contains("cp -r constant/polyMesh/. constant/polyMesh.background.air/"), "{prep}");
+        assert!(prep.contains("cp -r constant/polyMesh.background.air constant/polyMesh"), "{prep}");
+        // The air's block patches come into the vegetation's mesh: noted, and checked until
+        // the vegetation lists them.
+        assert!(out.data["notes"].to_string().contains("aren't patches of region vegetation"), "{}", out.data["notes"]);
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let said = check.data["diagnostics"].to_string();
+        assert!(said.contains("whose blocks' patches its mesh gets"), "{said}");
+        for p in ["inlet", "outlet", "side", "ground", "top"] {
+            s.execute("workflow.patch", &json!({"region": "vegetation", "patch": p, "role": p})).unwrap();
+        }
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let said = check.data["diagnostics"].to_string();
+        assert!(!said.contains("background"), "{said}");
+        assert!(!said.contains("inside point"), "{said}");
+        // The air's blocks changed so the vegetation's inside point is outside them: the case
+        // check says so (mesh.snappy checked it against the blocks it saw).
+        s.execute("mesh.block", &json!({"region": "air", "x": [2, [4, 1], 50]})).unwrap();
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let said = check.data["diagnostics"].to_string();
+        assert!(
+            said.contains(
+                "region vegetation, snappy: the inside point (0 0 5) is outside the blocks its mesh starts from"
+            ),
+            "{said}"
+        );
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // The air can't be split while the vegetation starts from its background; the
+        // vegetation's blocks are the air's; the air taken out names what started from it.
+        let e =
+            s.execute("mesh.split", &json!({"region": "air", "of": "street", "zone": "z"})).unwrap_err().to_string();
+        assert!(e.contains("region vegetation starts from the background mesh of region air"), "{e}");
+        let e = s
+            .execute(
+                "mesh.block",
+                &json!({"region": "vegetation", "x": [0, [2, 1], 4], "y": [0, [2, 1], 4], "z": [0, [2, 1], 4]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("is meshed from the background mesh of region air"), "{e}");
+        let out = s.execute("workflow.region", &json!({"region": "air", "remove": true})).unwrap();
+        assert!(out.message.contains("vegetation/mesh (background)"), "{}", out.message);
+        s.execute("edit.undo", &Value::Null).unwrap();
+        // Called again without background, it keeps starting from the air's.
+        s.execute("mesh.snappy", &json!({"region": "vegetation", "inside": [0, 0, 6]})).unwrap();
+        assert_eq!(mesh(&s, "vegetation").and_then(|m| m.background().map(str::to_string)).as_deref(), Some("air"));
+        // The air's background stays its own blockMesh's while the vegetation starts from it,
+        // and is checked when the steps no longer give it.
+        let mut edited = s.case().unwrap().dict(umcf_model::description::PATH).unwrap().to_string();
+        edited = edited.replace("( background air snappyHexMesh", "( background street snappyHexMesh");
+        let at = dir.join(umcf_model::description::PATH);
+        s.execute("case.save", &Value::Null).unwrap();
+        std::fs::write(&at, &edited).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let said = check.data["diagnostics"].to_string();
+        assert!(said.contains("region vegetation starts from the background mesh of region street"), "{said}");
+        let e = s.execute("workflow.scripts", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(e.contains("region vegetation, meshed from another region's background"), "{e}");
+        // Steps with a later blockMesh (written by hand): a background over them is refused.
+        let hand = edited.replace(
+            "( background street snappyHexMesh",
+            "( blockMesh blockMesh \"system/x/blockMeshDict\" snappyHexMesh",
+        );
+        std::fs::write(&at, &hand).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let e = err(&mut s, json!({"region": "vegetation", "background": "air"}));
+        assert!(e.contains("runs blockMesh after its first step"), "{e}");
+        std::fs::write(&at, &edited).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        // null: its own blockMesh again.
+        s.execute("mesh.snappy", &json!({"region": "vegetation", "background": Value::Null})).unwrap();
+        assert_eq!(
+            mesh(&s, "vegetation"),
+            Some(MeshBuild::Root(vec![
+                RootStep::BlockMesh("system/vegetation/blockMeshDict".into()),
+                RootStep::SnappyHexMesh("system/snappyHexMeshDict.vegetation".into())
+            ]))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}

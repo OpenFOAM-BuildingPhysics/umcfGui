@@ -1,5 +1,6 @@
 //! The *snappyHexMesh* card (`mesh.snappy`): its form filled from the region's snappy entry
-//! ([`crate::workflowcard`]), and while it is open the region's blocks, the refinement boxes
+//! ([`crate::workflowcard`]), and while it is open the blocks its mesh starts from (the region's,
+//! or those of the region whose background it starts from), the refinement boxes
 //! and the inside point the form holds shown in the 3D view, with what it has said on the card.
 
 use umcf_model::snappy::MAX_ITEMS;
@@ -15,6 +16,11 @@ impl App {
         let Some(f) = self.dialog.as_ref().and_then(|d| d.form.as_ref()) else { return };
         let value = |k: &str| f.values.get(k).map_or("", String::as_str);
         let region = value("region").trim().to_string();
+        // The region whose blocks the mesh starts from: the background's, else its own.
+        let from = match value("background").trim() {
+            "" => region.clone(),
+            of => of.to_string(),
+        };
         let point = point_of(value("inside"));
         // The region's blocks previewed, what its entry has (for a table it couldn't fill: a
         // name with a `|`, say), and where the inside point is in the blocks, by the command's
@@ -24,17 +30,11 @@ impl App {
         let (grid, entry, listed, place) = match &description {
             Some(Some(d)) => d.region(&region).map_or((None, (0, 0), false, None), |r| {
                 let entry = r.snappy.as_ref().map_or((0, 0), |s| (s.surfaces.len(), s.boxes.len()));
-                let place = r.blocks.as_ref().zip(point).map(|(g, q)| {
-                    let outside = (0..3).any(|a| {
-                        let st = g.axes.get(a).map(|x| x.stations.as_slice()).unwrap_or_default();
-                        match (st.first(), st.last(), q.get(a)) {
-                            (Some(lo), Some(hi), Some(x)) => !(lo < x && x < hi),
-                            _ => true,
-                        }
-                    });
-                    (outside, umcf_engine::snappy_missing_at(g, q))
-                });
-                (r.blocks.as_ref().map(crate::blockcard::preview), entry, true, place)
+                let blocks = d.region(&from).and_then(|b| b.blocks.as_ref());
+                let place = blocks
+                    .zip(point)
+                    .map(|(g, q)| (!umcf_engine::snappy_point_inside(g, q), umcf_engine::snappy_missing_at(g, q)));
+                (blocks.map(crate::blockcard::preview), entry, true, place)
             }),
             _ => (None, (0, 0), false, None),
         };
@@ -112,6 +112,7 @@ impl App {
         p.inside = point;
         // A coordinate in its shortest form (`1e300`, not 301 digits).
         let n = |x: f64| number_text(&serde_json::json!(x));
+        let whose = if from == region { "the region's blocks".to_string() } else { format!("region {from}'s blocks") };
         let blank = value("inside").chars().all(|c| c == '|' || c.is_whitespace());
         match (p.inside, place) {
             (None, _) if json("inside") => said.push("the inside point as Edit as JSON gives it".to_string()),
@@ -119,7 +120,7 @@ impl App {
             (None, _) => said.push("the inside point doesn't read: give x, y and z".to_string()),
             (Some(q), Some((true, _))) => {
                 said.push(format!(
-                    "the inside point ({}, {}, {}) is outside the region's blocks or on their sides",
+                    "the inside point ({}, {}, {}) is outside {whose} or on their sides",
                     n(q[0]),
                     n(q[1]),
                     n(q[2])
@@ -127,7 +128,7 @@ impl App {
             }
             (Some(q), Some((_, Some(b)))) => {
                 said.push(format!(
-                    "the inside point ({}, {}, {}) is in the missing block ({} {} {}) of the region's blocks",
+                    "the inside point ({}, {}, {}) is in the missing block ({} {} {}) of {whose}",
                     n(q[0]),
                     n(q[1]),
                     n(q[2]),
@@ -142,8 +143,12 @@ impl App {
             said.push("system/umcfWorkflow is missing or doesn't load".to_string());
         } else if !listed && !region.is_empty() {
             said.push(format!("region {region} isn't in system/umcfWorkflow"));
+        } else if from != region
+            && !description.as_ref().is_some_and(|d| d.as_ref().is_some_and(|d| d.region(&from).is_some()))
+        {
+            said.push(format!("region {from}, the background's, isn't in system/umcfWorkflow"));
         } else if !has_blocks && !region.is_empty() {
-            said.push(format!("region {region} has no blocks in system/umcfWorkflow"));
+            said.push(format!("region {from} has no blocks in system/umcfWorkflow"));
         }
         let preview = (p != BlockPreview::default()).then_some(p);
         if self.viewport.blocks != preview {

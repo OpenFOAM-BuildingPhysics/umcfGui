@@ -2,7 +2,7 @@
 
 A design, partly built (the description, its import, check and edits, the scripts, new cases and
 regions, the settings: [the case workflow](user-guide/workflow.md#the-workflow-description)):
-what [gaps](gaps.md) rows 4–8 and 11 build towards. It answers one question: how does a case
+what [gaps](gaps.md) rows 4, 7, 8 and 11 build towards (row 6, meshing from the regions' surfaces, is done). It answers one question: how does a case
 stay consistent when its patches, regions or surfaces change?
 
 Today every case carries hand-written meshing dictionaries and scripts, copied from case to case
@@ -88,7 +88,7 @@ regions
     vegetation
     {
         kind        vegetation;
-        mesh        { from box; }           // or { from split; of air; zone trees; } (street canyon, mesh.split)
+        mesh        ( background air snappyHexMesh "system/snappyHexMeshDict.vegetation" );   // or { from split; of air; zone trees; } (street canyon, mesh.split)
         snappy      { inside ( 1 1 5 ); surfaces { buildings { mode cut; level ( 3 5 ); }
                       air_to_vegetation { file trees.stl; mode cut; level ( 2 3 ); } } }
     }
@@ -181,8 +181,11 @@ An import reads a case into a `umcfWorkflow`:
   and street regions of the 3×3 cases, every region of the street canyon);
 - a region split from another by a cell zone (the street canyon's vegetation:
   `splitMeshRegions`) is read with its zone;
-- the STL chain needs the reading extended: the kept background, `extrudeMesh`, the moves
-  between `constant/polyMesh` and the regions;
+- the STL chain needs the reading extended: `extrudeMesh`, and the moves between
+  `constant/polyMesh` and the regions by copy (the tutorials' `cp -r constant/polyMesh/.`) rather
+  than `mv`; a background kept for later regions (`cp -r constant/polyMesh
+  constant/polyMesh.bckp` right after `blockMesh`, put back before the next region's
+  `snappyHexMesh`) is read already where the mesh is moved with `mv`;
 - what doesn't fit is listed (as today), and the case keeps its own scripts until the user
   takes the generated ones. Writing them keeps the old ones as backups.
 

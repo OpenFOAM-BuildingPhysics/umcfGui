@@ -1080,9 +1080,15 @@ static SPECS: &[Spec] = &[
     },
     Spec {
         id: "mesh.snappy",
-        intro: "A region meshed from the case's STL surfaces by snappyHexMesh: its snappy entry, and its snappyHexMeshDict written from it after the surfaces are checked. While the card is open the 3D view shows the region's blocks, the refinement boxes and the inside point.",
+        intro: "A region meshed from the case's STL surfaces by snappyHexMesh: its snappy entry, and its snappyHexMeshDict written from it after the surfaces are checked. While the card is open the 3D view shows the blocks its mesh starts from (the region's, or those of the region whose background it starts from), the refinement boxes and the inside point.",
         fields: &[
             field("region", "Region", Kind::WorkflowRegion, "A fluid or vegetation region of system/umcfWorkflow"),
+            field(
+                "background",
+                "Background from",
+                Kind::Model,
+                "The region whose background mesh (what its blockMesh made) it starts from, kept for it by Allprepare: one listed before it and built by steps of its own starting with blockMesh (the vegetation from the air's, as the windAroundBuildings tutorials mesh it); filled from the region's mesh; empty: a blockMesh of its own (the one it has, else from system/<region>/blockMeshDict), sent as null when emptied",
+            ),
             field(
                 "inside",
                 "Inside point",

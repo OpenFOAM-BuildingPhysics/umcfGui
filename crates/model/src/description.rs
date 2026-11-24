@@ -296,8 +296,15 @@ impl Description {
                 }
             }
             let blocks = mesh.and_then(|m| import_blocks(case, name, region.kind, &m.build, &patches, &mut notes));
-            let snappy = mesh
-                .and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, blocks.as_ref(), &mut notes));
+            // The blocks its mesh starts from: its own, or those of the region whose background
+            // it starts from (built, so read, before it), never its own then (its mesh doesn't
+            // read them).
+            let from = match mesh.and_then(|m| m.build.background()) {
+                Some(of) => regions.iter().find(|x: &&RegionDesc| x.name == of).and_then(|x| x.blocks.as_ref()),
+                None => blocks.as_ref(),
+            };
+            let snappy =
+                mesh.and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, from, &mut notes));
             // A region without a mesh: its patches are those its blocks name, without a role.
             if region.patches.is_none()
                 && let Some(g) = &blocks
@@ -422,6 +429,16 @@ impl Description {
 
     pub fn region(&self, name: &str) -> Option<&RegionDesc> {
         self.regions.iter().find(|r| r.name == name)
+    }
+
+    /// The region whose blocks region `name`'s mesh starts from: itself, or the region whose
+    /// background mesh it starts from ([`RootStep::Background`]), when that is in the description.
+    pub fn background_region(&self, name: &str) -> Option<&RegionDesc> {
+        let r = self.region(name)?;
+        match r.mesh.as_ref().and_then(MeshBuild::background) {
+            Some(of) => self.region(of),
+            None => Some(r),
+        }
     }
 
     /// The file's text.
@@ -698,6 +715,11 @@ pub(crate) fn root_steps(steps: &[RootStep]) -> String {
             RootStep::CreatePatch => out.push("createPatch".to_string()),
             RootStep::SnappyHexMesh(d) if d == SNAPPY_DICT => out.push("snappyHexMesh".to_string()),
             RootStep::SnappyHexMesh(d) => out.push(format!("snappyHexMesh {}", quote(d))),
+            // Quoted when it is a step's name, which the reader takes for a step.
+            RootStep::Background(of) if STEP_WORDS.contains(&of.as_str()) => {
+                out.push(format!("background {}", quote(of)))
+            }
+            RootStep::Background(of) => out.push(format!("background {}", word(of))),
         }
     }
     out.join(" ")
@@ -886,7 +908,7 @@ fn read_region(
                     Ok(steps) => r.mesh = Some(MeshBuild::Root(steps)),
                     Err(m) => problem(&here, m),
                 },
-                _ => problem(&here, "is blocks, the steps that build it in constant/polyMesh: ( blockMesh [\"dict\"] createPatch snappyHexMesh [\"dict\"] ), or { from split; of <region>; zone <cellZone>; [dict \"system/<region>/topoSetDict\";] }".into()),
+                _ => problem(&here, "is blocks, the steps that build it in constant/polyMesh: ( blockMesh [\"dict\"] | background <region>, createPatch, snappyHexMesh [\"dict\"] ), or { from split; of <region>; zone <cellZone>; [dict \"system/<region>/topoSetDict\";] }".into()),
             },
             "blocks" => match e.dict() {
                 Some(b) => r.blocks = BlockGrid::read(b, &here, problem),
@@ -1303,7 +1325,11 @@ pub fn case_materials(case: &Case, region: &str) -> Option<(Vec<CaseMaterial>, b
     Some((out, all))
 }
 
-/// `blockMesh ["dict"] createPatch snappyHexMesh ["dict"]`, in any order.
+/// The names of the steps that build a mesh in `constant/polyMesh`.
+const STEP_WORDS: [&str; 4] = ["background", "blockMesh", "createPatch", "snappyHexMesh"];
+
+/// `blockMesh ["dict"] createPatch snappyHexMesh ["dict"]`, in any order, starting with
+/// `blockMesh` or `background <region>` (then without `blockMesh`).
 fn read_root(items: &[Node]) -> Result<Vec<RootStep>, String> {
     let mut out = Vec::new();
     let mut it = items.iter().peekable();
@@ -1322,11 +1348,39 @@ fn read_root(items: &[Node]) -> Result<Vec<RootStep>, String> {
             Some("blockMesh") => out.push(RootStep::BlockMesh(dict(&mut it, BLOCK_DICT))),
             Some("snappyHexMesh") => out.push(RootStep::SnappyHexMesh(dict(&mut it, SNAPPY_DICT))),
             Some("createPatch") => out.push(RootStep::CreatePatch),
-            _ => return Err(format!("`{}` is not a step: blockMesh, createPatch or snappyHexMesh", n.compact())),
+            Some("background") => {
+                // The region as written: a word (not a step's name), or quoted.
+                let of = it.next().and_then(|n| {
+                    string(n).or_else(|| atom(n).filter(|a| !STEP_WORDS.contains(a)).map(str::to_string))
+                });
+                match of {
+                    Some(of) if out.is_empty() => out.push(RootStep::Background(of)),
+                    Some(_) => return Err("background comes first: the mesh the other steps change".into()),
+                    None => {
+                        return Err("background is followed by the region whose background mesh it starts from".into());
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "`{}` is not a step: background, blockMesh, createPatch or snappyHexMesh",
+                    n.compact()
+                ));
+            }
         }
     }
-    if !matches!(out.first(), Some(RootStep::BlockMesh(_))) {
-        return Err("starts with blockMesh, which makes the mesh the other steps change".into());
+    match out.first() {
+        Some(RootStep::BlockMesh(_)) => {}
+        Some(RootStep::Background(_)) => {
+            if out.iter().any(|st| matches!(st, RootStep::BlockMesh(_))) {
+                return Err("starts from another region's background: a blockMesh after it would replace it".into());
+            }
+        }
+        _ => {
+            return Err(
+                "starts with blockMesh, which makes the mesh the other steps change, or with background <region>, which starts from the background mesh another region's blockMesh made".into(),
+            );
+        }
     }
     Ok(out)
 }

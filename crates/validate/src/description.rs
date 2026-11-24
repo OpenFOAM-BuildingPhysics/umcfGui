@@ -99,6 +99,7 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
         mesh_box(case, r, out);
         split(case, &d, r, out);
         snappy(case, &d, r, out);
+        background(case, &d, r, out);
         // The patches against the mesh, where the region has one.
         let Some(mesh) = cr.patches.as_ref() else { continue };
         for p in &r.patches {
@@ -589,6 +590,47 @@ fn blocks(case: &Case, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
     out.push(warn(&path, message));
 }
 
+/// A region meshed from another's background mesh: that region built before it by steps of its
+/// own starting with `blockMesh` (else `workflow.scripts` refuses the scripts), and blocks of its
+/// own, which its mesh doesn't read, named.
+fn background(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
+    let Some(of) = r.mesh.as_ref().and_then(MeshBuild::background) else { return };
+    let name = &r.name;
+    let warn = |m: String| Diagnostic::new(Level::Warning, BLOCKS, PATH, m).region(name);
+    let meshes = d.regions.iter().filter_map(|x| x.mesh.as_ref().map(|m| (x.name.as_str(), m)));
+    if let Err(why) = umcf_model::workflow::background_ok(meshes, name, of) {
+        out.push(warn(format!("region {name} starts from the background mesh of region {of}: {why}")));
+    }
+    // The directory it is kept in: not a region's, which the scripts would remove.
+    let dir = umcf_model::workflow::background_dir(of);
+    if let Some(kept) = dir.strip_prefix("constant/").filter(|k| d.region(k).is_some() || case.region(k).is_some()) {
+        out.push(warn(format!(
+            "region {name} starts from the background mesh of region {of}, kept in {dir}: the case has a region named {kept}, whose directory the scripts would remove; rename it"
+        )));
+    }
+    if r.blocks.is_some() {
+        out.push(warn(format!(
+            "region {name} has blocks of its own, but its mesh starts from the background of region {of}: they aren't meshed (mesh.snappy with background null meshes them again)"
+        )));
+    }
+    // The background's patches come into its mesh: listed as its patches, for their roles.
+    let listed: HashSet<&str> = r.patches.iter().map(|p| p.name.as_str()).collect();
+    let unlisted: Vec<&str> = d
+        .region(of)
+        .and_then(|x| x.blocks.as_ref())
+        .map(|g| {
+            let faceless = g.faceless();
+            g.patch_names().into_iter().filter(|n| !faceless.contains(n) && !listed.contains(n)).collect()
+        })
+        .unwrap_or_default();
+    if !unlisted.is_empty() {
+        out.push(warn(format!(
+            "region {name} starts from the background of region {of}, whose blocks' patches its mesh gets, but doesn't list {} among its patches (workflow.patch gives them their roles)",
+            blocks::list_some(&unlisted)
+        )));
+    }
+}
+
 /// A region's `snappy` entry against the case: its own problems, a mesh that doesn't run
 /// snappyHexMesh, surfaces the case doesn't have, patches the description doesn't list, feature
 /// edges no step makes, and its `snappyHexMeshDict` where it isn't what the entry writes.
@@ -646,19 +688,46 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
     // Each patch once, among the cutting surfaces' and the blocks': snappyHexMesh would put a
     // surface's faces into a block patch of the same name.
     // Not those the blocks declare without faces: left for snappyHexMesh to fill.
-    let block_patches: Vec<&str> = r
-        .blocks
-        .as_ref()
+    // The blocks the mesh starts from: the region's, or those of the region whose background it
+    // starts from.
+    let block_patches: Vec<&str> = d
+        .background_region(name)
+        .and_then(|x| x.blocks.as_ref())
         .map(|g| {
             let faceless = g.faceless();
             g.patch_names().into_iter().filter(|n| !faceless.contains(n)).collect()
         })
         .unwrap_or_default();
+    // The inside point against the blocks as they are now (mesh.snappy checked it against
+    // those it saw): outside them or on their sides, or in a missing block.
+    if let Some(g) = d.background_region(name).and_then(|x| x.blocks.as_ref()) {
+        let q = sn.inside;
+        let pt = format!("({} {} {})", blocks::number(q[0]), blocks::number(q[1]), blocks::number(q[2]));
+        if !blocks::point_inside(g, q) {
+            out.push(warn(
+                PATH,
+                format!("region {name}, snappy: the inside point {pt} is outside the blocks its mesh starts from, or on their sides: snappyHexMesh would find no cell there"),
+            ));
+        } else if let Some(b) = blocks::missing_at(g, q) {
+            out.push(warn(
+                PATH,
+                format!(
+                    "region {name}, snappy: the inside point {pt} is in the missing block ({} {} {}) of the blocks its mesh starts from: snappyHexMesh would find no cell there",
+                    b[0], b[1], b[2]
+                ),
+            ));
+        }
+    }
     let mut seen: HashSet<&str> = block_patches.iter().copied().collect();
     for p in &patches {
         if !seen.insert(p.as_str()) {
-            let whose =
-                if block_patches.contains(&p.as_str()) { "a patch of its blocks" } else { "another surface's patch" };
+            let whose = if !block_patches.contains(&p.as_str()) {
+                "another surface's patch".to_string()
+            } else if let Some(of) = r.mesh.as_ref().and_then(MeshBuild::background) {
+                format!("a patch of the blocks of region {of}, whose background it starts from")
+            } else {
+                "a patch of its blocks".to_string()
+            };
             out.push(warn(
                 PATH,
                 format!("region {name}, snappy: a cutting surface makes the patch {p}, which is {whose} too: snappyHexMesh would put both in one patch"),

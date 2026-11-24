@@ -3897,3 +3897,75 @@ fn a_regions_split_is_filled_offered_and_sent_from_its_card() {
     h.run();
     assert_eq!(form(&h).params(spec).unwrap(), json!({"region": "vegetation", "remove": true}));
 }
+
+/// The snappy card's background: filled from the region's mesh, the regions offered whose
+/// background it can start from, their blocks previewed and checked, and emptied sent as null
+/// (its own blockMesh again).
+#[test]
+fn the_snappy_card_starts_a_region_from_another_regions_background() {
+    let dir = std::env::temp_dir().join(format!("umcf-ui-{}-snappy-background", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::with_backup(".umcfgui/backup/test");
+    s.execute(
+        "case.new",
+        &json!({
+            "path": dir.to_str().unwrap(),
+            "version": 12,
+            "regions": [{"name": "air", "kind": "fluid"}, {"name": "vegetation", "kind": "vegetation"}],
+            "radiation": "vegetation",
+        }),
+    )
+    .unwrap();
+    s.execute(
+        "mesh.block",
+        &json!({
+            "region": "air", "x": [0, [5, 1], 30], "y": [0, [5, 1], 40], "z": [0, [8, 1], 16],
+            "patches": {"west": "inlet", "east": "outlet", "south": "side", "north": "side", "ground": "ground", "top": "top"},
+        }),
+    )
+    .unwrap();
+    let boxes = json!({"street": {"min": [0, 0, 0], "max": [30, 10, 4], "level": 1}});
+    s.execute("mesh.snappy", &json!({"region": "air", "inside": [5, 5, 5], "boxes": boxes})).unwrap();
+    s.execute(
+        "mesh.snappy",
+        &json!({"region": "vegetation", "inside": [5, 5, 5], "boxes": boxes, "background": "air"}),
+    )
+    .unwrap();
+    let mut h = harness(App::new(s));
+    let form = |h: &Harness<'_, App>| h.state().dialog.as_ref().unwrap().form.clone().unwrap();
+    let set = |h: &mut Harness<'_, App>, k: &'static str, v: &str| {
+        h.state_mut().dialog.as_mut().unwrap().form.as_mut().unwrap().values.insert(k, v.to_string());
+    };
+    let spec = crate::forms::spec("mesh.snappy").unwrap();
+    h.state_mut().invoke("mesh.snappy");
+    h.run();
+    set(&mut h, "region", "vegetation");
+    h.run();
+    h.run();
+    let f = form(&h);
+    assert_eq!(f.values["background"], "air");
+    assert_eq!(f.options["background"], vec!["air".to_string()]);
+    // The air's blocks previewed and checked: the vegetation has none.
+    assert!(h.state().viewport.blocks.as_ref().is_some_and(|b| b.stations[0] == [0.0, 30.0]));
+    let said = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(!said.contains("has no blocks"), "{said}");
+    set(&mut h, "inside", "5|5|50");
+    h.run();
+    let said = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(said.contains("is outside region air's blocks or on their sides"), "{said}");
+    set(&mut h, "inside", "");
+    // Unchanged: not sent. Emptied: null, its own blockMesh, whose blocks it hasn't.
+    assert!(form(&h).params(spec).unwrap().get("background").is_none());
+    set(&mut h, "background", "");
+    h.run();
+    assert_eq!(form(&h).params(spec).unwrap()["background"], serde_json::Value::Null);
+    let said = h.state().preview_summary.clone().unwrap().unwrap();
+    assert!(said.contains("region vegetation has no blocks"), "{said}");
+    // The air, the first region, has none to start from.
+    set(&mut h, "region", "air");
+    h.run();
+    h.run();
+    assert_eq!(form(&h).options["background"], Vec::<String>::new());
+    assert_eq!(form(&h).values["background"], "");
+    let _ = std::fs::remove_dir_all(&dir);
+}
