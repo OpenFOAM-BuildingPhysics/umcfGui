@@ -297,13 +297,14 @@ impl Description {
             }
             let blocks = mesh.and_then(|m| import_blocks(case, name, region.kind, &m.build, &patches, &mut notes));
             // The blocks its mesh starts from: its own, or those of the region whose background
-            // it starts from (built, so read, before it).
-            let from = mesh
-                .and_then(|m| m.build.background())
-                .and_then(|of| regions.iter().find(|x: &&RegionDesc| x.name == of).and_then(|x| x.blocks.as_ref()));
-            let snappy = mesh.and_then(|m| {
-                import_snappy(case, name, region.kind, &m.build, &patches, from.or(blocks.as_ref()), &mut notes)
-            });
+            // it starts from (built, so read, before it), never its own then (its mesh doesn't
+            // read them).
+            let from = match mesh.and_then(|m| m.build.background()) {
+                Some(of) => regions.iter().find(|x: &&RegionDesc| x.name == of).and_then(|x| x.blocks.as_ref()),
+                None => blocks.as_ref(),
+            };
+            let snappy =
+                mesh.and_then(|m| import_snappy(case, name, region.kind, &m.build, &patches, from, &mut notes));
             // A region without a mesh: its patches are those its blocks name, without a role.
             if region.patches.is_none()
                 && let Some(g) = &blocks

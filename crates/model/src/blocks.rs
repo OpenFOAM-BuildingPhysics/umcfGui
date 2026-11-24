@@ -2389,6 +2389,16 @@ pub fn untouched(text: &str) -> bool {
     given == Some(checksum(body.as_bytes()))
 }
 
+/// Whether `p` is inside the blocks of `g`: strictly between their first and last stations on
+/// every axis (on their sides is outside, as snappyHexMesh would find no cell there). The case
+/// check, `mesh.snappy` and the desktop's snappy card use it for the inside point.
+pub fn point_inside(g: &BlockGrid, p: [f64; 3]) -> bool {
+    (0..3).all(|a| {
+        let st = g.axes.get(a).map(|x| x.stations.as_slice()).unwrap_or_default();
+        matches!((st.first(), st.last(), p.get(a)), (Some(lo), Some(hi), Some(x)) if lo < x && x < hi)
+    })
+}
+
 /// The missing block of `g` that `p` is in, if any: every block whose stations hold it (two
 /// or more for a point on a station between them) is missing. The desktop's snappy card says
 /// it before *OK* by the same rule.

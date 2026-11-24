@@ -199,7 +199,7 @@ fn o_exists(s: &Session, p: &str) -> bool {
         .is_some_and(|c| c.exists(p) == Some(true) || c.put_paths().any(|x| x == p || x.starts_with(&format!("{p}/"))))
 }
 
-pub use umcf_model::blocks::missing_at;
+pub use umcf_model::blocks::{missing_at, point_inside};
 
 /// Whether `p` lies on a station of `g`'s grid: on a face between blocks (and cells).
 fn on_station(g: &blocks::BlockGrid, p: [f64; 3]) -> bool {
@@ -684,13 +684,13 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     for x in &read {
         for n in &x.patches {
             if !seen.insert(n.as_str()) {
-                let whose = if block_patches.contains(&n.as_str()) {
+                let clash = if block_patches.contains(&n.as_str()) {
                     format!("a patch of {whose}")
                 } else {
                     "another cutting surface's patch".to_string()
                 };
                 return Err(failed(format!(
-                    "surface {} makes the patch {n}, which is {whose} too: rename the surface (or the solids in its file)",
+                    "surface {} makes the patch {n}, which is {clash} too: rename the surface (or the solids in its file)",
                     x.name
                 )));
             }
@@ -707,7 +707,7 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     let pt = |q: [f64; 3]| format!("({} {} {})", blocks::number(q[0]), blocks::number(q[1]), blocks::number(q[2]));
     match &extent {
         Some((lo, hi)) => {
-            if (0..3).any(|a| !(lo[a] < inside[a] && inside[a] < hi[a])) {
+            if !grid.as_ref().is_some_and(|g| point_inside(g, inside)) {
                 return Err(failed(format!(
                     "the inside point {} is outside {whose}, {} to {}: snappyHexMesh would find no cell there",
                     pt(inside),
@@ -969,5 +969,11 @@ mod tests {
         assert_eq!(missing_at(&both, [15.0, 10.0, 1.0]), Some([1, 0, 0]), "between two missing blocks");
         assert!(on_station(&g, [10.0, 5.0, 1.0]));
         assert!(!on_station(&g, [15.0, 5.0, 1.0]));
+        // Inside the blocks: strictly between their first and last stations on every axis.
+        assert!(point_inside(&g, [15.0, 5.0, 1.0]), "in a missing block, still inside the grid");
+        assert!(!point_inside(&g, [0.0, 5.0, 1.0]), "on a side");
+        assert!(!point_inside(&g, [5.0, 5.0, 9.0]), "above");
+        assert!(!point_inside(&g, [f64::NAN, 5.0, 1.0]), "not a number");
+        assert!(!point_inside(&BlockGrid::default(), [0.0, 0.0, 0.0]), "no stations");
     }
 }

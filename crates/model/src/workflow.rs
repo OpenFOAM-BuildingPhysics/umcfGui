@@ -339,22 +339,9 @@ impl Workflow {
                 StepKind::Move { from, .. } => from,
                 _ => &[],
             };
-            // The directory itself, one above it, or a pattern for it in its own directory.
-            let hit = |d: &str| {
-                away.iter().any(|p| {
-                    let p = p.trim_end_matches('/');
-                    p == d
-                        || d.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
-                        // Something inside it: the copy is no longer whole.
-                        || p.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))
-                        || p.rsplit_once('/').zip(d.rsplit_once('/')).is_some_and(|((pd, pn), (dd, dn))| {
-                            pd == dd && !pd.contains(['*', '?', '[']) && {
-                                glob_calls.set(glob_calls.get().saturating_add(1));
-                                glob_calls.get() > GLOB_CALLS || glob(pn, dn)
-                            }
-                        })
-                })
-            };
+            // The directory itself, one above it, or something inside it (the copy is no longer
+            // whole).
+            let hit = |d: &str| away.iter().any(|p| takes(p, d, true, true, &glob_calls));
             if let Some((_, lines)) = keeping.take_if(|(d, _)| hit(d)) {
                 for (l, w) in lines {
                     miss(self, l, w, false);
@@ -811,17 +798,20 @@ impl Workflow {
                 StepKind::Move { from, .. } => from,
                 _ => &[],
             };
-            made_now.retain(|m| {
-                !gone_paths.iter().any(|p| {
-                    let p = p.trim_end_matches('/');
-                    p == m || m.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
-                })
-            });
+            made_now.retain(|m| !gone_paths.iter().any(|p| takes(p, m, false, false, &glob_calls)));
+            // With the directories above each (`mkdir -p a/b` makes `a` too; recorded either way,
+            // only compared with where a background is kept).
             if let StepKind::MakeDir { paths } = &st.kind {
                 for p in paths {
-                    let p = p.trim_end_matches('/').to_string();
-                    if !made_now.contains(&p) && made_now.len() < MAX_MADE {
-                        made_now.push(p);
+                    let mut m = String::new();
+                    for part in parts(p) {
+                        if !m.is_empty() {
+                            m.push('/');
+                        }
+                        m.push_str(part);
+                        if !made_now.contains(&m) && made_now.len() < MAX_MADE {
+                            made_now.push(m.clone());
+                        }
                     }
                 }
             }
@@ -1802,13 +1792,55 @@ pub fn background_ok<'a>(
 /// kept background's directory name is at most this long too.
 const GLOB_MAX: usize = 255;
 
-/// The most pattern matches a script's reading makes; after them, a pattern is taken as
-/// matching (what it takes away is counted as gone): with [`GLOB_MAX`] it bounds the work.
+/// The most pattern matches a script's reading makes; after them, [`takes`] answers its doubt
+/// (a kept copy counts as gone, a made directory as still there): with [`GLOB_MAX`] it bounds
+/// the work.
 const GLOB_CALLS: usize = 10_000;
+
+/// The parts of a script's path, as the shell finds it: without `.` and empty parts
+/// (`./constant//polyMesh` is `constant/polyMesh`).
+fn parts(p: &str) -> impl Iterator<Item = &str> {
+    p.split('/').filter(|x| !x.is_empty() && *x != ".")
+}
+
+/// Whether removing or moving `path` (a script's, perhaps a pattern) takes away the directory
+/// `dir` of the case: it is `dir` or one above it, each part as the shell matches it
+/// (`*/polyMesh.bckp`, `constant`), or, with `inside`, something inside it (`dir/points`,
+/// `dir/*`). Inside, the parts down to `dir` must be written out, as a pattern there
+/// (`constant/*/polyMesh`) names the copy only through a file it may not hold. An absolute path
+/// (or one starting with `..`) is outside the case. Where it can't tell (a `..` part further
+/// in, a part over [`GLOB_MAX`] bytes, or past [`GLOB_CALLS`] pattern matches) it answers
+/// `doubt`: what errs on the safe side for the caller.
+fn takes(path: &str, dir: &str, inside: bool, doubt: bool, calls: &std::cell::Cell<usize>) -> bool {
+    let (p, d): (Vec<&str>, Vec<&str>) = (parts(path).collect(), parts(dir).collect());
+    if path.starts_with('/') || p.first() == Some(&"..") {
+        return false;
+    }
+    if p.contains(&"..") {
+        return doubt;
+    }
+    if p.is_empty() || d.is_empty() {
+        return false;
+    }
+    if p.len() > d.len() {
+        return inside && p.iter().zip(&d).all(|(a, b)| a == b);
+    }
+    p.iter().zip(&d).all(|(pn, dn)| {
+        pn == dn
+            || pn.contains(['*', '?', '[']) && {
+                calls.set(calls.get().saturating_add(1));
+                if calls.get() > GLOB_CALLS || pn.len() > GLOB_MAX || dn.len() > GLOB_MAX {
+                    doubt
+                } else {
+                    glob(pn, dn)
+                }
+            }
+    })
+}
 
 /// Whether the shell pattern `pattern` (`*`, `?`, `[…]` with ranges and `!` or `^`) matches the
 /// name `name`, as `sh` does in the C locale. A pattern or name longer than [`GLOB_MAX`] is
-/// taken as matching (what it takes away is then counted as gone). Work: pattern × name.
+/// taken as matching, a guard only: [`takes`] answers its doubt before. Work: pattern × name.
 fn glob(pattern: &str, name: &str) -> bool {
     if pattern.len() > GLOB_MAX || name.len() > GLOB_MAX {
         return true;
@@ -1945,7 +1977,7 @@ type Lines = Vec<(usize, String)>;
 struct Kept {
     dir: String,
     region: String,
-    lines: Vec<(usize, String)>,
+    lines: Lines,
     used: bool,
 }
 

@@ -31,16 +31,9 @@ impl App {
             Some(Some(d)) => d.region(&region).map_or((None, (0, 0), false, None), |r| {
                 let entry = r.snappy.as_ref().map_or((0, 0), |s| (s.surfaces.len(), s.boxes.len()));
                 let blocks = d.region(&from).and_then(|b| b.blocks.as_ref());
-                let place = blocks.zip(point).map(|(g, q)| {
-                    let outside = (0..3).any(|a| {
-                        let st = g.axes.get(a).map(|x| x.stations.as_slice()).unwrap_or_default();
-                        match (st.first(), st.last(), q.get(a)) {
-                            (Some(lo), Some(hi), Some(x)) => !(lo < x && x < hi),
-                            _ => true,
-                        }
-                    });
-                    (outside, umcf_engine::snappy_missing_at(g, q))
-                });
+                let place = blocks
+                    .zip(point)
+                    .map(|(g, q)| (!umcf_engine::snappy_point_inside(g, q), umcf_engine::snappy_missing_at(g, q)));
                 (blocks.map(crate::blockcard::preview), entry, true, place)
             }),
             _ => (None, (0, 0), false, None),

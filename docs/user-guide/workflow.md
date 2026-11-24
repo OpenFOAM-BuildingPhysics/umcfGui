@@ -82,22 +82,23 @@ the time step. OpenFOAM-8 reads a `-dict` given with `-region` below the region'
 (`system/../air/topoSetDict`).
 
 A mesh built in `constant/polyMesh` keeps its steps in the order the case's script ran them
-(`createPatch` before or after `snappyHexMesh`); a variant copied into `system/` or passed
-with `-dict` is the same dictionary. A copy of `constant/polyMesh` into a `constant/polyMesh.*`
+(`createPatch` before or after `snappyHexMesh`); a variant copied into `system/` or passed with
+`-dict` is the same dictionary. A copy of `constant/polyMesh` into a `constant/polyMesh.*`
 directory right after `blockMesh` is a kept [background](#background), and that copy put back
 into `constant/polyMesh` for a later region is its `background` step, when the mesh it was kept
-from is moved to its region with `mv` (as the generated scripts do; the tutorials copy it with
-`cp -r constant/polyMesh/.`, which isn't read yet). A copy taken after `snappyHexMesh`, one no
-region is meshed from, one removed before it is used, one whose mesh a later `blockMesh` (not
-`blockMesh -region`) replaces, a restore a later `blockMesh` replaces, a restore whose mesh isn't moved to a region (or is
-removed first, or is moved to the region it was kept from), a second copy into a directory still
-kept, or an `rm -rf` of such a directory with no copy after it isn't one, and is listed. A region
-built again after a background was kept from it, or after another was meshed from it, is
-listed too; the earlier reading stays. One limit: the reader takes `constant/polyMesh/` and
-`constant/polyMesh/.` as the same path, so a hand-written `cp -r constant/polyMesh/ <dir>/` into
-a directory made for it (which puts the mesh one level down) reads as the generated
-`constant/polyMesh/.` would. A region step with its own
-`-dict`, or a field restored without a `setFields` after it, doesn't fit and is listed.
+from is moved to its region with `mv` (as the generated scripts do). A region's mesh copied to
+its region with `cp -r` instead of moved (as the tutorials do) isn't read as one yet. A copy
+taken after `snappyHexMesh`, one no region is meshed from, one removed before it is used, one
+whose mesh a later `blockMesh` (not `blockMesh -region`) replaces, a restore a later `blockMesh`
+replaces, a restore whose mesh isn't moved to a region (or is removed first, or is moved to the
+region it was kept from), a second copy into a directory still kept, or an `rm -rf` of such a
+directory with no copy after it isn't one, and is listed. A region built again after a
+background was kept from it, or after another was meshed from it, is listed too; the earlier
+reading stays. One limit: the reader takes `constant/polyMesh/` and `constant/polyMesh/.` as the
+same path, so a hand-written `cp -r constant/polyMesh/ <dir>/` into a directory made for it
+(which puts the mesh one level down) reads as the generated `constant/polyMesh/.` would. A
+region step with its own `-dict`, or a field restored without a `setFields` after it, doesn't
+fit and is listed.
 
 Run on the 3×3 test case (OpenFOAM-12, two processes), the written scripts mesh, pre-process
 and run the case through to its first written time.

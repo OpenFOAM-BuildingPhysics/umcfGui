@@ -906,6 +906,12 @@ cp -r constant/polyMesh.b constant/polyMesh\nsnappyHexMesh -overwrite\nmv consta
         "mv constant/polyMesh.bckp constant/old\n",
         "rm -rf constant/*.bckp\n",
         "rm -rf constant\n",
+        "rm -rf */polyMesh.bckp\n",
+        "rm -rf c*/polyMesh.bckp\n",
+        "rm -rf */*.bckp\n",
+        "rm -rf ./constant/polyMesh.bckp\n",
+        "rm -rf constant//polyMesh.bckp/\n",
+        "rm -f constant/polyMesh.bckp/*\n",
     ] {
         let script = format!(
             "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n{away}\
@@ -915,13 +921,18 @@ cp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\nmv con
         assert!(lines(&wf).contains(&3), "{script}\n{:?}", wf.unmatched);
         assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{script}\n{:?}", wf.meshes);
     }
-    // A pattern inside constant/polyMesh/ leaves the kept copy: still read, the line listed.
-    let inside = "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
-rm -rf constant/polyMesh/*\ncp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\n\
-mv constant/polyMesh constant/vegetation/polyMesh\n";
-    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", inside)]);
-    assert_eq!(lines(&wf), [5], "{:?}", wf.unmatched);
-    assert_eq!(wf.meshes[1].build.background(), Some("air"));
+    // A pattern inside constant/polyMesh/ (the line listed), or the regions' meshes cleared (a
+    // file a level below every directory of constant/; the copy holds no polyMesh): the kept
+    // copy left, still read.
+    for (away, listed) in [("rm -rf constant/polyMesh/*\n", vec![5]), ("rm -rf constant/*/polyMesh\n", vec![])] {
+        let script = format!(
+            "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n{away}\
+cp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n"
+        );
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        assert_eq!(lines(&wf), listed, "{script}\n{:?}", wf.unmatched);
+        assert_eq!(wf.meshes[1].build.background(), Some("air"), "{script}");
+    }
     // Taken away by a pattern or a move after its restore, before the mesh is moved: still the
     // region's background, only that step listed.
     for away in ["rm -rf constant/polyMesh.*\n", "mv constant/polyMesh.bckp constant/old\n"] {
@@ -947,6 +958,22 @@ snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n";
     );
     let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &made_gone)]);
     assert_eq!(wf.meshes[1].build.background(), Some("air"), "{:?}", wf.unmatched);
+    // Made by a mkdir -p of a directory inside it, even with that one removed again: the copy
+    // nests, not a keep; the whole of it removed: a keep.
+    for (made, keep) in [
+        ("mkdir -p constant/polyMesh.bckp/spare\n", false),
+        ("mkdir -p constant/polyMesh.bckp/spare\nrm -rf constant/polyMesh.bckp/spare\n", false),
+        ("mkdir -p constant/polyMesh.bckp/spare\nrm -rf constant/polyMesh.bckp\n", true),
+        ("mkdir -p ./constant//polyMesh.bckp/spare\nrm -rf constant/polyMesh.bckp/spare\n", false),
+        ("mkdir -p constant/polyMesh.bckp\nrm -rf constant/*.bckp\n", true),
+        ("mkdir -p constant/polyMesh.bckp\nrm -rf /constant/polyMesh.bckp\n", false),
+        ("mkdir -p constant/polyMesh.bckp\nrm -rf ../constant/polyMesh.bckp\n", false),
+    ] {
+        let script = made_first.replace("mkdir -p constant/polyMesh.bckp\n", made);
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        let found = wf.meshes.get(1).and_then(|m| m.build.background());
+        assert_eq!(found, keep.then_some("air"), "{script}\n{:?}", wf.unmatched);
+    }
     // Cleaned up and made again, but not marked, then the mesh itself copied in: nests, not a
     // keep; marked and its contents copied in (the generated form): a keep.
     let unmarked = "#!/bin/sh\nblockMesh\nrm -rf constant/polyMesh.bckp\nmkdir -p constant/polyMesh.bckp\ncp -r constant/polyMesh constant/polyMesh.bckp\n\

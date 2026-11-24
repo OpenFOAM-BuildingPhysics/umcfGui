@@ -703,14 +703,7 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
     if let Some(g) = d.background_region(name).and_then(|x| x.blocks.as_ref()) {
         let q = sn.inside;
         let pt = format!("({} {} {})", blocks::number(q[0]), blocks::number(q[1]), blocks::number(q[2]));
-        let outside = (0..3).any(|a| {
-            let st = g.axes.get(a).map(|x| x.stations.as_slice()).unwrap_or_default();
-            match (st.first(), st.last(), q.get(a)) {
-                (Some(lo), Some(hi), Some(x)) => !(lo < x && x < hi),
-                _ => true,
-            }
-        });
-        if outside {
+        if !blocks::point_inside(g, q) {
             out.push(warn(
                 PATH,
                 format!("region {name}, snappy: the inside point {pt} is outside the blocks its mesh starts from, or on their sides: snappyHexMesh would find no cell there"),
