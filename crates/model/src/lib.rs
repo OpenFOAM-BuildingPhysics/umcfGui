@@ -645,7 +645,7 @@ fn read_scripts(fs: &dyn CaseFs, options: OpenOptions, notes: &mut Vec<Note>) ->
                     notes.push(note(
                         Severity::Warning,
                         &name,
-                        "script read only in part (too deeply nested, or its loops run too many commands): it is checked only that far",
+                        "script read only in part (too deeply nested, or its loops run too many commands or expand too much text): it is checked only that far",
                     ));
                 }
                 out.push(s);

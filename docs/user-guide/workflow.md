@@ -33,9 +33,10 @@ without running the script (`$(…)`, a variable set from a command, a `cd` else
 and marked; the check doesn't guess it.
 
 Scripts are case files, read every time a case opens, so their reading is bounded: blocks
-nested more than 32 deep are not read, and a script stops being read after a million
-commands (loops count each pass) or 100 000 steps. Such a script gets a note, and is
-checked only as far as it was read.
+nested more than 32 deep are not read, a word longer than 64 KiB once expanded is cut there
+and marked, and a script stops being read after a million commands (loops count each pass),
+100 000 steps or 64 MiB of expanded words (each word counting 64 bytes more, so many empty
+ones count too). Such a script gets a note, and is checked only as far as it was read.
 
 Steps that don't fit the pattern are listed (`workflow.custom`), as are steps that fit but
 aren't needed (`workflow.not-needed`, for example a serial `faceAgglomerate` before the
