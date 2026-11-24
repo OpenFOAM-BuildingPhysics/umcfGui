@@ -93,7 +93,10 @@ region is meshed from, one removed before it is used, one whose mesh a later `bl
 removed first, or is moved to the region it was kept from), a second copy into a directory still
 kept, or an `rm -rf` of such a directory with no copy after it isn't one, and is listed. A region
 built again after a background was kept from it, or after another was meshed from it, is
-listed too; the earlier reading stays. A region step with its own
+listed too; the earlier reading stays. One limit: the reader takes `constant/polyMesh/` and
+`constant/polyMesh/.` as the same path, so a hand-written `cp -r constant/polyMesh/ <dir>/` into
+a directory made for it (which puts the mesh one level down) reads as the generated
+`constant/polyMesh/.` would. A region step with its own
 `-dict`, or a field restored without a `setFields` after it, doesn't fit and is listed.
 
 Run on the 3×3 test case (OpenFOAM-12, two processes), the written scripts mesh, pre-process
@@ -786,7 +789,8 @@ vegetation
 
 `Allprepare` keeps a copy of what the air's `blockMesh` made (and nothing after it: the air's own
 `createPatch` and `snappyHexMesh` change only its mesh) in `constant/polyMesh.background.air`,
-marked as its own with a `.umcfgui-kept` file inside, puts it into `constant/polyMesh` (without
+marked as its own with a `.umcfgui-kept` file inside before the copy (so one stopped part way
+is still its own, replaced by the next run and removed by `Allclean`), puts it into `constant/polyMesh` (without
 the mark) before each region meshed from it runs its other steps, and removes it after the last.
 A `constant/polyMesh.background.air` there without the mark isn't `Allprepare`'s: it stops
 before touching it, and says so. `Allclean` removes a marked one, should `Allprepare` have
@@ -806,10 +810,11 @@ mesh: `workflow.patch` gives them their roles; the case check names them too). A
 `null`. While another region starts from its background, a region's mesh keeps its own
 `blockMesh` first: `mesh.split` refuses to split it, and `workflow.region` with `remove` lists the
 regions that started from it (`vegetation/mesh (background)`). `mesh.block` and `mesh.box` refuse
-a region meshed from a background: its blocks are the other region's. `background: null` gives
-the region a `blockMesh` of its own from `system/<region>/blockMeshDict`, whichever dictionary
-its `blockMesh` read before the background replaced it (the outcome notes one of another
-name); a region without a snappy entry gives `inside` with it, and a solid's mesh steps are
+a region meshed from a background: its blocks are the other region's. `background: null` leaves
+a region that already starts with its own `blockMesh` as it is (its dictionary too), and gives
+one switched back from a background the `blockMesh` from `system/<region>/blockMeshDict`,
+whichever dictionary its `blockMesh` read before the background replaced it (the outcome notes
+one of another name when the background is set); a region without a snappy entry gives `inside` with it, and a solid's mesh steps are
 written in `system/umcfWorkflow` by hand. On the card it is *Background from*, filled from the
 region's mesh and offering the regions listed before it that it can start from (empty: its own
 `blockMesh`, sent as `null` when emptied); the 3D view then shows that region's blocks, and the

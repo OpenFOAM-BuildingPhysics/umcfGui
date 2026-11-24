@@ -4816,7 +4816,7 @@ fn a_region_meshed_from_another_regions_background() {
         let show = s.execute("workflow.show", &json!({"scripts": true})).unwrap();
         assert_eq!(show.data["description"]["regions"][2]["mesh"][0], json!({"step": "background", "of": "air"}));
         let prep = show.data["scripts"].to_string();
-        assert!(prep.contains("cp -r constant/polyMesh constant/polyMesh.background.air"), "{prep}");
+        assert!(prep.contains("cp -r constant/polyMesh/. constant/polyMesh.background.air/"), "{prep}");
         assert!(prep.contains("cp -r constant/polyMesh.background.air constant/polyMesh"), "{prep}");
         // The air's block patches come into the vegetation's mesh: noted, and checked until
         // the vegetation lists them.

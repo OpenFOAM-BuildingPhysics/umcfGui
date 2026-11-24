@@ -162,6 +162,9 @@ pub enum RootStep {
     Background(String),
 }
 
+/// The longest name of the directory a background is kept in (a file name's limit).
+pub const KEPT_NAME_MAX: usize = 255;
+
 /// The file that marks a kept background as Allprepare's (in its directory): one there without it
 /// is the user's, which the scripts don't remove.
 pub const KEPT_MARK: &str = ".umcfgui-kept";
@@ -292,7 +295,9 @@ impl Workflow {
         let mut split: Option<DoneSplit> = None;
         // `mkdir constant/<r>`: part of a split when a copy of a mesh into it follows.
         let mut made: Vec<(usize, String, String)> = Vec::new();
-        // A background mesh kept (`cp -r constant/polyMesh <dir>` right after blockMesh): its
+        // A background mesh kept right after blockMesh (`cp -r constant/polyMesh <dir>`, or as
+        // the generated scripts do: the directory cleaned up, made, marked, and the mesh's
+        // contents copied in, `cp -r constant/polyMesh/. <dir>/`; see `Cleared`): its
         // directory and the lines that kept it, until the mesh being built is moved to its
         // region; then each kept one, with the region whose blockMesh made it and whether a
         // region was meshed from it. An `rm -rf` of a directory such a copy could go to, right
@@ -300,7 +305,9 @@ impl Workflow {
         let mut keeping: Option<(String, Vec<(usize, String)>)> = None;
         let mut kept: Vec<Kept> = Vec::new();
         // (With the directory made and marked for it, as the generated scripts do.)
-        let mut cleared: Option<(String, Lines)> = None;
+        let mut cleared: Option<Cleared> = None;
+        // Directories a mkdir made that are still there: a copy into one nests in it.
+        let mut made_now: Vec<String> = Vec::new();
         // The restore of a kept background the mesh being built starts from: its line, step and
         // directory, and the lines of the copy should it be removed before that mesh is moved to
         // its region (only then is the copy used).
@@ -338,6 +345,8 @@ impl Workflow {
                     let p = p.trim_end_matches('/');
                     p == d
                         || d.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
+                        // Something inside it: the copy is no longer whole.
+                        || p.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))
                         || p.rsplit_once('/').zip(d.rsplit_once('/')).is_some_and(|((pd, pn), (dd, dn))| {
                             pd == dd && !pd.contains(['*', '?', '[']) && {
                                 glob_calls.set(glob_calls.get().saturating_add(1));
@@ -413,7 +422,7 @@ impl Workflow {
                         .into_iter()
                         .flatten()
                         .chain(keep.into_iter().flatten())
-                        .chain(cleared.take().map(|(_, lines)| lines).into_iter().flatten())
+                        .chain(cleared.take().map(|c| c.lines).into_iter().flatten())
                     {
                         miss(self, l, w, false);
                     }
@@ -429,14 +438,22 @@ impl Workflow {
                         && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)]))
                         && keeping.is_none()
                         // Into one still kept, or one the script made, cp -r would nest the
-                        // copy in it.
+                        // copy in it, unless it is the scripts' own: made after its clean-up,
+                        // marked, and the mesh's contents copied in (`constant/polyMesh/.`).
                         && !kept.iter().any(|k| k.dir == to.trim_end_matches('/'))
-                        && !made.iter().any(|(_, _, r)| to.trim_end_matches('/').strip_prefix("constant/") == Some(r.as_str())) =>
+                        && {
+                            let dir = to.trim_end_matches('/');
+                            let contents = from.first().is_some_and(|f| f.ends_with('/'));
+                            match cleared.as_ref().filter(|c| c.dir == dir) {
+                                Some(c) if c.made => c.marked && contents,
+                                _ => !made_now.iter().any(|m| m == dir),
+                            }
+                        } =>
                 {
                     let dir = to.trim_end_matches('/').to_string();
                     // The clean-up before it, of the same directory, is part of it.
                     let mut lines = Vec::new();
-                    if let Some((d, before)) = cleared.take() {
+                    if let Some(Cleared { dir: d, lines: before, .. }) = cleared.take() {
                         if d == dir {
                             lines.extend(before);
                         } else {
@@ -507,7 +524,32 @@ impl Workflow {
                         && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)])) =>
                 {
                     let p = paths.first().map(|p| p.trim_end_matches('/').to_string()).unwrap_or_default();
-                    cleared = Some((p, vec![(line, describe_step(&st.kind))]));
+                    cleared = Some(Cleared {
+                        dir: p,
+                        lines: vec![(line, describe_step(&st.kind))],
+                        made: false,
+                        marked: false,
+                    });
+                }
+                // The directory made again after its clean-up, and marked as the script's.
+                StepKind::MakeDir { paths }
+                    if paths.len() == 1
+                        && paths.first().is_some_and(|p| {
+                            cleared.as_ref().is_some_and(|c| c.dir == p.trim_end_matches('/') && !c.made)
+                        }) =>
+                {
+                    if let Some(c) = cleared.as_mut() {
+                        c.made = true;
+                        c.lines.push((line, describe_step(&st.kind)));
+                    }
+                }
+                StepKind::Write { path }
+                    if cleared.as_ref().is_some_and(|c| c.made && *path == format!("{}/{KEPT_MARK}", c.dir)) =>
+                {
+                    if let Some(c) = cleared.as_mut() {
+                        c.marked = true;
+                        c.lines.push((line, describe_step(&st.kind)));
+                    }
                 }
                 // The keep marked as the script's.
                 StepKind::Write { path }
@@ -665,7 +707,7 @@ impl Workflow {
                         // Meshed from its own background, or built again: listed.
                         Some(_) if from.as_deref() == Some(region) || rebuilt => {
                             let keep = keeping.take().map(|(_, lines)| lines);
-                            let clean = cleared.take().map(|(_, lines)| lines).into_iter().flatten();
+                            let clean = cleared.take().map(|c| c.lines).into_iter().flatten();
                             for (l, w) in restore_lines(&mut restored)
                                 .into_iter()
                                 .flatten()
@@ -694,7 +736,7 @@ impl Workflow {
                         }
                         _ => {
                             let keep = keeping.take().map(|(_, lines)| lines);
-                            let clean = cleared.take().map(|(_, lines)| lines).into_iter().flatten();
+                            let clean = cleared.take().map(|c| c.lines).into_iter().flatten();
                             for (l, w) in restore_lines(&mut restored)
                                 .into_iter()
                                 .flatten()
@@ -718,7 +760,7 @@ impl Workflow {
                         for (l, w) in keeping.take().map(|(_, lines)| lines).into_iter().flatten() {
                             miss(self, l, w, false);
                         }
-                        for (l, w) in cleared.take().map(|(_, lines)| lines).into_iter().flatten() {
+                        for (l, w) in cleared.take().map(|c| c.lines).into_iter().flatten() {
                             miss(self, l, w, false);
                         }
                     }
@@ -763,6 +805,26 @@ impl Workflow {
                 StepKind::Clean { .. } | StepKind::Call { .. } => {}
                 k => miss(self, line, describe_step(k), false),
             }
+            // The directories mkdir made that a removal or a move takes away (or one above them).
+            let gone_paths: &[String] = match &st.kind {
+                StepKind::Remove { paths } => paths,
+                StepKind::Move { from, .. } => from,
+                _ => &[],
+            };
+            made_now.retain(|m| {
+                !gone_paths.iter().any(|p| {
+                    let p = p.trim_end_matches('/');
+                    p == m || m.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
+                })
+            });
+            if let StepKind::MakeDir { paths } = &st.kind {
+                for p in paths {
+                    let p = p.trim_end_matches('/').to_string();
+                    if !made_now.contains(&p) && made_now.len() < MAX_MADE {
+                        made_now.push(p);
+                    }
+                }
+            }
             // What the step did to constant/polyMesh.
             let working_dir = |p: &String| p.trim_end_matches('/') == "constant/polyMesh";
             match &st.kind {
@@ -782,10 +844,8 @@ impl Workflow {
         let unused =
             keeping.map(|(_, lines)| lines).into_iter().chain(kept.into_iter().filter(|k| !k.used).map(|k| k.lines));
         let unmoved = restored.map(|(l, w, _, pending)| std::iter::once((l, w)).chain(pending).collect::<Lines>());
-        for (l, w) in unused
-            .flatten()
-            .chain(unmoved.into_iter().flatten())
-            .chain(cleared.map(|(_, lines)| lines).into_iter().flatten())
+        for (l, w) in
+            unused.flatten().chain(unmoved.into_iter().flatten()).chain(cleared.map(|c| c.lines).into_iter().flatten())
         {
             miss(self, l, w, false);
         }
@@ -1124,13 +1184,14 @@ impl Workflow {
                             RootStep::BlockMesh(d) => {
                                 s.push_str(&format!("runApplication -o -s {rq} blockMesh{}\n", dict(d, BLOCK_DICT)));
                                 // The background a later region starts from, kept as blockMesh made it.
-                                // Marked as Allprepare's: one there without the mark isn't removed.
+                                // Marked as Allprepare's before the copy (one stopped part way is
+                                // still its own); one there without the mark isn't removed.
                                 if i == 0 && kept.contains(&m.region.as_str()) {
                                     let dir = background_dir(&m.region);
                                     let (k, mark) = (q(&dir), q(&format!("{dir}/{KEPT_MARK}")));
                                     s.push_str(&format!(
                                         "if [ -e {k} ] && [ ! -e {mark} ]\nthen\n    echo {} >&2\n    exit 1\nfi\n\
-rm -rf {k}\ncp -r constant/polyMesh {k}\ntouch {mark}\n",
+rm -rf {k}\nmkdir -p {k}\ntouch {mark}\ncp -r constant/polyMesh/. {k}/\n",
                                         q(&format!(
                                             "region {}: {dir} is there but has no {KEPT_MARK}, so Allprepare did not keep it: nothing is removed; move it away",
                                             m.region
@@ -1709,6 +1770,13 @@ pub fn background_ok<'a>(
     if of == region {
         return Err("it starts from its own background: name another region".into());
     }
+    // The directory it is kept in is one name, as long as a file system takes.
+    let dir = background_dir(of);
+    if dir.strip_prefix("constant/").unwrap_or(&dir).len() > KEPT_NAME_MAX {
+        return Err(format!(
+            "the directory it would be kept in, polyMesh.background.{of}, is longer than a file name may be ({KEPT_NAME_MAX} bytes): give region {of} a shorter name"
+        ));
+    }
     let mut before = None;
     for (r, b) in meshes {
         if r == region {
@@ -1857,6 +1925,18 @@ fn glob(pattern: &str, name: &str) -> bool {
     reach.last().copied().unwrap_or(false)
 }
 
+/// A clean-up of where a background is about to be kept (`rm -rf <dir>`), with the directory
+/// made again after it and marked as the script's, as the generated scripts do.
+struct Cleared {
+    dir: String,
+    lines: Lines,
+    made: bool,
+    marked: bool,
+}
+
+/// The most directories made by mkdir the reading follows.
+const MAX_MADE: usize = 10_000;
+
 /// Script lines and their steps, as listed when they don't fit.
 type Lines = Vec<(usize, String)>;
 
@@ -1872,9 +1952,9 @@ struct Kept {
 /// Whether `to` is where a background mesh could be kept: a directory `polyMesh.*` of
 /// `constant/` (`constant/polyMesh.background.air`, the tutorials' `constant/polyMesh.bckp`).
 fn keep_dir(to: &str) -> bool {
-    to.trim_end_matches('/')
-        .strip_prefix("constant/")
-        .is_some_and(|d| d.starts_with("polyMesh.") && d.len() <= GLOB_MAX && !d.contains(['/', '*', '?', '[']))
+    to.trim_end_matches('/').strip_prefix("constant/").is_some_and(|d| {
+        d.starts_with("polyMesh.") && d.len() <= KEPT_NAME_MAX.min(GLOB_MAX) && !d.contains(['/', '*', '?', '['])
+    })
 }
 
 fn header(functions: &str, what: &str) -> String {

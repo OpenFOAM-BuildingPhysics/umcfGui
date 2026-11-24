@@ -633,8 +633,9 @@ fn a_background_mesh_is_kept_for_the_regions_meshed_from_it() {
 if [ -e constant/polyMesh.background.air ] && [ ! -e constant/polyMesh.background.air/.umcfgui-kept ]\nthen\n    \
 echo 'region air: constant/polyMesh.background.air is there but has no .umcfgui-kept, so Allprepare did not keep it: nothing is removed; move it away' >&2\n    \
 exit 1\nfi\n\
-rm -rf constant/polyMesh.background.air\ncp -r constant/polyMesh constant/polyMesh.background.air\n\
+rm -rf constant/polyMesh.background.air\nmkdir -p constant/polyMesh.background.air\n\
 touch constant/polyMesh.background.air/.umcfgui-kept\n\
+cp -r constant/polyMesh/. constant/polyMesh.background.air/\n\
 runApplication -o -s air snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\n\
 rm -rf constant/air/polyMesh\nmv constant/polyMesh constant/air/polyMesh\n";
         assert!(prep.contains(air), "{prep}");
@@ -706,6 +707,13 @@ fn a_background_the_script_cannot_keep_is_refused() {
     wf.meshes[1].build =
         MeshBuild::Root(vec![RootStep::Background("air".into()), RootStep::BlockMesh("system/blockMeshDict".into())]);
     refused(&wf, "vegetation", "without a blockMesh after it");
+    // A region whose kept directory's name would be longer than a file name may be.
+    let mut wf = background_workflow();
+    let long = "a".repeat(KEPT_NAME_MAX);
+    wf.regions[0].clone_from(&long);
+    wf.meshes[0].region.clone_from(&long);
+    wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background(long.clone())]);
+    refused(&wf, "vegetation", "longer than a file name may be");
     // A name that isn't safe in a script is refused before.
     let mut wf = background_workflow();
     wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background("-rf".into())]);
@@ -932,6 +940,37 @@ snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n";
     let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", made_first)]);
     assert!(lines(&wf).contains(&3), "{:?}", wf.unmatched);
     assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // Made, then removed: the copy no longer nests, so it is a keep.
+    let made_gone = made_first.replace(
+        "mkdir -p constant/polyMesh.bckp\n",
+        "mkdir -p constant/polyMesh.bckp\nrm -rf constant/polyMesh.bckp\n",
+    );
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &made_gone)]);
+    assert_eq!(wf.meshes[1].build.background(), Some("air"), "{:?}", wf.unmatched);
+    // Cleaned up and made again, but not marked, then the mesh itself copied in: nests, not a
+    // keep; marked and its contents copied in (the generated form): a keep.
+    let unmarked = "#!/bin/sh\nblockMesh\nrm -rf constant/polyMesh.bckp\nmkdir -p constant/polyMesh.bckp\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\nrm -rf constant/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\n\
+snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", unmarked)]);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    let marked = unmarked.replace(
+        "cp -r constant/polyMesh constant/polyMesh.bckp\n",
+        "touch constant/polyMesh.bckp/.umcfgui-kept\ncp -r constant/polyMesh/. constant/polyMesh.bckp/\n",
+    );
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &marked)]);
+    assert_eq!(wf.unmatched, [], "{marked}");
+    assert_eq!(wf.meshes[1].build.background(), Some("air"));
+    // Something inside a kept copy moved or removed: the copy isn't whole, not read.
+    for inside in ["mv constant/polyMesh.bckp/points constant/old-points\n", "rm -f constant/polyMesh.bckp/faces\n"] {
+        let script = format!(
+            "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n{inside}\
+cp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n"
+        );
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        assert!(lines(&wf).contains(&3), "{script}\n{:?}", wf.unmatched);
+        assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{script}");
+    }
     // A restore into a constant/polyMesh that is there puts the copy inside it: not read.
     let inside_existing = "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
 cp -r constant/air/polyMesh constant/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\n\

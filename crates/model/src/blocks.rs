@@ -2393,6 +2393,10 @@ pub fn untouched(text: &str) -> bool {
 /// or more for a point on a station between them) is missing. The desktop's snappy card says
 /// it before *OK* by the same rule.
 pub fn missing_at(g: &BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
+    // A grid with more missing blocks than a grid may have (its own problem): not looked up.
+    if g.missing.len() > 2 * MAX_BLOCKS {
+        return None;
+    }
     // Along each axis the blocks that hold the coordinate: one inside its span, the two either
     // side of a station between spans, the one at an end.
     let mut along: [Vec<usize>; 3] = Default::default();
