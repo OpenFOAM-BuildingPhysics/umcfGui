@@ -1,4 +1,4 @@
-//! Meshing from the regions' STL surfaces (gaps row 6): a region's `snappy` entry in the
+//! Meshing from the regions' STL surfaces: a region's `snappy` entry in the
 //! workflow description, from which its `snappyHexMeshDict` is written.
 //!
 //! ```c++

@@ -595,3 +595,312 @@ fn a_split_is_taken_from_where_it_wrote_its_parts() {
     let wf = Workflow::import(&split_regions(), None, &[parse("Allprepare", &timed)]);
     assert!(wf.meshes.iter().all(|m| m.region != "vegetation"), "{:?}", wf.meshes);
 }
+
+/// The air meshed by blockMesh and snappyHexMesh, the vegetation and a second fluid from the
+/// air's background mesh (the windAroundBuildings chain).
+fn background_workflow() -> Workflow {
+    let mut wf = Workflow { regions: vec!["air".into(), "vegetation".into(), "street".into()], ..Workflow::default() };
+    let snappy = |r: &str| RootStep::SnappyHexMesh(format!("system/snappyHexMeshDict.{r}"));
+    wf.meshes = vec![
+        RegionMesh {
+            region: "air".into(),
+            build: MeshBuild::Root(vec![RootStep::BlockMesh("system/air/blockMeshDict".into()), snappy("air")]),
+            steps: vec![RegionStep::ChangeDictionary],
+        },
+        RegionMesh {
+            region: "vegetation".into(),
+            build: MeshBuild::Root(vec![RootStep::Background("air".into()), snappy("vegetation")]),
+            steps: vec![RegionStep::CreatePatch],
+        },
+        RegionMesh {
+            region: "street".into(),
+            build: MeshBuild::Root(vec![RootStep::Background("air".into()), RootStep::CreatePatch, snappy("street")]),
+            steps: Vec::new(),
+        },
+    ];
+    wf
+}
+
+#[test]
+fn a_background_mesh_is_kept_for_the_regions_meshed_from_it() {
+    let wf = background_workflow();
+    for v in [OfVersion::V8, OfVersion::V12] {
+        let scripts = wf.generate(v).unwrap();
+        let prep = &scripts[0].1;
+        // Kept right after the air's blockMesh, before its snappyHexMesh changes it.
+        let air = "runApplication -o -s air blockMesh -dict system/air/blockMeshDict\n\
+rm -rf constant/polyMesh.background.air\n\
+cp -r constant/polyMesh constant/polyMesh.background.air\n\
+runApplication -o -s air snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\n\
+rm -rf constant/air/polyMesh\nmv constant/polyMesh constant/air/polyMesh\n";
+        assert!(prep.contains(air), "{prep}");
+        // Each region from it starts from the copy; the last removes it.
+        let veg = "rm -rf constant/polyMesh\ncp -r constant/polyMesh.background.air constant/polyMesh\n\
+runApplication -o -s vegetation snappyHexMesh -overwrite -dict system/snappyHexMeshDict.vegetation\n\
+rm -rf constant/vegetation/polyMesh\nmv constant/polyMesh constant/vegetation/polyMesh\n\
+runApplication -o -s vegetation createPatch -region vegetation -overwrite\n";
+        assert!(prep.contains(veg), "{prep}");
+        let street = "rm -rf constant/polyMesh\ncp -r constant/polyMesh.background.air constant/polyMesh\n\
+runApplication -o -s street createPatch -overwrite\n\
+runApplication -o -s street snappyHexMesh -overwrite -dict system/snappyHexMeshDict.street\n\
+rm -rf constant/street/polyMesh\nmv constant/polyMesh constant/street/polyMesh\n\
+rm -rf constant/polyMesh.background.air\n";
+        assert!(prep.contains(street), "{prep}");
+        assert_eq!(prep.matches("rm -rf constant/polyMesh.background.air\n").count(), 2, "{prep}");
+        // Allclean removes it too, should Allprepare have stopped before.
+        assert!(scripts[2].1.contains("rm -rf constant/polyMesh.background.air\n"), "{}", scripts[2].1);
+        // The scripts read back into the same meshes.
+        let again = Workflow::import(&wf.regions, None, &[parse("Allprepare", prep)]);
+        assert_eq!(again.unmatched, [], "{prep}");
+        assert_eq!(again.meshes, wf.meshes);
+    }
+}
+
+#[test]
+fn a_background_the_script_cannot_keep_is_refused() {
+    let refused = |wf: &Workflow, region: &str, why: &str| match wf.generate(OfVersion::V12) {
+        Err(ScriptError::Background { region: r, why: w }) => {
+            assert_eq!(r, region);
+            assert!(w.contains(why), "{w}");
+        }
+        other => panic!("{other:?}"),
+    };
+    // Built after the region meshed from it.
+    let mut wf = background_workflow();
+    wf.meshes.swap(0, 1);
+    refused(&wf, "vegetation", "isn't built before it");
+    // A region of no mesh, its own, one from a background itself, one blocks alone.
+    let mut wf = background_workflow();
+    wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background("roof".into())]);
+    refused(&wf, "vegetation", "isn't built before it");
+    let mut wf = background_workflow();
+    wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background("vegetation".into())]);
+    refused(&wf, "vegetation", "its own background");
+    let mut wf = background_workflow();
+    wf.meshes[2].build = MeshBuild::Root(vec![RootStep::Background("vegetation".into())]);
+    refused(&wf, "street", "starts from a background too");
+    let mut wf = background_workflow();
+    wf.meshes[0].build = MeshBuild::Block;
+    refused(&wf, "vegetation", "starting with blockMesh");
+    // A region named as the directory the background is kept in: the scripts would remove it.
+    let mut wf = background_workflow();
+    wf.case_regions = vec!["polyMesh.background.air".into()];
+    refused(&wf, "vegetation", "a region named polyMesh.background.air");
+    // A name that isn't safe in a script is refused before.
+    let mut wf = background_workflow();
+    wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background("-rf".into())]);
+    assert_eq!(wf.generate(OfVersion::V12), Err(ScriptError::Unsafe("-rf".into())));
+}
+
+#[test]
+fn shell_patterns_match_as_the_shell_does() {
+    for (p, n, m) in [
+        ("polyMesh.*", "polyMesh.bckp", true),
+        ("*.bckp", "polyMesh.bckp", true),
+        ("polyMesh.?ckp", "polyMesh.bckp", true),
+        ("polyMesh.[ab]ckp", "polyMesh.bckp", true),
+        ("polyMesh[0-9]*", "polyMesh.bckp", true),
+        ("*", "", true),
+        ("polyMesh", "polyMesh.bckp", false),
+        ("*.x", "polyMesh.bckp", false),
+        ("a*b*c", "aXbYc", true),
+        ("a*b*c", "aXbY", false),
+    ] {
+        assert_eq!(glob(p, n), m, "{p} {n}");
+    }
+}
+
+#[test]
+fn the_tutorials_kept_background_is_read_when_moved_into_place() {
+    // A kept copy of any polyMesh.* name, put back for the next region.
+    let prepare = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\nmv constant/polyMesh constant/air/polyMesh\n\
+cp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite -dict system/snappyHexMeshDict.vegetation\n\
+mv constant/polyMesh constant/vegetation/polyMesh\nrm -rf constant/polyMesh.bckp\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", prepare)]);
+    assert_eq!(wf.unmatched, [], "{:?}", wf.unmatched);
+    assert_eq!(
+        wf.meshes[1].build,
+        MeshBuild::Root(vec![
+            RootStep::Background("air".into()),
+            RootStep::SnappyHexMesh("system/snappyHexMeshDict.vegetation".into())
+        ])
+    );
+    // A copy taken after snappyHexMesh is not the background: not read as one.
+    let late = prepare.replace(
+        "cp -r constant/polyMesh constant/polyMesh.bckp\nsnappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\n",
+        "snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\ncp -r constant/polyMesh constant/polyMesh.bckp\n",
+    );
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &late)]);
+    assert!(!wf.unmatched.is_empty());
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // Removed before it is used, or after: the keep and the removal listed, a restore not read.
+    let lines = |wf: &Workflow| wf.unmatched.iter().map(|u| u.line).collect::<Vec<_>>();
+    for (from, to, listed) in [
+        (
+            "cp -r constant/polyMesh constant/polyMesh.bckp\n",
+            "cp -r constant/polyMesh constant/polyMesh.bckp\nrm -rf constant/polyMesh.bckp\n",
+            vec![3, 4, 7, 8, 9, 10],
+        ),
+        (
+            "mv constant/polyMesh constant/air/polyMesh\n",
+            "mv constant/polyMesh constant/air/polyMesh\nrm -rf constant/polyMesh.bckp\n",
+            vec![3, 6, 7, 8, 9, 10],
+        ),
+    ] {
+        let script = prepare.replacen(from, to, 1);
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        assert_eq!(lines(&wf), listed, "{script}\n{:?}", wf.unmatched);
+        assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    }
+    // Kept and never used, or cleared with no keep after it: listed.
+    let unused = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\nrm -rf constant/polyMesh.x\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\n";
+    let wf = Workflow::import(&["air".into()], None, &[parse("Allprepare", unused)]);
+    assert_eq!(lines(&wf), [3, 4], "{:?}", wf.unmatched);
+    let cleared = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\nrm -rf constant/polyMesh.x\nmv constant/polyMesh constant/air/polyMesh\n";
+    // A second keep into a directory still kept would nest the copy in it: listed, the first
+    // one stays the background.
+    let twice = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\nblockMesh -dict system/street/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/street/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\n\
+snappyHexMesh -overwrite -dict system/snappyHexMeshDict.vegetation\nmv constant/polyMesh constant/vegetation/polyMesh\n";
+    let three: Vec<String> = ["air", "street", "vegetation"].map(String::from).to_vec();
+    let wf = Workflow::import(&three, None, &[parse("Allprepare", twice)]);
+    assert_eq!(lines(&wf), [6], "{:?}", wf.unmatched);
+    assert_eq!(wf.meshes[2].build.background(), Some("air"));
+    // A restore a blockMesh then replaces did nothing: listed, and so is the keep, unused.
+    let replaced = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\nblockMesh -dict system/vegetation/blockMeshDict\n\
+mv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", replaced)]);
+    assert_eq!(lines(&wf), [3, 5], "{:?}", wf.unmatched);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    let wf = Workflow::import(&["air".into()], None, &[parse("Allprepare", cleared)]);
+    assert_eq!(lines(&wf), [3], "{:?}", wf.unmatched);
+    // Its clean-up of the same directory goes with a keep never used.
+    let unused_cleaned = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\nrm -rf constant/polyMesh.bckp\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\n";
+    let wf = Workflow::import(&["air".into()], None, &[parse("Allprepare", unused_cleaned)]);
+    assert_eq!(lines(&wf), [3, 4], "{:?}", wf.unmatched);
+    // A blockMesh after the keep replaces the mesh it was kept from: the keep isn't of the mesh
+    // built, listed, and no region is read as meshed from it.
+    let rebuilt = prepare.replace(
+        "cp -r constant/polyMesh constant/polyMesh.bckp\n",
+        "cp -r constant/polyMesh constant/polyMesh.bckp\nblockMesh -dict system/other/blockMeshDict\n",
+    );
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &rebuilt)]);
+    assert!(lines(&wf).contains(&3), "{:?}", wf.unmatched);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // Restored, removed, then replaced by a blockMesh: no region was meshed from the copy, so
+    // the keep, the restore and the removal are all listed.
+    let gone = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\nrm -rf constant/polyMesh.bckp\n\
+blockMesh -dict system/vegetation/blockMeshDict\nmv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", gone)]);
+    let mut listed = lines(&wf);
+    listed.sort_unstable();
+    assert_eq!(listed, [3, 5, 6], "{:?}", wf.unmatched);
+    // Removed after the restore, before the region's mesh is moved: still its background.
+    let early = "#!/bin/sh\nblockMesh -dict system/air/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\nrm -rf constant/polyMesh.bckp\n\
+snappyHexMesh -overwrite -dict system/snappyHexMeshDict.vegetation\nmv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", early)]);
+    assert_eq!(wf.unmatched, [], "{:?}", wf.unmatched);
+    assert_eq!(wf.meshes[1].build.background(), Some("air"));
+    // Scripts whose restore doesn't give a region the kept mesh: listed, not read as one.
+    let head = "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bg\nmv constant/polyMesh constant/air/polyMesh\n\
+cp -r constant/polyMesh.bg constant/polyMesh\n";
+    let three: Vec<String> = ["air", "vegetation"].map(String::from).to_vec();
+    for (tail, listed) in [
+        // Its mesh never moved to a region (the copy removed meanwhile, or not).
+        ("rm -rf constant/polyMesh.bg\n", vec![3, 5, 6]),
+        ("", vec![3, 5]),
+        // Moved where no region is.
+        ("rm -rf constant/polyMesh.bg\nmv constant/polyMesh constant/a/b/polyMesh\n", vec![3, 5, 6, 7]),
+        // The region it was kept from meshed from it.
+        (
+            "snappyHexMesh -overwrite\nrm -rf constant/air/polyMesh\nmv constant/polyMesh constant/air/polyMesh\n",
+            vec![3, 5, 8],
+        ),
+        // The restored mesh removed before it is moved.
+        ("rm -rf constant/polyMesh\nmv constant/polyMesh constant/vegetation/polyMesh\n", vec![3, 5, 6, 7]),
+    ] {
+        let script = format!("{head}{tail}");
+        let wf = Workflow::import(&three, None, &[parse("Allprepare", &script)]);
+        let mut got = lines(&wf);
+        got.sort_unstable();
+        assert_eq!(got, listed, "{script}\n{:?}", wf.unmatched);
+        assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{script}\n{:?}", wf.meshes);
+    }
+    // The region the background was kept from built again: listed, the earlier reading kept.
+    let again = format!(
+        "{head}snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\nblockMesh\nmv constant/polyMesh constant/air/polyMesh\n"
+    );
+    let wf = Workflow::import(&three, None, &[parse("Allprepare", &again)]);
+    assert_eq!(lines(&wf), [9], "{:?}", wf.unmatched);
+    assert_eq!(wf.meshes.iter().map(|m| m.region.as_str()).collect::<Vec<_>>(), ["air", "vegetation"]);
+    assert_eq!(wf.meshes[1].build.background(), Some("air"));
+    // A keep whose mesh is removed (or moved nowhere) isn't handed to the next region moved.
+    for gone in ["rm -rf constant/polyMesh\n", "mv constant/polyMesh constant/a/b/polyMesh\n"] {
+        let script = format!(
+            "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.a\nmv constant/polyMesh constant/air/polyMesh\n\
+blockMesh -dict system/street/blockMeshDict\ncp -r constant/polyMesh constant/polyMesh.b\n{gone}\
+cp -r constant/polyMesh.a constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n\
+cp -r constant/polyMesh.b constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/trees/polyMesh\n"
+        );
+        let regions: Vec<String> = ["air", "vegetation", "trees"].map(String::from).to_vec();
+        let wf = Workflow::import(&regions, None, &[parse("Allprepare", &script)]);
+        let got = lines(&wf);
+        assert!(got.contains(&6) && got.contains(&7) && got.contains(&11), "{script}\n{:?}", wf.unmatched);
+        let bg =
+            |r: &str| wf.meshes.iter().find(|m| m.region == r).and_then(|m| m.build.background().map(str::to_string));
+        assert_eq!(bg("vegetation").as_deref(), Some("air"), "{script}");
+        assert_eq!(bg("trees"), None, "{script}");
+    }
+    // A kept copy taken away with other paths, by a pattern or by a move: a later restore of it
+    // isn't read.
+    for away in [
+        "rm -rf constant/polyMesh.bckp constant/vegetation/polyMesh\n",
+        "rm -rf constant/polyMesh.*\n",
+        "mv constant/polyMesh.bckp constant/old\n",
+        "rm -rf constant/*.bckp\n",
+        "rm -rf constant\n",
+    ] {
+        let script = format!(
+            "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n{away}\
+cp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n"
+        );
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        assert!(lines(&wf).contains(&3), "{script}\n{:?}", wf.unmatched);
+        assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{script}\n{:?}", wf.meshes);
+    }
+    // A pattern inside constant/polyMesh/ leaves the kept copy: still read, the line listed.
+    let inside = "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
+rm -rf constant/polyMesh/*\ncp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\n\
+mv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", inside)]);
+    assert_eq!(lines(&wf), [5], "{:?}", wf.unmatched);
+    assert_eq!(wf.meshes[1].build.background(), Some("air"));
+    // Taken away by a pattern or a move after its restore, before the mesh is moved: still the
+    // region's background, only that step listed.
+    for away in ["rm -rf constant/polyMesh.*\n", "mv constant/polyMesh.bckp constant/old\n"] {
+        let script = format!(
+            "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
+cp -r constant/polyMesh.bckp constant/polyMesh\n{away}snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n"
+        );
+        let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", &script)]);
+        assert_eq!(lines(&wf), [6], "{script}\n{:?}", wf.unmatched);
+        assert_eq!(wf.meshes[1].build.background(), Some("air"), "{script}");
+    }
+    // A blockMesh of another region (-region) writes its own mesh: the keep and the restore
+    // stand.
+    for at in ["cp -r constant/polyMesh constant/polyMesh.bckp\n", "cp -r constant/polyMesh.bckp constant/polyMesh\n"] {
+        let other = prepare.replace(at, &format!("{at}blockMesh -region wall\n"));
+        let regions: Vec<String> = ["air", "vegetation", "wall"].map(String::from).to_vec();
+        let wf = Workflow::import(&regions, None, &[parse("Allprepare", &other)]);
+        assert_eq!(wf.unmatched, [], "{other}");
+        let veg = wf.meshes.iter().find(|m| m.region == "vegetation").unwrap();
+        assert_eq!(veg.build.background(), Some("air"), "{other}");
+    }
+}

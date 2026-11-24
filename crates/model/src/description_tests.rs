@@ -925,3 +925,60 @@ castellatedMeshControls
     assert_eq!(needs.files, ["towers.stl", "big.stl"]);
     assert!(needs.unread.is_empty());
 }
+
+#[test]
+fn a_mesh_from_another_regions_background_is_written_read_back_and_found() {
+    let text = format!(
+        "{}regions\n{{\n    air {{ kind fluid; mesh ( blockMesh \"system/air/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.air\" ); blocks {{ x ( 0 ( 4 1 ) 40 ); y ( 0 ( 4 1 ) 40 ); z ( 0 ( 4 1 ) 20 ); }} }}\n    vegetation {{ kind vegetation; mesh ( background air snappyHexMesh \"system/snappyHexMeshDict.vegetation\" ); }}\n}}\n",
+        header("dictionary", "umcfWorkflow")
+    );
+    let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+    assert_eq!(problems, []);
+    let veg = d.region("vegetation").unwrap();
+    assert_eq!(
+        veg.mesh,
+        Some(MeshBuild::Root(vec![
+            RootStep::Background("air".into()),
+            RootStep::SnappyHexMesh("system/snappyHexMeshDict.vegetation".into())
+        ]))
+    );
+    // Its blocks are the air's; the air's its own.
+    assert_eq!(d.background_region("vegetation").map(|r| r.name.as_str()), Some("air"));
+    assert_eq!(d.background_region("air").map(|r| r.name.as_str()), Some("air"));
+    assert!(
+        d.write().contains("mesh        ( background air snappyHexMesh \"system/snappyHexMeshDict.vegetation\" );")
+    );
+    let (back, problems) = Description::read(&Document::parse(&d.write()).unwrap());
+    assert_eq!(problems, []);
+    assert_eq!(back, d);
+    // A name quoted as the writer quotes one that isn't plain: read as the name.
+    let quoted = text.replace("background air", "background \"air\"");
+    let (q, problems) = Description::read(&Document::parse(&quoted).unwrap());
+    assert_eq!(problems, []);
+    assert_eq!(q.region("vegetation").unwrap().mesh, veg.mesh);
+    // A region named as a step: written quoted, read back.
+    let mut named = d.clone();
+    if let Some(r) = named.regions.iter_mut().find(|r| r.name == "vegetation") {
+        r.mesh = Some(MeshBuild::Root(vec![RootStep::Background("createPatch".into())]));
+    }
+    assert!(named.write().contains("( background \"createPatch\" )"), "{}", named.write());
+    let (back, problems) = Description::read(&Document::parse(&named.write()).unwrap());
+    assert_eq!(problems, []);
+    assert_eq!(back, named);
+    // Not first, without a region, or with a blockMesh after it: a problem, not read.
+    for (mesh, why) in [
+        ("( blockMesh background air )", "background comes first"),
+        ("( background )", "is followed by the region"),
+        ("( background air blockMesh )", "a blockMesh after it would replace it"),
+        ("( background snappyHexMesh )", "is followed by the region"),
+        ("( snappyHexMesh )", "or with background <region>"),
+    ] {
+        let text = text.replace("( background air snappyHexMesh \"system/snappyHexMeshDict.vegetation\" )", mesh);
+        let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+        assert!(
+            problems.iter().any(|p| p.at == "regions/vegetation/mesh" && p.message.contains(why)),
+            "{mesh}: {problems:#?}"
+        );
+        assert_eq!(d.region("vegetation").and_then(|r| r.mesh.clone()), None, "{mesh}");
+    }
+}

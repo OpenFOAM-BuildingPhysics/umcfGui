@@ -12,7 +12,7 @@ for the case's OpenFOAM version.
 
 | Region | Steps |
 |---|---|
-| Fluid or vegetation, meshed with snappyHexMesh | `surfaceFeatures` (once, for all regions); `blockMesh` from the region's variant `system/blockMeshDict.<r>`; `createPatch`; `snappyHexMesh -overwrite` from `system/snappyHexMeshDict.<r>`; move `constant/polyMesh` to `constant/<r>/polyMesh`. Case scripts copy the variants over `system/blockMeshDict`; the written scripts pass them with `-dict` |
+| Fluid or vegetation, meshed with snappyHexMesh | `surfaceFeatures` (once, for all regions); `blockMesh` from the region's variant `system/blockMeshDict.<r>`; `createPatch`; `snappyHexMesh -overwrite` from `system/snappyHexMeshDict.<r>`; move `constant/polyMesh` to `constant/<r>/polyMesh`. Case scripts copy the variants over `system/blockMeshDict`; the written scripts pass them with `-dict`. A region meshed from another's [background](#background) starts from a copy of what that region's `blockMesh` made instead of a `blockMesh` of its own |
 | Solid, meshed with blockMesh | `blockMesh -region <r>` from `system/<r>/blockMeshDict` |
 | Then, any region | `createPatch -region`, `changeDictionary -region`, `topoSet -region` (`setSet -batch` in OpenFOAM-8), and `setFields -region` after restoring the field it sets from its backup (`0/air.bckp/LAD`) |
 
@@ -83,7 +83,17 @@ the time step. OpenFOAM-8 reads a `-dict` given with `-region` below the region'
 
 A mesh built in `constant/polyMesh` keeps its steps in the order the case's script ran them
 (`createPatch` before or after `snappyHexMesh`); a variant copied into `system/` or passed
-with `-dict` is the same dictionary. A region step with its own
+with `-dict` is the same dictionary. A copy of `constant/polyMesh` into a `constant/polyMesh.*`
+directory right after `blockMesh` is a kept [background](#background), and that copy put back
+into `constant/polyMesh` for a later region is its `background` step, when the mesh it was kept
+from is moved to its region with `mv` (as the generated scripts do; the tutorials copy it with
+`cp -r constant/polyMesh/.`, which isn't read yet). A copy taken after `snappyHexMesh`, one no
+region is meshed from, one removed before it is used, one whose mesh a later `blockMesh` (not
+`blockMesh -region`) replaces, a restore a later `blockMesh` replaces, a restore whose mesh isn't moved to a region (or is
+removed first, or is moved to the region it was kept from), a second copy into a directory still
+kept, or an `rm -rf` of such a directory with no copy after it isn't one, and is listed. A region
+built again after a background was kept from it, or after another was meshed from it, is
+listed too; the earlier reading stays. A region step with its own
 `-dict`, or a field restored without a `setFields` after it, doesn't fit and is listed.
 
 Run on the 3×3 test case (OpenFOAM-12, two processes), the written scripts mesh, pre-process
@@ -175,7 +185,7 @@ settings
 | `version` | `8` or `12`: the OpenFOAM version the scripts are for |
 | `profile` | written by an earlier `case.new`: read and left out (there is [one configuration](new-case.md#the-configuration)) |
 | `kind` | `fluid`, `solid` or `vegetation` |
-| `mesh` | `blocks` (`blockMesh -region`), the steps that build it in `constant/polyMesh` before it is moved to the region (`blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one), or `{ from split; of air; zone trees; }`: [split](#split) from another region's mesh by a cell zone |
+| `mesh` | `blocks` (`blockMesh -region`), the steps that build it in `constant/polyMesh` before it is moved to the region (`blockMesh`, `createPatch`, `snappyHexMesh`, each meshing step with its dictionary when it isn't the default one; or, first instead of `blockMesh`, `background <region>`: another region's [background](#background)), or `{ from split; of air; zone trees; }`: [split](#split) from another region's mesh by a cell zone |
 | `blocks` | the grid of blocks the region's `blockMeshDict` is written from ([below](#blocks)) |
 | `box` | the box around the STL surfaces its blocks are made from ([below](#box)) |
 | `snappy` | the STL surfaces snappyHexMesh makes its mesh with, refinement boxes and the inside point ([below](#snappy)) |
@@ -642,6 +652,7 @@ umcf-cli run --case path/to/case \
 | `surfaces` | `{"buildings": {…}, …}`: each merged into the surface of its name, a key given `null` taken away (`"features": null`), a surface given `null` taken out; a new surface needs its `mode`. Its keys are the entry's (`file`, `mode`, `level`, `distance`, `layers`, `features`) and `role`, the role given to a cutting surface's patch (each of its `<name>_<solid>` patches) in the description. A surface switched to `refine` loses its `level` and `layers` (a refining surface has neither: a call that gives them is refused). Without a `role`, when a cutting surface's file gained or lost solids, a patch it makes that the description doesn't list yet takes the role the patches it made before all had (not when they had a partner: the outcome lists such patches, for `workflow.patch` to give each its role and partner) |
 | `boxes` | `{"street": {"min": […], "max": […], "level": 1}}`, merged as the surfaces |
 | `expansion`, `firstLayer` | numbers; `null` takes either away |
+| `background` | the region whose background mesh it starts from (`"air"`), or `null` for a `blockMesh` of its own ([below](#background)) |
 | `replace` | `true` writes over a `snappyHexMeshDict`, and a `surfaceFeaturesDict` that doesn't list every surface asking for features, edited by hand or not written by umcfGui (case.save keeps them in the backup); not the `surfaceFeaturesDict` while a region's own `snappyHexMeshDict` reads features that can't be told |
 | `remove` | `true` takes the `snappy` entry out (its dictionary stays, the case's own, and so do the surfaces in `system/surfaceFeaturesDict` whose `.eMesh` it reads; while what it reads can't be told, `system/surfaceFeaturesDict` isn't written, noted) |
 
@@ -758,6 +769,52 @@ is left as it is; `mesh.snappy` with `replace` writes it from the entry. On the 
 refinement around the trees and the vegetation's cut, levels, features and first layer are read
 this way.
 
+#### Background
+
+A region can be meshed from the background mesh of another, as the `windAroundBuildings`
+tutorials mesh the vegetation: one `blockMesh` for the air, kept, then `snappyHexMesh` for the
+air and again for the vegetation from the same background. Its mesh then starts with
+`background <region>` instead of `blockMesh`:
+
+```c++
+vegetation
+{
+    kind        vegetation;
+    mesh        ( background air snappyHexMesh "system/snappyHexMeshDict.vegetation" );
+}
+```
+
+`Allprepare` keeps a copy of what the air's `blockMesh` made (and nothing after it: the air's own
+`createPatch` and `snappyHexMesh` change only its mesh) in `constant/polyMesh.background.air`,
+puts it into `constant/polyMesh` before each region meshed from it runs its other steps, and
+removes it after the last; `Allclean` removes it too, should `Allprepare` have stopped before.
+The region it starts from is one listed before it, built by steps of its own that start with
+`blockMesh` (not from a background itself, not `mesh blocks;`, not split); else
+`workflow.scripts` refuses to write the scripts, and the case check (`workflow.blocks`) names it,
+and blocks the region has of its own, which its mesh doesn't read.
+
+`mesh.snappy` takes `background`: the region whose background it starts from (refused unless the
+scripts could keep it), or `null` for a `blockMesh` of its own again
+(`system/<region>/blockMeshDict`); without it the mesh stays as it is. The inside point and the
+surfaces are then checked against that region's blocks, and a patch of its blocks counts as a
+clash as the region's own would; the outcome notes blocks of the region's own (which its mesh
+doesn't read) and the background's block patches the region doesn't list (they come into its
+mesh: `workflow.patch` gives them their roles; the case check names them too). An empty name is
+`null`. While another region starts from its background, a region's mesh keeps its own
+`blockMesh` first: `mesh.split` refuses to split it, and `workflow.region` with `remove` lists the
+regions that started from it (`vegetation/mesh (background)`). `mesh.block` and `mesh.box` refuse
+a region meshed from a background: its blocks are the other region's. On the card it is *Background from*, filled from the
+region's mesh and offering the regions listed before it that it can start from (empty: its own
+`blockMesh`, sent as `null` when emptied); the 3D view then shows that region's blocks, and the
+card checks the inside point against them.
+
+```sh
+umcf-cli run --case path/to/case \
+  --cmd 'mesh.snappy={"region": "vegetation", "background": "air", "inside": [1, 1, 5],
+    "surfaces": {"trees": {"mode": "cut", "level": [3, 3]}}}' \
+  --cmd 'workflow.scripts={}' --cmd 'case.save={}'
+```
+
 ### Split
 
 A region whose mesh is another region's split by a cell zone: the copy's cells outside the zone.
@@ -866,8 +923,9 @@ for a zone named as the parts outside it (`region1`, `region2`, …) or as a reg
 itself too), while a region is named
 `region` and a number, a zone of the name of a
 directory the case has (`constant/<zone>`, `0/<zone>`, `system/<region>/<zone>`: the split
-writes its parts there), a region split from itself, and names that aren't plain OpenFOAM
-words. It says when the dictionary doesn't make the zone, makes others too, or isn't there, and
+writes its parts there), a region split from itself, a region whose
+[background](#background) another region starts from (a split mesh has none to keep), and names
+that aren't plain OpenFOAM words. It says when the dictionary doesn't make the zone, makes others too, or isn't there, and
 returns the zones it makes (`zones`).
 
 ```sh
@@ -986,7 +1044,7 @@ its comments kept.
 
 | Command | What |
 |---|---|
-| `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, the radiation) is listed. A solid with materials stays one |
+| `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, regions meshed from its [background](#background), the radiation) is listed. A solid with materials stays one |
 | `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`) and `name`. `null` takes a role or partner away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
 | `workflow.material` | `region` (a solid), `material` (the name of its cell zone) and `model` (its `buildingMaterialModel`, or `null`), or `remove: true` |
 

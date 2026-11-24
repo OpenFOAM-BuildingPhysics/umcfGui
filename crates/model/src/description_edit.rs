@@ -6,6 +6,7 @@
 use umcf_foam_dict::{Document, Node, unquote};
 
 use crate::description::{PATH, Role};
+use crate::workflow::MeshBuild;
 use crate::{Case, Error, RegionKind, Result};
 
 /// A change to a patch of the description; `None` leaves that part as it is.
@@ -227,6 +228,12 @@ impl Case {
         for (r, p, pr, _) in partners(self.editable()?) {
             if pr == region {
                 dangling.push(format!("{r}/{p}"));
+            }
+        }
+        // Regions meshed from its background.
+        if let Some((d, _)) = self.description() {
+            for r in d.regions.iter().filter(|r| r.mesh.as_ref().and_then(MeshBuild::background) == Some(region)) {
+                dangling.push(format!("{}/mesh (background)", r.name));
             }
         }
         if let Some(rad) = self.description().and_then(|(d, _)| d.radiation) {

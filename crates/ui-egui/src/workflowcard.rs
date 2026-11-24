@@ -7,6 +7,7 @@
 
 use umcf_model::RegionKind;
 use umcf_model::description::Description;
+use umcf_model::workflow::MeshBuild;
 
 use crate::App;
 use crate::forms::{FormState, Kind, PARTNER_PATCHES};
@@ -95,7 +96,11 @@ fn described(
             Some(vec![("model", m.model.clone().unwrap_or_default())])
         }
         "mesh.snappy" => {
-            let mut json = umcf_engine::snappy_json(r.snappy.as_ref()?);
+            // The region whose background mesh it starts from; empty: its own blockMesh's.
+            let background = r.mesh.as_ref().and_then(MeshBuild::background).unwrap_or_default().to_string();
+            // Without an entry, the background alone: the other fields are as for a region gone.
+            let Some(sn) = r.snappy.as_ref() else { return Some(vec![("background", background)]) };
+            let mut json = umcf_engine::snappy_json(sn);
             // The solids are the command's own record, not a field's.
             if let Some(m) = json.get_mut("surfaces").and_then(Value::as_object_mut) {
                 for x in m.values_mut().filter_map(Value::as_object_mut) {
@@ -116,6 +121,7 @@ fn described(
                 json.get(k).and_then(|v| crate::forms::grid_text(kind, v, "")).unwrap_or_default()
             };
             Some(vec![
+                ("background", background),
                 ("inside", inside),
                 ("expansion", number("expansion")),
                 ("firstLayer", number("firstLayer")),
@@ -176,7 +182,8 @@ fn card_fields(id: &str) -> &'static [&'static str] {
         "workflow.material" => &["model"],
         "material.set" => &["coefficients"],
         "mesh.split" => &["of", "zone", "dict"],
-        "mesh.snappy" => &["inside", "expansion", "firstLayer", "surfaces", "boxes"],
+        // The background is filled when the region has no snappy entry too.
+        "mesh.snappy" => &["background", "inside", "expansion", "firstLayer", "surfaces", "boxes"],
         _ => &[],
     }
 }
@@ -246,6 +253,16 @@ impl App {
             }
             return;
         };
+        // The fields it no longer says (a snappy entry taken out, its region's mesh kept): as for
+        // a region gone.
+        for k in card_fields(id) {
+            if !now.iter().any(|(x, _)| x == k) {
+                if !f.extra.contains_key(*k) {
+                    undescribed(f, k);
+                }
+                f.initial.insert(k, String::new());
+            }
+        }
         for (k, v) in now {
             let was = f.initial.get(k).cloned().unwrap_or_default();
             let value = f.values.get(k).cloned().unwrap_or_default();
@@ -310,6 +327,20 @@ impl App {
                     // None for the first region: the field's hint says why.
                     options.insert("of", before);
                     options.insert("zone", zones.unwrap_or_default());
+                }
+                "mesh.snappy" => {
+                    // The regions listed before it built by steps of their own starting with
+                    // blockMesh: those whose background mesh it can start from.
+                    let before: Vec<String> = d
+                        .regions
+                        .iter()
+                        .take_while(|r| r.name != region)
+                        .filter(|r| {
+                            matches!(&r.mesh, Some(MeshBuild::Root(steps)) if matches!(steps.first(), Some(umcf_model::workflow::RootStep::BlockMesh(_))))
+                        })
+                        .map(|r| r.name.clone())
+                        .collect();
+                    options.insert("background", before);
                 }
                 "workflow.material" => {
                     let solids =

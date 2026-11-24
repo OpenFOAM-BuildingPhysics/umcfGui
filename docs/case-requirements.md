@@ -171,7 +171,7 @@ The chain from STL surfaces, *12*:
 |---|---|---|---|
 | 1 | `blockMesh` | `system/blockMeshDict` | One box covering every surface, ground at its lowest plane. Patches: `west`, `east`, `north`, `south`, `top` (`patch`), `ground` (`wall`). Variables as `$!backgroundMesh/xMin` *12*, `$:backgroundMesh.xMin` *8*. |
 | 2 | `surfaceFeatures` | `system/surfaceFeaturesDict` | The building and tree surfaces. |
-| 3 | keep a copy of the background mesh | | snappyHexMesh runs twice on it. |
+| 3 | keep a copy of the background mesh | | snappyHexMesh runs twice on it (in `umcfWorkflow`: the vegetation's mesh starts with `background air`, [the workflow](user-guide/workflow.md#background)). |
 | 4 | `snappyHexMesh` for `air` | `system/snappyHexMeshDict.air` | Buildings a refinement surface with `patchInfo { type wall; }` and layers; trees a distance refinement only; `locationInMesh` (*12* also `insidePoint`) in the air, outside every building and tree. A multi-region STL makes patches `<geometry>_<region>` unless renamed. |
 | 5 | `changeDictionary -region air` | `system/air/changeDictionaryDict` | The coupled walls become `mappedWall` to their solids. |
 | 6 | restore the background; `snappyHexMesh` for `vegetation` | `system/snappyHexMeshDict.veg` | As for `air`, with the trees also a wall surface, so their volume is cut out; no layers. |

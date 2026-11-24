@@ -124,6 +124,9 @@ pub enum ScriptError {
     /// A region split from another ([`MeshBuild::Split`]) the script can't make: what its
     /// clean-up would take away is another region, or what it needs isn't known.
     Split { region: String, why: String },
+    /// A region meshed from another's background mesh ([`RootStep::Background`]) the script
+    /// can't make: why.
+    Background { region: String, why: String },
 }
 
 impl std::fmt::Display for ScriptError {
@@ -134,6 +137,9 @@ impl std::fmt::Display for ScriptError {
                 "`{w}` isn't safe in a script: not a plain name or a path inside the case (a control character, a leading `-`, `/` or `..`)"
             ),
             ScriptError::Split { region, why } => write!(f, "region {region}, split by a cell zone: {why}"),
+            ScriptError::Background { region, why } => {
+                write!(f, "region {region}, meshed from another region's background: {why}")
+            }
         }
     }
 }
@@ -149,6 +155,30 @@ pub enum RootStep {
     CreatePatch,
     /// `snappyHexMesh -overwrite` from this dictionary (copied to `system/snappyHexMeshDict`).
     SnappyHexMesh(String),
+    /// The background mesh of this region (what its first step, `blockMesh`, made, kept in
+    /// [`background_dir`]) copied into `constant/polyMesh`: the first step of a region meshed
+    /// from another's background (the `windAroundBuildings` chain: one background `blockMesh`,
+    /// `snappyHexMesh` for the air and again for the vegetation from it).
+    Background(String),
+}
+
+/// Where the background mesh of region `of` is kept while the regions meshed from it are built:
+/// `constant/polyMesh.background.<of>`, removed once the last of them is.
+pub fn background_dir(of: &str) -> String {
+    format!("constant/polyMesh.background.{of}")
+}
+
+impl MeshBuild {
+    /// The region whose background mesh this one starts from ([`RootStep::Background`]).
+    pub fn background(&self) -> Option<&str> {
+        match self {
+            MeshBuild::Root(steps) => match steps.first() {
+                Some(RootStep::Background(of)) => Some(of),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 const BLOCK_DICT: &str = "system/blockMeshDict";
@@ -258,11 +288,75 @@ impl Workflow {
         let mut split: Option<DoneSplit> = None;
         // `mkdir constant/<r>`: part of a split when a copy of a mesh into it follows.
         let mut made: Vec<(usize, String, String)> = Vec::new();
+        // A background mesh kept (`cp -r constant/polyMesh <dir>` right after blockMesh): its
+        // directory and the lines that kept it, until the mesh being built is moved to its
+        // region; then each kept one, with the region whose blockMesh made it and whether a
+        // region was meshed from it. An `rm -rf` of a directory such a copy could go to, right
+        // after blockMesh, waits for the keep (the scripts' own clean-up before it).
+        let mut keeping: Option<(String, Vec<(usize, String)>)> = None;
+        let mut kept: Vec<Kept> = Vec::new();
+        let mut cleared: Option<(String, usize, String)> = None;
+        // The restore of a kept background the mesh being built starts from: its line, step and
+        // directory, and the lines of the copy should it be removed before that mesh is moved to
+        // its region (only then is the copy used).
+        let mut restored: Option<(usize, String, String, Lines)> = None;
         let miss = |wf: &mut Workflow, line: usize, what: String, redundant: bool| {
             wf.unmatched.push(Unmatched { script: s.path.clone(), line, what, redundant });
         };
         for st in &s.steps {
             let line = st.line;
+            // A kept copy (or one being kept) taken away by a step the arms below don't read as
+            // its removal (several paths, a pattern, a move): gone, and listed if no region was
+            // meshed from it.
+            let away: &[String] = match &st.kind {
+                // (A removal of the one directory is read by its own arm below.)
+                StepKind::Remove { paths }
+                    if !(paths.len() == 1
+                        && paths.first().is_some_and(|p| {
+                            let p = p.trim_end_matches('/');
+                            keeping.as_ref().is_some_and(|(d, _)| d == p) || kept.iter().any(|k| k.dir == p)
+                        })) =>
+                {
+                    paths
+                }
+                StepKind::Move { from, .. } => from,
+                _ => &[],
+            };
+            // The directory itself, one above it, or a pattern for it in its own directory.
+            let hit = |d: &str| {
+                away.iter().any(|p| {
+                    let p = p.trim_end_matches('/');
+                    p == d
+                        || d.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
+                        || p.rsplit_once('/').zip(d.rsplit_once('/')).is_some_and(|((pd, pn), (dd, dn))| {
+                            pd == dd && !pd.contains(['*', '?', '[']) && glob(pn, dn)
+                        })
+                })
+            };
+            if let Some((_, lines)) = keeping.take_if(|(d, _)| hit(d)) {
+                for (l, w) in lines {
+                    miss(self, l, w, false);
+                }
+            }
+            let restoring = matches!(root.as_deref().and_then(<[RootStep]>::first), Some(RootStep::Background(_)));
+            let mut i = 0;
+            while let Some(k) = kept.get(i) {
+                if hit(&k.dir) {
+                    let k = kept.remove(i);
+                    match restored.as_mut() {
+                        // Taken away after its restore: used once the restored mesh is moved.
+                        Some((_, _, d, pending)) if !k.used && restoring && *d == k.dir => pending.extend(k.lines),
+                        _ if !k.used => {
+                            for (l, w) in k.lines {
+                                miss(self, l, w, false);
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    i += 1;
+                }
+            }
             match &st.kind {
                 // Logs, the script's own directory changes and messages are not the workflow.
                 StepKind::Write { path } if path.starts_with("log") => {}
@@ -294,7 +388,109 @@ impl Workflow {
                         }
                     }
                 }
+                // The mesh being built removed before it went to a region: it, a restore it
+                // started from and a clean-up waiting for its keep go with it.
+                StepKind::Remove { paths }
+                    if root.is_some() && paths.iter().any(|p| p.trim_end_matches('/') == "constant/polyMesh") =>
+                {
+                    root = None;
+                    let lost = restored.take().map(|(l, w, _, pending)| std::iter::once((l, w)).chain(pending));
+                    let keep = keeping.take().map(|(_, lines)| lines);
+                    for (l, w) in lost
+                        .into_iter()
+                        .flatten()
+                        .chain(keep.into_iter().flatten())
+                        .chain(cleared.take().map(|(_, l, w)| (l, w)))
+                    {
+                        miss(self, l, w, false);
+                    }
+                    miss(self, line, describe_step(&st.kind), false);
+                }
                 StepKind::Remove { paths } if paths.iter().all(|p| is_temporary(p) || p == "constant/polyMesh") => {}
+                // A background mesh kept for the regions meshed from it, its copy put back, and
+                // the copy removed (`rm -rf` before and after).
+                StepKind::Copy { from, to }
+                    if from.len() == 1
+                        && from.first().is_some_and(|f| f.trim_end_matches('/') == "constant/polyMesh")
+                        && keep_dir(to)
+                        && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)]))
+                        && keeping.is_none()
+                        // Into one still kept, cp -r would nest the copy in it.
+                        && !kept.iter().any(|k| k.dir == to.trim_end_matches('/')) =>
+                {
+                    let dir = to.trim_end_matches('/').to_string();
+                    // The clean-up before it, of the same directory, is part of it.
+                    let mut lines = Vec::new();
+                    if let Some((d, l, w)) = cleared.take() {
+                        if d == dir {
+                            lines.push((l, w));
+                        } else {
+                            miss(self, l, w, false);
+                        }
+                    }
+                    lines.push((line, describe_step(&st.kind)));
+                    keeping = Some((dir, lines));
+                }
+                StepKind::Copy { from, to }
+                    if to.trim_end_matches('/') == "constant/polyMesh"
+                        && root.is_none()
+                        && from.len() == 1
+                        && from.first().is_some_and(|f| kept.iter().any(|k| k.dir == f.trim_end_matches('/'))) =>
+                {
+                    if let Some(k) =
+                        from.first().and_then(|f| kept.iter_mut().find(|k| k.dir == f.trim_end_matches('/')))
+                    {
+                        restored = Some((line, describe_step(&st.kind), k.dir.clone(), Vec::new()));
+                        root = Some(vec![RootStep::Background(k.region.clone())]);
+                    }
+                }
+                // The kept copy removed: after the regions meshed from it, part of the pattern;
+                // a copy no region was meshed from, or one still being kept, isn't (a later
+                // restore of it isn't read either).
+                StepKind::Remove { paths }
+                    if paths.len() == 1
+                        && paths.first().is_some_and(|p| {
+                            let p = p.trim_end_matches('/');
+                            keeping.as_ref().is_some_and(|(d, _)| d == p) || kept.iter().any(|k| k.dir == p)
+                        }) =>
+                {
+                    let p = paths.first().map(|p| p.trim_end_matches('/').to_string()).unwrap_or_default();
+                    if let Some((_, lines)) = keeping.take_if(|(d, _)| *d == p) {
+                        for (l, w) in lines {
+                            miss(self, l, w, false);
+                        }
+                        miss(self, line, describe_step(&st.kind), false);
+                    }
+                    if let Some(i) = kept.iter().position(|k| k.dir == p) {
+                        let k = kept.remove(i);
+                        let restoring =
+                            matches!(root.as_deref().and_then(<[RootStep]>::first), Some(RootStep::Background(_)));
+                        match restored.as_mut() {
+                            // Used once the mesh restored from it is moved to its region.
+                            Some((_, _, d, pending)) if !k.used && restoring && *d == p => {
+                                pending.extend(k.lines);
+                                pending.push((line, describe_step(&st.kind)));
+                            }
+                            _ if !k.used => {
+                                for (l, w) in k.lines {
+                                    miss(self, l, w, false);
+                                }
+                                miss(self, line, describe_step(&st.kind), false);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                StepKind::Remove { paths }
+                    if paths.len() == 1
+                        && cleared.is_none()
+                        && keeping.is_none()
+                        && paths.first().is_some_and(|p| keep_dir(p))
+                        && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)])) =>
+                {
+                    let p = paths.first().map(|p| p.trim_end_matches('/').to_string()).unwrap_or_default();
+                    cleared = Some((p, line, describe_step(&st.kind)));
+                }
                 StepKind::Remove { paths }
                     if paths.iter().all(|p| {
                         p.strip_prefix("constant/")
@@ -419,19 +615,93 @@ impl Workflow {
                 {
                     let region = to.trim_end_matches('/').trim_end_matches("/polyMesh");
                     let region = region.strip_prefix("constant/").unwrap_or(region);
+                    // A restore whose mesh doesn't go to a region the way it reads: listed with it.
+                    let restore_lines = |restored: &mut Option<(usize, String, String, Lines)>| {
+                        restored
+                            .take()
+                            .map(|(l, w, _, pending)| std::iter::once((l, w)).chain(pending).collect::<Lines>())
+                    };
+                    let from = root.as_deref().and_then(<[RootStep]>::first).and_then(|st| match st {
+                        RootStep::Background(of) => Some(of.clone()),
+                        _ => None,
+                    });
+                    // A region another's background was kept from, or one meshed from it,
+                    // built again: the mesh it reads is the earlier one.
+                    let rebuilt = self.meshes.iter().any(|m| m.region == region)
+                        && (kept.iter().any(|k| k.region == region)
+                            || self.meshes.iter().any(|m| m.build.background() == Some(region)));
                     match root.take() {
+                        // Meshed from its own background, or built again: listed.
+                        Some(_) if from.as_deref() == Some(region) || rebuilt => {
+                            let keep = keeping.take().map(|(_, lines)| lines);
+                            let clean = cleared.take().map(|(_, l, w)| (l, w));
+                            for (l, w) in restore_lines(&mut restored)
+                                .into_iter()
+                                .flatten()
+                                .chain(keep.into_iter().flatten())
+                                .chain(clean)
+                            {
+                                miss(self, l, w, false);
+                            }
+                            miss(self, line, format!("mv constant/polyMesh {to}"), false);
+                        }
                         Some(steps) if !region.contains('/') && !region.is_empty() => {
+                            if let Some((dir, lines)) = keeping.take() {
+                                kept.retain(|k| k.dir != dir);
+                                kept.push(Kept { dir, region: region.to_string(), lines, used: false });
+                            }
+                            // A region meshed from a kept background: the copy used.
+                            if matches!(steps.first(), Some(RootStep::Background(_)))
+                                && let Some((_, _, dir, _)) = restored.take()
+                                && let Some(k) = kept.iter_mut().find(|k| k.dir == dir)
+                            {
+                                k.used = true;
+                            }
                             let build = MeshBuild::Root(steps);
                             self.meshes.retain(|m| m.region != region);
                             self.meshes.push(RegionMesh { region: region.to_string(), build, steps: Vec::new() });
                         }
-                        _ => miss(self, line, format!("mv constant/polyMesh {to}"), false),
+                        _ => {
+                            let keep = keeping.take().map(|(_, lines)| lines);
+                            let clean = cleared.take().map(|(_, l, w)| (l, w));
+                            for (l, w) in restore_lines(&mut restored)
+                                .into_iter()
+                                .flatten()
+                                .chain(keep.into_iter().flatten())
+                                .chain(clean)
+                            {
+                                miss(self, l, w, false);
+                            }
+                            miss(self, line, format!("mv constant/polyMesh {to}"), false);
+                        }
                     }
                 }
                 StepKind::Run(r) if st.unresolved && !is_radiation(&r.app) && r.app != solver => {
                     miss(self, line, describe(r), false);
                 }
                 StepKind::Run(r) => {
+                    // A blockMesh replacing the mesh a background was kept from (or is about to
+                    // be): the keep, or the clean-up before it, isn't of the mesh built.
+                    // (blockMesh -region writes the region's own mesh, not constant/polyMesh.)
+                    if r.app == "blockMesh" && r.region.is_none() {
+                        for (l, w) in keeping.take().map(|(_, lines)| lines).into_iter().flatten() {
+                            miss(self, l, w, false);
+                        }
+                        if let Some((_, l, w)) = cleared.take() {
+                            miss(self, l, w, false);
+                        }
+                    }
+                    // A blockMesh replacing a restored background: the restore did nothing.
+                    if r.app == "blockMesh"
+                        && r.region.is_none()
+                        && matches!(root.as_deref().and_then(<[RootStep]>::first), Some(RootStep::Background(_)))
+                        && let Some((l, w, _, pending)) = restored.take()
+                    {
+                        miss(self, l, w, false);
+                        for (l, w) in pending {
+                            miss(self, l, w, false);
+                        }
+                    }
                     self.run(r, line, &s.path, solver, &mut root, &mut copied_block, &mut copied_snappy, &mut restore)
                 }
                 // Copying constant/ files into processor*/ (needed by solver builds before
@@ -444,6 +714,14 @@ impl Workflow {
         }
         if let Some(p) = pending {
             p.unused(self, &s.path);
+        }
+        // A background kept that no region was meshed from, or whose mesh never went to a
+        // region; a clean-up with no keep after it.
+        let unused =
+            keeping.map(|(_, lines)| lines).into_iter().chain(kept.into_iter().filter(|k| !k.used).map(|k| k.lines));
+        let unmoved = restored.map(|(l, w, _, pending)| std::iter::once((l, w)).chain(pending).collect::<Lines>());
+        for (l, w) in unused.flatten().chain(unmoved.into_iter().flatten()).chain(cleared.map(|(_, l, w)| (l, w))) {
+            miss(self, l, w, false);
         }
         if let Some(done) = split {
             done.end(self, &s.path);
@@ -588,6 +866,11 @@ impl Workflow {
             {
                 return Err(ScriptError::Split { region: m.region.clone(), why });
             }
+            if let Some(of) = m.build.background()
+                && let Err(why) = self.background_ok(&m.region, of)
+            {
+                return Err(ScriptError::Background { region: m.region.clone(), why });
+            }
         }
         Ok(vec![
             ("Allprepare", self.allprepare(version)),
@@ -606,8 +889,10 @@ impl Workflow {
             match &m.build {
                 MeshBuild::Root(steps) => {
                     for st in steps {
-                        if let RootStep::BlockMesh(d) | RootStep::SnappyHexMesh(d) = st {
-                            paths.push(d.as_str());
+                        match st {
+                            RootStep::BlockMesh(d) | RootStep::SnappyHexMesh(d) => paths.push(d.as_str()),
+                            RootStep::Background(of) => names.push(of),
+                            RootStep::CreatePatch => {}
                         }
                     }
                 }
@@ -708,6 +993,35 @@ impl Workflow {
         Ok(())
     }
 
+    /// Whether region `region` can start from the background mesh of `of`: another region,
+    /// built before it by steps of its own that start with `blockMesh` (not from a background
+    /// itself). `Ok` when it can; `Err` with why not.
+    pub fn background_ok(&self, region: &str, of: &str) -> Result<(), String> {
+        background_ok(self.meshes.iter().map(|m| (m.region.as_str(), &m.build)), region, of)?;
+        // The kept copy's directory: not a region's, which the scripts would remove.
+        let dir = background_dir(of);
+        let name = dir.strip_prefix("constant/").unwrap_or(&dir);
+        if self.regions.iter().chain(&self.case_regions).any(|r| r == name)
+            || self.meshes.iter().any(|m| m.region == name)
+        {
+            return Err(format!(
+                "the case has a region named {name}, where the background is kept: the scripts would remove that region's directory; rename it"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The regions whose background mesh a later region starts from.
+    fn kept(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for of in self.meshes.iter().filter_map(|m| m.build.background()) {
+            if !out.contains(&of) {
+                out.push(of);
+            }
+        }
+        out
+    }
+
     fn allprepare(&self, version: OfVersion) -> String {
         let mut s = header("RunFunctions", "Builds the region meshes, sets and fields.");
         if self.features {
@@ -724,10 +1038,20 @@ impl Workflow {
                     // system/blockMeshDict is neither overwritten nor removed.
                     let dict =
                         |d: &str, default: &str| if d == default { String::new() } else { format!(" -dict {}", q(d)) };
-                    for st in steps {
+                    let kept = self.kept();
+                    for (i, st) in steps.iter().enumerate() {
                         match st {
                             RootStep::BlockMesh(d) => {
-                                s.push_str(&format!("runApplication -o -s {rq} blockMesh{}\n", dict(d, BLOCK_DICT)))
+                                s.push_str(&format!("runApplication -o -s {rq} blockMesh{}\n", dict(d, BLOCK_DICT)));
+                                // The background a later region starts from, kept as blockMesh made it.
+                                if i == 0 && kept.contains(&m.region.as_str()) {
+                                    let k = q(&background_dir(&m.region));
+                                    s.push_str(&format!("rm -rf {k}\ncp -r constant/polyMesh {k}\n"));
+                                }
+                            }
+                            RootStep::Background(of) => {
+                                let k = q(&background_dir(of));
+                                s.push_str(&format!("rm -rf constant/polyMesh\ncp -r {k} constant/polyMesh\n"));
                             }
                             RootStep::CreatePatch => {
                                 s.push_str(&format!("runApplication -o -s {rq} createPatch -overwrite\n"))
@@ -741,6 +1065,17 @@ impl Workflow {
                     s.push_str(&format!(
                         "rm -rf constant/{rq}/polyMesh\nmv constant/polyMesh constant/{rq}/polyMesh\n"
                     ));
+                    // A background no later region starts from any more: removed.
+                    if let Some(of) = m.build.background()
+                        && !self
+                            .meshes
+                            .iter()
+                            .skip_while(|x| x.region != m.region)
+                            .skip(1)
+                            .any(|x| x.build.background() == Some(of))
+                    {
+                        s.push_str(&format!("rm -rf {}\n", q(&background_dir(of))));
+                    }
                 }
                 MeshBuild::Split(sp) => s.push_str(&split_script(&m.region, sp, version)),
             }
@@ -862,6 +1197,10 @@ impl Workflow {
         let built: Vec<String> = self.meshes.iter().map(|m| q(&m.region)).collect();
         if !built.is_empty() {
             s.push_str(&format!("\nfor r in {}\ndo\n    rm -rf \"constant/$r/polyMesh\"\ndone\n", built.join(" ")));
+        }
+        // The backgrounds kept, should Allprepare have stopped before removing them.
+        for of in self.kept() {
+            s.push_str(&format!("rm -rf {}\n", q(&background_dir(of))));
         }
         if let Some(rad) = &self.radiation {
             let v = q(&format!("constant/{}", rad.region));
@@ -1264,6 +1603,100 @@ fn q(s: &str) -> String {
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
+}
+
+/// Whether `region` can start from the background mesh of `of`, the regions' meshes in the order
+/// they are built given: `of` another region, built before it by steps of its own that start
+/// with `blockMesh`.
+pub fn background_ok<'a>(
+    meshes: impl IntoIterator<Item = (&'a str, &'a MeshBuild)>,
+    region: &str,
+    of: &str,
+) -> Result<(), String> {
+    if of == region {
+        return Err("it starts from its own background: name another region".into());
+    }
+    let mut before = None;
+    for (r, b) in meshes {
+        if r == region {
+            break;
+        }
+        if r == of {
+            before = Some(b);
+        }
+    }
+    match before {
+        None => Err(format!("{of} isn't built before it (or has no mesh): its background can't be kept for it")),
+        Some(MeshBuild::Root(steps)) if matches!(steps.first(), Some(RootStep::BlockMesh(_))) => Ok(()),
+        Some(MeshBuild::Root(_)) => {
+            Err(format!("{of}'s mesh starts from a background too: name the region whose blockMesh made it"))
+        }
+        Some(_) => Err(format!(
+            "{of}'s mesh isn't built in constant/polyMesh by steps starting with blockMesh: there is no background to keep"
+        )),
+    }
+}
+
+/// Whether the shell pattern `pattern` (`*`, `?`; a `[…]` class taken as any one character)
+/// matches the name `name`.
+fn glob(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    // Positions in the pattern reachable after each character of the name.
+    let mut at = vec![0usize];
+    let star_run = |at: &mut Vec<usize>| {
+        let mut i = 0;
+        while let Some(&j) = at.get(i) {
+            if p.get(j) == Some(&'*') && !at.contains(&(j + 1)) {
+                at.push(j + 1);
+            }
+            i += 1;
+        }
+    };
+    star_run(&mut at);
+    for c in n {
+        let mut next = Vec::new();
+        for &j in &at {
+            match p.get(j) {
+                Some('*') => next.push(j),
+                Some('?') => next.push(j + 1),
+                Some('[') => {
+                    let close = p.iter().skip(j + 1).position(|x| *x == ']').map(|k| j + 2 + k);
+                    next.push(close.unwrap_or(j + 1));
+                }
+                Some(x) if *x == c => next.push(j + 1),
+                _ => {}
+            }
+        }
+        next.sort_unstable();
+        next.dedup();
+        star_run(&mut next);
+        at = next;
+        if at.is_empty() {
+            return false;
+        }
+    }
+    at.contains(&p.len())
+}
+
+/// Script lines and their steps, as listed when they don't fit.
+type Lines = Vec<(usize, String)>;
+
+/// A background mesh the script kept: where, for which region, the lines and steps that kept it
+/// (with the clean-up before it), and whether a region was meshed from it.
+struct Kept {
+    dir: String,
+    region: String,
+    lines: Vec<(usize, String)>,
+    used: bool,
+}
+
+/// Whether `to` is where a background mesh could be kept: a directory `polyMesh.*` of
+/// `constant/` (`constant/polyMesh.background.air`, the tutorials' `constant/polyMesh.bckp`).
+fn keep_dir(to: &str) -> bool {
+    to.trim_end_matches('/')
+        .strip_prefix("constant/")
+        .is_some_and(|d| d.starts_with("polyMesh.") && !d.contains(['/', '*', '?', '[']))
 }
 
 fn header(functions: &str, what: &str) -> String {
