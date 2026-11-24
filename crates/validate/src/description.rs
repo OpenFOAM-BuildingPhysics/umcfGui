@@ -698,6 +698,33 @@ fn snappy(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic
             g.patch_names().into_iter().filter(|n| !faceless.contains(n)).collect()
         })
         .unwrap_or_default();
+    // The inside point against the blocks as they are now (mesh.snappy checked it against
+    // those it saw): outside them or on their sides, or in a missing block.
+    if let Some(g) = d.background_region(name).and_then(|x| x.blocks.as_ref()) {
+        let q = sn.inside;
+        let pt = format!("({} {} {})", blocks::number(q[0]), blocks::number(q[1]), blocks::number(q[2]));
+        let outside = (0..3).any(|a| {
+            let st = g.axes.get(a).map(|x| x.stations.as_slice()).unwrap_or_default();
+            match (st.first(), st.last(), q.get(a)) {
+                (Some(lo), Some(hi), Some(x)) => !(lo < x && x < hi),
+                _ => true,
+            }
+        });
+        if outside {
+            out.push(warn(
+                PATH,
+                format!("region {name}, snappy: the inside point {pt} is outside the blocks its mesh starts from, or on their sides: snappyHexMesh would find no cell there"),
+            ));
+        } else if let Some(b) = blocks::missing_at(g, q) {
+            out.push(warn(
+                PATH,
+                format!(
+                    "region {name}, snappy: the inside point {pt} is in the missing block ({} {} {}) of the blocks its mesh starts from: snappyHexMesh would find no cell there",
+                    b[0], b[1], b[2]
+                ),
+            ));
+        }
+    }
     let mut seen: HashSet<&str> = block_patches.iter().copied().collect();
     for p in &patches {
         if !seen.insert(p.as_str()) {

@@ -22,13 +22,16 @@ pub(super) const SNAPPY: CommandSpec = CommandSpec {
     label: "Snappy mesh",
     menu: "Mesh/From the surfaces (snappyHexMesh)",
     shortcut: None,
-    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (an uncompressed surface): system/surfaceFeaturesDict is written listing the surfaces of every region's snappy entry that ask for features, and those whose .eMesh a snappyHexMeshDict of the case's own reads (one edited by hand or held by an entry only in part) (generated, with a checksum; one edited by hand or not written by umcfGui is left, noted for the surfaces it doesn't list, unless replace), and the workflow given features yes;. role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. background: the region whose background mesh (what its blockMesh made, kept for it by Allprepare in constant/polyMesh.background.<that region>) the mesh starts from instead of a blockMesh of its own (its steps then start with background <region>): one listed before it in system/umcfWorkflow, built by steps of its own starting with blockMesh (refused otherwise, and while another region starts from this one's background, this one keeps its own blockMesh first); null: its own blockMesh again (system/<region>/blockMeshDict); absent: the mesh as it is. The inside point and the surfaces are then checked against that region's blocks. Levels are 10 at most, layers and distances 100, surfaces and boxes 1000. replace: true writes over a snappyHexMeshDict, and a surfaceFeaturesDict that doesn't list every surface asking for features, edited by hand or not written by umcfGui (not the surfaceFeaturesDict while a region's own snappyHexMeshDict reads features that can't be told: an .eMesh of no surface it names, features from a $macro or an #include other than OpenFOAM's snappyHexMeshDict.cfg header (also inside a features entry), castellatedMeshControls or geometry given twice, more than 1000 features or geometry entries, a dictionary that doesn't load) (case.save keeps them in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own, and so do the surfaces in system/surfaceFeaturesDict whose .eMesh it reads; while what it reads can't be told, system/surfaceFeaturesDict isn't written, noted). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't one closed surface (open edges, or edges of more than two triangles, as where its solids share faces: whether the inside point is inside it isn't checked, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, system/surfaceFeaturesDict written or features yes given, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, when its file gained or lost solids, a patch it makes that the description doesn't list takes the role the patches it made before all had (not when they had a partner: the new patches are then listed in the outcome). A block patch declared without faces (noFaces) isn't a clash: snappyHexMesh fills it. An inside point on a face between missing blocks only is refused. An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers (a refining surface has neither). The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
+    params: "region: a fluid or vegetation region of system/umcfWorkflow. inside: [x, y, z], a point in the cells the region keeps (locationInMesh). surfaces: {\"buildings\": {\"mode\": \"cut\", \"level\": [3, 5], \"layers\": 3, \"features\": 4, \"role\": \"coupled\"}, \"trees\": {\"file\": \"trees.stl\", \"mode\": \"refine\", \"distance\": [[2, 4], [4, 2]]}}: by name, each merged into the surface of that name (a key given null is taken away, a surface given null is taken out). file: the STL file in constant/triSurface (default <name>.stl). mode: cut (the mesh ends at it, a patch of its name, or <name>_<solid> for each solid of a surface of several; refined to level [least, most]; layers: cells added along it) or refine (only the cells within each distance of it refined to its level, the nearest first). features: the level its feature edges are refined to, from constant/triSurface/<stem>.eMesh, which surfaceFeatures writes (an uncompressed surface): system/surfaceFeaturesDict is written listing the surfaces of every region's snappy entry that ask for features, and those whose .eMesh a snappyHexMeshDict of the case's own reads (one edited by hand or held by an entry only in part) (generated, with a checksum; one edited by hand or not written by umcfGui is left, noted for the surfaces it doesn't list, unless replace), and the workflow given features yes;. role: the role given to the patch of a cutting surface (each of its <name>_<solid> patches) in the description (inlet, outlet, side, top, ground, coupled, canopy, interior, bottom, sky), which types it: ground, coupled, interior and bottom a wall. boxes: {\"street\": {\"min\": [0, 0, 0], \"max\": [100, 50, 10], \"level\": 2}}: the cells inside refined to level, merged as the surfaces. expansion: the layers' expansion ratio (default 1.2); firstLayer: the first layer's thickness (default: thicknesses relative to the cells); null takes either away. background: the region whose background mesh (what its blockMesh made, kept for it by Allprepare in constant/polyMesh.background.<that region>) the mesh starts from instead of a blockMesh of its own (its steps then start with background <region>): one listed before it in system/umcfWorkflow, built by steps of its own starting with blockMesh (refused otherwise, and while another region starts from this one's background, this one keeps its own blockMesh first); null (or an empty name): its own blockMesh again from system/<region>/blockMeshDict (a blockMesh of another dictionary the background replaced isn't kept: the outcome notes it); absent: the mesh as it is. The inside point and the surfaces are then checked against that region's blocks. Levels are 10 at most, layers and distances 100, surfaces and boxes 1000. replace: true writes over a snappyHexMeshDict, and a surfaceFeaturesDict that doesn't list every surface asking for features, edited by hand or not written by umcfGui (not the surfaceFeaturesDict while a region's own snappyHexMeshDict reads features that can't be told: an .eMesh of no surface it names, features from a $macro or an #include other than OpenFOAM's snappyHexMeshDict.cfg header (also inside a features entry), castellatedMeshControls or geometry given twice, more than 1000 features or geometry entries, a dictionary that doesn't load) (case.save keeps them in the backup). remove: true takes the snappy entry out of the description (the dictionary stays, the case's own, and so do the surfaces in system/surfaceFeaturesDict whose .eMesh it reads; while what it reads can't be told, system/surfaceFeaturesDict isn't written, noted). The dictionary is the one the region's snappyHexMesh step names; a region meshed by blocks alone (mesh blocks;), or without a mesh, is given the steps ( blockMesh \"system/<region>/blockMeshDict\" snappyHexMesh \"system/snappyHexMeshDict.<region>\" ), and one built by steps without snappyHexMesh gets snappyHexMesh \"system/snappyHexMeshDict.<region>\" after them. Each surface is read (as OpenFOAM reads it; the call can be cancelled between them) and checked before anything is written: refused for a surface that isn't there or doesn't read, two cutting surfaces' patches or a cutting surface's and a block patch of the same name, an inside point outside the region's blocks, in one of their missing blocks, or inside a closed cutting surface (the vegetation region is the air without the trees: its point is outside them too); a file name with a space or a quote (which OpenFOAM doesn't take) or ; { } ( ) $ # (which would change the dictionary); noted for a cutting surface that isn't one closed surface (open edges, or edges of more than two triangles, as where its solids share faces: whether the inside point is inside it isn't checked, and the mesh may leak through it), a cutting surface reaching past the blocks or outside them, system/surfaceFeaturesDict written or features yes given, and an OpenFOAM-12 case with constant/geometry (where its snappyHexMesh reads the surfaces instead). Each cutting surface's solids are recorded in its entry (solids), its layers and type given to each <name>_<solid> patch; without a role, when its file gained or lost solids, a patch it makes that the description doesn't list takes the role the patches it made before all had (not when they had a partner: the new patches are then listed in the outcome). A block patch declared without faces (noFaces) isn't a clash: snappyHexMesh fills it. An inside point on a face between missing blocks only is refused. An inside point on a face between the blocks is noted. A surface switched to refine loses its level and layers (a refining surface has neither). The outcome names the dictionary, whether it was written, the surfaces' patches, bounds and whether each is closed, and the notes. case.save writes it all; edit.undo takes it back.",
     enabled: needs_case,
     run: snappy,
     journal: true,
     undoable: true,
     reads_only: false,
 };
+
+/// The longest region name `background` takes (longer: refused before it is read further).
+const MAX_NAME: usize = 255;
 
 /// What OpenFOAM-8's snappyHexMesh needs in `system/fvSchemes` and `system/fvSolution`: the
 /// schemes' dictionaries, empty (it solves nothing).
@@ -196,40 +199,7 @@ fn o_exists(s: &Session, p: &str) -> bool {
         .is_some_and(|c| c.exists(p) == Some(true) || c.put_paths().any(|x| x == p || x.starts_with(&format!("{p}/"))))
 }
 
-/// The missing block of `g` that `p` is in, if any: every block whose stations hold it (two
-/// or more for a point on a station between them) is missing. The desktop's snappy card says
-/// it before *OK* by the same rule.
-pub fn missing_at(g: &blocks::BlockGrid, p: [f64; 3]) -> Option<[usize; 3]> {
-    // Along each axis the blocks that hold the coordinate: one inside its span, the two either
-    // side of a station between spans, the one at an end.
-    let mut along: [Vec<usize>; 3] = Default::default();
-    for (a, slot) in along.iter_mut().enumerate() {
-        let st = &g.axes.get(a)?.stations;
-        let x = *p.get(a)?;
-        let spans = st.len().checked_sub(1)?;
-        *slot = (0..spans)
-            .filter(|i| matches!((st.get(*i), st.get(i + 1)), (Some(lo), Some(hi)) if *lo <= x && x <= *hi))
-            .collect();
-        if slot.is_empty() {
-            return None;
-        }
-    }
-    // In a missing block only when every block that holds it is missing.
-    let missing: std::collections::HashSet<[usize; 3]> = g.missing.iter().copied().collect();
-    let mut first = None;
-    for i in &along[0] {
-        for j in &along[1] {
-            for k in &along[2] {
-                let b = [*i, *j, *k];
-                if !missing.contains(&b) {
-                    return None;
-                }
-                first.get_or_insert(b);
-            }
-        }
-    }
-    first
-}
+pub use umcf_model::blocks::missing_at;
 
 /// Whether `p` lies on a station of `g`'s grid: on a face between blocks (and cells).
 fn on_station(g: &blocks::BlockGrid, p: [f64; 3]) -> bool {
@@ -433,9 +403,13 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         Some(Value::Null) => Some(None),
         // An empty name: its own blockMesh, as null.
         Some(Value::String(of)) if of.trim().is_empty() => Some(None),
-        Some(Value::String(of)) => Some(Some(of.trim().to_string())),
+        // Borrowed: a name the description doesn't have is refused before it is copied.
+        Some(Value::String(of)) if of.len() <= MAX_NAME => Some(Some(of.trim())),
         Some(_) => return Err(bad("background is the name of a region, or null")),
     };
+    // A blockMesh of another dictionary than the default that the background replaces: not
+    // kept (background null gives the default one).
+    let mut replaced_dict: Option<String> = None;
     let new_mesh = match background {
         None => new_mesh,
         Some(of) => {
@@ -446,8 +420,20 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             // The first step replaced (another blockMesh after it is refused below).
             let skip = usize::from(matches!(steps.first(), Some(RootStep::BlockMesh(_) | RootStep::Background(_))));
             let rest = steps.iter().skip(skip);
+            if let (Some(_), Some(RootStep::BlockMesh(d))) = (&of, steps.first())
+                && *d != format!("system/{region}/blockMeshDict")
+            {
+                replaced_dict = Some(d.clone());
+            }
+            if let Some(of) = of
+                && d.region(of).is_none()
+            {
+                return Err(failed(format!(
+                    "region {region} can't start from the background of {of}: {of} isn't a region of {PATH}"
+                )));
+            }
             let first = match &of {
-                Some(of) => RootStep::Background(of.clone()),
+                Some(of) => RootStep::Background((*of).to_string()),
                 None => match steps.first() {
                     Some(st @ RootStep::BlockMesh(_)) => st.clone(),
                     _ => RootStep::BlockMesh(format!("system/{region}/blockMeshDict")),
@@ -663,6 +649,11 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .chain(roles_inherited.iter().map(|(p, role)| (p.clone(), Some(*role))))
         .collect();
     let mut notes: Vec<String> = Vec::new();
+    if let Some(dict) = &replaced_dict {
+        notes.push(format!(
+            "its blockMesh from {dict} is replaced by the background: background null gives it blockMesh from system/{region}/blockMeshDict, not {dict}"
+        ));
+    }
     for n in &partnered {
         notes.push(format!("patches without a role: {n}"));
     }

@@ -300,17 +300,9 @@ impl Description {
             // it starts from (built, so read, before it).
             let from = mesh
                 .and_then(|m| m.build.background())
-                .and_then(|of| regions.iter().find(|x: &&RegionDesc| x.name == of).and_then(|x| x.blocks.clone()));
+                .and_then(|of| regions.iter().find(|x: &&RegionDesc| x.name == of).and_then(|x| x.blocks.as_ref()));
             let snappy = mesh.and_then(|m| {
-                import_snappy(
-                    case,
-                    name,
-                    region.kind,
-                    &m.build,
-                    &patches,
-                    from.as_ref().or(blocks.as_ref()),
-                    &mut notes,
-                )
+                import_snappy(case, name, region.kind, &m.build, &patches, from.or(blocks.as_ref()), &mut notes)
             });
             // A region without a mesh: its patches are those its blocks name, without a role.
             if region.patches.is_none()

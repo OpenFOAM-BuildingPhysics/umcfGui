@@ -4767,7 +4767,9 @@ fn a_region_meshed_from_another_regions_background() {
             "{e}"
         );
         let e = err(&mut s, veg(json!({"background": "roof"})));
-        assert!(e.contains("roof isn't built before it"), "{e}");
+        assert!(e.contains("roof isn't a region of system/umcfWorkflow"), "{e}");
+        let e = err(&mut s, veg(json!({"background": "x".repeat(300)})));
+        assert!(e.contains("background is the name of a region"), "{e}");
         let e = err(&mut s, veg(json!({"background": "vegetation"})));
         assert!(e.contains("its own background"), "{e}");
         // An empty name: its own blockMesh, as null (the vegetation has no blocks).
@@ -4828,6 +4830,19 @@ fn a_region_meshed_from_another_regions_background() {
         let check = s.execute("case.check", &Value::Null).unwrap();
         let said = check.data["diagnostics"].to_string();
         assert!(!said.contains("background"), "{said}");
+        assert!(!said.contains("inside point"), "{said}");
+        // The air's blocks changed so the vegetation's inside point is outside them: the case
+        // check says so (mesh.snappy checked it against the blocks it saw).
+        s.execute("mesh.block", &json!({"region": "air", "x": [2, [4, 1], 50]})).unwrap();
+        let check = s.execute("case.check", &Value::Null).unwrap();
+        let said = check.data["diagnostics"].to_string();
+        assert!(
+            said.contains(
+                "region vegetation, snappy: the inside point (0 0 5) is outside the blocks its mesh starts from"
+            ),
+            "{said}"
+        );
+        s.execute("edit.undo", &Value::Null).unwrap();
         // The air can't be split while the vegetation starts from its background; the
         // vegetation's blocks are the air's; the air taken out names what started from it.
         let e =

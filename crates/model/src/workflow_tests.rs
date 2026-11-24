@@ -627,28 +627,38 @@ fn a_background_mesh_is_kept_for_the_regions_meshed_from_it() {
     for v in [OfVersion::V8, OfVersion::V12] {
         let scripts = wf.generate(v).unwrap();
         let prep = &scripts[0].1;
-        // Kept right after the air's blockMesh, before its snappyHexMesh changes it.
+        // Kept right after the air's blockMesh, before its snappyHexMesh changes it, marked as
+        // Allprepare's; one there without the mark stops the script, nothing removed.
         let air = "runApplication -o -s air blockMesh -dict system/air/blockMeshDict\n\
-rm -rf constant/polyMesh.background.air\n\
-cp -r constant/polyMesh constant/polyMesh.background.air\n\
+if [ -e constant/polyMesh.background.air ] && [ ! -e constant/polyMesh.background.air/.umcfgui-kept ]\nthen\n    \
+echo 'region air: constant/polyMesh.background.air is there but has no .umcfgui-kept, so Allprepare did not keep it: nothing is removed; move it away' >&2\n    \
+exit 1\nfi\n\
+rm -rf constant/polyMesh.background.air\ncp -r constant/polyMesh constant/polyMesh.background.air\n\
+touch constant/polyMesh.background.air/.umcfgui-kept\n\
 runApplication -o -s air snappyHexMesh -overwrite -dict system/snappyHexMeshDict.air\n\
 rm -rf constant/air/polyMesh\nmv constant/polyMesh constant/air/polyMesh\n";
         assert!(prep.contains(air), "{prep}");
         // Each region from it starts from the copy; the last removes it.
         let veg = "rm -rf constant/polyMesh\ncp -r constant/polyMesh.background.air constant/polyMesh\n\
+rm -f constant/polyMesh/.umcfgui-kept\n\
 runApplication -o -s vegetation snappyHexMesh -overwrite -dict system/snappyHexMeshDict.vegetation\n\
 rm -rf constant/vegetation/polyMesh\nmv constant/polyMesh constant/vegetation/polyMesh\n\
 runApplication -o -s vegetation createPatch -region vegetation -overwrite\n";
         assert!(prep.contains(veg), "{prep}");
         let street = "rm -rf constant/polyMesh\ncp -r constant/polyMesh.background.air constant/polyMesh\n\
+rm -f constant/polyMesh/.umcfgui-kept\n\
 runApplication -o -s street createPatch -overwrite\n\
 runApplication -o -s street snappyHexMesh -overwrite -dict system/snappyHexMeshDict.street\n\
 rm -rf constant/street/polyMesh\nmv constant/polyMesh constant/street/polyMesh\n\
 rm -rf constant/polyMesh.background.air\n";
         assert!(prep.contains(street), "{prep}");
         assert_eq!(prep.matches("rm -rf constant/polyMesh.background.air\n").count(), 2, "{prep}");
-        // Allclean removes it too, should Allprepare have stopped before.
-        assert!(scripts[2].1.contains("rm -rf constant/polyMesh.background.air\n"), "{}", scripts[2].1);
+        // Allclean removes it too, should Allprepare have stopped before: only when marked.
+        assert!(
+            scripts[2].1.contains("if [ -e constant/polyMesh.background.air/.umcfgui-kept ]\nthen\n    rm -rf constant/polyMesh.background.air\nfi\n"),
+            "{}",
+            scripts[2].1
+        );
         // The scripts read back into the same meshes.
         let again = Workflow::import(&wf.regions, None, &[parse("Allprepare", prep)]);
         assert_eq!(again.unmatched, [], "{prep}");
@@ -686,6 +696,16 @@ fn a_background_the_script_cannot_keep_is_refused() {
     let mut wf = background_workflow();
     wf.case_regions = vec!["polyMesh.background.air".into()];
     refused(&wf, "vegetation", "a region named polyMesh.background.air");
+    // A background that isn't the first step, or a blockMesh after one (a Workflow made
+    // directly; the description refuses both).
+    let mut wf = background_workflow();
+    wf.meshes[1].build =
+        MeshBuild::Root(vec![RootStep::BlockMesh("system/blockMeshDict".into()), RootStep::Background("air".into())]);
+    refused(&wf, "vegetation", "background is its mesh's first step");
+    let mut wf = background_workflow();
+    wf.meshes[1].build =
+        MeshBuild::Root(vec![RootStep::Background("air".into()), RootStep::BlockMesh("system/blockMeshDict".into())]);
+    refused(&wf, "vegetation", "without a blockMesh after it");
     // A name that isn't safe in a script is refused before.
     let mut wf = background_workflow();
     wf.meshes[1].build = MeshBuild::Root(vec![RootStep::Background("-rf".into())]);
@@ -699,7 +719,16 @@ fn shell_patterns_match_as_the_shell_does() {
         ("*.bckp", "polyMesh.bckp", true),
         ("polyMesh.?ckp", "polyMesh.bckp", true),
         ("polyMesh.[ab]ckp", "polyMesh.bckp", true),
-        ("polyMesh[0-9]*", "polyMesh.bckp", true),
+        ("polyMesh.[!ab]ckp", "polyMesh.bckp", false),
+        ("polyMesh.[^a]ckp", "polyMesh.bckp", true),
+        ("polyMesh.[a-c]ckp", "polyMesh.bckp", true),
+        ("polyMesh[0-9]*", "polyMesh.bckp", false),
+        ("polyMesh[.]bckp", "polyMesh.bckp", true),
+        ("polyMesh[]bckp", "polyMesh[]bckp", true),
+        ("[", "[", true),
+        ("**.bckp", "polyMesh.bckp", true),
+        ("polyMesh.[[:alpha:]]*", "polyMesh.bckp", true),
+        ("polyMesh.[[:alpha:]0-9]ckp", "polyMesh.bckp", true),
         ("*", "", true),
         ("polyMesh", "polyMesh.bckp", false),
         ("*.x", "polyMesh.bckp", false),
@@ -708,6 +737,9 @@ fn shell_patterns_match_as_the_shell_does() {
     ] {
         assert_eq!(glob(p, n), m, "{p} {n}");
     }
+    // Bounded: a pattern past the limit is taken as matching; many stars stay cheap.
+    assert!(glob(&"a".repeat(GLOB_MAX + 1), "b"));
+    assert!(!glob(&format!("{}x", "*".repeat(200)), &"a".repeat(200)));
 }
 
 #[test]
@@ -893,6 +925,29 @@ cp -r constant/polyMesh.bckp constant/polyMesh\n{away}snappyHexMesh -overwrite\n
         assert_eq!(lines(&wf), [6], "{script}\n{:?}", wf.unmatched);
         assert_eq!(wf.meshes[1].build.background(), Some("air"), "{script}");
     }
+    // A copy into a directory made for it puts the mesh inside it: not a keep.
+    let made_first = "#!/bin/sh\nblockMesh\nmkdir -p constant/polyMesh.bckp\ncp -r constant/polyMesh constant/polyMesh.bckp\n\
+mv constant/polyMesh constant/air/polyMesh\nrm -rf constant/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\n\
+snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", made_first)]);
+    assert!(lines(&wf).contains(&3), "{:?}", wf.unmatched);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // A restore into a constant/polyMesh that is there puts the copy inside it: not read.
+    let inside_existing = "#!/bin/sh\nblockMesh\ncp -r constant/polyMesh constant/polyMesh.bckp\nmv constant/polyMesh constant/air/polyMesh\n\
+cp -r constant/air/polyMesh constant/polyMesh\ncp -r constant/polyMesh.bckp constant/polyMesh\nsnappyHexMesh -overwrite\n\
+mv constant/polyMesh constant/vegetation/polyMesh\n";
+    let wf = Workflow::import(&["air".into(), "vegetation".into()], None, &[parse("Allprepare", inside_existing)]);
+    assert!(lines(&wf).contains(&6), "{:?}", wf.unmatched);
+    assert!(wf.meshes.iter().all(|m| m.build.background().is_none()), "{:?}", wf.meshes);
+    // The region the background was kept from built again by blockMesh -region: listed, the
+    // earlier reading (and order) kept.
+    let region_again = format!(
+        "{head}snappyHexMesh -overwrite\nmv constant/polyMesh constant/vegetation/polyMesh\nblockMesh -region air\n"
+    );
+    let wf = Workflow::import(&three, None, &[parse("Allprepare", &region_again)]);
+    assert_eq!(lines(&wf), [8], "{:?}", wf.unmatched);
+    assert_eq!(wf.meshes.iter().map(|m| m.region.as_str()).collect::<Vec<_>>(), ["air", "vegetation"]);
+    assert_eq!(wf.meshes[1].build.background(), Some("air"));
     // A blockMesh of another region (-region) writes its own mesh: the keep and the restore
     // stand.
     for at in ["cp -r constant/polyMesh constant/polyMesh.bckp\n", "cp -r constant/polyMesh.bckp constant/polyMesh\n"] {

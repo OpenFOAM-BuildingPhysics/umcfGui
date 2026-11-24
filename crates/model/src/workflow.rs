@@ -162,6 +162,10 @@ pub enum RootStep {
     Background(String),
 }
 
+/// The file that marks a kept background as Allprepare's (in its directory): one there without it
+/// is the user's, which the scripts don't remove.
+pub const KEPT_MARK: &str = ".umcfgui-kept";
+
 /// Where the background mesh of region `of` is kept while the regions meshed from it are built:
 /// `constant/polyMesh.background.<of>`, removed once the last of them is.
 pub fn background_dir(of: &str) -> String {
@@ -295,11 +299,17 @@ impl Workflow {
         // after blockMesh, waits for the keep (the scripts' own clean-up before it).
         let mut keeping: Option<(String, Vec<(usize, String)>)> = None;
         let mut kept: Vec<Kept> = Vec::new();
-        let mut cleared: Option<(String, usize, String)> = None;
+        // (With the directory made and marked for it, as the generated scripts do.)
+        let mut cleared: Option<(String, Lines)> = None;
         // The restore of a kept background the mesh being built starts from: its line, step and
         // directory, and the lines of the copy should it be removed before that mesh is moved to
         // its region (only then is the copy used).
         let mut restored: Option<(usize, String, String, Lines)> = None;
+        // Whether constant/polyMesh is there, as far as the script tells: a restore into one
+        // that is would put the copy inside it.
+        let mut working: Option<bool> = None;
+        // The pattern matches made so far (bounded: [`GLOB_CALLS`]).
+        let glob_calls = std::cell::Cell::new(0usize);
         let miss = |wf: &mut Workflow, line: usize, what: String, redundant: bool| {
             wf.unmatched.push(Unmatched { script: s.path.clone(), line, what, redundant });
         };
@@ -329,7 +339,10 @@ impl Workflow {
                     p == d
                         || d.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
                         || p.rsplit_once('/').zip(d.rsplit_once('/')).is_some_and(|((pd, pn), (dd, dn))| {
-                            pd == dd && !pd.contains(['*', '?', '[']) && glob(pn, dn)
+                            pd == dd && !pd.contains(['*', '?', '[']) && {
+                                glob_calls.set(glob_calls.get().saturating_add(1));
+                                glob_calls.get() > GLOB_CALLS || glob(pn, dn)
+                            }
                         })
                 })
             };
@@ -400,7 +413,7 @@ impl Workflow {
                         .into_iter()
                         .flatten()
                         .chain(keep.into_iter().flatten())
-                        .chain(cleared.take().map(|(_, l, w)| (l, w)))
+                        .chain(cleared.take().map(|(_, lines)| lines).into_iter().flatten())
                     {
                         miss(self, l, w, false);
                     }
@@ -415,17 +428,21 @@ impl Workflow {
                         && keep_dir(to)
                         && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)]))
                         && keeping.is_none()
-                        // Into one still kept, cp -r would nest the copy in it.
-                        && !kept.iter().any(|k| k.dir == to.trim_end_matches('/')) =>
+                        // Into one still kept, or one the script made, cp -r would nest the
+                        // copy in it.
+                        && !kept.iter().any(|k| k.dir == to.trim_end_matches('/'))
+                        && !made.iter().any(|(_, _, r)| to.trim_end_matches('/').strip_prefix("constant/") == Some(r.as_str())) =>
                 {
                     let dir = to.trim_end_matches('/').to_string();
                     // The clean-up before it, of the same directory, is part of it.
                     let mut lines = Vec::new();
-                    if let Some((d, l, w)) = cleared.take() {
+                    if let Some((d, before)) = cleared.take() {
                         if d == dir {
-                            lines.push((l, w));
+                            lines.extend(before);
                         } else {
-                            miss(self, l, w, false);
+                            for (l, w) in before {
+                                miss(self, l, w, false);
+                            }
                         }
                     }
                     lines.push((line, describe_step(&st.kind)));
@@ -434,6 +451,7 @@ impl Workflow {
                 StepKind::Copy { from, to }
                     if to.trim_end_matches('/') == "constant/polyMesh"
                         && root.is_none()
+                        && working != Some(true)
                         && from.len() == 1
                         && from.first().is_some_and(|f| kept.iter().any(|k| k.dir == f.trim_end_matches('/'))) =>
                 {
@@ -489,8 +507,21 @@ impl Workflow {
                         && matches!(root.as_deref(), Some([RootStep::BlockMesh(_)])) =>
                 {
                     let p = paths.first().map(|p| p.trim_end_matches('/').to_string()).unwrap_or_default();
-                    cleared = Some((p, line, describe_step(&st.kind)));
+                    cleared = Some((p, vec![(line, describe_step(&st.kind))]));
                 }
+                // The keep marked as the script's.
+                StepKind::Write { path }
+                    if keeping.as_ref().is_some_and(|(d, _)| *path == format!("{d}/{KEPT_MARK}")) =>
+                {
+                    if let Some((_, lines)) = keeping.as_mut() {
+                        lines.push((line, describe_step(&st.kind)));
+                    }
+                }
+                // The mark taken out of a restored copy.
+                StepKind::Remove { paths }
+                    if paths.len() == 1
+                        && paths.first().is_some_and(|p| *p == format!("constant/polyMesh/{KEPT_MARK}"))
+                        && matches!(root.as_deref().and_then(<[RootStep]>::first), Some(RootStep::Background(_))) => {}
                 StepKind::Remove { paths }
                     if paths.iter().all(|p| {
                         p.strip_prefix("constant/")
@@ -634,7 +665,7 @@ impl Workflow {
                         // Meshed from its own background, or built again: listed.
                         Some(_) if from.as_deref() == Some(region) || rebuilt => {
                             let keep = keeping.take().map(|(_, lines)| lines);
-                            let clean = cleared.take().map(|(_, l, w)| (l, w));
+                            let clean = cleared.take().map(|(_, lines)| lines).into_iter().flatten();
                             for (l, w) in restore_lines(&mut restored)
                                 .into_iter()
                                 .flatten()
@@ -663,7 +694,7 @@ impl Workflow {
                         }
                         _ => {
                             let keep = keeping.take().map(|(_, lines)| lines);
-                            let clean = cleared.take().map(|(_, l, w)| (l, w));
+                            let clean = cleared.take().map(|(_, lines)| lines).into_iter().flatten();
                             for (l, w) in restore_lines(&mut restored)
                                 .into_iter()
                                 .flatten()
@@ -687,7 +718,7 @@ impl Workflow {
                         for (l, w) in keeping.take().map(|(_, lines)| lines).into_iter().flatten() {
                             miss(self, l, w, false);
                         }
-                        if let Some((_, l, w)) = cleared.take() {
+                        for (l, w) in cleared.take().map(|(_, lines)| lines).into_iter().flatten() {
                             miss(self, l, w, false);
                         }
                     }
@@ -702,7 +733,28 @@ impl Workflow {
                             miss(self, l, w, false);
                         }
                     }
-                    self.run(r, line, &s.path, solver, &mut root, &mut copied_block, &mut copied_snappy, &mut restore)
+                    // A region whose background was kept, or that another region is meshed from,
+                    // built again by blockMesh -region: the background read is the earlier mesh.
+                    let source = r.region.as_deref().filter(|reg| {
+                        r.app == "blockMesh"
+                            && self.meshes.iter().any(|m| m.region == *reg)
+                            && (kept.iter().any(|k| k.region == *reg)
+                                || self.meshes.iter().any(|m| m.build.background() == Some(*reg)))
+                    });
+                    if source.is_some() {
+                        miss(self, line, describe(r), false);
+                    } else {
+                        self.run(
+                            r,
+                            line,
+                            &s.path,
+                            solver,
+                            &mut root,
+                            &mut copied_block,
+                            &mut copied_snappy,
+                            &mut restore,
+                        );
+                    }
                 }
                 // Copying constant/ files into processor*/ (needed by solver builds before
                 // 40f31d4): part of the pattern.
@@ -710,6 +762,16 @@ impl Workflow {
                 StepKind::MakeDir { paths } if paths.iter().all(|p| p.starts_with("processor")) => {}
                 StepKind::Clean { .. } | StepKind::Call { .. } => {}
                 k => miss(self, line, describe_step(k), false),
+            }
+            // What the step did to constant/polyMesh.
+            let working_dir = |p: &String| p.trim_end_matches('/') == "constant/polyMesh";
+            match &st.kind {
+                StepKind::Remove { paths } if paths.iter().any(working_dir) => working = Some(false),
+                StepKind::Move { from, .. } if from.iter().any(working_dir) => working = Some(false),
+                StepKind::Copy { to, .. } | StepKind::Move { to, .. } if working_dir(to) => working = Some(true),
+                StepKind::MakeDir { paths } if paths.iter().any(working_dir) => working = Some(true),
+                StepKind::Run(r) if r.app == "blockMesh" && r.region.is_none() => working = Some(true),
+                _ => {}
             }
         }
         if let Some(p) = pending {
@@ -720,7 +782,11 @@ impl Workflow {
         let unused =
             keeping.map(|(_, lines)| lines).into_iter().chain(kept.into_iter().filter(|k| !k.used).map(|k| k.lines));
         let unmoved = restored.map(|(l, w, _, pending)| std::iter::once((l, w)).chain(pending).collect::<Lines>());
-        for (l, w) in unused.flatten().chain(unmoved.into_iter().flatten()).chain(cleared.map(|(_, l, w)| (l, w))) {
+        for (l, w) in unused
+            .flatten()
+            .chain(unmoved.into_iter().flatten())
+            .chain(cleared.map(|(_, lines)| lines).into_iter().flatten())
+        {
             miss(self, l, w, false);
         }
         if let Some(done) = split {
@@ -854,6 +920,20 @@ impl Workflow {
     /// character or a leading `-` is refused (see `safe_name`, `safe_path`); the rest are
     /// quoted where the shell needs it.
     pub fn generate(&self, version: OfVersion) -> Result<Vec<(&'static str, String)>, ScriptError> {
+        // A background is the first step, without a blockMesh after it (as the description reads it).
+        for m in &self.meshes {
+            if let MeshBuild::Root(steps) = &m.build {
+                let later = steps.iter().skip(1).any(|st| matches!(st, RootStep::Background(_)));
+                let replaced =
+                    m.build.background().is_some() && steps.iter().any(|st| matches!(st, RootStep::BlockMesh(_)));
+                if later || replaced {
+                    return Err(ScriptError::Background {
+                        region: m.region.clone(),
+                        why: "background is its mesh's first step, without a blockMesh after it".into(),
+                    });
+                }
+            }
+        }
         let (names, paths) = self.words();
         if let Some(bad) =
             names.into_iter().find(|w| !safe_name(w)).or_else(|| paths.into_iter().find(|p| !safe_path(p)))
@@ -1024,6 +1104,7 @@ impl Workflow {
 
     fn allprepare(&self, version: OfVersion) -> String {
         let mut s = header("RunFunctions", "Builds the region meshes, sets and fields.");
+        let kept = self.kept();
         if self.features {
             s.push_str("runApplication -o surfaceFeatures\n");
         }
@@ -1038,20 +1119,30 @@ impl Workflow {
                     // system/blockMeshDict is neither overwritten nor removed.
                     let dict =
                         |d: &str, default: &str| if d == default { String::new() } else { format!(" -dict {}", q(d)) };
-                    let kept = self.kept();
                     for (i, st) in steps.iter().enumerate() {
                         match st {
                             RootStep::BlockMesh(d) => {
                                 s.push_str(&format!("runApplication -o -s {rq} blockMesh{}\n", dict(d, BLOCK_DICT)));
                                 // The background a later region starts from, kept as blockMesh made it.
+                                // Marked as Allprepare's: one there without the mark isn't removed.
                                 if i == 0 && kept.contains(&m.region.as_str()) {
-                                    let k = q(&background_dir(&m.region));
-                                    s.push_str(&format!("rm -rf {k}\ncp -r constant/polyMesh {k}\n"));
+                                    let dir = background_dir(&m.region);
+                                    let (k, mark) = (q(&dir), q(&format!("{dir}/{KEPT_MARK}")));
+                                    s.push_str(&format!(
+                                        "if [ -e {k} ] && [ ! -e {mark} ]\nthen\n    echo {} >&2\n    exit 1\nfi\n\
+rm -rf {k}\ncp -r constant/polyMesh {k}\ntouch {mark}\n",
+                                        q(&format!(
+                                            "region {}: {dir} is there but has no {KEPT_MARK}, so Allprepare did not keep it: nothing is removed; move it away",
+                                            m.region
+                                        ))
+                                    ));
                                 }
                             }
                             RootStep::Background(of) => {
                                 let k = q(&background_dir(of));
-                                s.push_str(&format!("rm -rf constant/polyMesh\ncp -r {k} constant/polyMesh\n"));
+                                s.push_str(&format!(
+                                    "rm -rf constant/polyMesh\ncp -r {k} constant/polyMesh\nrm -f constant/polyMesh/{KEPT_MARK}\n"
+                                ));
                             }
                             RootStep::CreatePatch => {
                                 s.push_str(&format!("runApplication -o -s {rq} createPatch -overwrite\n"))
@@ -1199,8 +1290,10 @@ impl Workflow {
             s.push_str(&format!("\nfor r in {}\ndo\n    rm -rf \"constant/$r/polyMesh\"\ndone\n", built.join(" ")));
         }
         // The backgrounds kept, should Allprepare have stopped before removing them.
+        // Only those Allprepare kept (marked).
         for of in self.kept() {
-            s.push_str(&format!("rm -rf {}\n", q(&background_dir(of))));
+            let dir = background_dir(of);
+            s.push_str(&format!("if [ -e {} ]\nthen\n    rm -rf {}\nfi\n", q(&format!("{dir}/{KEPT_MARK}")), q(&dir)));
         }
         if let Some(rad) = &self.radiation {
             let v = q(&format!("constant/{}", rad.region));
@@ -1637,46 +1730,131 @@ pub fn background_ok<'a>(
     }
 }
 
-/// Whether the shell pattern `pattern` (`*`, `?`; a `[…]` class taken as any one character)
-/// matches the name `name`.
+/// The longest shell pattern (or name) [`glob`] matches; a longer one is taken as matching. A
+/// kept background's directory name is at most this long too.
+const GLOB_MAX: usize = 255;
+
+/// The most pattern matches a script's reading makes; after them, a pattern is taken as
+/// matching (what it takes away is counted as gone): with [`GLOB_MAX`] it bounds the work.
+const GLOB_CALLS: usize = 10_000;
+
+/// Whether the shell pattern `pattern` (`*`, `?`, `[…]` with ranges and `!` or `^`) matches the
+/// name `name`, as `sh` does in the C locale. A pattern or name longer than [`GLOB_MAX`] is
+/// taken as matching (what it takes away is then counted as gone). Work: pattern × name.
 fn glob(pattern: &str, name: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let n: Vec<char> = name.chars().collect();
-    // Positions in the pattern reachable after each character of the name.
-    let mut at = vec![0usize];
-    let star_run = |at: &mut Vec<usize>| {
-        let mut i = 0;
-        while let Some(&j) = at.get(i) {
-            if p.get(j) == Some(&'*') && !at.contains(&(j + 1)) {
-                at.push(j + 1);
-            }
-            i += 1;
-        }
-    };
-    star_run(&mut at);
-    for c in n {
-        let mut next = Vec::new();
-        for &j in &at {
-            match p.get(j) {
-                Some('*') => next.push(j),
-                Some('?') => next.push(j + 1),
-                Some('[') => {
-                    let close = p.iter().skip(j + 1).position(|x| *x == ']').map(|k| j + 2 + k);
-                    next.push(close.unwrap_or(j + 1));
+    if pattern.len() > GLOB_MAX || name.len() > GLOB_MAX {
+        return true;
+    }
+    // The pattern as items: any run, any one, a class (negated, its ranges), a character.
+    enum Item {
+        Star,
+        One,
+        Class(bool, Vec<(char, char)>),
+        Char(char),
+    }
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut items = Vec::new();
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        i += 1;
+        match c {
+            '*' => {
+                if !matches!(items.last(), Some(Item::Star)) {
+                    items.push(Item::Star);
                 }
-                Some(x) if *x == c => next.push(j + 1),
-                _ => {}
             }
-        }
-        next.sort_unstable();
-        next.dedup();
-        star_run(&mut next);
-        at = next;
-        if at.is_empty() {
-            return false;
+            '?' => items.push(Item::One),
+            '[' => {
+                // `]` first is part of the class; without a closing `]`, `[` is itself.
+                let mut j = i;
+                let negated = matches!(chars.get(j), Some('!' | '^'));
+                if negated {
+                    j += 1;
+                }
+                let first = j;
+                let mut ranges = Vec::new();
+                let mut closed = false;
+                // A POSIX class (`[:alpha:]`) isn't told: the class is taken as any character.
+                let mut posix = false;
+                while let Some(&x) = chars.get(j) {
+                    if x == '[' && chars.get(j + 1) == Some(&':') {
+                        posix = true;
+                        match chars.iter().skip(j + 2).position(|c| *c == ']') {
+                            Some(k) => j += k + 3,
+                            None => break,
+                        }
+                        continue;
+                    }
+                    if x == ']' && j > first {
+                        closed = true;
+                        break;
+                    }
+                    match (chars.get(j + 1), chars.get(j + 2)) {
+                        (Some('-'), Some(&hi)) if hi != ']' => {
+                            ranges.push((x, hi));
+                            j += 3;
+                        }
+                        _ => {
+                            ranges.push((x, x));
+                            j += 1;
+                        }
+                    }
+                }
+                if closed && posix {
+                    items.push(Item::One);
+                    i = j + 1;
+                } else if closed {
+                    items.push(Item::Class(negated, ranges));
+                    i = j + 1;
+                } else {
+                    items.push(Item::Char('['));
+                }
+            }
+            c => items.push(Item::Char(c)),
         }
     }
-    at.contains(&p.len())
+    // reach[k]: the first k items can match the name so far.
+    let mut reach = vec![false; items.len() + 1];
+    if let Some(r) = reach.first_mut() {
+        *r = true;
+    }
+    let stars = |reach: &mut Vec<bool>| {
+        for (k, item) in items.iter().enumerate() {
+            if matches!(item, Item::Star)
+                && reach.get(k).copied().unwrap_or(false)
+                && let Some(r) = reach.get_mut(k + 1)
+            {
+                *r = true;
+            }
+        }
+    };
+    stars(&mut reach);
+    for c in name.chars() {
+        let mut next = vec![false; items.len() + 1];
+        for (k, item) in items.iter().enumerate() {
+            if !reach.get(k).copied().unwrap_or(false) {
+                continue;
+            }
+            let (stay, step) = match item {
+                Item::Star => (true, false),
+                Item::One => (false, true),
+                Item::Class(neg, ranges) => (false, ranges.iter().any(|(lo, hi)| *lo <= c && c <= *hi) != *neg),
+                Item::Char(x) => (false, *x == c),
+            };
+            if stay && let Some(r) = next.get_mut(k) {
+                *r = true;
+            }
+            if step && let Some(r) = next.get_mut(k + 1) {
+                *r = true;
+            }
+        }
+        stars(&mut next);
+        if !next.contains(&true) {
+            return false;
+        }
+        reach = next;
+    }
+    reach.last().copied().unwrap_or(false)
 }
 
 /// Script lines and their steps, as listed when they don't fit.
@@ -1696,7 +1874,7 @@ struct Kept {
 fn keep_dir(to: &str) -> bool {
     to.trim_end_matches('/')
         .strip_prefix("constant/")
-        .is_some_and(|d| d.starts_with("polyMesh.") && !d.contains(['/', '*', '?', '[']))
+        .is_some_and(|d| d.starts_with("polyMesh.") && d.len() <= GLOB_MAX && !d.contains(['/', '*', '?', '[']))
 }
 
 fn header(functions: &str, what: &str) -> String {

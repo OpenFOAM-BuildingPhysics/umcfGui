@@ -52,7 +52,7 @@ fn split(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         .unwrap_or_default();
     if !users.is_empty() {
         return Err(Error::Failed(format!(
-            "{}: region {} starts from the background mesh of region {region}, which a split mesh doesn't have: give it a background of its own first (mesh.snappy with background null)",
+            "{}: region {} starts from the background mesh of region {region}, which a split mesh doesn't have: give it a background of its own first: mesh.snappy with background null (a region without a snappy entry gives inside too; a solid has none: write its mesh steps in system/umcfWorkflow by hand)",
             SPLIT.id,
             users.join(", ")
         )));

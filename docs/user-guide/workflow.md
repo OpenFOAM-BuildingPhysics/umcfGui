@@ -786,8 +786,11 @@ vegetation
 
 `Allprepare` keeps a copy of what the air's `blockMesh` made (and nothing after it: the air's own
 `createPatch` and `snappyHexMesh` change only its mesh) in `constant/polyMesh.background.air`,
-puts it into `constant/polyMesh` before each region meshed from it runs its other steps, and
-removes it after the last; `Allclean` removes it too, should `Allprepare` have stopped before.
+marked as its own with a `.umcfgui-kept` file inside, puts it into `constant/polyMesh` (without
+the mark) before each region meshed from it runs its other steps, and removes it after the last.
+A `constant/polyMesh.background.air` there without the mark isn't `Allprepare`'s: it stops
+before touching it, and says so. `Allclean` removes a marked one, should `Allprepare` have
+stopped before, and leaves one without the mark.
 The region it starts from is one listed before it, built by steps of its own that start with
 `blockMesh` (not from a background itself, not `mesh blocks;`, not split); else
 `workflow.scripts` refuses to write the scripts, and the case check (`workflow.blocks`) names it,
@@ -803,7 +806,11 @@ mesh: `workflow.patch` gives them their roles; the case check names them too). A
 `null`. While another region starts from its background, a region's mesh keeps its own
 `blockMesh` first: `mesh.split` refuses to split it, and `workflow.region` with `remove` lists the
 regions that started from it (`vegetation/mesh (background)`). `mesh.block` and `mesh.box` refuse
-a region meshed from a background: its blocks are the other region's. On the card it is *Background from*, filled from the
+a region meshed from a background: its blocks are the other region's. `background: null` gives
+the region a `blockMesh` of its own from `system/<region>/blockMeshDict`, whichever dictionary
+its `blockMesh` read before the background replaced it (the outcome notes one of another
+name); a region without a snappy entry gives `inside` with it, and a solid's mesh steps are
+written in `system/umcfWorkflow` by hand. On the card it is *Background from*, filled from the
 region's mesh and offering the regions listed before it that it can start from (empty: its own
 `blockMesh`, sent as `null` when emptied); the 3D view then shows that region's blocks, and the
 card checks the inside point against them.

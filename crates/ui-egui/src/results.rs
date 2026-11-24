@@ -37,10 +37,10 @@ fn list<'a>(v: &'a Value, k: &str) -> &'a [Value] {
 }
 
 /// A step with what it is given: `blockMesh(blockMeshDict.air)`, `setSet(batch)`,
-/// `setFields(restore 0/T.orig→T)`.
+/// `background(air)`, `setFields(restore 0/T.orig→T)`.
 fn step(st: &Value) -> String {
     let name = s(st, "step");
-    let arg = ["dict", "batch"].iter().find_map(|k| st.get(*k).and_then(Value::as_str));
+    let arg = ["dict", "batch", "of"].iter().find_map(|k| st.get(*k).and_then(Value::as_str));
     if let Some(a) = arg {
         return format!("{name}({a})");
     }
@@ -337,5 +337,14 @@ mod tests {
         assert!(lines(&json!(null)).is_empty());
         assert!(lines(&json!({ "description": "text", "notes": [1] })).is_empty());
         assert!(lines(&json!({ "problems": ["a"], "notes": ["b"] })).is_empty());
+    }
+
+    #[test]
+    fn a_background_step_names_the_region_it_starts_from() {
+        assert_eq!(step(&json!({ "step": "background", "of": "air" })), "background(air)");
+        assert_eq!(
+            step(&json!({ "step": "blockMesh", "dict": "system/air/blockMeshDict" })),
+            "blockMesh(system/air/blockMeshDict)"
+        );
     }
 }
