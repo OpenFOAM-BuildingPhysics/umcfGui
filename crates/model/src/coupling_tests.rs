@@ -287,6 +287,66 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         differences(&root(t), &air12, OfVersion::V12),
         ["patch street: neighbourRegion is a dictionary there, which OpenFOAM refuses (not a word)"]
     );
+    // `~key` takes a key out of the mesh's patch: OpenFOAM-12 then reads the older one given,
+    // samePatch alone is no longer refused beside the mesh's neighbourPatch, and with both keys
+    // out OpenFOAM's default is read, not confirmed.
+    let out_newer =
+        "boundary { street { type mappedWall; ~neighbourRegion; sampleRegion street; neighbourPatch street; } }";
+    assert_eq!(differences(&root(out_newer), &air12, OfVersion::V12), Vec::<String>::new());
+    let out_same = "boundary { street { type mappedWall; ~neighbourPatch; samePatch true; neighbourRegion street; } }";
+    assert_eq!(differences(&root(out_same), &air12, OfVersion::V12), Vec::<String>::new());
+    let out_both = "boundary { street { type mappedWall; ~neighbourRegion; ~sampleRegion; neighbourPatch street; } }";
+    assert_eq!(
+        differences(&root(out_both), &air12, OfVersion::V12),
+        [
+            "patch street: the region it maps to is taken out there (~sampleRegion), so OpenFOAM's default is read, which can't be confirmed (the description makes it street)"
+        ]
+    );
+    let out_newer_only = "boundary { street { type mappedWall; ~neighbourRegion; neighbourPatch street; } }";
+    assert_eq!(
+        differences(&root(out_newer_only), &air12, OfVersion::V12),
+        [
+            "patch street: the region it maps to isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it street)"
+        ]
+    );
+    // A patch taken out of the boundary leaves its faces without one.
+    let out_patch = "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; } ~west; }";
+    assert_eq!(
+        differences(&root(out_patch), &air12, OfVersion::V12),
+        ["patch west is taken out there (~west), which leaves its faces without a patch"]
+    );
+    // A samePatch that isn't a switch is refused; samePatch alone beside the older region key
+    // says both.
+    for (v, said) in [
+        ("maybe", "samePatch is maybe there"),
+        ("{ }", "samePatch is a dictionary there"),
+        ("\"\"", "samePatch is \"\" there"),
+    ] {
+        let t = format!(
+            "boundary {{ street {{ type mappedWall; samePatch {v}; neighbourRegion street; neighbourPatch street; }} }}"
+        );
+        assert_eq!(
+            differences(&root(&t), &air12, OfVersion::V12),
+            [format!("patch street: {said}, which OpenFOAM-12 refuses (not a switch)")]
+        );
+    }
+    let t = "boundary { street { type mappedWall; samePatch true; sampleRegion street; } }";
+    let diff = differences(&root(t), &air12, OfVersion::V12);
+    assert_eq!(diff.len(), 2, "{diff:?}");
+    assert!(
+        diff[0].contains("given there as sampleRegion only") && diff[1].contains("it has samePatch there"),
+        "{diff:?}"
+    );
+    // samePatch alone where the description maps another patch: compared.
+    let mut other = canyon();
+    other.regions[0].patches[0].partner = Some(("street".into(), "wall".into()));
+    other.regions[1].patches[0].name = "wall".into();
+    let to_wall = entries(&other, "air", OfVersion::V12).unwrap();
+    let t = "boundary { street { type mappedWall; samePatch true; neighbourRegion street; } }";
+    assert_eq!(
+        differences(&root(t), &to_wall, OfVersion::V12),
+        ["patch street: the patch it maps to is street there, the description makes it wall"]
+    );
     // OpenFOAM's switches: a number other than 0 is true, 0 false.
     for (v, refused) in [("1", true), ("true", true), ("0", false), ("false", false)] {
         let t = format!(
