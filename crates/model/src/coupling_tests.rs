@@ -318,12 +318,14 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
             "patch street: it takes sampleRegion out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared"
         ]
     );
-    // Quoted, too (OpenFOAM reads the `~` first); a pattern taken out does nothing.
-    let quoted = "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; } \"~west\"; \"~air_.*\"; }";
+    // Quoted, too (OpenFOAM reads the `~` first), and a name with a `.` (taken literally).
+    let quoted =
+        "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; } \"~west\"; ~air.roof; }";
     assert_eq!(
         differences(&root(quoted), &air12, OfVersion::V12),
         [
-            "~west is in boundary there: changeDictionary stops where the mesh has patch west (it can't take a patch out)"
+            "~west is in boundary there: changeDictionary stops where the mesh has patch west (it can't take a patch out)",
+            "~air.roof is in boundary there: changeDictionary stops where the mesh has patch air.roof (it can't take a patch out)",
         ]
     );
     // With a block for the patch: stops, or writes the block without the faces; not compared.
@@ -342,6 +344,7 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         ("\"\"", "samePatch is \"\" there"),
         ("\"true\"", "samePatch is \"true\" there"),
         ("1.0", "samePatch is 1.0 there"),
+        ("+1", "samePatch is +1 there"),
     ] {
         let t = format!(
             "boundary {{ street {{ type mappedWall; samePatch {v}; neighbourRegion street; neighbourPatch street; }} }}"

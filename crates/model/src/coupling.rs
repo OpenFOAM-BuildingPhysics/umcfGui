@@ -271,8 +271,9 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
     let blank = |v: &Option<String>| v.as_deref() == Some("");
     // A value as said: an empty one as `""`.
     let shown = |v: &str| if v.is_empty() { "\"\"".to_string() } else { v.to_string() };
-    // OpenFOAM's switches: its words for true, or a number other than 0.
-    let on = |v: &str| matches!(v, "true" | "yes" | "on" | "y" | "t" | "any") || v.parse::<i64>().is_ok_and(|n| n != 0);
+    // A word OpenFOAM reads as a switch (`Switch`): not quoted, nor a number with a `+`.
+    let read_switch = |v: &str| if v.starts_with(['"', '+']) { None } else { umcf_foam_dict::switch(v) };
+    let on = |v: &str| read_switch(v) == Some(true);
     for e in entries {
         let Some(there) = boundary.get(&e.patch).and_then(umcf_foam_dict::Entry::dict) else {
             if boundary.get(&format!("~{}", e.patch)).is_none() {
@@ -374,8 +375,7 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
         // anything else (quoted, a dictionary) it refuses, said so, and the patch isn't
         // compared then.
         let raw = there.get("samePatch").and_then(umcf_foam_dict::Entry::value_text).map(|v| v.trim().to_string());
-        let switch =
-            |v: &str| on(v) || matches!(v, "false" | "no" | "off" | "n" | "f" | "none") || v.parse::<i64>().is_ok();
+        let switch = |v: &str| read_switch(v).is_some();
         let same = raw.as_deref().is_some_and(on);
         let odd_same = !v8
             && !internal
@@ -536,11 +536,9 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
         // `~patch`, quoted or not (OpenFOAM reads the `~` first), takes the mesh's patch out:
         // changeDictionary looks each of the mesh's patches up again after merging and stops
         // on one taken out, unless a block for it comes after, written in its place without
-        // its faces. A pattern or group taken out does nothing.
+        // its faces. The name is taken literally, a pattern's too (one that names no patch
+        // does nothing).
         if let Some(p) = k.strip_prefix('~') {
-            if p.chars().any(|c| ".*+?()[]{}|^$\\".contains(c)) {
-                continue;
-            }
             out.push(if boundary.get(p).and_then(umcf_foam_dict::Entry::dict).is_some() {
                 format!(
                     "~{p} is in boundary there with a block for {p}: changeDictionary stops where the mesh has patch {p} (the block first), or writes the block in its place without its faces (the block after)"
