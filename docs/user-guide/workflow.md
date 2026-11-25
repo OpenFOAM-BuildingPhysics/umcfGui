@@ -155,7 +155,10 @@ patches by their roles and points them at their partners, as the
   its `mappedInternal` patches, which OpenFOAM-12 doesn't read).
 - Refused, writing none: a description with problems, a patch with a partner but no role (which
   can't tell a wall from an open side: `workflow.patch` gives it one), a partner region the
-  description doesn't have, a canopy with a partner or with no air to map to.
+  description doesn't have, a canopy with a partner or with no air to map to, a region, patch
+  or partner name that isn't a plain OpenFOAM word (the names are written unquoted), and a
+  region's name that can't be a directory on every system (`.`, `..`, a `:`, a `.` at its end,
+  a name Windows keeps for a device), as `system/<region>` is one.
 - Generated, with a checksum: one umcfGui wrote and nobody changed since is written over as the
   description changes. One edited by hand or not written by umcfGui is written over only with
   `replace: true`; `case.save` keeps it in `.umcfgui/backup/` and `edit.undo` takes the write
@@ -164,12 +167,28 @@ patches by their roles and points them at their partners, as the
   one region's only; a region with coupled patches whose steps don't run `changeDictionary` is
   noted.
 - The case check (`workflow.change-dictionary`) says when one is missing, doesn't load, was
-  written from other roles or partners, or is the case's own and maps a patch otherwise (its
-  type, or the region and patch it maps to: OpenFOAM-12's older `sampleRegion` and
-  `samplePatch` count) or changes a patch the description doesn't map; the case's own that maps
-  them as the description does is fine, its other settings its own. It isn't checked while the
-  description has problems. A patch mapped only through a pattern (`"air_to_.*"`) or a group
-  in the case's own is said not to be there.
+  written from other roles or partners, or is the case's own and differs where the coupling
+  needs it, by the keys the version reads:
+  - a patch's type, or the region and patch it maps to: OpenFOAM-8 only `sampleRegion` and
+    `samplePatch`, OpenFOAM-12 `neighbourRegion` and `neighbourPatch`, else the older two.
+    OpenFOAM-12's `mappedInternal` reads no patch; OpenFOAM-8 stops on one (other than `none`)
+    in a mode that samples no patch (`nearestCell`, `nearestOnlyCell`, `nearestFace`), the mode
+    there (one without a mode is said to lack it). With a `coupleGroup`, OpenFOAM-8 takes the region and
+    patch given over the group's only when both are (compared then), and OpenFOAM-12 stops on a
+    group given with either; a partner named by the group alone isn't compared. OpenFOAM-12's
+    `samePatch true` names the patch of the same name (refused with a patch named too);
+  - an OpenFOAM-8 mapped patch without a sample mode, a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
+    one (or the other way round); an OpenFOAM-12 `method` (or `sampleMode`, its older name) OpenFOAM-12
+    hasn't. Another method or mode, the offsets and a value given by a macro or directive
+    (`$solid`, `#calc`) aren't compared;
+  - a patch it changes that the description doesn't map, and a value in `boundary`, which
+    `changeDictionary` adds to the mesh's `boundary` file.
+
+  The case's own that maps them as the description does is fine, its other settings its own.
+  It isn't checked while the description doesn't read whole. A patch mapped only through a
+  pattern (`"air_to_.*"`) or a group in the case's own is said not to be there; keys a patch's
+  block brings in (`$common;`, `#include`) aren't seen, and of a patch given twice only the
+  last is read (OpenFOAM merges them).
 
 ```sh
 umcf-cli run --case path/to/case --cmd 'workflow.import={}' \

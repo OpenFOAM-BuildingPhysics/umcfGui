@@ -53,16 +53,42 @@ pub fn runs(r: &RegionDesc) -> bool {
 
 /// The entries of `region`'s `changeDictionaryDict` for `version`, from its patches' roles and
 /// partners; an error says why one can't be written (a partner without a role, a partner
-/// region the description doesn't have, a canopy with no air to map to).
+/// region the description doesn't have, a canopy with a partner or no air to map to, a name
+/// that isn't a plain OpenFOAM word, a region's name that can't be a directory everywhere).
 pub fn entries(d: &Description, region: &str, version: OfVersion) -> Result<Vec<Entry>, String> {
     let Some(r) = d.region(region) else {
         return Err(format!("region {region} isn't in the description"));
     };
+    // The names are written as they are, unquoted: each a plain OpenFOAM word, so none changes
+    // the dictionary's syntax. A region's name is a directory too (`system/<region>`): not `.`
+    // or `..`, no `:`, not ending with `.`, not a name Windows keeps for a device.
+    let plain = |what: &str, n: &str| {
+        if crate::description_edit::plain_name(n) {
+            Ok(())
+        } else {
+            Err(format!("{what} `{n}` isn't a plain OpenFOAM word: rename it to write the changeDictionaryDict"))
+        }
+    };
+    let directory = |n: &str| {
+        plain("region", n)?;
+        if n.contains(':') || n.ends_with('.') || crate::new_case::windows_device(n) {
+            return Err(format!(
+                "region `{n}` can't be a directory on every system (a `:`, a `.` at its end, or a Windows device's name): rename it to write the changeDictionaryDict"
+            ));
+        }
+        Ok(())
+    };
+    directory(region)?;
     let v8 = version == OfVersion::V8;
     let mut out = Vec::new();
     for p in &r.patches {
+        let coupled = p.partner.is_some() || p.role == Some(Role::Canopy);
+        if coupled {
+            plain(&format!("patch of region {region}"), &p.name)?;
+        }
         if p.role == Some(Role::Canopy) && p.partner.is_none() {
             let air = canopy_air(d, r)?;
+            directory(&air)?;
             let keys = if v8 {
                 vec![
                     ("type", "mappedWall".to_string()),
@@ -89,6 +115,8 @@ pub fn entries(d: &Description, region: &str, version: OfVersion) -> Result<Vec<
                 p.name
             ));
         };
+        directory(of)?;
+        plain(&format!("patch of region {of}"), with)?;
         let open = match p.role {
             Some(Role::Inlet | Role::Outlet | Role::Side | Role::Top | Role::Sky) => true,
             Some(Role::Ground | Role::Coupled | Role::Interior | Role::Bottom) => false,
@@ -180,70 +208,187 @@ pub fn dict(d: &Description, region: &str, version: OfVersion) -> Result<String,
     ))
 }
 
+/// The methods OpenFOAM-12 pairs a mapped patch's faces by (its `patchToPatch` types).
+const METHODS_12: [&str; 4] = ["intersection", "inverseDistance", "matching", "nearest"];
+
+/// OpenFOAM-8's sample modes (`mappedPatchBase::sampleModeNames_`).
+const MODES_8: [&str; 6] =
+    ["nearestCell", "nearestPatchFace", "nearestPatchFaceAMI", "nearestPatchPoint", "nearestFace", "nearestOnlyCell"];
+
 /// How a `changeDictionaryDict`'s `boundary` (`root`, the file's top level) differs from
-/// `entries` in what matters to the coupling: each entry's patch there, its type, the region and
-/// patch it maps to (`neighbourRegion`/`neighbourPatch`, or `sampleRegion`/`samplePatch`, which
-/// OpenFOAM-12 reads too; no patch for one mapped to the air's cells, which reads none), and the
-/// canopy's `sampleMode`; and the patches it changes that `entries` doesn't map. `method` and
-/// the offsets aren't compared. A key that is a pattern (`"air_to_.*"`) or a group isn't
-/// matched to patches: a patch mapped only through one is said not to be there.
-pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry]) -> Vec<String> {
+/// `entries` (made for `version`) in what matters to the coupling, by the keys the version
+/// reads:
+/// - each entry's patch there, and its type;
+/// - the region and patch it maps to: `sampleRegion`/`samplePatch` for OpenFOAM-8;
+///   `neighbourRegion`/`neighbourPatch`, else the older `sampleRegion`/`samplePatch`, for -12.
+///   OpenFOAM-12's `mappedInternal` reads no patch (its tutorials name one all the same);
+///   OpenFOAM-8 stops on one (other than `none`) in the modes that sample no patch
+///   (`nearestCell`, the canopy's, `nearestOnlyCell`, `nearestFace`), the mode there (one
+///   without a mode is said to lack it). With a `coupleGroup`, OpenFOAM-8 takes the region and patch given only
+///   when both are (compared then; else the group's, not compared); OpenFOAM-12 stops on a
+///   group given with either. A partner named by the group alone isn't compared. OpenFOAM-12's
+///   `samePatch true` names the patch of the same name (refused with a patch named too);
+/// - OpenFOAM-8's `sampleMode`: none (it reads one), one it hasn't, or one sampling no patch
+///   where the entry's samples one, or the other way round; OpenFOAM-12's `method` (or
+///   `sampleMode`, its older name) that it hasn't;
+/// - the patches it changes that `entries` doesn't map, and a value in `boundary` (which
+///   changeDictionary adds to the mesh's `boundary` file).
+///
+/// A method OpenFOAM-12 has, other sample modes and the offsets aren't compared, nor a value
+/// given by a macro or directive (`$solid`, `#calc`). A key that is a pattern (`"air_to_.*"`)
+/// or a group isn't matched to patches: a patch mapped only through one is said not to be
+/// there. Keys a patch's block brings in (`$common;`, `#include`) aren't seen, and of a patch
+/// given twice only the last is read (OpenFOAM merges them).
+pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVersion) -> Vec<String> {
     let Some(boundary) = root.get("boundary").and_then(umcf_foam_dict::Entry::dict) else {
         return vec!["it has no boundary dictionary".to_string()];
     };
+    let v8 = version == OfVersion::V8;
     let mut out = Vec::new();
     let value = |d: &umcf_foam_dict::Dict, k: &str| {
         d.get(k).and_then(umcf_foam_dict::Entry::value_text).map(|v| v.trim_matches('"').to_string())
     };
+    // A value from a macro or directive (`$mode`, `#calc`) is told only once it is expanded:
+    // not compared.
+    let untold = |v: &Option<String>| v.as_deref().is_some_and(|v| v.starts_with(['$', '#']));
     for e in entries {
         let Some(there) = boundary.get(&e.patch).and_then(umcf_foam_dict::Entry::dict) else {
             out.push(format!("patch {} isn't there", e.patch));
             continue;
         };
-        let internal = e.get("type") == Some("mappedInternal");
-        let compared = [
-            ("type", e.get("type").map(str::to_string), value(there, "type")),
-            (
-                "the region it maps to",
-                e.get("neighbourRegion").or(e.get("sampleRegion")).map(str::to_string),
-                value(there, "neighbourRegion").or_else(|| value(there, "sampleRegion")),
-            ),
-            (
-                "the patch it maps to",
-                e.get("neighbourPatch").or(e.get("samplePatch")).map(str::to_string),
-                value(there, "neighbourPatch").or_else(|| value(there, "samplePatch")),
-            ),
-            ("sampleMode", e.get("sampleMode").map(str::to_string), value(there, "sampleMode")),
-        ];
-        for (what, want, have) in compared {
-            // A patch mapped to the air's cells reads no patch of it (OpenFOAM-12's tutorials
-            // name one all the same).
-            if what == "the patch it maps to" && internal {
-                continue;
-            }
-            // The sample mode of a mapped patch is written as the reference cases do; only the
-            // canopy's (the air's cells, not a patch) matters.
-            if what == "sampleMode" && want.as_deref() != Some("nearestCell") && have.as_deref() != Some("nearestCell")
-            {
-                continue;
-            }
-            if want != have {
-                out.push(format!(
+        let differ = |what: &str, want: Option<String>, have: Option<String>| {
+            (want != have && !untold(&have)).then(|| {
+                format!(
                     "patch {}: {what} is {} there, the description makes it {}",
                     e.patch,
                     have.as_deref().unwrap_or("not given"),
                     want.as_deref().unwrap_or("not given")
+                )
+            })
+        };
+        let want = |k: &str| e.get(k).map(str::to_string);
+        out.extend(differ("type", want("type"), value(there, "type")));
+        let internal = !v8 && e.get("type") == Some("mappedInternal");
+        // OpenFOAM-8's mode there (else the description's); these sample no patch: the cells
+        // (the canopy's) or the faces.
+        let mode = value(there, "sampleMode");
+        let unpatched = |m: Option<&str>| matches!(m, Some("nearestCell" | "nearestOnlyCell" | "nearestFace"));
+        let cells = v8 && unpatched(mode.as_deref().or(e.get("sampleMode")));
+        // A patch coupled by its group (`coupleGroup`): OpenFOAM-8 takes the region and patch
+        // given over the group's only when both are (else both from the group: neither
+        // compared); OpenFOAM-12 stops on a group given with either (its mappedInternal reads
+        // no group). A partner named by the group alone isn't compared.
+        let grouped = !internal && there.get("coupleGroup").is_some();
+        let given = |k: &str| there.get(k).is_some();
+        // OpenFOAM's switch words for true.
+        let same =
+            value(there, "samePatch").is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on" | "y" | "t" | "any"));
+        if v8 {
+            for (what, key) in [("the region it maps to", "sampleRegion"), ("the patch it maps to", "samplePatch")] {
+                let both = given("sampleRegion") && (given("samplePatch") || cells);
+                if (key == "samplePatch" && cells) || (grouped && !both) {
+                    continue;
+                }
+                out.extend(differ(what, want(key), value(there, key)));
+            }
+        } else if grouped {
+            let keys = ["neighbourRegion", "neighbourPatch", "sampleRegion", "samplePatch"];
+            if let Some(k) = keys.iter().find(|k| given(k)).copied().or(same.then_some("samePatch")) {
+                out.push(format!(
+                    "patch {}: it has a coupleGroup and {k} there, which OpenFOAM-12 refuses (one or the other)",
+                    e.patch
+                ));
+            }
+        } else {
+            // `samePatch true` maps to the patch of the same name; with a patch named too,
+            // OpenFOAM-12 stops.
+            if same
+                && !internal
+                && let Some(k) = ["neighbourPatch", "samplePatch"].into_iter().find(|k| given(k))
+            {
+                out.push(format!(
+                    "patch {}: it has samePatch and {k} there, which OpenFOAM-12 refuses (one or the other)",
+                    e.patch
+                ));
+            }
+            let have = |new: &str, old: &str| {
+                value(there, new)
+                    .or_else(|| value(there, old))
+                    .or_else(|| (same && new == "neighbourPatch").then(|| e.patch.clone()))
+            };
+            out.extend(differ(
+                "the region it maps to",
+                want("neighbourRegion"),
+                have("neighbourRegion", "sampleRegion"),
+            ));
+            if !internal {
+                out.extend(differ(
+                    "the patch it maps to",
+                    want("neighbourPatch"),
+                    have("neighbourPatch", "samplePatch"),
+                ));
+            }
+        }
+        if v8 {
+            if !untold(&mode) {
+                // The cells or a face against a patch: the canopy's or a mapped side's.
+                match mode.as_deref() {
+                    Some(m) if !MODES_8.contains(&m) => out.push(format!(
+                        "patch {}: its sampleMode is {m} there, which OpenFOAM-8 hasn't (it has {})",
+                        e.patch,
+                        MODES_8.join(", ")
+                    )),
+                    // OpenFOAM-8 reads one for every mapped patch.
+                    None if e.get("sampleMode").is_some() => {
+                        out.extend(differ("sampleMode", want("sampleMode"), None));
+                    }
+                    m if unpatched(m) != unpatched(e.get("sampleMode")) => {
+                        out.extend(differ("sampleMode", want("sampleMode"), mode.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            let patch = value(there, "samplePatch");
+            // Without a mode there OpenFOAM-8 stops on that first (said above).
+            if cells
+                && mode.is_some()
+                && !untold(&patch)
+                && let Some(p) = patch.filter(|p| !p.is_empty() && p != "none")
+            {
+                out.push(format!(
+                    "patch {}: samplePatch is {p} there, which OpenFOAM-8 refuses in sampleMode {}",
+                    e.patch,
+                    mode.as_deref().or(e.get("sampleMode")).unwrap_or_default()
+                ));
+            }
+        } else if !internal {
+            // OpenFOAM-12 reads `sampleMode` only as an older `method`; one it hasn't stops the run.
+            let method = value(there, "method").or_else(|| value(there, "sampleMode"));
+            if let Some(m) = method.filter(|m| !m.starts_with(['$', '#']) && !METHODS_12.contains(&m.as_str())) {
+                out.push(format!(
+                    "patch {}: its method is {m} there, which OpenFOAM-12 hasn't (it has {})",
+                    e.patch,
+                    METHODS_12.join(", ")
                 ));
             }
         }
     }
+    let named: std::collections::HashSet<&str> = entries.iter().map(|e| e.patch.as_str()).collect();
     for entry in boundary.entries() {
         // A pattern is quoted (`"air_to_.*"`); a patch's name never is.
         if entry.key.text.starts_with('"') {
             continue;
         }
         let k = entry.key();
-        if !entries.iter().any(|e| e.patch == k) {
+        if entry.dict().is_none() {
+            // changeDictionary adds what matches no patch to polyMesh/boundary, where a value
+            // breaks the mesh.
+            if !k.starts_with(['$', '#']) {
+                out.push(format!(
+                    "{k} is a value in boundary there: changeDictionary adds it to the mesh's boundary file"
+                ));
+            }
+        } else if !named.contains(k) {
             out.push(format!("patch {k} is changed there, the description doesn't map it"));
         }
     }

@@ -75,7 +75,7 @@ const RESERVED: [&str; 41] = [
 ];
 
 /// Names Windows keeps for its devices, with or without an extension (`con`, `nul.txt`).
-fn windows_device(name: &str) -> bool {
+pub(crate) fn windows_device(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
     matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
         || ((stem.starts_with("com") || stem.starts_with("lpt"))

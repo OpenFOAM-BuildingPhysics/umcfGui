@@ -638,10 +638,12 @@ fn background(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagno
 
 /// `workflow.change-dictionary`: the `changeDictionaryDict` of a region whose steps run
 /// `changeDictionary`, against what `workflow.dictionaries` writes from the patches' roles and
-/// partners ([`umcf_model::coupling`]): one that can't be written, one missing or that doesn't
-/// load, one umcfGui wrote from other roles or partners, and the case's own where it maps a
-/// patch otherwise (its type, or the region and patch it maps to) or changes a patch the
-/// description doesn't map. The case's own that maps them as the description does, its other
+/// partners ([`umcf_model::coupling`]): one that can't be written (a partner without a role, a
+/// name that isn't a plain word or a region's that can't be a directory, ...), one missing or
+/// that doesn't load, one umcfGui wrote from other roles or partners, and the case's own where
+/// it differs as [`umcf_model::coupling::differences`] says for the case's version (a type, the
+/// region or patch mapped to, a sample mode or method the version hasn't, a patch the
+/// description doesn't map). The case's own that maps them as the description does, its other
 /// settings its own, is fine.
 fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
     use umcf_model::coupling;
@@ -677,7 +679,7 @@ fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec
                     "written by umcfGui from other patch roles or partners than region {name}'s now: workflow.dictionaries writes it again"
                 )
             } else {
-                let diff = coupling::differences(&doc.root, &entries);
+                let diff = coupling::differences(&doc.root, &entries, version);
                 let Some(first) = diff.first() else { return };
                 format!(
                     "the case's own maps the patches otherwise than the description of region {name} ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",

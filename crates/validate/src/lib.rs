@@ -843,7 +843,8 @@ fn coupling(case: &Case, out: &mut Vec<Diagnostic>) {
             // With `coupleGroup`, OpenFOAM finds the partner (region and patch) by group.
             // OpenFOAM-12 refuses one together with partner keywords (mappedPatchBaseBase.C:
             // "Either neighbourRegion/Patch information or a coupleGroup should be specified,
-            // not both"); OpenFOAM-8 ignores them.
+            // not both"); OpenFOAM-8 takes a region and patch given over the group's when both
+            // are (mappedPatchBaseI.H).
             if group {
                 let same_patch =
                     param("samePatch").is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on" | "y" | "t" | "any"));

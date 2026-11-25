@@ -5041,6 +5041,37 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
         assert!(e.contains("is the canopy and coupled to air/inlet"), "{e}");
         s.execute("workflow.patch", &json!({"region": "vegetation", "patch": "air_to_vegetation", "partner": null}))
             .unwrap();
+        // A name that isn't a plain word (a quoted one in the description) isn't written: it
+        // would change the dictionary's syntax.
+        s.execute("case.save", &json!({})).unwrap();
+        let (mut odd, _) = s.case().unwrap().description().unwrap();
+        for r in &mut odd.regions {
+            for p in &mut r.patches {
+                if p.name == "street_to_air" {
+                    p.name = "street_to_air { type wall; }".into();
+                }
+                if let Some((_, with)) = &mut p.partner
+                    && with == "street_to_air"
+                {
+                    *with = "street_to_air { type wall; }".into();
+                }
+            }
+        }
+        let before = std::fs::read_to_string(dir.join("system/umcfWorkflow")).unwrap();
+        std::fs::write(dir.join("system/umcfWorkflow"), odd.write()).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(e.contains("`street_to_air { type wall; }` isn't a plain OpenFOAM word"), "{e}");
+        assert!(
+            said(&mut s)
+                .iter()
+                .any(|m| m.contains("can't be written from the description")
+                    && m.contains("isn't a plain OpenFOAM word")),
+            "{:?}",
+            said(&mut s)
+        );
+        std::fs::write(dir.join("system/umcfWorkflow"), before).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
         // One that doesn't load isn't written over, even with replace: nothing is written.
         s.execute("case.save", &json!({})).unwrap();
         std::fs::write(dir.join("system/street/changeDictionaryDict"), "boundary {").unwrap();
