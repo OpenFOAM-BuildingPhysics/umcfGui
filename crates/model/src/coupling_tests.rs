@@ -295,8 +295,14 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         let diff = differences(&root(&t), &air12, OfVersion::V12);
         assert_eq!(diff.iter().any(|m| m.contains("it has samePatch and neighbourPatch")), refused, "{v}: {diff:?}");
     }
+    // Alone, the mesh's patch may keep a neighbourPatch beside it, which OpenFOAM-12 refuses.
     let t = "boundary { street { type mappedWall; samePatch 1; neighbourRegion street; } }";
-    assert_eq!(differences(&root(t), &air12, OfVersion::V12), Vec::<String>::new());
+    assert_eq!(
+        differences(&root(t), &air12, OfVersion::V12),
+        [
+            "patch street: it has samePatch there, which OpenFOAM-12 refuses beside a neighbourPatch, and the mesh's patch keeps one it has (OpenFOAM-12 writes one on a mapped patch), which can't be confirmed"
+        ]
+    );
     // In the modes that sample no patch OpenFOAM-8 stops on a patch given (none will do),
     // with a group too (its patch would replace it, refused all the same).
     let veg8 = entries(&d, "vegetation", OfVersion::V8).unwrap();
@@ -457,17 +463,26 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     let air12 = entries(&d, "air", OfVersion::V12).unwrap();
     let alone = "boundary { street { type mappedWall; coupleGroup g; } }";
     assert_eq!(differences(&root(alone), &air12, OfVersion::V12), Vec::<String>::new());
-    // samePatch maps to the patch of the same name.
+    // samePatch maps to the patch of the same name, unconfirmed alone (the mesh's patch may
+    // keep a neighbourPatch); refused with a patch named too, which then isn't compared.
     let veg12 = entries(&d, "vegetation", OfVersion::V12).unwrap();
     let text =
         dict(&d, "vegetation", OfVersion::V12).unwrap().replacen("neighbourPatch  west;", "samePatch       true;", 1);
     assert!(text.contains("samePatch       true;"));
-    assert_eq!(differences(&root(&text), &veg12, OfVersion::V12), Vec::<String>::new());
-    let t = text.replacen("samePatch       true;", "samePatch       y;\n        samplePatch     west;", 1);
     assert_eq!(
-        differences(&root(&t), &veg12, OfVersion::V12),
-        ["patch west: it has samePatch and samplePatch there, which OpenFOAM-12 refuses (one or the other)"]
+        differences(&root(&text), &veg12, OfVersion::V12),
+        [
+            "patch west: it has samePatch there, which OpenFOAM-12 refuses beside a neighbourPatch, and the mesh's patch keeps one it has (OpenFOAM-12 writes one on a mapped patch), which can't be confirmed"
+        ]
     );
+    for patch in ["west", "roof"] {
+        let t =
+            text.replacen("samePatch       true;", &format!("samePatch       y;\n        samplePatch     {patch};"), 1);
+        assert_eq!(
+            differences(&root(&t), &veg12, OfVersion::V12),
+            ["patch west: it has samePatch and samplePatch there, which OpenFOAM-12 refuses (one or the other)"]
+        );
+    }
     let same = "boundary { street { type mappedWall; coupleGroup g; samePatch false; } }";
     assert_eq!(differences(&root(same), &air12, OfVersion::V12), Vec::<String>::new());
     let both = "boundary { street { type mappedWall; coupleGroup g; neighbourRegion street; } }";

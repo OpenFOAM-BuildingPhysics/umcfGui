@@ -5028,6 +5028,21 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
             )),
             "{unsaid_said:?}"
         );
+        // OpenFOAM-12 given the older key alone: it reads the newer first, which the mesh's
+        // patch may keep, so the older one's isn't confirmed.
+        if version == 12 {
+            std::fs::write(&hand, air.replacen("neighbourRegion", "sampleRegion   ", 1)).unwrap();
+            s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+            s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+                .unwrap();
+            let older = said(&mut s);
+            assert!(
+                older.iter().any(|m| m.contains(
+                    "(patch air_to_street: the region it maps to is given there as sampleRegion only, which OpenFOAM-12 reads after neighbourRegion"
+                )),
+                "{older:?}"
+            );
+        }
         std::fs::write(&hand, "FoamFile { class dictionary; object changeDictionaryDict; }\nboundary { }\n").unwrap();
         s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
         s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))

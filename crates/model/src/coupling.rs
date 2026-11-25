@@ -236,8 +236,9 @@ const MODES_8: [&str; 6] =
 ///   refused; compared then; else the group's, not compared); OpenFOAM-12
 ///   stops on a group given with either. A partner named by the group alone isn't compared.
 ///   OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a number other
-///   than 0) names the patch of
-///   the same name (refused with a patch named too);
+///   than 0) names the patch of the same name: refused with a patch named too (the patch not
+///   compared then), unconfirmed alone, as OpenFOAM-12 refuses it beside a `neighbourPatch` the
+///   mesh's patch may keep;
 /// - OpenFOAM-8's `sampleMode` it hasn't, or one sampling no patch where the entry's samples
 ///   one, or the other way round; OpenFOAM-12's `method` (or `sampleMode`, its older name) that
 ///   it hasn't;
@@ -415,7 +416,18 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
             }
             for (what, new, old) in pairs {
                 let said = if same && new == "neighbourPatch" {
-                    None
+                    // With a patch named too it is refused (said above), not compared. Alone,
+                    // the mesh's patch keeps a neighbourPatch it has (OpenFOAM-12 writes one on
+                    // every mapped patch), beside which OpenFOAM-12 refuses samePatch.
+                    if given(new) || given(old) {
+                        continue;
+                    }
+                    (want(new).as_deref() == Some(e.patch.as_str())).then(|| {
+                        format!(
+                            "patch {}: it has samePatch there, which OpenFOAM-12 refuses beside a neighbourPatch, and the mesh's patch keeps one it has (OpenFOAM-12 writes one on a mapped patch), which can't be confirmed",
+                            e.patch
+                        )
+                    })
                 } else {
                     shadowed(what, new, old, want(new), have(new, old))
                 };

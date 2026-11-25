@@ -186,8 +186,10 @@ patches by their roles and points them at their partners, as the
     are (in `nearestCell` and `nearestOnlyCell` the region alone; `nearestFace` asks the group
     for a patch not given, refused), compared then, and
     OpenFOAM-12 stops on a group given with either; a partner named by the group alone isn't
-    compared. OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a number other than 0) names the
-    patch of the same name, refused with a patch named too. A name that isn't a word (empty,
+    compared. OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a
+    number other than 0) names the patch of the same name: refused with a patch named too (the
+    patch not compared then), and alone said to be unconfirmed, as OpenFOAM-12 refuses it
+    beside a `neighbourPatch`, which it writes on a mapped patch and the mesh's patch keeps. A name that isn't a word (empty,
     `""`, or a dictionary) is said to be refused, for the keys the version reads, a group's
     too, and so is a type that is a dictionary;
   - a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
