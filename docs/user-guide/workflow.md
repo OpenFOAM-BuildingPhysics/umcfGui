@@ -202,8 +202,10 @@ patches by their roles and points them at their partners, as the
     directive (`$solid`, `#calc`) aren't compared, nor, with an OpenFOAM-8 `sampleMode` from
     one, the `samplePatch`;
   - a patch it changes that the description doesn't map, and a value in `boundary`, which
-    `changeDictionary` adds to the mesh's `boundary` file, and a `~patch` there, on which
-    `changeDictionary` stops where the mesh has the patch (it can't take one out).
+    `changeDictionary` adds to the mesh's `boundary` file, and a `~patch` there (quoted or
+    not), on which `changeDictionary` stops where the mesh has the patch, as it can't take one
+    out (with a block for the patch after it, the block is written in the patch's place
+    without its faces; neither is compared).
 
   The case's own that maps them as the description does is fine, its other settings its own.
   It isn't checked while the description doesn't read whole. A patch mapped only through a

@@ -293,7 +293,7 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     assert_eq!(
         differences(&root(taken), &air12, OfVersion::V12),
         [
-            "patch street: it takes ~neighbourRegion, ~sampleMode out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared"
+            "patch street: it takes neighbourRegion, sampleMode out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared"
         ]
     );
     // changeDictionary stops on a patch taken out of boundary; said once for a mapped one.
@@ -310,6 +310,30 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
             "~street is in boundary there: changeDictionary stops where the mesh has patch street (it can't take a patch out)"
         ]
     );
+    let taken8 =
+        "boundary { street { type mappedWall; sampleMode nearestPatchFace; ~sampleRegion; samplePatch street; } }";
+    assert_eq!(
+        differences(&root(taken8), &entries(&d, "air", OfVersion::V8).unwrap(), OfVersion::V8),
+        [
+            "patch street: it takes sampleRegion out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared"
+        ]
+    );
+    // Quoted, too (OpenFOAM reads the `~` first); a pattern taken out does nothing.
+    let quoted = "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; } \"~west\"; \"~air_.*\"; }";
+    assert_eq!(
+        differences(&root(quoted), &air12, OfVersion::V12),
+        [
+            "~west is in boundary there: changeDictionary stops where the mesh has patch west (it can't take a patch out)"
+        ]
+    );
+    // With a block for the patch: stops, or writes the block without the faces; not compared.
+    let with_block = "boundary { ~street; street { type mappedPatch; neighbourRegion roof; } }";
+    assert_eq!(
+        differences(&root(with_block), &air12, OfVersion::V12),
+        [
+            "~street is in boundary there with a block for street: changeDictionary stops where the mesh has patch street (the block first), or writes the block in its place without its faces (the block after)"
+        ]
+    );
     // A samePatch that isn't a switch is refused; samePatch alone beside the older region key
     // says both.
     for (v, said) in [
@@ -317,6 +341,7 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         ("{ }", "samePatch is a dictionary there"),
         ("\"\"", "samePatch is \"\" there"),
         ("\"true\"", "samePatch is \"true\" there"),
+        ("1.0", "samePatch is 1.0 there"),
     ] {
         let t = format!(
             "boundary {{ street {{ type mappedWall; samePatch {v}; neighbourRegion street; neighbourPatch street; }} }}"

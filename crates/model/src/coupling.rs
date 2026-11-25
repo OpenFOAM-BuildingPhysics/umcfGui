@@ -221,9 +221,9 @@ const MODES_8: [&str; 6] =
 /// key left out keeps the mesh's value, not told here (a region or patch the version reads,
 /// left out, is said to be unconfirmed; for OpenFOAM-8 not where OpenFOAM-12's key stands in
 /// its place, said to be unread). A block with a `~key`, which takes the key out of the
-/// mesh's patch, isn't compared, said so: what OpenFOAM reads then isn't told here. A name that isn't a word (empty, or a dictionary), a
-/// type that is a dictionary and a `samePatch` that isn't a switch, which OpenFOAM refuses,
-/// are said so and not compared.
+/// mesh's patch, isn't compared, said so: what OpenFOAM reads then isn't told here. A name
+/// that isn't a word (empty, or a dictionary), a type that is a dictionary and a `samePatch`
+/// that isn't a switch, which OpenFOAM refuses, are said so and not compared.
 /// - each entry's patch there, and its type;
 /// - the region and patch it maps to: `sampleRegion`/`samplePatch` for OpenFOAM-8 (OpenFOAM-12's
 ///   keys in their place said to be unread); `neighbourRegion`/`neighbourPatch` where given,
@@ -246,8 +246,9 @@ const MODES_8: [&str; 6] =
 ///   one, or the other way round; OpenFOAM-12's `method` (or `sampleMode`, its older name) that
 ///   it hasn't;
 /// - the patches it changes that `entries` doesn't map, and a value in `boundary` (which
-///   changeDictionary adds to the mesh's `boundary` file), and a `~patch` there, on which
-///   changeDictionary stops where the mesh has the patch.
+///   changeDictionary adds to the mesh's `boundary` file), and a `~patch` there, quoted or
+///   not, on which changeDictionary stops where the mesh has the patch (with a block for it
+///   after, the block is written in its place without its faces; neither compared).
 ///
 /// A method OpenFOAM-12 has, other sample modes and the offsets aren't compared, nor a value
 /// given by a macro or directive (`$solid`, `#calc`), nor, with OpenFOAM-8's `sampleMode`
@@ -274,15 +275,18 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
     let on = |v: &str| matches!(v, "true" | "yes" | "on" | "y" | "t" | "any") || v.parse::<i64>().is_ok_and(|n| n != 0);
     for e in entries {
         let Some(there) = boundary.get(&e.patch).and_then(umcf_foam_dict::Entry::dict) else {
-            // `~patch` in boundary is said below.
             if boundary.get(&format!("~{}", e.patch)).is_none() {
                 out.push(format!("patch {} isn't there", e.patch));
             }
             continue;
         };
+        // `~patch` in boundary (said below): the block isn't merged into the mesh's patch.
+        if boundary.get(&format!("~{}", e.patch)).is_some() {
+            continue;
+        }
         // `~key` takes a key out of the mesh's patch: what OpenFOAM reads then (the mesh's
         // other keys, the version's defaults, or a stop) isn't told here.
-        let taken: Vec<&str> = there.entries().map(|t| t.key()).filter(|k| k.starts_with('~')).collect();
+        let taken: Vec<&str> = there.entries().filter_map(|t| t.key().strip_prefix('~')).collect();
         if !taken.is_empty() {
             out.push(format!(
                 "patch {}: it takes {} out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared",
@@ -528,18 +532,31 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
     }
     let named: std::collections::HashSet<&str> = entries.iter().map(|e| e.patch.as_str()).collect();
     for entry in boundary.entries() {
+        let k = entry.key();
+        // `~patch`, quoted or not (OpenFOAM reads the `~` first), takes the mesh's patch out:
+        // changeDictionary looks each of the mesh's patches up again after merging and stops
+        // on one taken out, unless a block for it comes after, written in its place without
+        // its faces. A pattern or group taken out does nothing.
+        if let Some(p) = k.strip_prefix('~') {
+            if p.chars().any(|c| ".*+?()[]{}|^$\\".contains(c)) {
+                continue;
+            }
+            out.push(if boundary.get(p).and_then(umcf_foam_dict::Entry::dict).is_some() {
+                format!(
+                    "~{p} is in boundary there with a block for {p}: changeDictionary stops where the mesh has patch {p} (the block first), or writes the block in its place without its faces (the block after)"
+                )
+            } else {
+                format!(
+                    "~{p} is in boundary there: changeDictionary stops where the mesh has patch {p} (it can't take a patch out)"
+                )
+            });
+            continue;
+        }
         // A pattern is quoted (`"air_to_.*"`); a patch's name never is.
         if entry.key.text.starts_with('"') {
             continue;
         }
-        let k = entry.key();
-        if let Some(p) = k.strip_prefix('~') {
-            // changeDictionary can't take a patch out: it looks each of the mesh's patches up
-            // again after merging, and stops on one taken out (a pattern or group does nothing).
-            out.push(format!(
-                "~{p} is in boundary there: changeDictionary stops where the mesh has patch {p} (it can't take a patch out)"
-            ));
-        } else if entry.dict().is_none() {
+        if entry.dict().is_none() {
             // changeDictionary adds what matches no patch to polyMesh/boundary, where a value
             // breaks the mesh.
             if !k.starts_with(['$', '#']) {

@@ -846,8 +846,10 @@ fn coupling(case: &Case, out: &mut Vec<Diagnostic>) {
             // not both"); OpenFOAM-8 takes a region and patch given over the group's when both
             // are (mappedPatchBaseI.H).
             if group {
-                let same_patch =
-                    param("samePatch").is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on" | "y" | "t" | "any"));
+                let same_patch = param("samePatch").is_some_and(|v| {
+                    matches!(v.as_str(), "true" | "yes" | "on" | "y" | "t" | "any")
+                        || v.parse::<i64>().is_ok_and(|n| n != 0)
+                });
                 let key = ["neighbourRegion", "sampleRegion", "neighbourPatch", "samplePatch"]
                     .into_iter()
                     .find(|k| param(k).is_some())
