@@ -220,10 +220,8 @@ const MODES_8: [&str; 6] =
 /// reads and only those given: changeDictionary merges each block into the mesh's patch, so a
 /// key left out keeps the mesh's value, not told here (a region or patch the version reads,
 /// left out, is said to be unconfirmed; for OpenFOAM-8 not where OpenFOAM-12's key stands in
-/// its place, said to be unread). `~key` takes a key out of the mesh's patch: the key it read
-/// then isn't the mesh's, and one taken out where the version would read it leaves
-/// OpenFOAM's default, said to be unconfirmed; `~patch` in `boundary` takes a patch out of
-/// the mesh's boundary file, said so. A name that isn't a word (empty, or a dictionary), a
+/// its place, said to be unread). A block with a `~key`, which takes the key out of the
+/// mesh's patch, isn't compared, said so: what OpenFOAM reads then isn't told here. A name that isn't a word (empty, or a dictionary), a
 /// type that is a dictionary and a `samePatch` that isn't a switch, which OpenFOAM refuses,
 /// are said so and not compared.
 /// - each entry's patch there, and its type;
@@ -242,14 +240,14 @@ const MODES_8: [&str; 6] =
 ///   OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a number other
 ///   than 0) names the patch of the same name: refused with a patch named too (the patch not
 ///   compared then); alone, compared, and where it is the description's, unconfirmed, as
-///   OpenFOAM-12 refuses it beside a `neighbourPatch` the mesh's patch may keep (not with
-///   `~neighbourPatch`);
+///   OpenFOAM-12 refuses it beside a `neighbourPatch` the mesh's patch may keep; one that isn't
+///   a switch (quoted, too) refused, the patch not compared then;
 /// - OpenFOAM-8's `sampleMode` it hasn't, or one sampling no patch where the entry's samples
 ///   one, or the other way round; OpenFOAM-12's `method` (or `sampleMode`, its older name) that
 ///   it hasn't;
 /// - the patches it changes that `entries` doesn't map, and a value in `boundary` (which
-///   changeDictionary adds to the mesh's `boundary` file), and a `~patch` there (which takes
-///   the patch out of it).
+///   changeDictionary adds to the mesh's `boundary` file), and a `~patch` there, on which
+///   changeDictionary stops where the mesh has the patch.
 ///
 /// A method OpenFOAM-12 has, other sample modes and the offsets aren't compared, nor a value
 /// given by a macro or directive (`$solid`, `#calc`), nor, with OpenFOAM-8's `sampleMode`
@@ -276,23 +274,24 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
     let on = |v: &str| matches!(v, "true" | "yes" | "on" | "y" | "t" | "any") || v.parse::<i64>().is_ok_and(|n| n != 0);
     for e in entries {
         let Some(there) = boundary.get(&e.patch).and_then(umcf_foam_dict::Entry::dict) else {
-            out.push(format!("patch {} isn't there", e.patch));
+            // `~patch` in boundary is said below.
+            if boundary.get(&format!("~{}", e.patch)).is_none() {
+                out.push(format!("patch {} isn't there", e.patch));
+            }
             continue;
         };
+        // `~key` takes a key out of the mesh's patch: what OpenFOAM reads then (the mesh's
+        // other keys, the version's defaults, or a stop) isn't told here.
+        let taken: Vec<&str> = there.entries().map(|t| t.key()).filter(|k| k.starts_with('~')).collect();
+        if !taken.is_empty() {
+            out.push(format!(
+                "patch {}: it takes {} out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared",
+                e.patch,
+                taken.join(", ")
+            ));
+            continue;
+        }
         let given = |k: &str| there.get(k).is_some();
-        // `~key` takes the key out of the mesh's patch (changeDictionary removes it).
-        let removed = |k: &str| there.get(&format!("~{k}")).is_some();
-        // Taken out where OpenFOAM would read it: OpenFOAM-12 reads an older key only where
-        // the newer is out too.
-        let gone = |k: &str| {
-            removed(k)
-                && (v8
-                    || match k {
-                        "sampleRegion" => removed("neighbourRegion"),
-                        "samplePatch" => removed("neighbourPatch"),
-                        _ => true,
-                    })
-        };
         // changeDictionary merges the block into the patch the mesh has: a key left out keeps
         // the mesh's value, which isn't told here, so it isn't compared.
         let differ = |what: &str, want: Option<String>, have: Option<String>| {
@@ -309,14 +308,7 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
         // the mesh's, which can't be confirmed (said so); a name that isn't a word (empty, or a
         // dictionary) is said once, not compared.
         let name_differ = |what: &str, want: Option<String>, key: &str, have: Option<String>| {
-            if have.is_none() && there.get(key).is_none() && gone(key) {
-                want.map(|w| {
-                    format!(
-                        "patch {}: {what} is taken out there (~{key}), so OpenFOAM's default is read, which can't be confirmed (the description makes it {w})",
-                        e.patch
-                    )
-                })
-            } else if have.is_none() && there.get(key).is_none() {
+            if have.is_none() && there.get(key).is_none() {
                 want.map(|w| {
                     format!(
                         "patch {}: {what} isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it {w})",
@@ -374,23 +366,27 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
                 Some(_) => {}
             }
         }
-        let same = value(there, "samePatch").is_some_and(|v| on(&v));
-        // A samePatch that isn't a switch (its words, or a number) OpenFOAM-12 refuses.
-        if !v8 && !internal && given("samePatch") {
-            let switch =
-                |v: &str| on(v) || matches!(v, "false" | "no" | "off" | "n" | "f" | "none") || v.parse::<i64>().is_ok();
-            match value(there, "samePatch") {
-                None => out.push(format!(
-                    "patch {}: samePatch is a dictionary there, which OpenFOAM-12 refuses (not a switch)",
-                    e.patch
-                )),
-                Some(v) if !untold(&Some(v.clone())) && !switch(&v) => out.push(format!(
-                    "patch {}: samePatch is {} there, which OpenFOAM-12 refuses (not a switch)",
-                    e.patch,
-                    shown(&v)
-                )),
-                Some(_) => {}
-            }
+        // OpenFOAM-12's samePatch: a switch, a word (its words for true and false) or a number;
+        // anything else (quoted, a dictionary) it refuses, said so, and the patch isn't
+        // compared then.
+        let raw = there.get("samePatch").and_then(umcf_foam_dict::Entry::value_text).map(|v| v.trim().to_string());
+        let switch =
+            |v: &str| on(v) || matches!(v, "false" | "no" | "off" | "n" | "f" | "none") || v.parse::<i64>().is_ok();
+        let same = raw.as_deref().is_some_and(on);
+        let odd_same = !v8
+            && !internal
+            && given("samePatch")
+            && raw.as_deref().is_none_or(|v| !untold(&Some(v.to_string())) && !switch(v));
+        if odd_same {
+            out.push(format!(
+                "patch {}: samePatch is {} there, which OpenFOAM-12 refuses (not a switch)",
+                e.patch,
+                raw.as_deref().map_or("a dictionary".to_string(), |v| if v.is_empty() {
+                    "\"\"".to_string()
+                } else {
+                    v.to_string()
+                })
+            ));
         }
         if v8 {
             // OpenFOAM-12's keys in their place: OpenFOAM-8 doesn't read them.
@@ -447,7 +443,7 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
             let shadowed = |what: &str, new: &str, old: &str, want: Option<String>, have: Option<String>| match (
                 want, have,
             ) {
-                (Some(w), Some(h)) if !given(new) && !removed(new) && given(old) && w == h => Some(format!(
+                (Some(w), Some(h)) if !given(new) && given(old) && w == h => Some(format!(
                     "patch {}: {what} is given there as {old} only, which OpenFOAM-12 reads after {new}, so the mesh's {new}, where it has one, is kept, which can't be confirmed (the description makes it {w})",
                     e.patch
                 )),
@@ -458,12 +454,15 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
                 pairs.push(("the patch it maps to", "neighbourPatch", "samplePatch"));
             }
             for (what, new, old) in pairs {
+                // A samePatch OpenFOAM-12 refuses (said above): the patch isn't compared.
+                if odd_same && new == "neighbourPatch" {
+                    continue;
+                }
                 let said = if same && new == "neighbourPatch" {
                     // With a patch named too it is refused (said above), not compared. Alone,
                     // the mesh's patch keeps a neighbourPatch it has (OpenFOAM-12 writes one on
-                    // every mapped patch), beside which OpenFOAM-12 refuses samePatch, unless
-                    // `~neighbourPatch` takes it out.
-                    if given(new) || given(old) || removed(new) {
+                    // every mapped patch), beside which OpenFOAM-12 refuses samePatch.
+                    if given(new) || given(old) {
                         continue;
                     }
                     (want(new).as_deref() == Some(e.patch.as_str())).then(|| {
@@ -535,8 +534,11 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
         }
         let k = entry.key();
         if let Some(p) = k.strip_prefix('~') {
-            // changeDictionary takes the patch out of the mesh's boundary file, its faces not.
-            out.push(format!("patch {p} is taken out there (~{p}), which leaves its faces without a patch"));
+            // changeDictionary can't take a patch out: it looks each of the mesh's patches up
+            // again after merging, and stops on one taken out (a pattern or group does nothing).
+            out.push(format!(
+                "~{p} is in boundary there: changeDictionary stops where the mesh has patch {p} (it can't take a patch out)"
+            ));
         } else if entry.dict().is_none() {
             // changeDictionary adds what matches no patch to polyMesh/boundary, where a value
             // breaks the mesh.

@@ -173,15 +173,14 @@ patches by their roles and points them at their partners, as the
   the mesh has, so a key the block leaves out keeps the mesh's value, which isn't known before
   the mesh is made: only the keys given are compared, and a region or patch the version reads
   that is left out is said to be unconfirmed (the mesh's is kept), in OpenFOAM-8 unless
-  OpenFOAM-12's key stands in its place (said to be unread). A `~key` takes the key out of the
-  mesh's patch: where the version would read it, OpenFOAM's default is read, said to be
-  unconfirmed. A `~patch` in `boundary` takes the patch out of the mesh's boundary file,
-  leaving its faces without one, said so.
+  OpenFOAM-12's key stands in its place (said to be unread). A patch's block with a `~key`,
+  which takes the key out of the mesh's patch, isn't compared (said so), as what OpenFOAM reads
+  then isn't known.
   - a patch's type, or the region and patch it maps to: OpenFOAM-8 only `sampleRegion` and
     `samplePatch` (`neighbourRegion` or `neighbourPatch` in their place is said to be unread),
     OpenFOAM-12 `neighbourRegion` and `neighbourPatch` where given, else the older two (it
     reads the newer first, and the mesh's patch keeps a newer one it has, so an older one
-    alone, the description's, is said to be unconfirmed, unless `~` takes the newer out).
+    alone, the description's, is said to be unconfirmed).
     OpenFOAM-12's `mappedInternal` reads no patch. OpenFOAM-8 stops on a patch (other than
     `none`) in a mode that samples none (`nearestCell`, `nearestOnlyCell`, `nearestFace`),
     with a `coupleGroup` too; without a mode given, the patch isn't compared. With a
@@ -193,18 +192,18 @@ patches by their roles and points them at their partners, as the
     number other than 0) names the patch of the same name: refused with a patch named too (the
     patch not compared then). Alone it is compared, and where it is the description's, said to
     be unconfirmed: OpenFOAM-12 refuses it beside a `neighbourPatch`, which it writes on a
-    mapped patch and the mesh's patch keeps, unless `~neighbourPatch` takes it out. A name
-    that isn't a word (empty, `""`, or a dictionary) is said to be refused, for the keys the
-    version reads, a group's too, and so are a type that is a dictionary and a `samePatch`
-    that isn't a switch;
+    mapped patch and the mesh's patch keeps. A name that isn't a word (empty, `""`, or a
+    dictionary) is said to be refused, for the keys the version reads, a group's too, and so
+    are a type that is a dictionary and a `samePatch` that isn't a switch (quoted, too; the
+    patch not compared then);
   - a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
     one (or the other way round); an OpenFOAM-12 `method` (or `sampleMode`, its older name)
     OpenFOAM-12 hasn't. Another method or mode, the offsets and a value given by a macro or
     directive (`$solid`, `#calc`) aren't compared, nor, with an OpenFOAM-8 `sampleMode` from
     one, the `samplePatch`;
   - a patch it changes that the description doesn't map, and a value in `boundary`, which
-    `changeDictionary` adds to the mesh's `boundary` file, and a `~patch` there, which takes
-    the patch out of it.
+    `changeDictionary` adds to the mesh's `boundary` file, and a `~patch` there, on which
+    `changeDictionary` stops where the mesh has the patch (it can't take one out).
 
   The case's own that maps them as the description does is fine, its other settings its own.
   It isn't checked while the description doesn't read whole. A patch mapped only through a

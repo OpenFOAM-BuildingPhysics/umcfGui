@@ -287,33 +287,28 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         differences(&root(t), &air12, OfVersion::V12),
         ["patch street: neighbourRegion is a dictionary there, which OpenFOAM refuses (not a word)"]
     );
-    // `~key` takes a key out of the mesh's patch: OpenFOAM-12 then reads the older one given,
-    // samePatch alone is no longer refused beside the mesh's neighbourPatch, and with both keys
-    // out OpenFOAM's default is read, not confirmed.
-    let out_newer =
-        "boundary { street { type mappedWall; ~neighbourRegion; sampleRegion street; neighbourPatch street; } }";
-    assert_eq!(differences(&root(out_newer), &air12, OfVersion::V12), Vec::<String>::new());
-    let out_same = "boundary { street { type mappedWall; ~neighbourPatch; samePatch true; neighbourRegion street; } }";
-    assert_eq!(differences(&root(out_same), &air12, OfVersion::V12), Vec::<String>::new());
-    let out_both = "boundary { street { type mappedWall; ~neighbourRegion; ~sampleRegion; neighbourPatch street; } }";
+    // `~key` takes a key out of the mesh's patch: what OpenFOAM reads then isn't told, so the
+    // patch isn't compared, said once.
+    let taken = "boundary { street { type mappedPatch; ~neighbourRegion; ~sampleMode; neighbourRegion roof; } }";
     assert_eq!(
-        differences(&root(out_both), &air12, OfVersion::V12),
+        differences(&root(taken), &air12, OfVersion::V12),
         [
-            "patch street: the region it maps to is taken out there (~sampleRegion), so OpenFOAM's default is read, which can't be confirmed (the description makes it street)"
+            "patch street: it takes ~neighbourRegion, ~sampleMode out of the mesh's patch there, after which what OpenFOAM reads isn't told: not compared"
         ]
     );
-    let out_newer_only = "boundary { street { type mappedWall; ~neighbourRegion; neighbourPatch street; } }";
-    assert_eq!(
-        differences(&root(out_newer_only), &air12, OfVersion::V12),
-        [
-            "patch street: the region it maps to isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it street)"
-        ]
-    );
-    // A patch taken out of the boundary leaves its faces without one.
+    // changeDictionary stops on a patch taken out of boundary; said once for a mapped one.
     let out_patch = "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; } ~west; }";
     assert_eq!(
         differences(&root(out_patch), &air12, OfVersion::V12),
-        ["patch west is taken out there (~west), which leaves its faces without a patch"]
+        [
+            "~west is in boundary there: changeDictionary stops where the mesh has patch west (it can't take a patch out)"
+        ]
+    );
+    assert_eq!(
+        differences(&root("boundary { ~street; }"), &air12, OfVersion::V12),
+        [
+            "~street is in boundary there: changeDictionary stops where the mesh has patch street (it can't take a patch out)"
+        ]
     );
     // A samePatch that isn't a switch is refused; samePatch alone beside the older region key
     // says both.
@@ -321,6 +316,7 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         ("maybe", "samePatch is maybe there"),
         ("{ }", "samePatch is a dictionary there"),
         ("\"\"", "samePatch is \"\" there"),
+        ("\"true\"", "samePatch is \"true\" there"),
     ] {
         let t = format!(
             "boundary {{ street {{ type mappedWall; samePatch {v}; neighbourRegion street; neighbourPatch street; }} }}"
@@ -330,6 +326,11 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
             [format!("patch street: {said}, which OpenFOAM-12 refuses (not a switch)")]
         );
     }
+    let t = "boundary { street { type mappedWall; samePatch maybe; neighbourRegion street; } }";
+    assert_eq!(
+        differences(&root(t), &air12, OfVersion::V12),
+        ["patch street: samePatch is maybe there, which OpenFOAM-12 refuses (not a switch)"]
+    );
     let t = "boundary { street { type mappedWall; samePatch true; sampleRegion street; } }";
     let diff = differences(&root(t), &air12, OfVersion::V12);
     assert_eq!(diff.len(), 2, "{diff:?}");
