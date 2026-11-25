@@ -171,7 +171,9 @@ patches by their roles and points them at their partners, as the
   version, or an older umcfGui), or is the case's own and differs where the coupling needs it,
   by the keys the version reads. `changeDictionary` merges each patch's block into the patch
   the mesh has, so a key the block leaves out keeps the mesh's value, which isn't known before
-  the mesh is made: only the keys given are compared.
+  the mesh is made: only the keys given are compared, and a region or patch the version reads
+  that is left out is said to be unconfirmed (the mesh's is kept), in OpenFOAM-8 unless
+  OpenFOAM-12's key stands in its place (said to be unread).
   - a patch's type, or the region and patch it maps to: OpenFOAM-8 only `sampleRegion` and
     `samplePatch` (`neighbourRegion` or `neighbourPatch` in their place is said to be unread),
     OpenFOAM-12 `neighbourRegion` and `neighbourPatch` where given, else the older two.
@@ -185,7 +187,7 @@ patches by their roles and points them at their partners, as the
     compared. OpenFOAM-12's `samePatch` (`true`, `yes`, `on` or a number other than 0) names the
     patch of the same name, refused with a patch named too. A name that isn't a word (empty,
     `""`, or a dictionary) is said to be refused, for the keys the version reads, a group's
-    too;
+    too, and so is a type that is a dictionary;
   - a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
     one (or the other way round); an OpenFOAM-12 `method` (or `sampleMode`, its older name)
     OpenFOAM-12 hasn't. Another method or mode, the offsets and a value given by a macro or

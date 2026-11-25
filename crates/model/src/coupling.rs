@@ -218,8 +218,10 @@ const MODES_8: [&str; 6] =
 /// How a `changeDictionaryDict`'s `boundary` (`root`, the file's top level) differs from
 /// `entries` (made for `version`) in what matters to the coupling, by the keys the version
 /// reads and only those given: changeDictionary merges each block into the mesh's patch, so a
-/// key left out keeps the mesh's value, not told here. A name that isn't a word (empty, or a
-/// dictionary), which OpenFOAM refuses, is said so and not compared.
+/// key left out keeps the mesh's value, not told here (a region or patch the version reads,
+/// left out, is said to be unconfirmed; for OpenFOAM-8 not where OpenFOAM-12's key stands in
+/// its place, said to be unread). A name that isn't a word (empty, or a dictionary) and a type
+/// that is a dictionary, which OpenFOAM refuses, are said so and not compared.
 /// - each entry's patch there, and its type;
 /// - the region and patch it maps to: `sampleRegion`/`samplePatch` for OpenFOAM-8 (OpenFOAM-12's
 ///   keys in their place said to be unread); `neighbourRegion`/`neighbourPatch` where given,
@@ -279,11 +281,29 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
                 )
             })
         };
-        // A name that isn't a word (empty, or a dictionary) is said once, not compared.
-        let name_differ = |what: &str, want: Option<String>, have: Option<String>| {
-            if blank(&have) { None } else { differ(what, want, have) }
+        // The region or patch it maps to, from the key OpenFOAM reads (`key`): one left out is
+        // the mesh's, which can't be confirmed (said so); a name that isn't a word (empty, or a
+        // dictionary) is said once, not compared.
+        let name_differ = |what: &str, want: Option<String>, key: &str, have: Option<String>| {
+            if have.is_none() && there.get(key).is_none() {
+                want.map(|w| {
+                    format!(
+                        "patch {}: {what} isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it {w})",
+                        e.patch
+                    )
+                })
+            } else if blank(&have) || have.is_none() {
+                None
+            } else {
+                differ(what, want, have)
+            }
         };
         let want = |k: &str| e.get(k).map(str::to_string);
+        // A type that isn't a word (a dictionary): OpenFOAM stops on it. One left out is the
+        // mesh's: not compared.
+        if there.get("type").is_some() && value(there, "type").is_none() {
+            out.push(format!("patch {}: type is a dictionary there, which OpenFOAM refuses (not a word)", e.patch));
+        }
         out.extend(differ("type", want("type"), value(there, "type")));
         let internal = !v8 && e.get("type") == Some("mappedInternal");
         // OpenFOAM-8's mode there; these sample no patch: the cells (the canopy's) or the faces.
@@ -343,7 +363,12 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
                 if (key == "samplePatch" && (cells || moot)) || (grouped && !both) {
                     continue;
                 }
-                out.extend(name_differ(what, want(key), value(there, key)));
+                // OpenFOAM-12's key in its place is said above to be unread.
+                let newer = if key == "sampleRegion" { "neighbourRegion" } else { "neighbourPatch" };
+                if !given(key) && given(newer) {
+                    continue;
+                }
+                out.extend(name_differ(what, want(key), key, value(there, key)));
             }
         } else if grouped {
             let keys = ["neighbourRegion", "neighbourPatch", "sampleRegion", "samplePatch"];
@@ -372,12 +397,14 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
             out.extend(name_differ(
                 "the region it maps to",
                 want("neighbourRegion"),
+                read("neighbourRegion", "sampleRegion"),
                 have("neighbourRegion", "sampleRegion"),
             ));
             if !internal {
                 out.extend(name_differ(
                     "the patch it maps to",
                     want("neighbourPatch"),
+                    read("neighbourPatch", "samplePatch"),
                     have("neighbourPatch", "samplePatch"),
                 ));
             }

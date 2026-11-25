@@ -224,14 +224,20 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     let mac = none.replace("sampleMode      nearestCell;", "sampleMode      $mode;");
     assert!(mac.contains("$mode"));
     assert_eq!(differences(&root(&mac), &veg8, OfVersion::V8), Vec::<String>::new());
-    // A key left out keeps the mesh's value (changeDictionary merges): not told, not compared,
-    // whether the description's partner is in the same region or another.
+    // A region or patch left out keeps the mesh's value (changeDictionary merges): not told,
+    // so said to be unconfirmed, whether the description's partner is in the same region or
+    // another. A type left out isn't compared.
     let inner = |keys: &[(&'static str, &str)]| {
         vec![Entry { patch: "inlet".into(), keys: keys.iter().map(|(k, v)| (*k, v.to_string())).collect() }]
     };
     let in12 = inner(&[("type", "mapped"), ("neighbourRegion", "air"), ("neighbourPatch", "outlet")]);
     let omitted12 = "boundary { inlet { type mapped; neighbourPatch outlet; } }";
-    assert_eq!(differences(&root(omitted12), &in12, OfVersion::V12), Vec::<String>::new());
+    let unconfirmed = |p: &str, w: &str| {
+        format!(
+            "patch {p}: the region it maps to isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it {w})"
+        )
+    };
+    assert_eq!(differences(&root(omitted12), &in12, OfVersion::V12), [unconfirmed("inlet", "air")]);
     let in8 = inner(&[
         ("type", "mapped"),
         ("sampleMode", "nearestPatchFace"),
@@ -239,9 +245,25 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
         ("samplePatch", "outlet"),
     ]);
     let omitted8 = "boundary { inlet { type mapped; sampleMode nearestPatchFace; samplePatch outlet; } }";
-    assert_eq!(differences(&root(omitted8), &in8, OfVersion::V8), Vec::<String>::new());
+    assert_eq!(differences(&root(omitted8), &in8, OfVersion::V8), [unconfirmed("inlet", "air")]);
     let omitted = "boundary { street { type mappedWall; neighbourPatch street; } }";
-    assert_eq!(differences(&root(omitted), &air12, OfVersion::V12), Vec::<String>::new());
+    assert_eq!(differences(&root(omitted), &air12, OfVersion::V12), [unconfirmed("street", "street")]);
+    // OpenFOAM-12's mappedInternal reads a region only; OpenFOAM-8's cells' modes no patch: the
+    // region alone is unconfirmed then.
+    let veg12 = entries(&d, "vegetation", OfVersion::V12).unwrap();
+    let t = "boundary { west { type mapped; neighbourRegion air; neighbourPatch west; } street { type mappedWall; neighbourRegion air; neighbourPatch street; } air_to_vegetation { type mappedInternal; } }";
+    assert_eq!(differences(&root(t), &veg12, OfVersion::V12), [unconfirmed("air_to_vegetation", "air")]);
+    let veg8 = entries(&d, "vegetation", OfVersion::V8).unwrap();
+    let t = "boundary { west { type mappedPatch; sampleMode nearestPatchFace; sampleRegion air; samplePatch west; } street { type mappedWall; sampleMode nearestPatchFace; sampleRegion air; samplePatch street; } air_to_vegetation { type mappedWall; sampleMode nearestCell; } }";
+    assert_eq!(differences(&root(t), &veg8, OfVersion::V8), [unconfirmed("air_to_vegetation", "air")]);
+    let typeless = "boundary { street { neighbourRegion street; neighbourPatch street; } }";
+    assert_eq!(differences(&root(typeless), &air12, OfVersion::V12), Vec::<String>::new());
+    // A type that is a dictionary isn't a word: refused.
+    let t = "boundary { street { type { }; neighbourRegion street; neighbourPatch street; } }";
+    assert_eq!(
+        differences(&root(t), &air12, OfVersion::V12),
+        ["patch street: type is a dictionary there, which OpenFOAM refuses (not a word)"]
+    );
     // Nor a mode left out (OpenFOAM-8): the samplePatch then isn't compared either.
     let modeless = "boundary { street { type mappedWall; sampleRegion street; samplePatch roof; } }";
     assert_eq!(differences(&root(modeless), &air8, OfVersion::V8), Vec::<String>::new());
