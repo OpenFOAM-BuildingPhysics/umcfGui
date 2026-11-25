@@ -5008,10 +5008,30 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
         let hand_said = said(&mut s);
         assert!(
             hand_said.iter().any(|m| m.contains(
-                "system/air/changeDictionaryDict: the case's own maps the patches otherwise than the description of region air (patch air_to_street isn't there)"
+                "system/air/changeDictionaryDict: the case's own isn't known to map the patches as the description of region air does (patch air_to_street isn't there)"
             )),
             "{hand_said:?}"
         );
+        // One that leaves out the region air_to_street maps to: the mesh's is kept, unconfirmed.
+        let key = if version == 8 { "sampleRegion" } else { "neighbourRegion" };
+        let unsaid: String =
+            air.lines().filter(|l| !l.trim_start().starts_with(key)).map(|l| format!("{l}\n")).collect();
+        assert_ne!(unsaid, format!("{air}\n"), "{air}");
+        std::fs::write(&hand, &unsaid).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+            .unwrap();
+        let unsaid_said = said(&mut s);
+        assert!(
+            unsaid_said.iter().any(|m| m.starts_with(
+                "system/air/changeDictionaryDict: the case's own isn't known to map the patches as the description of region air does (patch air_to_street: the region it maps to isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it street))"
+            )),
+            "{unsaid_said:?}"
+        );
+        std::fs::write(&hand, "FoamFile { class dictionary; object changeDictionaryDict; }\nboundary { }\n").unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+            .unwrap();
         let e = s.execute("workflow.dictionaries", &json!({})).unwrap_err().to_string();
         assert!(e.contains("system/air/changeDictionaryDict was edited by hand or not written by umcfGui"), "{e}");
         assert!(text(&s, "street").contains("ground"), "nothing written");

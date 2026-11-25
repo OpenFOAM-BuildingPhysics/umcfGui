@@ -642,10 +642,10 @@ fn background(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagno
 /// name that isn't a plain word or a region's that can't be a directory, ...), one missing or
 /// that doesn't load, one umcfGui wrote that isn't what it writes now (other roles or
 /// partners, another OpenFOAM version, or an older umcfGui), and the case's own where
-/// it differs as [`umcf_model::coupling::differences`] says for the case's version (a type, the
-/// region or patch mapped to, a sample mode or method the version hasn't, a patch the
-/// description doesn't map). The case's own that maps them as the description does, its other
-/// settings its own, is fine.
+/// it differs, or leaves out what would confirm it, as [`umcf_model::coupling::differences`]
+/// says for the case's version (a type, the region or patch mapped to or one left out, a
+/// sample mode or method the version hasn't, a patch the description doesn't map). The case's
+/// own that maps them as the description does, its other settings its own, is fine.
 fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec<Diagnostic>) {
     use umcf_model::coupling;
     if !coupling::runs(r) {
@@ -683,7 +683,7 @@ fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec
                 let diff = coupling::differences(&doc.root, &entries, version);
                 let Some(first) = diff.first() else { return };
                 format!(
-                    "the case's own maps the patches otherwise than the description of region {name} ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",
+                    "the case's own isn't known to map the patches as the description of region {name} does ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",
                     match diff.len() {
                         1 => String::new(),
                         n => format!(", and {} more", n - 1),
