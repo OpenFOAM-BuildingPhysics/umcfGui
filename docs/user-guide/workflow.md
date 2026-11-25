@@ -180,7 +180,7 @@ patches by their roles and points them at their partners, as the
     `samplePatch` (`neighbourRegion` or `neighbourPatch` in their place is said to be unread),
     OpenFOAM-12 `neighbourRegion` and `neighbourPatch` where given, else the older two (it
     reads the newer first, and the mesh's patch keeps a newer one it has, so an older one
-    alone, the description's, is said to be unconfirmed).
+    alone, the description's or not, is said to be unconfirmed).
     OpenFOAM-12's `mappedInternal` reads no patch. OpenFOAM-8 stops on a patch (other than
     `none`) in a mode that samples none (`nearestCell`, `nearestOnlyCell`, `nearestFace`),
     with a `coupleGroup` too; without a mode given, the patch isn't compared. With a

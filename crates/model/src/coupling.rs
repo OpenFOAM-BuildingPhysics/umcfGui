@@ -228,8 +228,8 @@ const MODES_8: [&str; 6] =
 /// - the region and patch it maps to: `sampleRegion`/`samplePatch` for OpenFOAM-8 (OpenFOAM-12's
 ///   keys in their place said to be unread); `neighbourRegion`/`neighbourPatch` where given,
 ///   else the older `sampleRegion`/`samplePatch`, for -12 (which reads the newer first, so an
-///   older one alone, the description's, can't be confirmed: the mesh's patch keeps a newer
-///   one it has). OpenFOAM-12's `mappedInternal`
+///   older one alone, the description's or not, can't be confirmed: the mesh's patch keeps a
+///   newer one it has). OpenFOAM-12's `mappedInternal`
 ///   reads no patch (its tutorials name one all the same); OpenFOAM-8 stops on one (other than
 ///   `none`) in the modes that sample no patch (`nearestCell`, the canopy's, `nearestOnlyCell`,
 ///   `nearestFace`), with a group too, and without a mode given the patch isn't compared. With
@@ -443,14 +443,20 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
             };
             // Only the older key given: OpenFOAM-12 reads the newer one first, and the mesh's
             // patch (`splitMeshRegions` writes the newer keys) keeps its own where it has one,
-            // so the older one's value, the description's, can't be confirmed to be read.
+            // so what is read can't be confirmed, whether the older one's value is the
+            // description's or not. An empty one (refused, said above) or one given by a macro or
+            // directive isn't compared.
             let shadowed = |what: &str, new: &str, old: &str, want: Option<String>, have: Option<String>| match (
                 want, have,
             ) {
-                (Some(w), Some(h)) if !given(new) && given(old) && w == h => Some(format!(
-                    "patch {}: {what} is given there as {old} only, which OpenFOAM-12 reads after {new}, so the mesh's {new}, where it has one, is kept, which can't be confirmed (the description makes it {w})",
-                    e.patch
-                )),
+                (Some(w), Some(h))
+                    if !given(new) && given(old) && !blank(&Some(h.clone())) && !untold(&Some(h.clone())) =>
+                {
+                    Some(format!(
+                        "patch {}: {what} is given there as {old} {h} only, which OpenFOAM-12 reads after {new}, so the mesh's {new}, where it has one, is kept, which can't be confirmed (the description makes it {w})",
+                        e.patch
+                    ))
+                }
                 _ => None,
             };
             let mut pairs = vec![("the region it maps to", "neighbourRegion", "sampleRegion")];

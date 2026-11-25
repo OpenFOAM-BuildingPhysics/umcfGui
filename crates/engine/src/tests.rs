@@ -5038,7 +5038,7 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
             let older = said(&mut s);
             assert!(
                 older.iter().any(|m| m.contains(
-                    "(patch air_to_street: the region it maps to is given there as sampleRegion only, which OpenFOAM-12 reads after neighbourRegion"
+                    "(patch air_to_street: the region it maps to is given there as sampleRegion street only, which OpenFOAM-12 reads after neighbourRegion"
                 )),
                 "{older:?}"
             );

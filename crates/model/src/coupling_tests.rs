@@ -155,20 +155,22 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     let d = canyon();
     let air12 = entries(&d, "air", OfVersion::V12).unwrap();
     // OpenFOAM-12 reads the older keys too, after the newer ones: the mesh's patch keeps the
-    // newer where it has them, so the older ones' can't be confirmed; one that differs is said
-    // to. Method and offsets aren't compared.
+    // newer where it has them, so the older ones' can't be confirmed, the description's or not.
+    // Method and offsets aren't compared.
     let old_keys = "boundary { street { type mappedWall; sampleRegion street; samplePatch street; offsetMode uniform; offset (1 0 0); } }";
     assert_eq!(
         differences(&root(old_keys), &air12, OfVersion::V12),
         [
-            "patch street: the region it maps to is given there as sampleRegion only, which OpenFOAM-12 reads after neighbourRegion, so the mesh's neighbourRegion, where it has one, is kept, which can't be confirmed (the description makes it street)",
-            "patch street: the patch it maps to is given there as samplePatch only, which OpenFOAM-12 reads after neighbourPatch, so the mesh's neighbourPatch, where it has one, is kept, which can't be confirmed (the description makes it street)",
+            "patch street: the region it maps to is given there as sampleRegion street only, which OpenFOAM-12 reads after neighbourRegion, so the mesh's neighbourRegion, where it has one, is kept, which can't be confirmed (the description makes it street)",
+            "patch street: the patch it maps to is given there as samplePatch street only, which OpenFOAM-12 reads after neighbourPatch, so the mesh's neighbourPatch, where it has one, is kept, which can't be confirmed (the description makes it street)",
         ]
     );
     let old_other = "boundary { street { type mappedWall; sampleRegion roof; neighbourPatch street; } }";
     assert_eq!(
         differences(&root(old_other), &air12, OfVersion::V12),
-        ["patch street: the region it maps to is roof there, the description makes it street"]
+        [
+            "patch street: the region it maps to is given there as sampleRegion roof only, which OpenFOAM-12 reads after neighbourRegion, so the mesh's neighbourRegion, where it has one, is kept, which can't be confirmed (the description makes it street)"
+        ]
     );
     // Another type or partner, a patch missing, one the description doesn't map; a pattern is
     // left alone.
@@ -184,6 +186,19 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     // OpenFOAM-12 reads the newer keys first: an older one beside them doesn't count.
     let both = "boundary { street { type mappedWall; neighbourRegion street; neighbourPatch street; sampleRegion roof; samplePatch roof; } }";
     assert_eq!(differences(&root(both), &air12, OfVersion::V12), Vec::<String>::new());
+    // An older key alone that is empty or a dictionary is refused, said once; one given by a
+    // macro isn't compared.
+    let empty = "boundary { street { type mappedWall; sampleRegion \"\"; neighbourPatch street; } }";
+    assert_eq!(
+        differences(&root(empty), &air12, OfVersion::V12),
+        ["patch street: sampleRegion is an empty name there, which OpenFOAM refuses (not a word)"]
+    );
+    let macro_old = "boundary { street { type mappedWall; sampleRegion $r; neighbourPatch street; } }";
+    assert_eq!(differences(&root(macro_old), &air12, OfVersion::V12), Vec::<String>::new());
+    let dict_old = "boundary { street { type mappedWall; sampleRegion { }; neighbourPatch street; } }";
+    let diff = differences(&root(dict_old), &air12, OfVersion::V12);
+    assert_eq!(diff.len(), 1, "{diff:?}");
+    assert!(diff[0].contains("sampleRegion") && diff[0].contains("refuses"), "{diff:?}");
     // OpenFOAM-8 reads only the older keys: newer ones beside them don't hide another mapping.
     let air8 = entries(&d, "air", OfVersion::V8).unwrap();
     let both8 = "boundary { street { type mappedWall; sampleMode nearestPatchFace; neighbourRegion street; neighbourPatch street; sampleRegion roof; samplePatch roof; } }";
@@ -363,7 +378,7 @@ fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     let diff = differences(&root(t), &air12, OfVersion::V12);
     assert_eq!(diff.len(), 2, "{diff:?}");
     assert!(
-        diff[0].contains("given there as sampleRegion only") && diff[1].contains("it has samePatch there"),
+        diff[0].contains("given there as sampleRegion street only") && diff[1].contains("it has samePatch there"),
         "{diff:?}"
     );
     // samePatch alone where the description maps another patch: compared.
