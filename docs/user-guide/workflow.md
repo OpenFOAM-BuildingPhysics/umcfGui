@@ -176,7 +176,9 @@ patches by their roles and points them at their partners, as the
   OpenFOAM-12's key stands in its place (said to be unread).
   - a patch's type, or the region and patch it maps to: OpenFOAM-8 only `sampleRegion` and
     `samplePatch` (`neighbourRegion` or `neighbourPatch` in their place is said to be unread),
-    OpenFOAM-12 `neighbourRegion` and `neighbourPatch` where given, else the older two.
+    OpenFOAM-12 `neighbourRegion` and `neighbourPatch` where given, else the older two (it
+    reads the newer first, and the mesh's patch keeps a newer one it has, so an older one
+    alone, the description's, is said to be unconfirmed).
     OpenFOAM-12's `mappedInternal` reads no patch. OpenFOAM-8 stops on a patch (other than
     `none`) in a mode that samples none (`nearestCell`, `nearestOnlyCell`, `nearestFace`),
     with a `coupleGroup` too; without a mode given, the patch isn't compared. With a
@@ -184,7 +186,7 @@ patches by their roles and points them at their partners, as the
     are (in `nearestCell` and `nearestOnlyCell` the region alone; `nearestFace` asks the group
     for a patch not given, refused), compared then, and
     OpenFOAM-12 stops on a group given with either; a partner named by the group alone isn't
-    compared. OpenFOAM-12's `samePatch` (`true`, `yes`, `on` or a number other than 0) names the
+    compared. OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a number other than 0) names the
     patch of the same name, refused with a patch named too. A name that isn't a word (empty,
     `""`, or a dictionary) is said to be refused, for the keys the version reads, a group's
     too, and so is a type that is a dictionary;

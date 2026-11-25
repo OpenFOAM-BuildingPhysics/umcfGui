@@ -683,7 +683,7 @@ fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec
                 let diff = coupling::differences(&doc.root, &entries, version);
                 let Some(first) = diff.first() else { return };
                 format!(
-                    "the case's own isn't known to map the patches as the description of region {name} does ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",
+                    "the case's own doesn't map, or isn't known to map, the patches as the description of region {name} does ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",
                     match diff.len() {
                         1 => String::new(),
                         n => format!(", and {} more", n - 1),

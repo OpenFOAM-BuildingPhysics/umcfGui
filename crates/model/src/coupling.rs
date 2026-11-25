@@ -225,7 +225,9 @@ const MODES_8: [&str; 6] =
 /// - each entry's patch there, and its type;
 /// - the region and patch it maps to: `sampleRegion`/`samplePatch` for OpenFOAM-8 (OpenFOAM-12's
 ///   keys in their place said to be unread); `neighbourRegion`/`neighbourPatch` where given,
-///   else the older `sampleRegion`/`samplePatch`, for -12. OpenFOAM-12's `mappedInternal`
+///   else the older `sampleRegion`/`samplePatch`, for -12 (which reads the newer first, so an
+///   older one alone, the description's, can't be confirmed: the mesh's patch keeps a newer
+///   one it has). OpenFOAM-12's `mappedInternal`
 ///   reads no patch (its tutorials name one all the same); OpenFOAM-8 stops on one (other than
 ///   `none`) in the modes that sample no patch (`nearestCell`, the canopy's, `nearestOnlyCell`,
 ///   `nearestFace`), with a group too, and without a mode given the patch isn't compared. With
@@ -233,7 +235,8 @@ const MODES_8: [&str; 6] =
 ///   cells' modes the region alone, `nearestFace` asking the group for a patch not given,
 ///   refused; compared then; else the group's, not compared); OpenFOAM-12
 ///   stops on a group given with either. A partner named by the group alone isn't compared.
-///   OpenFOAM-12's `samePatch` (a switch: `true`, or a number other than 0) names the patch of
+///   OpenFOAM-12's `samePatch` (a switch: `true`, `yes`, `on` and the like, or a number other
+///   than 0) names the patch of
 ///   the same name (refused with a patch named too);
 /// - OpenFOAM-8's `sampleMode` it hasn't, or one sampling no patch where the entry's samples
 ///   one, or the other way round; OpenFOAM-12's `method` (or `sampleMode`, its older name) that
@@ -394,19 +397,29 @@ pub fn differences(root: &umcf_foam_dict::Dict, entries: &[Entry], version: OfVe
             let have = |new: &'static str, old: &'static str| {
                 value(there, read(new, old)).or_else(|| (same && new == "neighbourPatch").then(|| e.patch.clone()))
             };
-            out.extend(name_differ(
-                "the region it maps to",
-                want("neighbourRegion"),
-                read("neighbourRegion", "sampleRegion"),
-                have("neighbourRegion", "sampleRegion"),
-            ));
+            // Only the older key given: OpenFOAM-12 reads the newer one first, and the mesh's
+            // patch (`splitMeshRegions` writes the newer keys) keeps its own where it has one,
+            // so the older one's value, the description's, can't be confirmed to be read.
+            let shadowed = |what: &str, new: &str, old: &str, want: Option<String>, have: Option<String>| match (
+                want, have,
+            ) {
+                (Some(w), Some(h)) if !given(new) && given(old) && w == h => Some(format!(
+                    "patch {}: {what} is given there as {old} only, which OpenFOAM-12 reads after {new}, so the mesh's {new}, where it has one, is kept, which can't be confirmed (the description makes it {w})",
+                    e.patch
+                )),
+                _ => None,
+            };
+            let mut pairs = vec![("the region it maps to", "neighbourRegion", "sampleRegion")];
             if !internal {
-                out.extend(name_differ(
-                    "the patch it maps to",
-                    want("neighbourPatch"),
-                    read("neighbourPatch", "samplePatch"),
-                    have("neighbourPatch", "samplePatch"),
-                ));
+                pairs.push(("the patch it maps to", "neighbourPatch", "samplePatch"));
+            }
+            for (what, new, old) in pairs {
+                let said = if same && new == "neighbourPatch" {
+                    None
+                } else {
+                    shadowed(what, new, old, want(new), have(new, old))
+                };
+                out.extend(said.or_else(|| name_differ(what, want(new), read(new, old), have(new, old))));
             }
         }
         if v8 {

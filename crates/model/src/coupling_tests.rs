@@ -154,9 +154,22 @@ fn what_cant_be_mapped_is_refused() {
 fn a_cases_own_dictionary_is_compared_by_what_the_coupling_needs() {
     let d = canyon();
     let air12 = entries(&d, "air", OfVersion::V12).unwrap();
-    // OpenFOAM-12 reads the older keys too; method and offsets aren't compared.
+    // OpenFOAM-12 reads the older keys too, after the newer ones: the mesh's patch keeps the
+    // newer where it has them, so the older ones' can't be confirmed; one that differs is said
+    // to. Method and offsets aren't compared.
     let old_keys = "boundary { street { type mappedWall; sampleRegion street; samplePatch street; offsetMode uniform; offset (1 0 0); } }";
-    assert_eq!(differences(&root(old_keys), &air12, OfVersion::V12), Vec::<String>::new());
+    assert_eq!(
+        differences(&root(old_keys), &air12, OfVersion::V12),
+        [
+            "patch street: the region it maps to is given there as sampleRegion only, which OpenFOAM-12 reads after neighbourRegion, so the mesh's neighbourRegion, where it has one, is kept, which can't be confirmed (the description makes it street)",
+            "patch street: the patch it maps to is given there as samplePatch only, which OpenFOAM-12 reads after neighbourPatch, so the mesh's neighbourPatch, where it has one, is kept, which can't be confirmed (the description makes it street)",
+        ]
+    );
+    let old_other = "boundary { street { type mappedWall; sampleRegion roof; neighbourPatch street; } }";
+    assert_eq!(
+        differences(&root(old_other), &air12, OfVersion::V12),
+        ["patch street: the region it maps to is roof there, the description makes it street"]
+    );
     // Another type or partner, a patch missing, one the description doesn't map; a pattern is
     // left alone.
     let other = "boundary { street { type mappedPatch; neighbourRegion air; neighbourPatch street; } west { type patch; } \"air_.*\" { type wall; } }";
