@@ -176,11 +176,17 @@ patches by their roles and points them at their partners, as the
     there (one without a mode is said to lack it). With a `coupleGroup`, OpenFOAM-8 takes the region and
     patch given over the group's only when both are (compared then), and OpenFOAM-12 stops on a
     group given with either; a partner named by the group alone isn't compared. OpenFOAM-12's
-    `samePatch true` names the patch of the same name (refused with a patch named too);
-  - an OpenFOAM-8 mapped patch without a sample mode, a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
+    `samePatch true` names the patch of the same name (refused with a patch named too). Without
+    a group, a region not given is the patch's own, and OpenFOAM-8 asks for a patch (`none` will
+    do) in `nearestFace`. An empty name (`""`, a group's too) the version reads is said to be refused, not being
+    a word (in OpenFOAM-8 with a group or without);
+  - an OpenFOAM-8 mapped patch without a sample mode, a mode sampling no patch with a
+    `coupleGroup` that names the patch to OpenFOAM-8 (with no region given, or in `nearestFace`
+    no patch; it stops on one), a sample mode OpenFOAM-8 hasn't, or one sampling no patch where the description's samples
     one (or the other way round); an OpenFOAM-12 `method` (or `sampleMode`, its older name) OpenFOAM-12
     hasn't. Another method or mode, the offsets and a value given by a macro or directive
-    (`$solid`, `#calc`) aren't compared;
+    (`$solid`, `#calc`) aren't compared, nor, with an OpenFOAM-8 `sampleMode` from one, the
+    `samplePatch`;
   - a patch it changes that the description doesn't map, and a value in `boundary`, which
     `changeDictionary` adds to the mesh's `boundary` file.
 

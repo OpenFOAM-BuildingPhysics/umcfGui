@@ -679,7 +679,7 @@ fn change_dictionary(case: &Case, d: &Description, r: &RegionDesc, out: &mut Vec
                     "written by umcfGui from other patch roles or partners than region {name}'s now: workflow.dictionaries writes it again"
                 )
             } else {
-                let diff = coupling::differences(&doc.root, &entries, version);
+                let diff = coupling::differences(&doc.root, name, &entries, version);
                 let Some(first) = diff.first() else { return };
                 format!(
                     "the case's own maps the patches otherwise than the description of region {name} ({first}{}): workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)",
