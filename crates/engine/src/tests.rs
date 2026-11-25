@@ -4991,7 +4991,7 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
         assert!(
             stale.len() == 1
                 && stale[0].contains(
-                    "system/street/changeDictionaryDict: written by umcfGui from other patch roles or partners"
+                    "system/street/changeDictionaryDict: written by umcfGui otherwise than it writes region street's now"
                 ),
             "{stale:?}"
         );

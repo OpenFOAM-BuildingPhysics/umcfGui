@@ -15,7 +15,9 @@ use umcf_model::description::Description;
 #[test]
 fn the_cases_change_dictionaries_are_generated_from_their_descriptions() {
     let Ok(cases) = std::env::var("UMCF_CASES") else {
-        eprintln!("skip: UMCF_CASES not set");
+        eprintln!(
+            "SKIP the_cases_change_dictionaries_are_generated_from_their_descriptions: set UMCF_CASES=<case>:<case>… to run it"
+        );
         return;
     };
     let mut compared = 0;
@@ -35,7 +37,7 @@ fn the_cases_change_dictionaries_are_generated_from_their_descriptions() {
             let path = coupling::dict_path(&r.name);
             let Some(own) = case.dict(&path) else { continue };
             let entries = coupling::entries(&desc, &r.name, version).unwrap_or_else(|e| panic!("{dir}: {path}: {e}"));
-            let diff = coupling::differences(&own.root, &r.name, &entries, version);
+            let diff = coupling::differences(&own.root, &entries, version);
             assert_eq!(diff, Vec::<String>::new(), "{dir}: {path}");
             // And no patch the case's dictionary changes is left out.
             let theirs: Vec<&str> = own
@@ -56,11 +58,7 @@ fn the_cases_change_dictionaries_are_generated_from_their_descriptions() {
             let text = coupling::dict(&desc, &r.name, version).unwrap();
             let doc = umcf_foam_dict::Document::parse(&text).unwrap();
             assert!(umcf_model::blocks::untouched(&text), "{dir}: {path}");
-            assert_eq!(
-                coupling::differences(&doc.root, &r.name, &entries, version),
-                Vec::<String>::new(),
-                "{dir}: {path}"
-            );
+            assert_eq!(coupling::differences(&doc.root, &entries, version), Vec::<String>::new(), "{dir}: {path}");
             eprintln!("{dir}: {path}: {} patches as the case's", entries.len());
             compared += 1;
         }
