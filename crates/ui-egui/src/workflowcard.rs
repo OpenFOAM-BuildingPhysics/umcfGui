@@ -1,9 +1,9 @@
 //! The workflow description's cards (`workflow.region`, `workflow.patch`, `workflow.material`,
 //! `workflow.component`, `mesh.split`, `mesh.snappy`): each frame, the names their fields offer
 //! (the description's regions, a region's patches and materials, the material models of the
-//! solver, the air's patches), and
-//! what they describe filled in when it is chosen (a region's kind, a patch's role and partner,
-//! a material's model, a region's snappy entry).
+//! solver, the air's patches), and what they describe filled in when it is chosen (a region's
+//! kind, a patch's role, partner and the patches it is made of, a material's model, a region's
+//! snappy entry).
 
 use umcf_model::RegionKind;
 use umcf_model::description::Description;
@@ -89,7 +89,15 @@ fn described(
                 .filter(|(a, b)| !a.contains('|') && !b.contains('|'))
                 .map(|(a, b)| format!("{a}|{b}"))
                 .unwrap_or_default();
-            Some(vec![("role", role), ("partner", partner)])
+            // Sources with a space can't be shown apart by spaces: none shown.
+            let from =
+                if p.from.iter().any(|x| x.contains(char::is_whitespace)) { String::new() } else { p.from.join(" ") };
+            Some(vec![
+                ("role", role),
+                ("partner", partner),
+                ("from", from),
+                ("type", p.kind.clone().unwrap_or_default()),
+            ])
         }
         "workflow.material" => {
             let m = r.materials.iter().find(|m| m.name == value("material"))?;
@@ -178,7 +186,7 @@ fn merge_table(k: &str, value: &str, was: &str, now: &str) -> Option<String> {
 fn card_fields(id: &str) -> &'static [&'static str] {
     match id {
         "workflow.region" => &["kind"],
-        "workflow.patch" => &["role", "partner"],
+        "workflow.patch" => &["role", "partner", "from", "type"],
         "workflow.material" => &["model"],
         "material.set" => &["coefficients"],
         "mesh.split" => &["of", "zone", "dict"],
@@ -305,6 +313,7 @@ impl App {
                     options.insert("patch", patches_of(d, &region));
                     let partner = f.values.get("partner").and_then(|p| p.split('|').next()).unwrap_or("").trim();
                     options.insert(PARTNER_PATCHES, patches_of(d, partner));
+                    options.insert("type", vec!["wall".to_string(), "patch".to_string()]);
                     options.insert("partner", regions);
                 }
                 "mesh.split" => {

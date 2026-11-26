@@ -60,6 +60,8 @@ fn a_patch_is_added_and_partnered() {
         role: Some(Some(Role::Coupled)),
         partner: Some(Some(("street".into(), "roof".into()))),
         rename: None,
+        from: None,
+        kind: None,
     };
     assert!(c.describe_patch("air", "roof", &edit).unwrap().added);
     let p = read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "roof").cloned().unwrap();
@@ -211,8 +213,13 @@ fn a_patch_laid_out_by_hand_keeps_its_comments() {
     );
     assert!(text.contains("// the wind comes from here"));
     c.put_description(&fs, &text, false).unwrap();
-    let edit =
-        PatchEdit { role: Some(Some(Role::Side)), partner: Some(Some(("air".into(), "east".into()))), rename: None };
+    let edit = PatchEdit {
+        role: Some(Some(Role::Side)),
+        partner: Some(Some(("air".into(), "east".into()))),
+        rename: None,
+        from: None,
+        kind: None,
+    };
     c.describe_patch("air", "west", &edit).unwrap();
     let after = text_of(&c);
     assert!(after.contains("                // the wind comes from here\n                role side;\n                partner ( air east );\n"), "{after}");
@@ -356,8 +363,13 @@ fn a_self_coupled_patch_renamed_with_a_new_partner_keeps_it() {
     let (_, mut c) = described();
     let selfish = PatchEdit { partner: Some(Some(("air".into(), "odd".into()))), ..PatchEdit::default() };
     c.describe_patch("air", "odd", &selfish).unwrap();
-    let edit =
-        PatchEdit { rename: Some("even".into()), partner: Some(Some(("street".into(), "x".into()))), role: None };
+    let edit = PatchEdit {
+        rename: Some("even".into()),
+        partner: Some(Some(("street".into(), "x".into()))),
+        role: None,
+        from: None,
+        kind: None,
+    };
     let r = c.describe_patch("air", "odd", &edit).unwrap();
     assert!(!r.followed.contains(&"air/even".to_string()), "{r:?}");
     let p = read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "even").cloned().unwrap();
@@ -365,7 +377,7 @@ fn a_self_coupled_patch_renamed_with_a_new_partner_keeps_it() {
     // Coupled to itself again, then renamed with its partner taken away: none.
     let selfish = PatchEdit { partner: Some(Some(("air".into(), "even".into()))), ..PatchEdit::default() };
     c.describe_patch("air", "even", &selfish).unwrap();
-    let edit = PatchEdit { rename: Some("third".into()), partner: Some(None), role: None };
+    let edit = PatchEdit { rename: Some("third".into()), partner: Some(None), role: None, from: None, kind: None };
     c.describe_patch("air", "even", &edit).unwrap();
     let p = read(&c).region("air").unwrap().patches.iter().find(|p| p.name == "third").cloned().unwrap();
     assert_eq!(p.partner, None);
@@ -536,4 +548,24 @@ fn a_snappy_surface_changes_alone() {
     let after = text(&c);
     assert!(after.contains("/* to come */"), "{after}");
     assert_eq!(read(&c).region(&region).unwrap().snappy.as_ref(), Some(&sn));
+}
+
+#[test]
+fn a_patch_another_is_made_of_isnt_renamed() {
+    let (fs, mut c) = described();
+    let edit = |from: Option<Vec<String>>, rename: Option<&str>| PatchEdit {
+        role: None,
+        partner: None,
+        rename: rename.map(str::to_string),
+        from,
+        kind: None,
+    };
+    c.describe_patch("air", "buildings", &edit(Some(vec!["odd".into()]), None)).unwrap();
+    let e = c.describe_patch("air", "odd", &edit(None, Some("even"))).unwrap_err().to_string();
+    assert!(e.contains("patch buildings of region air is made of odd (from): renaming odd would leave it"), "{e}");
+    // Quoted without a pattern's characters, it names the patch too.
+    c.describe_patch("air", "buildings", &edit(Some(vec!["\"odd\"".into()]), None)).unwrap();
+    let e = c.describe_patch("air", "odd", &edit(None, Some("even"))).unwrap_err().to_string();
+    assert!(e.contains("is made of odd (from)"), "{e}");
+    let _ = fs;
 }

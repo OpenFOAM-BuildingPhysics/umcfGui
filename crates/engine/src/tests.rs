@@ -2143,11 +2143,14 @@ fn the_description_is_edited_entry_by_entry() {
     assert_eq!(out.message, "system/umcfWorkflow: patch top of region roofs is now outside");
     assert_eq!(
         region(&mut s, "roofs")["patches"],
-        json!([{ "name": "outside", "role": "coupled", "partner": { "region": "air", "patch": "roofs" } }])
+        json!([{ "name": "outside", "role": "coupled", "partner": { "region": "air", "patch": "roofs" }, "from": [], "type": null }])
     );
     s.execute("workflow.patch", &json!({ "region": "roofs", "patch": "outside", "role": null, "partner": null }))
         .unwrap();
-    assert_eq!(region(&mut s, "roofs")["patches"], json!([{ "name": "outside", "role": null, "partner": null }]));
+    assert_eq!(
+        region(&mut s, "roofs")["patches"],
+        json!([{ "name": "outside", "role": null, "partner": null, "from": [], "type": null }])
+    );
     s.execute("workflow.material", &json!({ "region": "roofs", "material": "tiles", "remove": true })).unwrap();
     assert_eq!(region(&mut s, "roofs")["materials"], json!([]));
     // Each is one edit in the history and the journal.
@@ -4911,13 +4914,15 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
         s.execute("case.new", &canyon_params(&dir, version)).unwrap();
         // Nothing to write while no region's steps run changeDictionary.
         let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
-        assert!(out.message.starts_with("no region's steps"), "{}", out.message);
+        assert!(out.message.starts_with("no region's mesh or steps"), "{}", out.message);
         // The canyon's coupling, as workflow.import reads it from a case.
         let (mut d, _) = s.case().unwrap().description().unwrap();
         let patch = |name: &str, role: Role, partner: Option<(&str, &str)>| PatchDesc {
             name: name.into(),
             role: Some(role),
             partner: partner.map(|(r, p)| (r.into(), p.into())),
+            from: Vec::new(),
+            kind: None,
         };
         for r in &mut d.regions {
             r.steps = vec![RegionStep::ChangeDictionary];
@@ -5125,7 +5130,7 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
         std::fs::write(dir.join("system/umcfWorkflow"), d.write()).unwrap();
         s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
         let e = s.execute("workflow.dictionaries", &json!({"region": "street"})).unwrap_err().to_string();
-        assert!(e.contains("the steps of region street in system/umcfWorkflow don't run changeDictionary"), "{e}");
+        assert!(e.contains("the mesh and steps of region street in system/umcfWorkflow run neither changeDictionary nor createPatch"), "{e}");
         let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
         assert!(
             out.data["notes"][0]
@@ -5135,6 +5140,200 @@ fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners
             "{}",
             out.data
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn each_create_patch_dict_is_written_from_the_patches_made_of_others() {
+    use umcf_model::workflow::RegionStep;
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-create-patch-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        // The air's buildings made of blockMesh's defaultFaces after its mesh, the street's sides
+        // too; the other regions run no createPatch.
+        let (mut d, _) = s.case().unwrap().description().unwrap();
+        for r in &mut d.regions {
+            r.steps = match r.name.as_str() {
+                "air" | "street" => vec![RegionStep::CreatePatch],
+                _ => Vec::new(),
+            };
+        }
+        std::fs::write(dir.join("system/umcfWorkflow"), d.write()).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        let out = s
+            .execute(
+                "workflow.patch",
+                &json!({"region": "air", "patch": "buildings", "role": "coupled", "from": ["defaultFaces"]}),
+            )
+            .unwrap();
+        assert_eq!(out.message, "system/umcfWorkflow: patch buildings of region air added");
+        let air =
+            out.data["description"]["regions"].as_array().unwrap().iter().find(|r| r["name"] == "air").unwrap().clone();
+        let buildings = air["patches"].as_array().unwrap().iter().find(|p| p["name"] == "buildings").unwrap().clone();
+        assert_eq!(buildings["from"], json!(["defaultFaces"]));
+        s.execute(
+            "workflow.patch",
+            &json!({"region": "street", "patch": "sides", "role": "side", "from": ["defaultFaces", "region1_to_.*"]}),
+        )
+        .unwrap();
+        let desc = s.case().unwrap().dict("system/umcfWorkflow").unwrap().to_string();
+        assert!(desc.contains("sides           { role side; from ( defaultFaces \"region1_to_.*\" ); }"), "{desc}");
+        // A type of its own, over the role's; a mapped one refused.
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "type": "symmetryPlane"})).unwrap();
+        let e = s
+            .execute("workflow.patch", &json!({"region": "street", "patch": "sides", "type": "mappedWall"}))
+            .unwrap_err();
+        assert!(e.to_string().contains("type mappedWall needs entries of its own"), "{e}");
+        let out = s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "type": null})).unwrap();
+        let street = out.data["description"]["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "street")
+            .unwrap()
+            .clone();
+        let sides = street["patches"].as_array().unwrap().iter().find(|p| p["name"] == "sides").unwrap().clone();
+        assert_eq!(sides["type"], Value::Null);
+        // A type only with from.
+        let e = s.execute("workflow.patch", &json!({"region": "air", "patch": "inlet", "type": "wall"})).unwrap_err();
+        assert!(e.to_string().contains("a type is read only for a patch createPatch makes (from)"), "{e}");
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "type": "wall"})).unwrap();
+        let e = s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "from": null})).unwrap_err();
+        assert!(e.to_string().contains("give from too, or take the type away (null)"), "{e}");
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "type": null})).unwrap();
+        // Refused: a source with a quote, an empty list.
+        let e =
+            s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "from": ["a\"b"]})).unwrap_err();
+        assert!(e.to_string().contains("is neither a plain OpenFOAM name nor a pattern"), "{e}");
+        let e = s.execute("workflow.patch", &json!({"region": "street", "patch": "sides", "from": []})).unwrap_err();
+        assert!(e.to_string().contains("from is a list of patch names, or null"), "{e}");
+        let said = |s: &mut Session| -> Vec<String> {
+            let check = s.execute("case.check", &Value::Null).unwrap();
+            check.data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "workflow.create-patch")
+                .map(|d| format!("{}: {}", d["path"].as_str().unwrap_or(""), d["message"].as_str().unwrap_or("")))
+                .collect()
+        };
+        assert_eq!(
+            said(&mut s),
+            [
+                "system/air/createPatchDict: not there, and createPatch reads it: workflow.dictionaries writes it from the patches of region air",
+                "system/street/createPatchDict: not there, and createPatch reads it: workflow.dictionaries writes it from the patches of region street",
+            ]
+        );
+        let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
+        assert_eq!(
+            out.data["written"],
+            json!(["system/air/createPatchDict", "system/street/createPatchDict"]),
+            "{}",
+            out.data
+        );
+        assert_eq!(said(&mut s), Vec::<String>::new());
+        let air = s.case().unwrap().dict("system/air/createPatchDict").unwrap().to_string();
+        assert!(umcf_model::blocks::untouched(&air), "{air}");
+        assert!(
+            air.contains("name            buildings;") && air.contains("patches         ( defaultFaces );"),
+            "{air}"
+        );
+        assert_eq!(air.contains("pointSync false;"), version == 8, "{air}");
+        let street = s.case().unwrap().dict("system/street/createPatchDict").unwrap().to_string();
+        assert!(
+            street.contains("type            wall;") && street.contains("( defaultFaces \"region1_to_.*\" )"),
+            "{street}"
+        );
+        // One region only: its dictionary.
+        let out = s.execute("workflow.dictionaries", &json!({"region": "street"})).unwrap();
+        assert_eq!(out.data["unchanged"], json!(["system/street/createPatchDict"]), "{}", out.data);
+        // Edited by hand: said, kept without replace, written with it.
+        s.execute("case.save", &json!({})).unwrap();
+        let hand = dir.join("system/air/createPatchDict");
+        std::fs::write(
+            &hand,
+            "FoamFile { class dictionary; object createPatchDict; }\npointSync false;\npatches ( { name buildings; patchInfo { type wall; } constructFrom patches; patches ( other ); } );\n",
+        )
+        .unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        let hand_said = said(&mut s);
+        assert_eq!(hand_said.len(), 1, "{hand_said:?}");
+        assert!(
+            hand_said[0].starts_with(
+                "system/air/createPatchDict: the case's own makes the patches otherwise than the description of region air does (patch buildings is made of ( other ) there, the description makes it of ( defaultFaces ))"
+            ),
+            "{hand_said:?}"
+        );
+        let e = s.execute("workflow.dictionaries", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("system/air/createPatchDict was edited by hand"), "{e}");
+        let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
+        assert_eq!(out.data["replaced"], json!(["system/air/createPatchDict"]), "{}", out.data);
+        assert_eq!(said(&mut s), Vec::<String>::new());
+        // One making what the description doesn't hold: never written over, even with replace.
+        s.execute("case.save", &json!({})).unwrap();
+        std::fs::write(
+            &hand,
+            "FoamFile { class dictionary; object createPatchDict; }\npointSync false;\npatches ( { name buildings; patchInfo { type wall; } constructFrom patches; patches ( defaultFaces ); } { name cyc; patchInfo { type cyclic; neighbourPatch cyc2; } constructFrom patches; patches ( a ); } );\n",
+        )
+        .unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        let before = std::fs::read_to_string(&hand).unwrap();
+        let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
+        assert!(out.message.contains("1 createPatchDict left as it is"), "{}", out.message);
+        assert!(
+            out.data["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains(
+                "system/air/createPatchDict holds what system/umcfWorkflow doesn't (patch cyc): left as it is"
+            )),
+            "{}",
+            out.data
+        );
+        s.execute("case.save", &json!({})).unwrap();
+        assert_eq!(std::fs::read_to_string(&hand).unwrap(), before);
+        let kept_said = said(&mut s);
+        assert!(
+            kept_said[0].contains(
+                "(patch cyc is made there, the description doesn't make it (from)): it holds what the description can't"
+            ),
+            "{kept_said:?}"
+        );
+        let fresh = umcf_model::create_patch::dict(
+            &umcf_model::create_patch::targets(&s.case().unwrap().description().unwrap().0, Some("air")).unwrap()[0],
+            if version == 8 { umcf_core::OfVersion::V8 } else { umcf_core::OfVersion::V12 },
+        );
+        // The same patches, but more the description can't hold: said, though nothing differs.
+        std::fs::write(&hand, format!("{fresh}\nwriteCyclicMatch true;\n")).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        let more = said(&mut s);
+        assert!(
+            more.len() == 1 && more[0].contains("makes the patches as the description of region air does, but holds what it can't (its writeCyclicMatch)"),
+            "{more:?}"
+        );
+        std::fs::write(&hand, fresh).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        assert_eq!(said(&mut s), Vec::<String>::new());
+        // Taken away: written over (umcfGui's own) with nothing to make.
+        s.execute("workflow.patch", &json!({"region": "air", "patch": "buildings", "from": null})).unwrap();
+        assert!(said(&mut s)[0].starts_with("system/air/createPatchDict: written by umcfGui otherwise"));
+        let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
+        assert_eq!(out.data["written"], json!(["system/air/createPatchDict"]), "{}", out.data);
+        assert!(s.case().unwrap().dict("system/air/createPatchDict").unwrap().to_string().contains("patches\n(\n);"));
+        // A patch made of others in a region that runs no createPatch: refused, said.
+        s.execute(
+            "workflow.patch",
+            &json!({"region": "vegetation", "patch": "air_to_vegetation", "role": "canopy", "from": ["x"]}),
+        )
+        .unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("patch air_to_vegetation of region vegetation is made by createPatch (from), but the region's mesh and steps don't run createPatch"), "{e}");
+        assert!(
+            said(&mut s)[0]
+                .starts_with("system/umcfWorkflow: the createPatchDicts can't be written from the description")
+        );
+        let e = s.execute("workflow.dictionaries", &json!({"region": "vegetation"})).unwrap_err().to_string();
+        assert!(e.contains("run neither changeDictionary nor createPatch"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

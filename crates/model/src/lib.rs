@@ -47,6 +47,7 @@ pub mod blocks;
 pub mod components;
 mod controls;
 pub mod coupling;
+pub mod create_patch;
 pub mod description;
 pub mod description_edit;
 pub mod material_edit;

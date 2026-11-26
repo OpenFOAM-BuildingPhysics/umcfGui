@@ -64,6 +64,9 @@ pub(crate) enum Kind {
     Role(&'static [&'static str]),
     /// A name typed or picked (as [`Kind::Pick`]), sent as [`Kind::Role`] is: a material's model.
     Model,
+    /// Names typed, apart by spaces (with the hint while empty), sent as a list only when changed
+    /// from what the form was filled with; emptied: `null`. The patches a patch is made of.
+    Words(&'static str),
     /// The region and patch a patch is coupled to (`{"region", "patch"}`), each typed or picked:
     /// sent only when changed, both emptied: `null`.
     Partner,
@@ -279,6 +282,7 @@ fn sent_when_changed(kind: Kind) -> bool {
             | Kind::Sides(_)
             | Kind::Role(_)
             | Kind::Model
+            | Kind::Words(_)
             | Kind::Partner
             | Kind::Coefficients
             | Kind::SnappySurfaces
@@ -452,6 +456,17 @@ pub(crate) fn grid_text(kind: Kind, v: &Value, start: &str) -> Option<String> {
         Kind::Role(_) | Kind::Model => match v {
             Value::Null => Some(String::new()),
             Value::String(t) => Some(t.clone()),
+            _ => None,
+        },
+        Kind::Words(_) => match v {
+            Value::Null => Some(String::new()),
+            Value::Array(items) => {
+                let words: Option<Vec<&str>> = items
+                    .iter()
+                    .map(|x| x.as_str().filter(|t| !t.is_empty() && !t.contains(char::is_whitespace)))
+                    .collect();
+                Some(words?.join(" "))
+            }
             _ => None,
         },
         Kind::RegionRows => {
@@ -909,6 +924,14 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
             }
             Ok(Some(if now.is_empty() { Value::Null } else { json!(now) }))
         }
+        Kind::Words(_) => {
+            let (now, then): (Vec<&str>, Vec<&str>) =
+                (text.split_whitespace().collect(), was.split_whitespace().collect());
+            if now == then {
+                return Ok(None);
+            }
+            Ok(Some(if now.is_empty() { Value::Null } else { json!(now) }))
+        }
         Kind::Partner => {
             let (now, then) = (parts(text, 2), parts(was, 2));
             let trim = |v: &[String]| v.iter().map(|x| x.trim().to_string()).collect::<Vec<_>>();
@@ -1214,7 +1237,7 @@ static SPECS: &[Spec] = &[
     },
     Spec {
         id: "workflow.patch",
-        intro: "A patch of a region of system/umcfWorkflow: its role, its partner, or a new name (a patch the region doesn't list is added).",
+        intro: "A patch of a region of system/umcfWorkflow: its role, its partner, the patches createPatch makes it of and their type, or a new name (a patch the region doesn't list is added).",
         fields: &[
             field("region", "Region", Kind::WorkflowRegion, "A region of system/umcfWorkflow"),
             field("patch", "Patch", Kind::Pick("a patch, or a new one"), "A patch of the region, or a new one"),
@@ -1227,6 +1250,18 @@ static SPECS: &[Spec] = &[
                 "none: taken away",
             ),
             field("partner", "Coupled to", Kind::Partner, "The region and patch it is coupled to; neither: taken away"),
+            field(
+                "from",
+                "Made of",
+                Kind::Words("defaultFaces"),
+                "The patches createPatch makes it of, apart by spaces (one that isn't a plain name is a pattern); none: taken away",
+            ),
+            field(
+                "type",
+                "Type",
+                Kind::Model,
+                "The type createPatch makes it of where its role doesn't give one (wall); empty: taken away",
+            ),
             field(
                 "name",
                 "New name",
@@ -1270,13 +1305,13 @@ static SPECS: &[Spec] = &[
     },
     Spec {
         id: "workflow.dictionaries",
-        intro: "Writes each region's changeDictionaryDict from the patches' roles and partners in system/umcfWorkflow (Save writes them).",
+        intro: "Writes each region's changeDictionaryDict from the patches' roles and partners in system/umcfWorkflow, and each createPatchDict from the patches made of others (Save writes them).",
         fields: &[
             field(
                 "region",
                 "Region",
                 Kind::WorkflowRegion,
-                "Left to choose: every region whose steps run changeDictionary",
+                "Left to choose: every region whose steps run changeDictionary, or whose mesh or steps run createPatch",
             ),
             field(
                 "replace",
@@ -2249,7 +2284,7 @@ pub(crate) fn show(
                                 v.join(&PARTS.to_string())
                             };
                         }
-                        Kind::Text(hint) | Kind::Number(hint) | Kind::Count(hint) => {
+                        Kind::Text(hint) | Kind::Number(hint) | Kind::Count(hint) | Kind::Words(hint) => {
                             let edit = egui::TextEdit::singleline(text).desired_width(wide).hint_text(hint);
                             ui.add(edit).labelled_by(label.id);
                         }
@@ -2866,6 +2901,21 @@ mod tests {
         assert_eq!(f.values["role"], "top");
         f.fill(spec, &json!({"region": "air", "patch": "ground", "partner": ["street"]})).unwrap();
         assert_eq!(f.params(spec).unwrap()["partner"], json!(["street"]));
+        // The patches it is made of: a list apart by spaces, sent when changed; emptied: null.
+        let mut f = FormState::default();
+        f.fill(spec, &json!({"region": "air", "patch": "buildings", "from": ["defaultFaces", "region1_to_.*"]}))
+            .unwrap();
+        assert_eq!(f.values["from"], "defaultFaces region1_to_.*");
+        f.initial = f.values.clone();
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "patch": "buildings"}));
+        f.values.insert("from", "  defaultFaces   region1_to_.* ".into());
+        assert_eq!(f.params(spec).unwrap(), json!({"region": "air", "patch": "buildings"}));
+        f.values.insert("from", "defaultFaces other".into());
+        assert_eq!(f.params(spec).unwrap()["from"], json!(["defaultFaces", "other"]));
+        f.values.insert("from", " ".into());
+        assert_eq!(f.params(spec).unwrap()["from"], Value::Null);
+        f.fill(spec, &json!({"region": "air", "patch": "buildings", "from": null})).unwrap();
+        assert_eq!(f.values["from"], "");
         // A switch is sent either way; names ticked as a list.
         let spec = super::spec("workflow.component").unwrap();
         let mut c = FormState::default();

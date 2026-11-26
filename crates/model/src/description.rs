@@ -123,6 +123,13 @@ pub struct PatchDesc {
     pub role: Option<Role>,
     /// The region and patch it is coupled to.
     pub partner: Option<(String, String)>,
+    /// The patches `createPatch` makes it of (`constructFrom patches`), in its region's
+    /// `createPatchDict`; a name that isn't a plain word is a pattern. Empty: not made by
+    /// `createPatch`.
+    pub from: Vec<String>,
+    /// Its type where the role doesn't give it (`type`), for `createPatch` to make it of: a
+    /// plain wall without a partner (the canyons' `buildings`), or a patch without a role.
+    pub kind: Option<String>,
 }
 
 /// A solid's material: the cell zone of its name is built of it
@@ -256,7 +263,7 @@ impl Description {
                 if role.is_none() {
                     notes.push(format!("region {name}, patch {}: no role could be told ({})", p.name, p.kind));
                 }
-                patches.push(PatchDesc { name: p.name.clone(), role, partner });
+                patches.push(PatchDesc { name: p.name.clone(), role, partner, from: Vec::new(), kind: None });
             }
             let mut materials = Vec::new();
             if region.kind == RegionKind::Solid {
@@ -311,9 +318,18 @@ impl Description {
             {
                 for n in g.patch_names() {
                     if !patches.iter().any(|p| p.name == n) {
-                        patches.push(PatchDesc { name: n.to_string(), role: None, partner: None });
+                        patches.push(PatchDesc {
+                            name: n.to_string(),
+                            role: None,
+                            partner: None,
+                            from: Vec::new(),
+                            kind: None,
+                        });
                     }
                 }
+            }
+            if let Some(m) = mesh {
+                import_created(case, name, region.kind, m, &mut patches, &mut notes);
             }
             regions.push(RegionDesc {
                 name: name.to_string(),
@@ -495,6 +511,12 @@ impl Description {
                     }
                     if let Some((region, patch)) = &p.partner {
                         let _ = write!(body, " partner ( {} {} );", word(region), word(patch));
+                    }
+                    if !p.from.is_empty() {
+                        let _ = write!(body, " from ( {} );", p.from.join(" "));
+                    }
+                    if let Some(t) = &p.kind {
+                        let _ = write!(body, " type {};", word(t));
                     }
                     let _ = writeln!(s, "            {:<15} {{{body} }}", word(&p.name));
                 }
@@ -943,7 +965,7 @@ fn read_region(
                         }
                         match p.dict() {
                             Some(b) => r.patches.push(read_patch(&pname, b, &pat, problem)),
-                            None => problem(&pat, "is a dictionary: { role …; [partner ( region patch );] }".into()),
+                            None => problem(&pat, "is a dictionary: { role …; [partner ( region patch );] [from ( patch … );] [type …;] }".into()),
                         }
                     }
                 }
@@ -1059,8 +1081,11 @@ fn read_split(
     Some(Split { of, zone, dict })
 }
 
+/// What a patch's `from` is, said when it isn't.
+const FROM_IS: &str = "is ( patch … ): names, or quoted patterns without quotes, backslashes or spaces inside";
+
 fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> PatchDesc {
-    let mut p = PatchDesc { name: name.to_string(), role: None, partner: None };
+    let mut p = PatchDesc { name: name.to_string(), role: None, partner: None, from: Vec::new(), kind: None };
     let mut seen = HashSet::new();
     for e in body.entries() {
         let here = format!("{at}/{}", e.key());
@@ -1082,8 +1107,37 @@ fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut i
                 },
                 _ => problem(&here, "is ( region patch )".into()),
             },
+            "type" => match single(e) {
+                Some(t) if crate::description_edit::plain_name(&t) && !crate::blocks::needs_own_entries(&t) => {
+                    p.kind = Some(t)
+                }
+                Some(t) if crate::description_edit::plain_name(&t) => problem(
+                    &here,
+                    format!(
+                        "{t} needs entries of its own (neighbourPatch, …): give it with changeDictionary (role and partner)"
+                    ),
+                ),
+                _ => problem(&here, "is a patch type (one plain word)".into()),
+            },
+            "from" => match list(e) {
+                Some(items) if !items.is_empty() => {
+                    let names: Option<Vec<String>> = items
+                        .iter()
+                        .map(|n| atom(n).filter(|t| crate::create_patch::source_ok(t)).map(str::to_string))
+                        .collect();
+                    match names {
+                        Some(names) => p.from = names,
+                        None => problem(&here, FROM_IS.into()),
+                    }
+                }
+                _ => problem(&here, FROM_IS.into()),
+            },
             _ => problem(&here, "is not a key of a patch".into()),
         }
+    }
+    if p.kind.is_some() && p.from.is_empty() {
+        problem(&format!("{at}/type"), "is read only with from (the patches createPatch makes it of)".into());
+        p.kind = None;
     }
     p
 }
@@ -1450,6 +1504,204 @@ fn air_roles(case: &Case) -> Vec<(String, Role)> {
     }
     out
 }
+
+/// The patches the `createPatchDict` region `name`'s `createPatch` reads makes of others
+/// (`constructFrom patches`): their `from`, a patch the list doesn't have added (its role not
+/// told), and the type it is made of where the role wouldn't give it (`type`). The region's own dictionary when its steps run `createPatch`, else
+/// `system/createPatchDict` when its mesh does. What can't be told (a face set, a macro) is noted.
+fn import_created(
+    case: &Case,
+    name: &str,
+    kind: RegionKind,
+    mesh: &crate::workflow::RegionMesh,
+    patches: &mut Vec<PatchDesc>,
+    notes: &mut Vec<String>,
+) {
+    let own = mesh.steps.contains(&RegionStep::CreatePatch);
+    let at_root = matches!(&mesh.build, MeshBuild::Root(s) if s.contains(&RootStep::CreatePatch));
+    if own && at_root {
+        notes.push(format!(
+            "region {name}: createPatch runs both in its mesh and after it: only system/{name}/createPatchDict is read, and workflow.dictionaries writes neither while the region has patches to make, until one is taken out"
+        ));
+    }
+    let path = match (own, at_root) {
+        (true, _) => crate::create_patch::dict_path(name),
+        (false, true) => crate::create_patch::ROOT_PATH.to_string(),
+        (false, false) => return,
+    };
+    let Some(doc) = case.dict(&path) else {
+        notes.push(format!("region {name}: createPatch runs, but {path} isn't there or doesn't load"));
+        return;
+    };
+    let items = match doc.root.get("patches").map(|e| e.value.as_slice()) {
+        Some([Node::List { items, .. }]) => items,
+        _ => {
+            notes.push(format!("region {name}: {path} has no plain patches list: what createPatch makes isn't told"));
+            return;
+        }
+    };
+    let one = |d: &umcf_foam_dict::Dict, k: &str| match d.get(k).map(|e| e.value.as_slice()) {
+        Some([Node::Atom(t)]) => Some(t.text.clone()),
+        _ => None,
+    };
+    // The patches by name, as items are many (a hostile file); a few notes, then a count.
+    let mut at: HashMap<String, usize> = patches.iter().enumerate().map(|(i, p)| (p.name.clone(), i)).collect();
+    // A name given twice is one patch of both items' sources, as createPatch makes it.
+    let mut imported: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut noted = 0usize;
+    let mut note = |notes: &mut Vec<String>, m: String| {
+        noted += 1;
+        if noted <= MAX_CREATE_NOTES {
+            notes.push(m);
+        }
+    };
+    for n in items {
+        let Node::Dict { body, .. } = n else {
+            note(notes, format!("region {name}: an item of the patches of {path} isn't a dictionary: left out"));
+            continue;
+        };
+        let plain = |t: &String| !t.starts_with(['$', '#']);
+        let Some(patch) = one(body, "name").filter(plain).map(|t| unescaped(&t)) else {
+            note(notes, format!("region {name}: a patch of {path} has no plain name: left out"));
+            continue;
+        };
+        if crate::create_patch::keys_twice(body) {
+            note(
+                notes,
+                format!(
+                    "region {name}, patch {patch}: {path} gives a key of it twice, which OpenFOAM merges: left out"
+                ),
+            );
+            continue;
+        }
+        // A patchInfo that isn't a dictionary (nor a macro's), and keys createPatch doesn't
+        // read that the description can't hold.
+        if let Some(e) = body.get("patchInfo")
+            && e.dict().is_none()
+            && !matches!(e.value.as_slice(), [Node::Atom(t)] if t.text.starts_with(['$', '#']))
+        {
+            note(
+                notes,
+                format!("region {name}, patch {patch}: {path} gives its patchInfo, which isn't a dictionary: left out"),
+            );
+            continue;
+        }
+        if let Some(k) = body
+            .entries()
+            .map(|e| e.key())
+            .find(|k| !matches!(*k, "name" | "patchInfo" | "constructFrom" | "patches" | "set"))
+        {
+            note(
+                notes,
+                format!(
+                    "region {name}, patch {patch}: {path} gives it {}, which the description doesn't hold: left out",
+                    crate::create_patch::cut(k)
+                ),
+            );
+            continue;
+        }
+        if !crate::create_patch::whole(body) {
+            note(
+                notes,
+                format!("region {name}, patch {patch}: {path} gives part of it by a macro or directive: left out"),
+            );
+            continue;
+        }
+        match one(body, "constructFrom").map(|t| unescaped(&t)).as_deref() {
+            Some("patches") => {}
+            Some(c) => {
+                note(
+                    notes,
+                    format!(
+                        "region {name}, patch {patch}: {path} makes it of a {c}, which the description doesn't hold: left out"
+                    ),
+                );
+                continue;
+            }
+            None => {
+                note(notes, format!("region {name}, patch {patch}: {path} gives no plain constructFrom: left out"));
+                continue;
+            }
+        }
+        let from: Option<Vec<String>> = match body.get("patches").map(|e| e.value.as_slice()) {
+            Some([Node::List { items, .. }]) => items
+                .iter()
+                .map(|n| atom(n).filter(|t| crate::create_patch::source_ok(t)).map(str::to_string))
+                .collect(),
+            _ => None,
+        };
+        let Some(from) = from.filter(|f| !f.is_empty()) else {
+            note(
+                notes,
+                format!(
+                    "region {name}, patch {patch}: the patches {path} makes it of aren't a plain list of names and quoted patterns (without quotes, backslashes or spaces inside): left out"
+                ),
+            );
+            continue;
+        };
+        // Its type, kept where the role wouldn't give it (none, or another); a patchInfo holding
+        // more (a cyclic's or mapped patch's entries) isn't the description's.
+        let info = body.get("patchInfo").and_then(Entry::dict);
+        let given = info.and_then(|i| one(i, "type")).map(|t| unescaped(&t));
+        let more = info.is_some_and(|i| {
+            i.entries().any(|e| e.key() != "type")
+                || i.items.iter().any(|x| !matches!(x, umcf_foam_dict::Item::Entry(_)))
+        });
+        if more
+            || given
+                .as_deref()
+                .is_some_and(|t| !crate::description_edit::plain_name(t) || crate::blocks::needs_own_entries(t))
+        {
+            note(
+                notes,
+                format!(
+                    "region {name}, patch {patch}: {path} gives its patchInfo more than a plain type the description holds (a mapped or cyclic type, its entries): left out"
+                ),
+            );
+            continue;
+        }
+        let own = |role: Option<Role>| {
+            given.clone().filter(|t| role.is_none_or(|r| crate::create_patch::role_type(kind, r) != t.as_str()))
+        };
+        match at.get(&patch).and_then(|i| patches.get_mut(*i)) {
+            Some(p) if imported.contains_key(&patch) => {
+                let seen = imported.entry(patch).or_default();
+                for f in from {
+                    if seen.insert(f.clone()) {
+                        p.from.push(f);
+                    }
+                }
+            }
+            Some(p) => {
+                let mut seen = HashSet::new();
+                let from: Vec<String> = from.into_iter().filter(|f| seen.insert(f.clone())).collect();
+                imported.insert(patch.clone(), seen);
+                p.from = from;
+                p.kind = own(p.role);
+            }
+            None => {
+                let kind = own(None);
+                note(
+                    notes,
+                    format!(
+                        "region {name}, patch {patch}: made by createPatch, its role isn't told (the mesh doesn't have it)"
+                    ),
+                );
+                at.insert(patch.clone(), patches.len());
+                let mut seen = HashSet::new();
+                let from: Vec<String> = from.into_iter().filter(|f| seen.insert(f.clone())).collect();
+                imported.insert(patch.clone(), seen);
+                patches.push(PatchDesc { name: patch, role: None, partner: None, from, kind });
+            }
+        }
+    }
+    if noted > MAX_CREATE_NOTES {
+        notes.push(format!("region {name}: {path}: and {} more notes like these", noted - MAX_CREATE_NOTES));
+    }
+}
+
+/// The most notes [`import_created`] gives for one dictionary before it counts the rest.
+const MAX_CREATE_NOTES: usize = 20;
 
 /// A patch's role and partner, as far as the mesh and the velocity condition (`u`) tell.
 fn infer(

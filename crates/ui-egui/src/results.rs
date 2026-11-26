@@ -194,7 +194,19 @@ pub fn lines(data: &Value) -> Vec<(Kind, String)> {
                 .filter(|q| q.is_object())
                 .map(|q| format!(" → {}/{}", s(q, "region"), s(q, "patch")))
                 .unwrap_or_default();
-            desc.push(Kind::Text, || format!("    {}: {role}{partner}", s(p, "name")));
+            let from = p
+                .get("from")
+                .and_then(Value::as_array)
+                .filter(|f| !f.is_empty())
+                .map(|f| {
+                    format!(
+                        ", made of {}",
+                        some(f.iter().map(|x| x.as_str().unwrap_or_default().to_string())).join(" ")
+                    )
+                })
+                .unwrap_or_default();
+            let kind = p.get("type").and_then(Value::as_str).map(|t| format!(", type {t}")).unwrap_or_default();
+            desc.push(Kind::Text, || format!("    {}: {role}{partner}{from}{kind}", s(p, "name")));
         }
         if !materials.is_empty() {
             let names = some(materials.iter().map(|m| match m.get("model").and_then(Value::as_str) {
@@ -232,7 +244,7 @@ mod tests {
                       "patches": [
                         { "name": "inlet", "role": "inlet", "partner": null },
                         { "name": "ground", "role": "coupled", "partner": { "region": "street", "patch": "top" } },
-                        { "name": "odd", "role": null, "partner": null },
+                        { "name": "odd", "role": null, "partner": null, "from": ["defaultFaces", "region1_to_.*"], "type": "wall" },
                       ] },
                     { "name": "street", "kind": "solid", "mesh": [{ "step": "blockMesh", "dict": "blockMeshDict.street" }],
                       "steps": [], "patches": [],
@@ -264,7 +276,7 @@ mod tests {
                 ),
                 (Kind::Text, "    inlet: inlet".to_string()),
                 (Kind::Text, "    ground: coupled → street/top".to_string()),
-                (Kind::Text, "    odd: no role".to_string()),
+                (Kind::Text, "    odd: no role, made of defaultFaces region1_to_.*, type wall".to_string()),
                 (Kind::Text, "street (solid), mesh blockMesh(blockMeshDict.street)".to_string()),
                 (Kind::Text, "    materials: soil (Soil), plaster".to_string()),
             ]

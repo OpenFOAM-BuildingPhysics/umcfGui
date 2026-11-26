@@ -69,15 +69,7 @@ pub fn entries(d: &Description, region: &str, version: OfVersion) -> Result<Vec<
             Err(format!("{what} `{n}` isn't a plain OpenFOAM word: rename it to write the changeDictionaryDict"))
         }
     };
-    let directory = |n: &str| {
-        plain("region", n)?;
-        if n.contains(':') || n.ends_with('.') || crate::new_case::windows_device(n) {
-            return Err(format!(
-                "region `{n}` can't be a directory on every system (a `:`, a `.` at its end, or a Windows device's name): rename it to write the changeDictionaryDict"
-            ));
-        }
-        Ok(())
-    };
+    let directory = |n: &str| directory(n, "changeDictionaryDict");
     directory(region)?;
     let v8 = version == OfVersion::V8;
     let mut out = Vec::new();
@@ -160,6 +152,21 @@ pub fn entries(d: &Description, region: &str, version: OfVersion) -> Result<Vec<
         out.push(Entry { patch: p.name.clone(), keys });
     }
     Ok(out)
+}
+
+/// A region's name, written unquoted and as a directory (`system/<region>`) for `what`'s sake:
+/// a plain OpenFOAM word, not `.` or `..`, no `:`, not ending with `.`, not a name Windows keeps
+/// for a device.
+pub(crate) fn directory(n: &str, what: &str) -> Result<(), String> {
+    if !crate::description_edit::plain_name(n) {
+        return Err(format!("region `{n}` isn't a plain OpenFOAM word: rename it to write the {what}"));
+    }
+    if n.contains(':') || n.ends_with('.') || crate::new_case::windows_device(n) {
+        return Err(format!(
+            "region `{n}` can't be a directory on every system (a `:`, a `.` at its end, or a Windows device's name): rename it to write the {what}"
+        ));
+    }
+    Ok(())
 }
 
 /// The fluid region a vegetation region's canopy maps to: the one its other patches are

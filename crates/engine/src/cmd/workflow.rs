@@ -115,7 +115,7 @@ pub(super) const IMPORT: CommandSpec = CommandSpec {
     label: "Write workflow description",
     menu: "Case/Write workflow description",
     shortcut: None,
-    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties whose grassModel isn't none and grass isn't off, a limitTemperature entry in the file a fluid's limit is read from (OpenFOAM-12: system/fvConstraints, else system/fvOptions, else constant/fvOptions; OpenFOAM-8: constant/fvOptions, else system/fvOptions), blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), each region's grid of blocks read from the blockMeshDict its mesh reads, when that is one (all its blocks one cell each of a grid of stations along x, y and z, each span's cells and grading the same in every block; a dictionary that isn't one, with curved edges, a block over several cells, a scale, an #include or a $macro, is left out with a note; each patch whose type there isn't the one its role (or no role: patch) gives kept in the blocks' types; a region without a mesh given the patches its blocks name, without a role; the dictionary isn't written: mesh.block writes it from the blocks), each region's snappy entry read from the snappyHexMeshDict its snappyHexMesh step reads (its STL surfaces that cut or refine by distance, with the solids of the <surface>_<solid> patches each made in the mesh, boxes refining the cells inside, feature levels, layers, the inside point, the expansion ratio and the first layer's thickness; the inside point as the case's version takes it (OpenFOAM-12: insidePoints of one point, insidePoint, locationInMesh; OpenFOAM-8: locationInMesh); what the entry can't hold noted and left out: other geometry, a surface or box it would refuse (the others kept), a scaled surface, a surface making a faceZone or cellZone (its refinement alone kept), layer sizes other than the entry's, an expansion below 1, a patch type other than its role's (each <surface>_<solid> patch against its own), patchInfo beyond its type (inGroups), singleRegionName false, an expansionRatio that isn't a number, a name given to more than one surface or box, layers given to a surface by a <surface>_<solid> patch's name, levels per solid, surfaces and layers named by a pattern, a patch's own layer settings, outside points, an #include or $macro not followed, macros; several inside points give no entry; the dictionary isn't written: mesh.snappy with replace writes it from the entry), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over.",
+    params: "replace: true to write over the case's system/umcfWorkflow (its comments and hand edits are not kept). Writes the workflow description from the case: its scripts (Allprepare, Allrun) read into the workflow, the region kinds, each patch's role and partner as its mesh and velocity condition tell, each solid's materials as its constant/<region>/transportProperties lists them (buildingMaterials), and the components the case's files switch on (a fluid's grassProperties whose grassModel isn't none and grass isn't off, a limitTemperature entry in the file a fluid's limit is read from (OpenFOAM-12: system/fvConstraints, else system/fvOptions, else constant/fvOptions; OpenFOAM-8: constant/fvOptions, else system/fvOptions), blending on in controlDict), and the settings its files have (deltaT, endTime, writeInterval, the fluids' RAS model, the temperature limit's bounds, blendingCoeffs: a macro, or fluids that differ, noted and left out), each region's grid of blocks read from the blockMeshDict its mesh reads, when that is one (all its blocks one cell each of a grid of stations along x, y and z, each span's cells and grading the same in every block; a dictionary that isn't one, with curved edges, a block over several cells, a scale, an #include or a $macro, is left out with a note; each patch whose type there isn't the one its role (or no role: patch) gives kept in the blocks' types; a region without a mesh given the patches its blocks name, without a role; the dictionary isn't written: mesh.block writes it from the blocks), each region's snappy entry read from the snappyHexMeshDict its snappyHexMesh step reads (its STL surfaces that cut or refine by distance, with the solids of the <surface>_<solid> patches each made in the mesh, boxes refining the cells inside, feature levels, layers, the inside point, the expansion ratio and the first layer's thickness; the inside point as the case's version takes it (OpenFOAM-12: insidePoints of one point, insidePoint, locationInMesh; OpenFOAM-8: locationInMesh); what the entry can't hold noted and left out: other geometry, a surface or box it would refuse (the others kept), a scaled surface, a surface making a faceZone or cellZone (its refinement alone kept), layer sizes other than the entry's, an expansion below 1, a patch type other than its role's (each <surface>_<solid> patch against its own), patchInfo beyond its type (inGroups), singleRegionName false, an expansionRatio that isn't a number, a name given to more than one surface or box, layers given to a surface by a <surface>_<solid> patch's name, levels per solid, surfaces and layers named by a pattern, a patch's own layer settings, outside points, an #include or $macro not followed, macros; several inside points give no entry; the dictionary isn't written: mesh.snappy with replace writes it from the entry), and the material library from the solids' materials (each model's first material whose coefficients are numbers or dictionaries of them; a model whose materials differ noted once, a material with a macro or directive among its coefficients noted and left out). What it couldn't tell (a patch without a role, a region the scripts don't mesh, a step that doesn't fit, a material or its model given by a macro, a material listed more than once) is listed in notes. case.save writes it. A system/umcfWorkflow that is a symbolic link is not written over. Also reads, from the createPatchDict each region's createPatch reads (its own when its steps run createPatch, else system/createPatchDict when its mesh does), the patches made of others (constructFrom patches) into their from, as written (a quoted source a pattern), and their type where the role wouldn't give it; a name given twice is made of both items' sources; an item made of a face set, part of which a macro or directive gives, with a patchInfo that isn't a plain type's dictionary, other keys, a key given twice, or sources with a quote, backslash or space inside is noted and left out (20 notes a dictionary for each region reading it, then a count).",
     enabled: needs_case,
     run: import,
     journal: true,
@@ -220,7 +220,7 @@ pub(super) const PATCH: CommandSpec = CommandSpec {
     label: "Describe a patch",
     menu: "Case/Workflow/Describe a patch",
     shortcut: None,
-    params: "region, patch: the region of system/umcfWorkflow and its patch (a patch the region doesn't list is added); role: inlet, outlet, side, top, ground, coupled, canopy, interior, bottom or sky (null takes it away); partner: {\"region\", \"patch\"} it is coupled to (null takes it away); name: a new name for the patch (the partners that named it follow, and the region's blocks: sides, single faces, patches without faces, types; refused while the region's blocks entry doesn't read whole, or when the blocks name a patch of the new name, or to or from defaultFaces while the region has blocks: the faces left to blockMesh). At least one of them. Edits the description only, entry by entry: its comments and layout stay. The case's own files (the mesh, fields, dictionaries) follow once they are written from it; patch.set renames a patch in the case.",
+    params: "region, patch: the region of system/umcfWorkflow and its patch (a patch the region doesn't list is added); role: inlet, outlet, side, top, ground, coupled, canopy, interior, bottom or sky (null takes it away); partner: {\"region\", \"patch\"} it is coupled to (null takes it away); from: the patches createPatch makes it of, a list of names and patterns as createPatch reads them (a name that isn't a plain word is quoted for it, a pattern: \"region1_to_.*\"; one given quoted stays so, \"\\\"region.1\\\"\" a regular expression; none with a quote, backslash or space inside; null takes them away), which workflow.dictionaries writes into the createPatchDict its mesh or steps read; type: the type createPatch makes it of where its role doesn't give it (wall for a plain wall without a partner; read only with from, refused without; null takes it away; not a mapped type, which changeDictionary gives from the role and partner); name: a new name for the patch (refused while another patch of the region is made of it, from; the partners that named it follow, and the region's blocks: sides, single faces, patches without faces, types; refused while the region's blocks entry doesn't read whole, or when the blocks name a patch of the new name, or to or from defaultFaces while the region has blocks: the faces left to blockMesh). At least one of them. Edits the description only, entry by entry: its comments and layout stay. The case's own files (the mesh, fields, dictionaries) follow once they are written from it; patch.set renames a patch in the case.",
     enabled: needs_case,
     run: patch,
     journal: true,
@@ -230,7 +230,7 @@ pub(super) const PATCH: CommandSpec = CommandSpec {
 
 /// `workflow.patch`: a patch's role, partner and name.
 fn patch(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    let p = Params::new(PATCH.id, p, &["region", "patch", "role", "partner", "name"])?;
+    let p = Params::new(PATCH.id, p, &["region", "patch", "role", "partner", "from", "type", "name"])?;
     let region = p.required_str("region")?;
     let patch = p.required_str("patch")?;
     let mut edit = PatchEdit::default();
@@ -261,6 +261,24 @@ fn patch(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
                 }
             }
         }
+    }
+    match p.value("from") {
+        None => {}
+        Some(Value::Null) => edit.from = Some(Vec::new()),
+        Some(Value::Array(items)) if !items.is_empty() => {
+            let names: Option<Vec<String>> = items.iter().map(|v| v.as_str().map(str::to_string)).collect();
+            match names {
+                Some(names) => edit.from = Some(names),
+                None => return Err(Error::Params(format!("{}: from is a list of patch names, or null", PATCH.id))),
+            }
+        }
+        Some(_) => return Err(Error::Params(format!("{}: from is a list of patch names, or null", PATCH.id))),
+    }
+    match p.value("type") {
+        None => {}
+        Some(Value::Null) => edit.kind = Some(None),
+        Some(Value::String(t)) => edit.kind = Some(Some(t.clone())),
+        Some(_) => return Err(Error::Params(format!("{}: type is a patch type, or null", PATCH.id))),
     }
     edit.rename = p.str("name")?.map(str::to_string);
     let o = s.opened_mut()?;
@@ -760,7 +778,7 @@ pub(super) const DICTIONARIES: CommandSpec = CommandSpec {
     label: "Write the dictionaries",
     menu: "Case/Workflow/Write the dictionaries",
     shortcut: None,
-    params: "region: one region (default: every region). replace: true to write over a dictionary edited by hand or not written by umcfGui (case.save keeps a backup of each). Writes, from system/umcfWorkflow and for its OpenFOAM version (the case's when it names none), each region's system/<region>/changeDictionaryDict whose steps run changeDictionary: every patch with a partner, mappedWall to it when its role is a wall's (ground, coupled, interior, bottom) and mapped (mappedPatch in OpenFOAM-8) when it is an open side's (inlet, outlet, side, top, sky), with neighbourRegion and neighbourPatch (OpenFOAM-8: sampleMode nearestPatchFace, sampleRegion, samplePatch) and a uniform offset of (0 0 0); a fluid's and a solid's patches paired by method nearest (OpenFOAM-12), a vegetation patch and its twin without; the vegetation region's canopy mapped to the air's cells (mappedInternal, offsetMode normal, distance 0; OpenFOAM-8: mappedWall, sampleMode nearestCell), the air being the fluid region its other patches are coupled to, else the radiation's lai region, else the only fluid region. Patches without a partner are left as the mesh makes them. Generated, with a checksum: one written by umcfGui and unchanged since is written over without replace. Refused, writing none: a description with problems (workflow.show lists them), a patch with a partner but no role, a partner region the description doesn't have, a canopy with a partner or with no air to map to, a region, patch or partner name that isn't a plain OpenFOAM word (they are written unquoted), a region's name that can't be a directory on every system (., .., a colon, a dot at its end, a Windows device's name), a region named that the description doesn't have or whose steps don't run changeDictionary, a dictionary there that doesn't load (or a directory: mend or remove it), one that is a symbolic link or the same file as another dictionary, and, without replace, one there that differs and wasn't written by umcfGui. The outcome lists what was written, written over by hand edits, and left as it was, and notes a region with coupled patches whose steps don't run changeDictionary. case.save writes them; edit.undo takes them back.",
+    params: "region: one region (default: every region). replace: true to write over a dictionary edited by hand or not written by umcfGui (case.save keeps a backup of each). Writes, from system/umcfWorkflow and for its OpenFOAM version (the case's when it names none), each region's system/<region>/changeDictionaryDict whose steps run changeDictionary: every patch with a partner, mappedWall to it when its role is a wall's (ground, coupled, interior, bottom) and mapped (mappedPatch in OpenFOAM-8) when it is an open side's (inlet, outlet, side, top, sky), with neighbourRegion and neighbourPatch (OpenFOAM-8: sampleMode nearestPatchFace, sampleRegion, samplePatch) and a uniform offset of (0 0 0); a fluid's and a solid's patches paired by method nearest (OpenFOAM-12), a vegetation patch and its twin without; the vegetation region's canopy mapped to the air's cells (mappedInternal, offsetMode normal, distance 0; OpenFOAM-8: mappedWall, sampleMode nearestCell), the air being the fluid region its other patches are coupled to, else the radiation's lai region, else the only fluid region. Patches without a partner are left as the mesh makes them. Generated, with a checksum: one written by umcfGui and unchanged since is written over without replace. Refused, writing none: a description with problems (workflow.show lists them), a patch with a partner but no role, a partner region the description doesn't have, a canopy with a partner or with no air to map to, a region, patch or partner name that isn't a plain OpenFOAM word (they are written unquoted), a region's name that can't be a directory on every system (., .., a colon, a dot at its end, a Windows device's name), a region named that the description doesn't have, a dictionary there that doesn't load (or a directory: mend or remove it), one that is a symbolic link or the same file as another dictionary, and, without replace, one there that differs and wasn't written by umcfGui. Also writes each createPatchDict the mesh or steps read: system/<region>/createPatchDict for a region whose steps run createPatch, system/createPatchDict for the regions meshed with createPatch in constant/polyMesh (one for them all: they must make the same patches); each patch made of others (from) as { name; patchInfo { type; } constructFrom patches; patches ( … ); }, the sources as the description has them (a quoted one a pattern), its type the patch's own (type), else wall for a wall's role (ground, coupled, interior, bottom), the canopy and every solid's patch, else patch; pointSync false for OpenFOAM-8. Refused, too: a patch made by createPatch with neither a role nor a type, or in a region whose mesh and steps run no createPatch, a region running createPatch both in and after its mesh with patches to make, and regions sharing system/createPatchDict that make other patches. The case's own createPatchDict that holds what the description can't (a patch it doesn't make or gives twice, one made of a face set or of sources it can't hold, patchInfo entries besides the type or other keys of an item, a key given twice in an item or its patchInfo, a value from a macro or directive, a patches list that can't be read whole, another entry at its top, OpenFOAM-8's pointSync not off) is left as it is even with replace, noted with what would be lost; the others are written. With region, that region's dictionaries (and the shared createPatchDict when its mesh runs createPatch); a region whose mesh and steps run neither changeDictionary nor createPatch is refused. The outcome lists what was written, written over by hand edits, and left as it was, and notes a region with coupled patches whose steps don't run changeDictionary. case.save writes them; edit.undo takes them back.",
     enabled: needs_case,
     run: dictionaries,
     journal: true,
@@ -770,7 +788,7 @@ pub(super) const DICTIONARIES: CommandSpec = CommandSpec {
 
 /// `workflow.dictionaries`: the dictionaries generated from the description.
 fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
-    use umcf_model::coupling;
+    use umcf_model::{coupling, create_patch};
     let p = Params::new(DICTIONARIES.id, p, &["region", "replace"])?;
     let replace = p.bool("replace")?.unwrap_or(false);
     let only = p.str("region")?.map(str::to_string);
@@ -796,9 +814,9 @@ fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     if let Some(name) = &only {
         match d.region(name) {
             None => return Err(Error::Failed(format!("region {name} isn't in {PATH}"))),
-            Some(r) if !coupling::runs(r) => {
+            Some(r) if !coupling::runs(r) && !create_patch::runs(r) && !create_patch::runs_root(r) => {
                 return Err(Error::Failed(format!(
-                    "the steps of region {name} in {PATH} don't run changeDictionary: it has no dictionary to write"
+                    "the mesh and steps of region {name} in {PATH} run neither changeDictionary nor createPatch: it has no dictionary to write"
                 )));
             }
             Some(_) => {}
@@ -819,6 +837,28 @@ fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         let text = coupling::dict(&d, &r.name, version)
             .map_err(|e| Error::Failed(format!("{}: {e}: no dictionary is written", DICTIONARIES.id)))?;
         texts.push((coupling::dict_path(&r.name), text));
+    }
+    // The createPatchDicts: a region's own, and the one of every region meshed with createPatch
+    // in constant/polyMesh, written when one of them is asked for.
+    let targets = create_patch::targets(&d, only.as_deref())
+        .map_err(|e| Error::Failed(format!("{}: {e}: no dictionary is written", DICTIONARIES.id)))?;
+    for t in &targets {
+        // The case's own holding what the description can't: never written over, even with
+        // replace (it would be lost), but left as it is, noted (the others are written).
+        if let Some(doc) = o.case.dict(&t.path)
+            && !umcf_model::blocks::untouched(&doc.to_string())
+        {
+            let kept = create_patch::kept(&doc.root, &t.made, version);
+            if !kept.is_empty() {
+                notes.push(format!(
+                    "{} holds what {PATH} doesn't ({}): left as it is, as written over it would be lost: give the patches their from (and type) with workflow.patch, or mend the file by hand",
+                    t.path,
+                    create_patch::summary(&kept)
+                ));
+                continue;
+            }
+        }
+        texts.push((t.path.clone(), create_patch::dict(t, version)));
     }
     let limit = o.case.options().dict_bytes;
     // What is there now: the same, one umcfGui wrote (written over), or another (by hand).
@@ -875,8 +915,9 @@ fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
         })?;
     }
     let changed: Vec<&String> = written.iter().chain(&by_hand).collect();
-    let message = if texts.is_empty() {
-        format!("no region's steps in {PATH} run changeDictionary: no dictionary to write")
+    let left = notes.iter().filter(|n| n.contains("left as it is, as written over")).count();
+    let message = if texts.is_empty() && left == 0 {
+        format!("no region's mesh or steps in {PATH} run changeDictionary or createPatch: no dictionary to write")
     } else if changed.is_empty() {
         format!("the dictionaries are as {PATH} has them already, for {version}: nothing to write")
     } else {
@@ -884,6 +925,14 @@ fn dictionaries(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
             "{}: written from {PATH}, for {version}",
             changed.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
         )
+    };
+    let message = if left > 0 {
+        format!(
+            "{message}; {} left as it is, holding what {PATH} doesn't (see the notes)",
+            count(left, "createPatchDict")
+        )
+    } else {
+        message
     };
     Ok(Outcome::new(
         message,
@@ -983,6 +1032,8 @@ pub(crate) fn to_json(d: &Description) -> Value {
                         "name": p.name,
                         "role": p.role.map(description::Role::name),
                         "partner": p.partner.as_ref().map(|(r, q)| json!({ "region": r, "patch": q })),
+                        "from": p.from,
+                        "type": p.kind,
                     })
                 })
                 .collect();

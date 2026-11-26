@@ -17,6 +17,7 @@ const BLOCKS: &str = "workflow.blocks";
 const SPLIT: &str = "workflow.split";
 const SNAPPY: &str = "workflow.snappy";
 const CHANGE: &str = "workflow.change-dictionary";
+const CREATE: &str = "workflow.create-patch";
 
 pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
     let Some((d, problems)) = case.description() else { return };
@@ -145,6 +146,95 @@ pub(crate) fn check(case: &Case, out: &mut Vec<Diagnostic>) {
         }
     }
     features(case, &d, out);
+    if problems.is_empty() {
+        create_patch(case, &d, out);
+    }
+}
+
+/// `workflow.create-patch`: each `createPatchDict` the description's meshes and steps read
+/// (`createPatch -region`'s own, and `system/createPatchDict` of the regions meshed with
+/// `createPatch` in `constant/polyMesh`), against what `workflow.dictionaries` writes from the
+/// patches' `from` and roles ([`umcf_model::create_patch`]): one that can't be written, one
+/// missing or that doesn't load, one umcfGui wrote that isn't what it writes now, and the
+/// case's own where it makes the patches otherwise, as [`umcf_model::create_patch::differences`]
+/// says.
+fn create_patch(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
+    use umcf_model::create_patch as cp;
+    let Some(version) = d.version.or(case.layout.version) else { return };
+    let targets = match cp::targets(d, None) {
+        Ok(t) => t,
+        Err(e) => {
+            out.push(Diagnostic::new(
+                Level::Warning,
+                CREATE,
+                PATH,
+                format!("the createPatchDicts can't be written from the description: {e}"),
+            ));
+            return;
+        }
+    };
+    for t in &targets {
+        let regions = t.regions.join(", ");
+        let whose = if t.regions.len() == 1 { "region" } else { "regions" };
+        let message = match case.dict(&t.path) {
+            None if case.exists(&t.path) == Some(true) => {
+                "doesn't load as a dictionary (or is a directory): workflow.dictionaries can't write it until it is mended or removed".to_string()
+            }
+            None => format!("not there, and createPatch reads it: workflow.dictionaries writes it from the patches of {whose} {regions}"),
+            Some(doc) => {
+                let have = doc.to_string();
+                if have == cp::dict(t, version) {
+                    continue;
+                }
+                if blocks::untouched(&have) {
+                    format!(
+                        "written by umcfGui otherwise than it writes {whose} {regions}'s now (other patches made, roles, another OpenFOAM version, or an older umcfGui): workflow.dictionaries writes it again"
+                    )
+                } else {
+                    let diff = cp::differences(&doc.root, &t.made, version);
+                    let kept = cp::kept(&doc.root, &t.made, version);
+                    let Some(first) = diff.first() else {
+                        // The same patches, but more the description can't hold: said, as
+                        // workflow.dictionaries leaves it as it is.
+                        if !kept.is_empty() {
+                            let mut diag = Diagnostic::new(
+                                Level::Warning,
+                                CREATE,
+                                &t.path,
+                                format!(
+                                    "the case's own makes the patches as the description of {whose} {regions} does, but holds what it can't ({}), which workflow.dictionaries leaves as it is: describe it (workflow.patch) or mend the file by hand",
+                                    cp::summary(&kept)
+                                ),
+                            );
+                            if let [only] = t.regions.as_slice() {
+                                diag = diag.region(only);
+                            }
+                            out.push(diag);
+                        }
+                        continue;
+                    };
+                    let more = match diff.len() {
+                        1 => String::new(),
+                        n => format!(", and {} more", n - 1),
+                    };
+                    // What the description can't hold isn't written over: said how to keep it.
+                    let fix = if kept.is_empty() {
+                        "workflow.dictionaries with replace writes it from the description (the one there is kept in the backup when the case is saved)"
+                    } else {
+                        "it holds what the description can't, which workflow.dictionaries doesn't write over: give the patches their from (and type) with workflow.patch, or mend the file by hand"
+                    };
+                    format!(
+                        "the case's own makes the patches otherwise than the description of {whose} {regions} does ({first}{more}): {fix}"
+                    )
+                }
+            }
+        };
+        let mut diag = Diagnostic::new(Level::Warning, CREATE, &t.path, message);
+        if let [only] = t.regions.as_slice() {
+            diag = diag.region(only);
+        }
+        out.push(diag);
+    }
 }
 
 /// Whether the `snappyHexMeshDict` `root` holds what the entry `sn` of region `r` does, read
