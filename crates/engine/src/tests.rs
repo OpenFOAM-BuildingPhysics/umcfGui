@@ -4899,3 +4899,242 @@ fn a_region_meshed_from_another_regions_background() {
         let _ = std::fs::remove_dir_all(&src);
     }
 }
+
+#[test]
+fn each_regions_change_dictionary_is_written_from_its_patches_roles_and_partners() {
+    use umcf_model::description::{PatchDesc, Role};
+    use umcf_model::workflow::RegionStep;
+    for version in [8, 12] {
+        let dir = std::env::temp_dir().join(format!("umcf-engine-{}-dictionaries-{version}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::with_backup(".umcfgui/backup/test");
+        s.execute("case.new", &canyon_params(&dir, version)).unwrap();
+        // Nothing to write while no region's steps run changeDictionary.
+        let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
+        assert!(out.message.starts_with("no region's steps"), "{}", out.message);
+        // The canyon's coupling, as workflow.import reads it from a case.
+        let (mut d, _) = s.case().unwrap().description().unwrap();
+        let patch = |name: &str, role: Role, partner: Option<(&str, &str)>| PatchDesc {
+            name: name.into(),
+            role: Some(role),
+            partner: partner.map(|(r, p)| (r.into(), p.into())),
+        };
+        for r in &mut d.regions {
+            r.steps = vec![RegionStep::ChangeDictionary];
+            r.patches = match r.name.as_str() {
+                "air" => vec![
+                    patch("inlet", Role::Inlet, None),
+                    patch("air_to_street", Role::Coupled, Some(("street", "street_to_air"))),
+                ],
+                "street" => vec![
+                    patch("street_to_air", Role::Coupled, Some(("air", "air_to_street"))),
+                    patch("bottom", Role::Bottom, None),
+                ],
+                _ => vec![
+                    patch("inlet", Role::Sky, Some(("air", "inlet"))),
+                    patch("ground", Role::Ground, Some(("air", "ground"))),
+                    patch("air_to_street", Role::Coupled, Some(("air", "air_to_street"))),
+                    patch("air_to_vegetation", Role::Canopy, None),
+                ],
+            };
+        }
+        std::fs::write(dir.join("system/umcfWorkflow"), d.write()).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
+        assert_eq!(out.data["written"].as_array().unwrap().len(), 3, "{}", out.data);
+        let text = |s: &Session, r: &str| {
+            s.case().unwrap().dict(&format!("system/{r}/changeDictionaryDict")).unwrap().to_string()
+        };
+        let said = |s: &mut Session| -> Vec<String> {
+            let check = s.execute("case.check", &Value::Null).unwrap();
+            check.data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["code"] == "workflow.change-dictionary")
+                .map(|d| format!("{}: {}", d["path"].as_str().unwrap_or(""), d["message"].as_str().unwrap_or("")))
+                .collect()
+        };
+        assert_eq!(said(&mut s), Vec::<String>::new());
+        let (air, street, veg) = (text(&s, "air"), text(&s, "street"), text(&s, "vegetation"));
+        assert!(umcf_model::blocks::untouched(&air), "{air}");
+        // Only the patches with a partner, and the canopy.
+        assert!(!air.contains("inlet") && !street.contains("bottom"), "{air}{street}");
+        if version == 12 {
+            assert!(air.contains("type            mappedWall;\n        method          nearest;\n        neighbourRegion street;\n        neighbourPatch  street_to_air;"), "{air}");
+            assert!(street.contains("neighbourRegion air;\n        neighbourPatch  air_to_street;"), "{street}");
+            // The vegetation twins: no method; the sky side open, the canopy the air's cells.
+            assert!(!veg.contains("method"), "{veg}");
+            assert!(veg.contains("inlet\n    {\n        type            mapped;\n"), "{veg}");
+            assert!(veg.contains("ground\n    {\n        type            mappedWall;\n"), "{veg}");
+            assert!(veg.contains("type            mappedInternal;\n        neighbourRegion air;\n        offsetMode      normal;\n        distance        0;"), "{veg}");
+        } else {
+            assert!(air.contains("type            mappedWall;\n        sampleMode      nearestPatchFace;\n        sampleRegion    street;\n        samplePatch     street_to_air;"), "{air}");
+            assert!(veg.contains("inlet\n    {\n        type            mappedPatch;\n"), "{veg}");
+            assert!(
+                veg.contains(
+                    "type            mappedWall;\n        sampleMode      nearestCell;\n        sampleRegion    air;"
+                ),
+                "{veg}"
+            );
+        }
+        // Again: nothing to write.
+        let out = s.execute("workflow.dictionaries", &json!({})).unwrap();
+        assert_eq!(out.data["unchanged"].as_array().unwrap().len(), 3, "{}", out.data);
+        // A partner changed: one umcfGui wrote is written over without replace.
+        s.execute(
+            "workflow.patch",
+            &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "ground"}}),
+        )
+        .unwrap();
+        let stale = said(&mut s);
+        assert!(
+            stale.len() == 1
+                && stale[0].contains(
+                    "system/street/changeDictionaryDict: written by umcfGui otherwise than it writes region street's now"
+                ),
+            "{stale:?}"
+        );
+        let out = s.execute("workflow.dictionaries", &json!({"region": "street"})).unwrap();
+        assert_eq!(out.data["written"], json!(["system/street/changeDictionaryDict"]), "{}", out.data);
+        assert!(!text(&s, "street").contains("air_to_street") && text(&s, "street").contains("ground"));
+        s.execute("case.save", &json!({})).unwrap();
+        // One edited by hand: refused without replace, nothing written; written over with it.
+        let hand = dir.join("system/air/changeDictionaryDict");
+        std::fs::write(&hand, "FoamFile { class dictionary; object changeDictionaryDict; }\nboundary { }\n").unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+            .unwrap();
+        let hand_said = said(&mut s);
+        assert!(
+            hand_said.iter().any(|m| m.contains(
+                "system/air/changeDictionaryDict: the case's own doesn't map, or isn't known to map, the patches as the description of region air does (patch air_to_street isn't there)"
+            )),
+            "{hand_said:?}"
+        );
+        // One that leaves out the region air_to_street maps to: the mesh's is kept, unconfirmed.
+        let key = if version == 8 { "sampleRegion" } else { "neighbourRegion" };
+        let unsaid: String =
+            air.lines().filter(|l| !l.trim_start().starts_with(key)).map(|l| format!("{l}\n")).collect();
+        assert_ne!(unsaid, air, "{air}");
+        std::fs::write(&hand, &unsaid).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+            .unwrap();
+        let unsaid_said = said(&mut s);
+        assert!(
+            unsaid_said.iter().any(|m| m.starts_with(
+                "system/air/changeDictionaryDict: the case's own doesn't map, or isn't known to map, the patches as the description of region air does (patch air_to_street: the region it maps to isn't given there, so the mesh's is kept, which can't be confirmed (the description makes it street))"
+            )),
+            "{unsaid_said:?}"
+        );
+        // OpenFOAM-12 given the older key alone: it reads the newer first, which the mesh's
+        // patch may keep, so the older one's isn't confirmed.
+        if version == 12 {
+            std::fs::write(&hand, air.replacen("neighbourRegion", "sampleRegion   ", 1)).unwrap();
+            s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+            s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+                .unwrap();
+            let older = said(&mut s);
+            assert!(
+                older.iter().any(|m| m.contains(
+                    "(patch air_to_street: the region it maps to is given there as sampleRegion street only, which OpenFOAM-12 reads after neighbourRegion"
+                )),
+                "{older:?}"
+            );
+        }
+        std::fs::write(&hand, "FoamFile { class dictionary; object changeDictionaryDict; }\nboundary { }\n").unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "air_to_street"}}))
+            .unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("system/air/changeDictionaryDict was edited by hand or not written by umcfGui"), "{e}");
+        assert!(text(&s, "street").contains("ground"), "nothing written");
+        let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
+        assert_eq!(out.data["replaced"], json!(["system/air/changeDictionaryDict"]), "{}", out.data);
+        assert!(text(&s, "air").contains("street_to_air"));
+        // Undone: the hand edit is back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(text(&s, "air").contains("boundary { }"), "{}", text(&s, "air"));
+        // Refused: a region that isn't there or doesn't run changeDictionary, a partner without
+        // a role, a canopy with a partner.
+        let e = s.execute("workflow.dictionaries", &json!({"region": "roof"})).unwrap_err().to_string();
+        assert!(e.contains("region roof isn't in system/umcfWorkflow"), "{e}");
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "role": null})).unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(
+            e.contains("patch street_to_air of region street is coupled to air/air_to_street but has no role"),
+            "{e}"
+        );
+        assert!(
+            said(&mut s).iter().any(|m| m.contains("its changeDictionaryDict can't be written from the description"))
+        );
+        s.execute("workflow.patch", &json!({"region": "street", "patch": "street_to_air", "role": "coupled"})).unwrap();
+        s.execute("workflow.patch", &json!({"region": "vegetation", "patch": "air_to_vegetation", "partner": {"region": "air", "patch": "inlet"}}))
+            .unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(e.contains("is the canopy and coupled to air/inlet"), "{e}");
+        s.execute("workflow.patch", &json!({"region": "vegetation", "patch": "air_to_vegetation", "partner": null}))
+            .unwrap();
+        // A name that isn't a plain word (a quoted one in the description) isn't written: it
+        // would change the dictionary's syntax.
+        s.execute("case.save", &json!({})).unwrap();
+        let (mut odd, _) = s.case().unwrap().description().unwrap();
+        for r in &mut odd.regions {
+            for p in &mut r.patches {
+                if p.name == "street_to_air" {
+                    p.name = "street_to_air { type wall; }".into();
+                }
+                if let Some((_, with)) = &mut p.partner
+                    && with == "street_to_air"
+                {
+                    *with = "street_to_air { type wall; }".into();
+                }
+            }
+        }
+        let before = std::fs::read_to_string(dir.join("system/umcfWorkflow")).unwrap();
+        std::fs::write(dir.join("system/umcfWorkflow"), odd.write()).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(e.contains("`street_to_air { type wall; }` isn't a plain OpenFOAM word"), "{e}");
+        assert!(
+            said(&mut s)
+                .iter()
+                .any(|m| m.contains("can't be written from the description")
+                    && m.contains("isn't a plain OpenFOAM word")),
+            "{:?}",
+            said(&mut s)
+        );
+        std::fs::write(dir.join("system/umcfWorkflow"), before).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        // One that doesn't load isn't written over, even with replace: nothing is written.
+        s.execute("case.save", &json!({})).unwrap();
+        std::fs::write(dir.join("system/street/changeDictionaryDict"), "boundary {").unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap_err().to_string();
+        assert!(e.contains("system/street/changeDictionaryDict is there but doesn't load as a dictionary"), "{e}");
+        assert!(said(&mut s).iter().any(|m| m.contains("system/street/changeDictionaryDict: doesn't load")));
+        std::fs::remove_file(dir.join("system/street/changeDictionaryDict")).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        assert!(said(&mut s).iter().any(|m| m.contains("system/street/changeDictionaryDict: not there")));
+        // A region whose steps don't run changeDictionary: refused when named, noted otherwise.
+        let (mut d, _) = s.case().unwrap().description().unwrap();
+        if let Some(r) = d.regions.iter_mut().find(|r| r.name == "street") {
+            r.steps.clear();
+        }
+        std::fs::write(dir.join("system/umcfWorkflow"), d.write()).unwrap();
+        s.execute("case.open", &json!({ "path": dir.to_str().unwrap() })).unwrap();
+        let e = s.execute("workflow.dictionaries", &json!({"region": "street"})).unwrap_err().to_string();
+        assert!(e.contains("the steps of region street in system/umcfWorkflow don't run changeDictionary"), "{e}");
+        let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
+        assert!(
+            out.data["notes"][0]
+                .as_str()
+                .unwrap()
+                .contains("region street has coupled patches, but its steps don't run changeDictionary"),
+            "{}",
+            out.data
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

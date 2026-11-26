@@ -69,8 +69,8 @@ pub enum Role {
     Side,
     Top,
     Ground,
-    /// Coupled to a patch of another region (`mappedWall`): a fluid's wall to a solid, or the
-    /// vegetation region's twin of such an air patch.
+    /// Coupled to a patch of another region (`mappedWall`): a fluid's wall to a solid, or a
+    /// vegetation region's wall mapped to its air twin (such a patch, or another wall of the air).
     Coupled,
     /// The vegetation region's patch facing the trees (`air_to_vegetation`).
     Canopy,
@@ -1478,6 +1478,11 @@ fn infer(
                 match air_roles.iter().find(|(n, _)| *n == p.name).map(|(_, r)| *r) {
                     Some(Role::Inlet | Role::Outlet | Role::Side | Role::Top) => Some(Role::Sky),
                     Some(r @ (Role::Ground | Role::Coupled)) => Some(r),
+                    // Mapped to its twin, whose role the air's patch doesn't tell (the tutorials'
+                    // empty `buildings`, a side whose condition isn't read): a wall is coupled,
+                    // an open side the sky.
+                    _ if p.kind == "mappedWall" && partner.is_some() => Some(Role::Coupled),
+                    _ if matches!(p.kind.as_str(), "mapped" | "mappedPatch") && partner.is_some() => Some(Role::Sky),
                     _ => None,
                 }
             }

@@ -123,7 +123,7 @@ named by the description too: a solid's materials, the tree zone.
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
 | A region's `blockMeshDict` (the one its `mesh` reads) | generated from its `blocks` by `mesh.block` ([the workflow](user-guide/workflow.md#blocks)) |
-| `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` |
+| `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` (`changeDictionaryDict` so far: `workflow.dictionaries`) |
 | `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 9) or the user |
 | The materials' entries in `buildingMaterials` (`transportProperties` of each solid) | added with the material from a library of materials with their coefficients, then edited by the user |
 | `Allprepare`, `Allrun`, `Allclean` | generated, for the version in `umcfWorkflow` |

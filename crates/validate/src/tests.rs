@@ -791,6 +791,13 @@ fn couple_groups_and_first_time() {
         "coupleGroup streetAir;\n        samePatch false;",
     );
     assert_eq!(codes(&fs), []);
+    // A number other than 0 is a switch's true.
+    edit(&mut fs, "constant/air/polyMesh/boundary", "samePatch false;", "samePatch 1;");
+    assert!(
+        errors(&fs).iter().any(|d| d.code == "coupling.group" && d.message.contains("`samePatch`")),
+        "{:?}",
+        errors(&fs)
+    );
     let mut fs = case();
     edit(
         &mut fs,

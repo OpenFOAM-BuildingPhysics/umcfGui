@@ -1269,6 +1269,25 @@ static SPECS: &[Spec] = &[
         changed_only: false,
     },
     Spec {
+        id: "workflow.dictionaries",
+        intro: "Writes each region's changeDictionaryDict from the patches' roles and partners in system/umcfWorkflow (Save writes them).",
+        fields: &[
+            field(
+                "region",
+                "Region",
+                Kind::WorkflowRegion,
+                "Left to choose: every region whose steps run changeDictionary",
+            ),
+            field(
+                "replace",
+                "Write over dictionaries edited by hand",
+                Kind::Flag,
+                "Or not written by umcfGui; Save keeps a backup of each",
+            ),
+        ],
+        changed_only: false,
+    },
+    Spec {
         id: "case.new",
         intro: "A new case in a directory of its own, from the urbanMicroclimateFoam tutorials' configuration, opened when written.",
         fields: &[
