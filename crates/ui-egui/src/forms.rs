@@ -1260,7 +1260,7 @@ static SPECS: &[Spec] = &[
                 "type",
                 "Type",
                 Kind::Model,
-                "The type createPatch makes it of where its role doesn't give one (wall); empty: taken away",
+                "The type createPatch makes it of, over the one its role gives (wall for a plain wall); empty: by its role",
             ),
             field(
                 "name",

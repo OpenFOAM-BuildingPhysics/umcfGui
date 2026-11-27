@@ -154,6 +154,14 @@ pub fn targets(d: &Description, only: Option<&str>) -> Result<Vec<Target>, Strin
                             t.regions[0], r.name
                         ));
                     }
+                    let at: HashMap<&str, usize> =
+                        made.iter().enumerate().map(|(i, m)| (m.patch.as_str(), i)).collect();
+                    if let Some((a, b)) = out_of_order(&t.made, &at) {
+                        return Err(format!(
+                            "regions {} and {} are meshed in constant/polyMesh with createPatch, which reads system/createPatchDict for both: they make {a} and {b}, whose sources may overlap, in another order (createPatch gives a face to the last that takes it): list them in the same order",
+                            t.regions[0], r.name
+                        ));
+                    }
                     t.regions.push(r.name.clone());
                 }
             }
@@ -282,9 +290,12 @@ fn items(root: &Dict) -> Result<Option<Vec<There>>, String> {
             Err("it has no patches list, without which createPatch stops".into())
         };
     };
-    let items = match list.value.as_slice() {
-        [Node::List { items, .. }] => items,
-        [Node::Atom(t)] if untold(&t.text) => return Ok(None),
+    let items = match (listed(&list.value), list.value.as_slice()) {
+        (Some(items), _) => items,
+        (None, [Node::Atom(t)]) if untold(&t.text) => return Ok(None),
+        (None, [Node::Atom(_), Node::List { .. }]) => {
+            return Err("its patches list's count isn't the number of its items, at which OpenFOAM stops".into());
+        }
         _ => return Err("its patches isn't a list of dictionaries".into()),
     };
     let one = |d: &Dict, k: &str| match d.get(k).map(|e| e.value.as_slice()) {
@@ -322,15 +333,15 @@ fn items(root: &Dict) -> Result<Option<Vec<There>>, String> {
             .filter(|k| !matches!(k.as_str(), "name" | "patchInfo" | "constructFrom" | "patches" | "set"))
             .collect();
         let told = whole(d);
-        let from = match d.get("patches").map(|e| e.value.as_slice()) {
-            Some([Node::List { items, .. }]) => items
+        let from = match d.get("patches").and_then(|e| listed(&e.value)) {
+            Some(items) => items
                 .iter()
                 .map(|n| match n {
                     Node::Atom(t) => Some(t.text.clone()),
                     _ => None,
                 })
                 .collect(),
-            _ => None,
+            None => None,
         };
         let kind = info_dict.and_then(|p| one(p, "type"));
         let info = info_dict
@@ -378,6 +389,56 @@ fn source_set(from: &[String]) -> Vec<String> {
     v
 }
 
+/// The most patches made whose order is compared, two by two, and the most source lookups
+/// that takes: what a hostile file can't make slow (a description has far fewer).
+pub(crate) const MAX_ORDERED: usize = 256;
+const ORDER_BUDGET: usize = 1 << 20;
+
+/// Two of `made` whose sources may take the same faces (a source both name, or a pattern in
+/// either, which may match what the other names) and whose order `at` (a patch's place
+/// elsewhere) has the other way round: `createPatch` gives a face to the last patch taking it, so
+/// their order decides where the faces they share go. Patches `at` doesn't place aren't
+/// compared; the first [`MAX_ORDERED`] are, within [`ORDER_BUDGET`] lookups.
+fn out_of_order<'a>(made: &'a [Made], at: &HashMap<&str, usize>) -> Option<(&'a str, &'a str)> {
+    let placed: Vec<(&Made, usize, HashSet<String>, bool)> = made
+        .iter()
+        .take(MAX_ORDERED)
+        .filter_map(|m| {
+            let p = at.get(m.patch.as_str())?;
+            let set: HashSet<String> = m.from.iter().map(|f| normal(f)).collect();
+            let pattern = set.iter().any(|s| s.starts_with('"'));
+            Some((m, *p, set, pattern))
+        })
+        .collect();
+    let mut budget = ORDER_BUDGET;
+    for (i, (a, pa, sa, qa)) in placed.iter().enumerate() {
+        for (b, pb, sb, qb) in placed.iter().skip(i + 1) {
+            if pb >= pa {
+                continue;
+            }
+            if *qa || *qb {
+                return Some((&a.patch, &b.patch));
+            }
+            let (small, big) = if sa.len() < sb.len() { (sa, sb) } else { (sb, sa) };
+            budget = budget.checked_sub(small.len().max(1))?;
+            if small.iter().any(|f| big.contains(f)) {
+                return Some((&a.patch, &b.patch));
+            }
+        }
+    }
+    None
+}
+
+/// A list as OpenFOAM reads one: `( … )`, or with its count first (`2 ( … )`), the count the
+/// items'. `None`: neither.
+pub(crate) fn listed(values: &[Node]) -> Option<&[Node]> {
+    match values {
+        [Node::List { items, .. }] => Some(items),
+        [Node::Atom(n), Node::List { items, .. }] if n.text.parse::<usize>().ok() == Some(items.len()) => Some(items),
+        _ => None,
+    }
+}
+
 /// How a `createPatchDict` (`root`, the file's top level) differs from the patches `made`, for
 /// `version`: a patch not made there, made of a set or of other patches (in any order: their
 /// union), of what isn't a list of names, of another type, one made there the description
@@ -389,8 +450,20 @@ fn source_set(from: &[String]) -> Vec<String> {
 pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
     let mut out = Vec::new();
     let directives = root.items.iter().any(|i| matches!(i, Item::Directive { .. } | Item::Macro { .. }));
-    if version == OfVersion::V8 && root.get("pointSync").is_none() && !directives {
-        out.push("it has no pointSync, without which OpenFOAM-8's createPatch stops".to_string());
+    if version == OfVersion::V8 {
+        match root.get("pointSync").map(|e| e.value.as_slice()) {
+            None if !directives => {
+                out.push("it has no pointSync, without which OpenFOAM-8's createPatch stops".to_string());
+            }
+            None => {}
+            // A word or a number: a quoted string isn't a switch to OpenFOAM-8.
+            Some([Node::Atom(t)])
+                if untold(&t.text) || (!t.text.starts_with('"') && umcf_foam_dict::switch(&t.text).is_some()) => {}
+            Some(v) if holds_untold(v) => {}
+            Some(_) => out.push(
+                "its pointSync isn't a switch (true or false), at which OpenFOAM-8's createPatch stops".to_string(),
+            ),
+        }
     }
     let there = match items(root) {
         Ok(Some(t)) => t,
@@ -474,11 +547,31 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
                 shown(&m.from)
             )),
         }
-        if let Some(k) = &t.kind
-            && *k != m.kind
-        {
-            out.push(format!("patch {}: type is {} there, the description makes it {}", m.patch, cut(k), m.kind));
+        match &t.kind {
+            Some(k) if *k != m.kind => {
+                out.push(format!("patch {}: type is {} there, the description makes it {}", m.patch, cut(k), m.kind));
+            }
+            Some(_) => {}
+            None => out.push(format!(
+                "patch {} has no type there (patchInfo), which createPatch needs for a new patch; the description makes it {}",
+                m.patch, m.kind
+            )),
         }
+    }
+    // The order: where two patches' sources may overlap, the last takes the faces they share.
+    // A name given twice is compared by its first item and by its last.
+    let mut first_at: HashMap<&str, usize> = HashMap::with_capacity(there.len());
+    let mut last_at: HashMap<&str, usize> = HashMap::with_capacity(there.len());
+    for (i, t) in there.iter().enumerate() {
+        if let Some(n) = t.name.as_deref() {
+            first_at.entry(n).or_insert(i);
+            last_at.insert(n, i);
+        }
+    }
+    if let Some((a, b)) = out_of_order(made, &first_at).or_else(|| out_of_order(made, &last_at)) {
+        out.push(format!(
+            "patches {a} and {b}, whose sources may overlap, are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it)"
+        ));
     }
     let mut said: HashSet<&str> = HashSet::new();
     for t in &there {
@@ -514,11 +607,27 @@ pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
     }
     for e in root.entries() {
         match e.key() {
-            "FoamFile" | "patches" => {}
+            "FoamFile" => match e.dict() {
+                Some(h) => {
+                    for k in h.entries().map(|x| x.key()) {
+                        if !matches!(k, "version" | "format" | "class" | "location" | "object") {
+                            out.push(format!("its FoamFile {}", cut(k)));
+                            if out.len() > 2 * MAX_KEPT {
+                                break;
+                            }
+                        }
+                    }
+                    if h.items.iter().any(|i| !matches!(i, Item::Entry(_))) {
+                        out.push("its FoamFile's macro or directive".to_string());
+                    }
+                }
+                None => out.push("its FoamFile, which isn't a dictionary".to_string()),
+            },
+            "patches" => {}
             "pointSync" if version == OfVersion::V12 => {}
             "pointSync" => {
                 let off = match e.value.as_slice() {
-                    [Node::Atom(t)] => umcf_foam_dict::switch(&t.text) == Some(false),
+                    [Node::Atom(t)] => !t.text.starts_with('"') && umcf_foam_dict::switch(&t.text) == Some(false),
                     _ => false,
                 };
                 if !off {
@@ -526,6 +635,11 @@ pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
                 }
             }
             k => out.push(format!("its {}", cut(k))),
+        }
+        if out.len() > 2 * MAX_KEPT {
+            out.truncate(MAX_KEPT);
+            out.push("and more".to_string());
+            return out;
         }
     }
     let there = match items(root) {
@@ -611,10 +725,83 @@ pub fn source_ok(t: &str) -> bool {
             t.len() >= 2
                 && !inner.is_empty()
                 && inner.len() <= 255
-                && !inner.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '\\'))
+                && !inner.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '\\' | '{' | '}'))
+                && (!pattern(inner) || regex_ok(inner))
         }
         None => false,
     }
+}
+
+/// Whether `re` is a regular expression OpenFOAM compiles, as far as can be told without its
+/// regex library (POSIX extended, `regcomp` with `REG_EXTENDED`, in OpenFOAM-8 and -12): brackets
+/// closed and not empty, no bracket inside one, ranges upward, groups closed and not starting
+/// `(?`, a repeat (`* + ?`) only after what it repeats. Stricter than both, never looser:
+/// what may not compile is refused.
+fn regex_ok(re: &str) -> bool {
+    // A leading `(?i)` is OpenFOAM's: case ignored, the rest compiled.
+    let re = match re.strip_prefix("(?i)") {
+        Some("") => return false,
+        Some(rest) => rest,
+        None => re,
+    };
+    let mut depth = 0usize;
+    // Whether what came last can be repeated.
+    let mut atom = false;
+    let mut chars = re.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '[' => {
+                if chars.peek() == Some(&'^') {
+                    chars.next();
+                }
+                let mut class: Vec<char> = Vec::new();
+                loop {
+                    match chars.next() {
+                        None | Some('[') => return false,
+                        Some(']') => break,
+                        Some(x) => class.push(x),
+                    }
+                }
+                if class.is_empty() {
+                    return false;
+                }
+                let mut i = 1;
+                while i + 1 < class.len() {
+                    // Upward, and not chained (`a-c-e`, which POSIX leaves undefined).
+                    if class.get(i) == Some(&'-')
+                        && (class.get(i - 1) > class.get(i + 1) || class.get(i + 2) == Some(&'-'))
+                    {
+                        return false;
+                    }
+                    i += 1;
+                }
+                atom = true;
+            }
+            ']' => return false,
+            '(' => {
+                if chars.peek() == Some(&'?') {
+                    return false;
+                }
+                depth += 1;
+                atom = false;
+            }
+            ')' => {
+                let Some(d) = depth.checked_sub(1) else { return false };
+                depth = d;
+                atom = true;
+            }
+            '|' => atom = false,
+            '*' | '+' | '?' => {
+                if !atom {
+                    return false;
+                }
+                atom = false;
+            }
+            '^' | '$' => atom = false,
+            _ => atom = true,
+        }
+    }
+    depth == 0
 }
 
 fn shown(from: &[String]) -> String {

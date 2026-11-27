@@ -21,7 +21,7 @@ pub struct PatchEdit {
     /// The patches `createPatch` makes it of (names, or patterns); `Some(vec![])` takes them
     /// away.
     pub from: Option<Vec<String>>,
-    /// Its type where the role doesn't give it; `Some(None)` takes it away.
+    /// Its type, over the one its role gives; `Some(None)` takes it away.
     pub kind: Option<Option<String>>,
 }
 
@@ -270,7 +270,7 @@ impl Case {
         for f in from.iter().flatten() {
             if !crate::create_patch::source_ok(f) {
                 return Err(refuse(format!(
-                    "from `{f}` is neither a plain OpenFOAM name nor a pattern without quotes, backslashes or spaces inside"
+                    "from `{f}` is neither a plain OpenFOAM name nor a pattern OpenFOAM compiles, without quotes, backslashes, braces or spaces inside"
                 )));
             }
         }
@@ -354,7 +354,14 @@ impl Case {
                 d.region(region)?
                     .patches
                     .iter()
-                    .find(|q| q.from.iter().any(|f| crate::create_patch::normal(f) == patch))
+                    .find(|q| {
+                        // The patch renamed is made of what this call gives it, where it gives it.
+                        let from = match &from {
+                            Some(given) if q.name == patch => given,
+                            _ => &q.from,
+                        };
+                        from.iter().any(|f| crate::create_patch::normal(f) == patch)
+                    })
                     .map(|q| q.name.clone())
             }) {
                 return Err(refuse(format!(

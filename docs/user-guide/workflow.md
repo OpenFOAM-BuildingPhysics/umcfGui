@@ -235,9 +235,11 @@ canopy (`"region1_to_.*"`, a pattern). `workflow.dictionaries` writes, for each,
   -region`, after the mesh);
 - `system/createPatchDict` for the regions whose mesh runs `createPatch` in `constant/polyMesh`
   (`mesh ( blockMesh … createPatch … )`, the 3×3 cases' air and vegetation): one dictionary for
-  them all, so they must make the same patches.
+  them all, so they must make the same patches, in the same order where their sources may
+  overlap.
 
-Each patch is `{ name …; patchInfo { type …; } constructFrom patches; patches ( … ); }`, its
+The patches are written in the order the region lists them, which is `createPatch`'s: a face two
+patches' sources take goes to the last. Each patch is `{ name …; patchInfo { type …; } constructFrom patches; patches ( … ); }`, its
 sources as the description has them: a bare name one patch, a quoted one a pattern, as
 `createPatch` reads them (`"region.1"` is a regular expression, `region.1` a name). Its type is the
 patch's own `type` where it has one, else `wall` for a wall's role (`ground`, `coupled`,
@@ -247,7 +249,8 @@ stops without it (OpenFOAM-12 doesn't read it). A region whose steps run `create
 patch to make gets an empty list. Refused, writing none: a patch made by `createPatch` with
 neither a role nor a type, one in a region whose mesh and steps run no `createPatch`, a region
 whose mesh and steps both run it with patches to make (which makes them isn't told), regions
-meshed in `constant/polyMesh` that make different patches, a patch name that isn't a plain
+meshed in `constant/polyMesh` that make different patches (or in another order, where their
+sources may overlap), a patch name that isn't a plain
 OpenFOAM word, and a region's name that can't be a directory on every system. Generated, written
 over and kept as the `changeDictionaryDict`s are (`replace`, `region`: that region's, and the
 shared one when its mesh runs `createPatch`; a problem in another region's doesn't stop it,
@@ -256,17 +259,19 @@ can't (a patch it doesn't make or makes in two items, one made of a face set or 
 can't hold, an entry of `patchInfo` besides its `type`, such as a cyclic's `neighbourPatch`, or
 another key of the item, a key given twice in an item or its `patchInfo` (OpenFOAM merges them),
 a value given by a macro or directive, a `patches` list that can't be
-read whole, another entry at its top, OpenFOAM-8's `pointSync` that isn't off) isn't written over,
+read whole, another entry at its top or in its `FoamFile` header, OpenFOAM-8's `pointSync` that isn't off) isn't written over,
 even with `replace`: it is left as it is and noted, naming what would be lost, for
 `workflow.patch` to give the patches their `from` and `type`, or for the file to be mended by
 hand; the other dictionaries are written.
 
 The case check (`workflow.create-patch`) says when one is missing, doesn't load, was written by
 umcfGui otherwise than it writes now, or is the case's own and makes the patches otherwise: a
-patch not made there, made of a set or of other patches, of another type, one made there that
-the description doesn't make, and the `patches` list or OpenFOAM-8's `pointSync` missing, which
-`createPatch` stops without; and the case's own that makes the patches as the description does
-but holds what it can't (as above). The sources are compared as `createPatch` takes them, their
+patch not made there, made of a set or of other patches, of another type or of none, one made
+there that the description doesn't make, two whose sources may overlap made in the other order
+(`createPatch` gives a face to the last patch that takes it), the `patches` list or OpenFOAM-8's
+`pointSync` missing, which `createPatch` stops without, a `pointSync` that isn't a switch, and a
+`patches` list whose count isn't its items'; and the case's own that shows no difference but
+holds what it can't (as above). The sources are compared as `createPatch` takes them, their
 union in any order (of both items, for a patch given twice); a name or type quoted or not is the same, and so is a source quoted that OpenFOAM
 doesn't take for a pattern (`"defaultFaces"`: one without `. * + ? ( ) | [ ]` or a character a
 word can't hold); what a macro or directive gives isn't compared (an item holding one is
@@ -353,8 +358,8 @@ settings
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
-| `from` | the patches `createPatch` makes the patch of, as its dictionary has them: a bare name one patch (`( defaultFaces )`), a quoted one a pattern (`( "region1_to_.*" )`), without quotes, backslashes or spaces inside; in the [`createPatchDict`](#the-createpatchdicts) its region's mesh or steps read. A patch another of its region is made of (by name) isn't renamed with `workflow.patch` (refused: change the `from` first) |
-| `type` | the type `createPatch` makes it of where its role doesn't give it (`wall` for a plain wall without a partner, as the street canyons' `buildings`); read only with `from`; not a mapped type, which `changeDictionary` gives from the role and partner. |
+| `from` | the patches `createPatch` makes the patch of, as its dictionary has them: a bare name one patch (`( defaultFaces )`), a quoted one a pattern (`( "region1_to_.*" )`), without quotes, backslashes, braces or spaces inside and a pattern OpenFOAM compiles; in the [`createPatchDict`](#the-createpatchdicts) its region's mesh or steps read. A patch another of its region is made of (by name) isn't renamed with `workflow.patch` (refused: change the `from` first) |
+| `type` | the type `createPatch` makes it of, over the one its role gives (`wall` for a plain wall without a partner, as the street canyons' `buildings`); read only with `from`; not a mapped type, which `changeDictionary` gives from the role and partner. |
 | `materials` | a solid region's materials, in the order of its `buildingMaterials`: each the name of the cell zone built of it, with its `model` (`buildingMaterialModel`); the coefficients stay in the region's `transportProperties` |
 | `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
 | `settings` | the [settings](#settings) the case chose; one that isn't there is the default |
@@ -399,11 +404,15 @@ The import reads the `createPatchDict` each region's `createPatch` reads (its ow
 run it, else `system/createPatchDict` when its mesh does): each patch made of others
 (`constructFrom patches`) gets their names as its `from`, and its type as `type` where its role
 wouldn't give that one (a patch the region doesn't have is added without a role). One made of a
-face set, whose name or sources aren't plain (a pattern with a backslash, a quote or a space
-inside), part of which a macro or directive gives, with other keys or a key given twice, or whose `patchInfo` isn't a
+face set, whose name or sources aren't plain (a pattern with a backslash, a quote, a brace or a
+space inside, or one that may not compile), part of which a macro or directive gives, with other keys or a key given twice, or whose `patchInfo` isn't a
 dictionary or holds more than a plain type (a mapped or cyclic patch's entries), is noted and
 left out (the first 20 of a dictionary,
-then a count, for each region reading it); a patch given in two items is made of both items' sources. A region whose mesh
+then a count, for each region reading it); a patch given in two items is made of both items' sources (noted where
+it comes again after a patch whose sources may overlap its own: the faces they share may then go
+elsewhere, and `workflow.dictionaries` leaves the file as it is). The patches made keep the
+dictionary's order among the region's patches (`createPatch` gives a face to the last patch that
+takes it); the order of the patches in the description is the order the dictionary makes them in. A region whose mesh
 and steps both run `createPatch` is noted: only its own dictionary is read.
 
 
@@ -1230,7 +1239,7 @@ its comments kept.
 | Command | What |
 |---|---|
 | `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, regions meshed from its [background](#background), the radiation) is listed. A solid with materials stays one |
-| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`), `from` (`["defaultFaces"]`: names, and patterns, a name that isn't a plain word quoted for it, `"\"region.1\""` given quoted; none with a quote, backslash or space inside), `type` (not a mapped one; only with `from`, which isn't taken away while it is there) and `name`. `null` takes a role, partner, `from` or `type` away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
+| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`), `from` (`["defaultFaces"]`: names, and patterns, a name that isn't a plain word quoted for it, `"\"region.1\""` given quoted; none with a quote, backslash, brace or space inside, nor a pattern that may not compile; at most 64), `type` (not a mapped one; only with `from`, which isn't taken away while it is there) and `name`. `null` takes a role, partner, `from` or `type` away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
 | `workflow.material` | `region` (a solid), `material` (the name of its cell zone) and `model` (its `buildingMaterialModel`, or `null`), or `remove: true` |
 
 ```sh

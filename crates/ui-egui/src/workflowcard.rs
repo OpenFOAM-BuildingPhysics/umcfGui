@@ -274,7 +274,10 @@ impl App {
         for (k, v) in now {
             let was = f.initial.get(k).cloned().unwrap_or_default();
             let value = f.values.get(k).cloned().unwrap_or_default();
-            if !f.extra.contains_key(k) && value == was {
+            // Sources apart by spaces: the same as filled in however they are spaced.
+            let unchanged =
+                if k == "from" { value.split_whitespace().eq(was.split_whitespace()) } else { value == was };
+            if !f.extra.contains_key(k) && unchanged {
                 f.values.insert(k, v.clone());
             } else if !f.extra.contains_key(k)
                 && let Some(merged) = merge_table(k, &value, &was, &v)

@@ -101,7 +101,10 @@ fn the_cases_create_patch_dictionaries_are_generated_from_their_descriptions() {
             Err(e) => panic!("{dir}: {e}"),
         };
         for t in &targets {
-            let Some(own) = case.dict(&t.path) else { continue };
+            let Some(own) = case.dict(&t.path) else {
+                assert_ne!(case.exists(&t.path), Some(true), "{dir}: {} is there but doesn't load", t.path);
+                continue;
+            };
             assert_eq!(
                 create_patch::differences(&own.root, &t.made, version),
                 Vec::<String>::new(),

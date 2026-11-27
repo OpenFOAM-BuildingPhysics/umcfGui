@@ -180,6 +180,9 @@ fn create_patch(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
             None if case.exists(&t.path) == Some(true) => {
                 "doesn't load as a dictionary (or is a directory): workflow.dictionaries can't write it until it is mended or removed".to_string()
             }
+            None if case.exists(&t.path).is_none() => {
+                "not loaded, and whether it is there isn't known (the case lists more files than are read): createPatch reads it".to_string()
+            }
             None => format!("not there, and createPatch reads it: workflow.dictionaries writes it from the patches of {whose} {regions}"),
             Some(doc) => {
                 let have = doc.to_string();
@@ -202,7 +205,7 @@ fn create_patch(case: &Case, d: &Description, out: &mut Vec<Diagnostic>) {
                                 CREATE,
                                 &t.path,
                                 format!(
-                                    "the case's own makes the patches as the description of {whose} {regions} does, but holds what it can't ({}), which workflow.dictionaries leaves as it is: describe it (workflow.patch) or mend the file by hand",
+                                    "the case's own shows no difference from the patches the description of {whose} {regions} makes (what a macro or directive gives isn't compared), but holds what it can't ({}), which workflow.dictionaries leaves as it is: describe it (workflow.patch) or mend the file by hand",
                                     cp::summary(&kept)
                                 ),
                             );

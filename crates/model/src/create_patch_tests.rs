@@ -353,7 +353,8 @@ fn what_the_description_cant_hold_is_kept() {
         ["a directive or macro at its top", "its patches given by a macro or directive"]
     );
     // A list that can't be read, a value from a macro, other entries at the top.
-    assert_eq!(kept("pointSync false; patches 1 ( { name cyc; } );"), ["its patches list, which can't be read whole"]);
+    assert_eq!(kept("pointSync false; patches 2 ( { name cyc; } );"), ["its patches list, which can't be read whole"]);
+    assert_eq!(kept("pointSync false; patches 1 ( { name cyc; } );"), ["patch cyc"]);
     assert_eq!(kept("pointSync false; patches ( cyc );"), ["its patches list, which can't be read whole"]);
     assert_eq!(
         kept(&own.replace("patchInfo { type wall; }", "patchInfo $wallInfo;")),
@@ -442,4 +443,170 @@ fn keys_given_twice_are_kept_and_summaries_count() {
     assert_eq!(summary(&["a".into()]), "a");
     assert_eq!(summary(&["a".into(), "b".into(), "c".into()]), "a, and 2 more");
     assert_eq!(summary(&["a".into(), "b".into(), "and more".into()]), "a, and more");
+}
+
+#[test]
+fn counted_lists_switches_and_missing_types_are_read_as_openfoam_does() {
+    let made = targets(&three(), None).unwrap().remove(1).made;
+    let diff = |text: &str, v| differences(&root(text), &made, v);
+    let own = "pointSync false; patches 1 ( { name buildings; patchInfo { type wall; } constructFrom patches; patches 1 (defaultFaces); } );";
+    assert_eq!(diff(own, OfVersion::V8), Vec::<String>::new());
+    assert_eq!(kept(&root(own), &made, OfVersion::V8), Vec::<String>::new());
+    assert_eq!(
+        diff(&own.replace("patches 1 ( {", "patches 2 ( {"), OfVersion::V12),
+        ["its patches list's count isn't the number of its items, at which OpenFOAM stops"]
+    );
+    assert_eq!(
+        diff(&own.replace("pointSync false", "pointSync banana"), OfVersion::V8),
+        ["its pointSync isn't a switch (true or false), at which OpenFOAM-8's createPatch stops"]
+    );
+    assert_eq!(diff(&own.replace("pointSync false", "pointSync $sync"), OfVersion::V8), Vec::<String>::new());
+    // A quoted string isn't a switch to OpenFOAM-8, nor off.
+    let quoted = own.replace("pointSync false", "pointSync \"false\"");
+    assert_eq!(
+        diff(&quoted, OfVersion::V8),
+        ["its pointSync isn't a switch (true or false), at which OpenFOAM-8's createPatch stops"]
+    );
+    assert_eq!(kept(&root(&quoted), &made, OfVersion::V8), ["its pointSync, which isn't off"]);
+    assert_eq!(diff(&own.replace("pointSync false", "pointSync banana"), OfVersion::V12), Vec::<String>::new());
+    assert_eq!(
+        diff(&own.replace("{ type wall; }", "{ }"), OfVersion::V12),
+        [
+            "patch buildings has no type there (patchInfo), which createPatch needs for a new patch; the description makes it wall"
+        ]
+    );
+}
+
+#[test]
+fn the_order_decides_where_shared_faces_go() {
+    let two = |names: [&str; 2]| {
+        let mut d = three();
+        d.regions.truncate(2);
+        for r in &mut d.regions {
+            r.patches = names
+                .iter()
+                .map(|n| PatchDesc { kind: Some("wall".into()), ..patch(n, None, &["defaultFaces"]) })
+                .collect();
+        }
+        d
+    };
+    assert!(targets(&two(["roof", "wall"]), None).is_ok());
+    let mut d = two(["roof", "wall"]);
+    d.regions[1].patches.reverse();
+    let e = targets(&d, None).unwrap_err();
+    assert!(e.contains("they make roof and wall, whose sources may overlap, in another order"), "{e}");
+    // Sources that can't overlap: any order.
+    let mut d = two(["roof", "wall"]);
+    for r in &mut d.regions {
+        r.patches[1].from = vec!["other".into()];
+    }
+    d.regions[1].patches.reverse();
+    assert!(targets(&d, None).is_ok());
+    // The case's own in the other order: a difference, not what the description can't hold.
+    let made = targets(&two(["roof", "wall"]), None).unwrap().remove(0).made;
+    let item =
+        |n: &str| format!("{{ name {n}; patchInfo {{ type wall; }} constructFrom patches; patches (defaultFaces); }}");
+    let other = format!("patches ( {} {} );", item("wall"), item("roof"));
+    assert_eq!(
+        differences(&root(&other), &made, OfVersion::V12),
+        [
+            "patches roof and wall, whose sources may overlap, are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it)"
+        ]
+    );
+    assert_eq!(kept(&root(&other), &made, OfVersion::V12), Vec::<String>::new());
+    let same = format!("patches ( {} {} );", item("roof"), item("wall"));
+    assert_eq!(differences(&root(&same), &made, OfVersion::V12), Vec::<String>::new());
+    // A name given again after the other: its last item decides too.
+    let again = format!("patches ( {} {} {} );", item("roof"), item("wall"), item("roof"));
+    assert_eq!(differences(&root(&again), &made, OfVersion::V12).len(), 1);
+    // Many patches: compared two by two among the first few hundred only, quickly.
+    let many = |reversed: bool| {
+        let mut d = three();
+        d.regions.truncate(2);
+        for (k, r) in d.regions.iter_mut().enumerate() {
+            r.patches = (0..20_000)
+                .map(|i| PatchDesc { kind: Some("wall".into()), ..patch(&format!("p{i}"), None, &[&format!("s{i}")]) })
+                .collect();
+            if reversed && k == 1 {
+                r.patches.reverse();
+            }
+        }
+        d
+    };
+    assert!(targets(&many(true), None).is_ok());
+    assert!(targets(&many(false), None).is_ok());
+    // Wide patches, the other order, no source shared: within a budget of lookups.
+    let wide = |reversed: bool| {
+        let mut d = three();
+        d.regions.truncate(2);
+        for (k, r) in d.regions.iter_mut().enumerate() {
+            r.patches = (0..MAX_ORDERED)
+                .map(|i| {
+                    let from: Vec<String> = (0..2_000).map(|j| format!("s{i}_{j}")).collect();
+                    PatchDesc { kind: Some("wall".into()), from, ..patch(&format!("p{i}"), None, &[]) }
+                })
+                .collect();
+            if reversed && k == 1 {
+                r.patches.reverse();
+            }
+        }
+        d
+    };
+    assert!(targets(&wide(true), None).is_ok());
+    // A shared source among the first: still found at that scale.
+    let mut d = wide(true);
+    for r in &mut d.regions {
+        for p in r.patches.iter_mut().filter(|p| p.name == "p0" || p.name == "p1") {
+            p.from.push("shared".into());
+        }
+    }
+    assert!(targets(&d, None).unwrap_err().contains("p0 and p1"), "{:?}", targets(&d, None));
+}
+
+#[test]
+fn a_header_of_its_own_is_kept_and_long_lists_are_capped() {
+    let made = targets(&three(), None).unwrap().remove(1).made;
+    let own = "FoamFile { version 2.0; format ascii; class dictionary; object createPatchDict; note \"mine\"; } patches ( { name buildings; patchInfo { type wall; } constructFrom patches; patches (defaultFaces); } );";
+    assert_eq!(kept(&root(own), &made, OfVersion::V12), ["its FoamFile note"]);
+    let header: String = (0..1000).map(|i| format!("k{i} 1; ")).collect();
+    let k = kept(&root(&format!("FoamFile {{ {header} }} patches ( );")), &[], OfVersion::V12);
+    assert_eq!(k.len(), MAX_KEPT + 1);
+    let many: String = (0..1000).map(|i| format!("k{i} 1; ")).collect();
+    let k = kept(&root(&format!("{many} patches ( );")), &[], OfVersion::V12);
+    assert_eq!(k.len(), MAX_KEPT + 1);
+    assert_eq!(k.last().map(String::as_str), Some("and more"));
+}
+
+#[test]
+fn patterns_that_may_not_compile_are_refused() {
+    for ok in [
+        "defaultFaces",
+        "\"defaultFaces\"",
+        "\"region1_to_.*\"",
+        "\"(a|b)_wall\"",
+        "\"[a-c]x+\"",
+        "\"wall.?\"",
+        "\"(?i)wall.*\"",
+    ] {
+        assert!(source_ok(ok), "{ok}");
+    }
+    for bad in [
+        "\"[\"",
+        "\"(a\"",
+        "\"a)\"",
+        "\"*a\"",
+        "\"a**\"",
+        "\"[]\"",
+        "\"[z-a]\"",
+        "\"(?:a)\"",
+        "\"a{2}\"",
+        "\"|*\"",
+        "\"(?i)\"",
+        "\"(?i)*\"",
+        "\"[a-c-e]\"",
+    ] {
+        assert!(!source_ok(bad), "{bad}");
+    }
+    assert_eq!(source_token("["), "\"[\"");
+    assert!(!source_ok(&source_token("[")));
 }

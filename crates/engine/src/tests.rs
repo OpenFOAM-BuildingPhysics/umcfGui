@@ -5283,6 +5283,15 @@ fn each_create_patch_dict_is_written_from_the_patches_made_of_others() {
         let before = std::fs::read_to_string(&hand).unwrap();
         let out = s.execute("workflow.dictionaries", &json!({"replace": true})).unwrap();
         assert!(out.message.contains("1 createPatchDict left as it is"), "{}", out.message);
+        // Left as it is isn't the same as described already.
+        assert!(!out.message.starts_with("the dictionaries are as"), "{}", out.message);
+        assert_eq!(out.data["left"], json!(["system/air/createPatchDict"]), "{}", out.data);
+        let many: Vec<String> = (0..65).map(|i| format!("p{i}")).collect();
+        let e = s
+            .execute("workflow.patch", &json!({"region": "air", "patch": "buildings", "from": many}))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("from names more than 64 patches"), "{e}");
         assert!(
             out.data["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains(
                 "system/air/createPatchDict holds what system/umcfWorkflow doesn't (patch cyc): left as it is"
@@ -5308,7 +5317,7 @@ fn each_create_patch_dict_is_written_from_the_patches_made_of_others() {
         s.execute("case.open", &json!({ "path": dir.to_str().unwrap(), "discard": true })).unwrap();
         let more = said(&mut s);
         assert!(
-            more.len() == 1 && more[0].contains("makes the patches as the description of region air does, but holds what it can't (its writeCyclicMatch)"),
+            more.len() == 1 && more[0].contains("shows no difference from the patches the description of region air makes (what a macro or directive gives isn't compared), but holds what it can't (its writeCyclicMatch)"),
             "{more:?}"
         );
         std::fs::write(&hand, fresh).unwrap();

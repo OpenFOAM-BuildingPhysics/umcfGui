@@ -134,7 +134,9 @@ umcfGui from the case workflow; edit the workflow, not this file.`), and is writ
 whenever the description changes. One edited by hand since it was generated is kept in the backup
 before it is replaced, and the change says which. A `blockMeshDict` carries a checksum in its
 header too: one edited since (or not written by umcfGui) is written over only when asked
-(`replace`). The fields of `0.orig` are not generated files:
+(`replace`). A `createPatchDict` holding what the description can't (a patch's `inGroups`, a
+cyclic patch, a face set) isn't written over even with `replace`, as that would be lost: edit
+it by hand, or move into the description what it holds. The fields of `0.orig` are not generated files:
 they are edited in place (below).
 
 ## The fields

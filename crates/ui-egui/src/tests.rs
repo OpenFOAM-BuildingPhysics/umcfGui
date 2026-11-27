@@ -3475,6 +3475,18 @@ fn the_workflow_cards_fill_from_the_description() {
         form(&h).params(spec).unwrap(),
         json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "top"}})
     );
+    // Sources only spaced otherwise than filled in are unchanged: they follow a command run
+    // meanwhile.
+    h.state_mut()
+        .act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "from": ["defaultFaces"]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["from"], "defaultFaces");
+    set(&mut h, "from", "  defaultFaces ");
+    h.state_mut().act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "from": ["other"]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["from"], "other");
     // Leaving a patch the description has for a name it doesn't: what was filled in from it is
     // cleared, not carried over; what was typed (the partner) stays.
     set(&mut h, "patch", "street_to_air2");

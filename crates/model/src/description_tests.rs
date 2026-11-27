@@ -1085,3 +1085,39 @@ fn import_reads_what_create_patch_makes() {
     assert_eq!(notes.iter().filter(|n| n.contains("by a macro or directive")).count(), 20);
     assert!(notes.iter().any(|n| n.contains("and 10 more notes like these")), "{notes:#?}");
 }
+
+#[test]
+fn import_keeps_the_order_create_patch_makes_the_patches_in() {
+    let made = |name: &str, from: &str| {
+        format!("{{ name {name}; patchInfo {{ type wall; }} constructFrom patches; patches ({from}); }}")
+    };
+    let order = |items: &[String]| {
+        let dict =
+            format!("{}patches {} ( {} );\n", header("dictionary", "createPatchDict"), items.len(), items.join(" "));
+        let c = Case::open(&canyon().with("system/air/createPatchDict", dict)).unwrap();
+        let (d, notes) = Description::import(&c);
+        let names: Vec<String> = d.region("air").unwrap().patches.iter().map(|p| p.name.clone()).collect();
+        let at = |n: &str| names.iter().position(|x| x == n).unwrap();
+        (at("top") < at("ground"), names.len(), notes)
+    };
+    let (top_first, n, notes) = order(&[made("top", "x"), made("ground", "x")]);
+    assert!(top_first, "{notes:#?}");
+    let (top_first, m, _) = order(&[made("ground", "x"), made("top", "x")]);
+    assert!(!top_first);
+    assert_eq!(n, m);
+    // Given again after a patch whose sources may overlap: noted.
+    let (_, _, notes) = order(&[made("top", "x"), made("ground", "y"), made("top", "y")]);
+    assert!(
+        notes.iter().any(|n| n.contains("patch top: system/air/createPatchDict makes it again after ground")),
+        "{notes:#?}"
+    );
+    // A hostile file: a patch of many sources, then many repeats after it: bounded, noted once.
+    let wide: Vec<String> = (0..50_000).map(|i| format!("s{i}")).collect();
+    let mut items = vec![made("top", "x"), made("ground", &wide.join(" "))];
+    items.extend((0..5_000).map(|i| made("top", &format!("s{i}"))));
+    let (_, _, notes) = order(&items);
+    assert_eq!(notes.iter().filter(|n| n.contains("makes it again after ground")).count(), 1, "{notes:#?}");
+    // Only the repeat's own sources count: the first item's go where they would anyway.
+    let (_, _, notes) = order(&[made("top", "x"), made("ground", "x"), made("top", "y")]);
+    assert!(notes.iter().all(|n| !n.contains("makes it again")), "{notes:#?}");
+}

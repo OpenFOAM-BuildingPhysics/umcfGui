@@ -567,5 +567,11 @@ fn a_patch_another_is_made_of_isnt_renamed() {
     c.describe_patch("air", "buildings", &edit(Some(vec!["\"odd\"".into()]), None)).unwrap();
     let e = c.describe_patch("air", "odd", &edit(None, Some("even"))).unwrap_err().to_string();
     assert!(e.contains("is made of odd (from)"), "{e}");
+    // The patch renamed is made of what the call gives it: of itself refused, of another not.
+    c.describe_patch("air", "buildings", &edit(Some(vec!["defaultFaces".into()]), None)).unwrap();
+    let e = c.describe_patch("air", "odd", &edit(Some(vec!["odd".into()]), Some("even"))).unwrap_err().to_string();
+    assert!(e.contains("patch odd of region air is made of odd (from)"), "{e}");
+    c.describe_patch("air", "odd", &edit(Some(vec!["odd".into()]), None)).unwrap();
+    c.describe_patch("air", "odd", &edit(Some(vec!["west".into()]), Some("even"))).unwrap();
     let _ = fs;
 }

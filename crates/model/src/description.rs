@@ -127,7 +127,7 @@ pub struct PatchDesc {
     /// `createPatchDict`; a name that isn't a plain word is a pattern. Empty: not made by
     /// `createPatch`.
     pub from: Vec<String>,
-    /// Its type where the role doesn't give it (`type`), for `createPatch` to make it of: a
+    /// Its type (`type`) for `createPatch` to make it of, over the one its role gives: a
     /// plain wall without a partner (the canyons' `buildings`), or a patch without a role.
     pub kind: Option<String>,
 }
@@ -1082,7 +1082,8 @@ fn read_split(
 }
 
 /// What a patch's `from` is, said when it isn't.
-const FROM_IS: &str = "is ( patch … ): names, or quoted patterns without quotes, backslashes or spaces inside";
+const FROM_IS: &str =
+    "is ( patch … ): names, or quoted patterns OpenFOAM compiles, without quotes, backslashes, braces or spaces inside";
 
 fn read_patch(name: &str, body: &umcf_foam_dict::Dict, at: &str, problem: &mut impl FnMut(&str, String)) -> PatchDesc {
     let mut p = PatchDesc { name: name.to_string(), role: None, partner: None, from: Vec::new(), kind: None };
@@ -1533,9 +1534,9 @@ fn import_created(
         notes.push(format!("region {name}: createPatch runs, but {path} isn't there or doesn't load"));
         return;
     };
-    let items = match doc.root.get("patches").map(|e| e.value.as_slice()) {
-        Some([Node::List { items, .. }]) => items,
-        _ => {
+    let items = match doc.root.get("patches").and_then(|e| crate::create_patch::listed(&e.value)) {
+        Some(items) => items,
+        None => {
             notes.push(format!("region {name}: {path} has no plain patches list: what createPatch makes isn't told"));
             return;
         }
@@ -1548,6 +1549,12 @@ fn import_created(
     let mut at: HashMap<String, usize> = patches.iter().enumerate().map(|(i, p)| (p.name.clone(), i)).collect();
     // A name given twice is one patch of both items' sources, as createPatch makes it.
     let mut imported: HashMap<String, HashSet<String>> = HashMap::new();
+    // The patches made, in the dictionary's order (createPatch's: the last to take a face has it).
+    let mut order: Vec<String> = Vec::new();
+    let mut order_at: HashMap<String, usize> = HashMap::new();
+    let mut normals: HashMap<String, (HashSet<String>, bool)> = HashMap::new();
+    let mut again: HashSet<String> = HashSet::new();
+    let mut budget: usize = 1 << 20;
     let mut noted = 0usize;
     let mut note = |notes: &mut Vec<String>, m: String| {
         noted += 1;
@@ -1623,18 +1630,18 @@ fn import_created(
                 continue;
             }
         }
-        let from: Option<Vec<String>> = match body.get("patches").map(|e| e.value.as_slice()) {
-            Some([Node::List { items, .. }]) => items
-                .iter()
-                .map(|n| atom(n).filter(|t| crate::create_patch::source_ok(t)).map(str::to_string))
-                .collect(),
-            _ => None,
-        };
+        let from: Option<Vec<String>> =
+            body.get("patches").and_then(|e| crate::create_patch::listed(&e.value)).and_then(|items| {
+                items
+                    .iter()
+                    .map(|n| atom(n).filter(|t| crate::create_patch::source_ok(t)).map(str::to_string))
+                    .collect()
+            });
         let Some(from) = from.filter(|f| !f.is_empty()) else {
             note(
                 notes,
                 format!(
-                    "region {name}, patch {patch}: the patches {path} makes it of aren't a plain list of names and quoted patterns (without quotes, backslashes or spaces inside): left out"
+                    "region {name}, patch {patch}: the patches {path} makes it of aren't a plain list of names and quoted patterns OpenFOAM compiles (without quotes, backslashes, braces or spaces inside): left out"
                 ),
             );
             continue;
@@ -1663,6 +1670,47 @@ fn import_created(
         let own = |role: Option<Role>| {
             given.clone().filter(|t| role.is_none_or(|r| crate::create_patch::role_type(kind, r) != t.as_str()))
         };
+        // A name given again after others: its sources join the first item's place, which
+        // changes where faces it shares with those between go (the last to take a face has it).
+        // (Only the repeat's own sources: those of the first item go where they would anyway.)
+        // Bounded (a hostile file): the patches after its first item, a few hundred, by their
+        // sources as createPatch takes them, a budget of lookups for the whole dictionary; a
+        // patch noted once.
+        if let Some(first) = order_at.get(&patch)
+            && order.last() != Some(&patch)
+            && budget > 0
+            && !again.contains(&patch)
+        {
+            let own: HashSet<String> = from.iter().map(|f| crate::create_patch::normal(f)).collect();
+            let own_pattern = own.iter().any(|f| f.starts_with('"'));
+            let between = order.iter().skip(first.saturating_add(1)).take(crate::create_patch::MAX_ORDERED);
+            let shared = between.filter_map(|n| normals.get(n).map(|s| (n, s))).find(|(_, (theirs, pattern))| {
+                let (small, big) = if theirs.len() < own.len() { (theirs, &own) } else { (&own, theirs) };
+                budget = budget.saturating_sub(small.len().max(1));
+                own_pattern || *pattern || small.iter().any(|f| big.contains(f))
+            });
+            if let Some((q, _)) = shared {
+                let q = q.clone();
+                again.insert(patch.clone());
+                note(
+                    notes,
+                    format!(
+                        "region {name}, patch {patch}: {path} makes it again after {q}, whose sources may overlap: the description makes it of both items' sources in the first one's place, which may give the faces they share to {q} (workflow.dictionaries leaves the file as it is)"
+                    ),
+                );
+            }
+        }
+        if !imported.contains_key(&patch) {
+            order_at.insert(patch.clone(), order.len());
+            order.push(patch.clone());
+        }
+        // Its sources as createPatch takes them, and whether one is a pattern, for the above.
+        let entry = normals.entry(patch.clone()).or_default();
+        for f in &from {
+            let n = crate::create_patch::normal(f);
+            entry.1 |= n.starts_with('"');
+            entry.0.insert(n);
+        }
         match at.get(&patch).and_then(|i| patches.get_mut(*i)) {
             Some(p) if imported.contains_key(&patch) => {
                 let seen = imported.entry(patch).or_default();
@@ -1698,6 +1746,26 @@ fn import_created(
     if noted > MAX_CREATE_NOTES {
         notes.push(format!("region {name}: {path}: and {} more notes like these", noted - MAX_CREATE_NOTES));
     }
+    // The patches made take the places of those made, in the dictionary's order; the others
+    // keep the mesh's.
+    // (A name the mesh gives twice: the copy made of others only, the other left where it is.)
+    // In one pass (many patches in a hostile file).
+    let mut slotted: HashSet<String> = HashSet::new();
+    let mut rest: Vec<Option<PatchDesc>> = Vec::with_capacity(patches.len());
+    let mut made: HashMap<String, PatchDesc> = HashMap::new();
+    for p in std::mem::take(patches) {
+        if imported.contains_key(&p.name) && !p.from.is_empty() && slotted.insert(p.name.clone()) {
+            rest.push(None);
+            made.insert(p.name.clone(), p);
+        } else {
+            rest.push(Some(p));
+        }
+    }
+    let mut placed: Vec<PatchDesc> = order.iter().filter_map(|n| made.remove(n)).collect();
+    placed.extend(made.into_values());
+    let mut placed = placed.into_iter();
+    patches.extend(rest.into_iter().filter_map(|p| p.or_else(|| placed.next())));
+    patches.extend(placed);
 }
 
 /// The most notes [`import_created`] gives for one dictionary before it counts the rest.
