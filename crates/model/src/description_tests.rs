@@ -1105,19 +1105,22 @@ fn import_keeps_the_order_create_patch_makes_the_patches_in() {
     let (top_first, m, _) = order(&[made("ground", "x"), made("top", "x")]);
     assert!(!top_first);
     assert_eq!(n, m);
-    // Given again after a patch whose sources may overlap: noted.
+    // Given again after another patch: noted (any two may take the same faces).
     let (_, _, notes) = order(&[made("top", "x"), made("ground", "y"), made("top", "y")]);
     assert!(
         notes.iter().any(|n| n.contains("patch top: system/air/createPatchDict makes it again after ground")),
         "{notes:#?}"
     );
-    // A hostile file: a patch of many sources, then many repeats after it: bounded, noted once.
+    // A hostile file: a patch of many sources, then many repeats after it: noted once.
     let wide: Vec<String> = (0..50_000).map(|i| format!("s{i}")).collect();
     let mut items = vec![made("top", "x"), made("ground", &wide.join(" "))];
     items.extend((0..5_000).map(|i| made("top", &format!("s{i}"))));
     let (_, _, notes) = order(&items);
     assert_eq!(notes.iter().filter(|n| n.contains("makes it again after ground")).count(), 1, "{notes:#?}");
-    // Only the repeat's own sources count: the first item's go where they would anyway.
-    let (_, _, notes) = order(&[made("top", "x"), made("ground", "x"), made("top", "y")]);
+    // Sources by other names: one may be a patch group holding the other's, noted too.
+    let (_, _, notes) = order(&[made("top", "x"), made("ground", "facades"), made("top", "y")]);
+    assert!(notes.iter().any(|n| n.contains("makes it again after ground")), "{notes:#?}");
+    // Given again right after itself: one item, nothing between.
+    let (_, _, notes) = order(&[made("top", "x"), made("top", "y"), made("ground", "x")]);
     assert!(notes.iter().all(|n| !n.contains("makes it again")), "{notes:#?}");
 }

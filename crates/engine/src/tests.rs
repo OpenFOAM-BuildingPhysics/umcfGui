@@ -5286,6 +5286,14 @@ fn each_create_patch_dict_is_written_from_the_patches_made_of_others() {
         // Left as it is isn't the same as described already.
         assert!(!out.message.starts_with("the dictionaries are as"), "{}", out.message);
         assert_eq!(out.data["left"], json!(["system/air/createPatchDict"]), "{}", out.data);
+        // Nothing written: no step in the history, what can be redone stays.
+        s.execute("workflow.patch", &json!({"region": "air", "patch": "extra", "role": "side"})).unwrap();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        let undo = s.history().0.len();
+        let again = s.execute("workflow.dictionaries", &json!({"region": "air", "replace": true})).unwrap();
+        assert!(again.unchanged, "{}", again.message);
+        assert!(s.can_redo());
+        assert_eq!(s.history().0.len(), undo);
         let many: Vec<String> = (0..65).map(|i| format!("p{i}")).collect();
         let e = s
             .execute("workflow.patch", &json!({"region": "air", "patch": "buildings", "from": many}))

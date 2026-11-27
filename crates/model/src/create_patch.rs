@@ -156,9 +156,9 @@ pub fn targets(d: &Description, only: Option<&str>) -> Result<Vec<Target>, Strin
                     }
                     let at: HashMap<&str, usize> =
                         made.iter().enumerate().map(|(i, m)| (m.patch.as_str(), i)).collect();
-                    if let Some((a, b)) = out_of_order(&t.made, &at) {
+                    if let Some((a, b)) = out_of_order(t.made.iter().map(|m| m.patch.as_str()), &at) {
                         return Err(format!(
-                            "regions {} and {} are meshed in constant/polyMesh with createPatch, which reads system/createPatchDict for both: they make {a} and {b}, whose sources may overlap, in another order (createPatch gives a face to the last that takes it): list them in the same order",
+                            "regions {} and {} are meshed in constant/polyMesh with createPatch, which reads system/createPatchDict for both: they make {a} and {b} in another order (createPatch gives a face to the last that takes it, and any two may take the same faces: a source both name, a pattern, a patch group): list them in the same order",
                             t.regions[0], r.name
                         ));
                     }
@@ -389,42 +389,27 @@ fn source_set(from: &[String]) -> Vec<String> {
     v
 }
 
-/// The most patches made whose order is compared, two by two, and the most source lookups
-/// that takes: what a hostile file can't make slow (a description has far fewer).
-pub(crate) const MAX_ORDERED: usize = 256;
-const ORDER_BUDGET: usize = 1 << 20;
-
-/// Two of `made` whose sources may take the same faces (a source both name, or a pattern in
-/// either, which may match what the other names) and whose order `at` (a patch's place
-/// elsewhere) has the other way round: `createPatch` gives a face to the last patch taking it, so
-/// their order decides where the faces they share go. Patches `at` doesn't place aren't
-/// compared; the first [`MAX_ORDERED`] are, within [`ORDER_BUDGET`] lookups.
-fn out_of_order<'a>(made: &'a [Made], at: &HashMap<&str, usize>) -> Option<(&'a str, &'a str)> {
-    let placed: Vec<(&Made, usize, HashSet<String>, bool)> = made
-        .iter()
-        .take(MAX_ORDERED)
-        .filter_map(|m| {
-            let p = at.get(m.patch.as_str())?;
-            let set: HashSet<String> = m.from.iter().map(|f| normal(f)).collect();
-            let pattern = set.iter().any(|s| s.starts_with('"'));
-            Some((m, *p, set, pattern))
-        })
-        .collect();
-    let mut budget = ORDER_BUDGET;
-    for (i, (a, pa, sa, qa)) in placed.iter().enumerate() {
-        for (b, pb, sb, qb) in placed.iter().skip(i + 1) {
-            if pb >= pa {
+/// Two patches of `seq` (the names of a dictionary's items, in its order) that `at` (a patch's
+/// place elsewhere) has the other way round, or a name given again around another: the one
+/// before, and the one after. `createPatch` gives a face to the last item that takes it, and any
+/// two may take the same faces (a source both name, a pattern, a name that is a patch group, as
+/// OpenFOAM takes a name no patch has), so their order decides where those faces go. Items `at`
+/// doesn't place aren't compared (one the description doesn't make is a difference of its own,
+/// and a name given again around it isn't seen as such); one given again right after itself is
+/// one item. In one pass.
+fn out_of_order<'a>(seq: impl IntoIterator<Item = &'a str>, at: &HashMap<&str, usize>) -> Option<(&'a str, &'a str)> {
+    let mut last: Option<(&str, usize)> = None;
+    for n in seq {
+        let Some(&p) = at.get(n) else { continue };
+        if let Some((m, q)) = last {
+            if m == n {
                 continue;
             }
-            if *qa || *qb {
-                return Some((&a.patch, &b.patch));
-            }
-            let (small, big) = if sa.len() < sb.len() { (sa, sb) } else { (sb, sa) };
-            budget = budget.checked_sub(small.len().max(1))?;
-            if small.iter().any(|f| big.contains(f)) {
-                return Some((&a.patch, &b.patch));
+            if p <= q {
+                return Some((m, n));
             }
         }
+        last = Some((n, p));
     }
     None
 }
@@ -558,19 +543,12 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
             )),
         }
     }
-    // The order: where two patches' sources may overlap, the last takes the faces they share.
-    // A name given twice is compared by its first item and by its last.
-    let mut first_at: HashMap<&str, usize> = HashMap::with_capacity(there.len());
-    let mut last_at: HashMap<&str, usize> = HashMap::with_capacity(there.len());
-    for (i, t) in there.iter().enumerate() {
-        if let Some(n) = t.name.as_deref() {
-            first_at.entry(n).or_insert(i);
-            last_at.insert(n, i);
-        }
-    }
-    if let Some((a, b)) = out_of_order(made, &first_at).or_else(|| out_of_order(made, &last_at)) {
+    // The order: any two may take the same faces, and the last takes them (a name given again
+    // around another is in both places).
+    let at: HashMap<&str, usize> = made.iter().enumerate().map(|(i, m)| (m.patch.as_str(), i)).collect();
+    if let Some((a, b)) = out_of_order(there.iter().filter_map(|t| t.name.as_deref()), &at) {
         out.push(format!(
-            "patches {a} and {b}, whose sources may overlap, are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it)"
+            "patches {a} and {b} are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it, and any two may take the same faces: a source both name, a pattern, a patch group)"
         ));
     }
     let mut said: HashSet<&str> = HashSet::new();
@@ -660,7 +638,8 @@ pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
             out.push("a patch without a plain name".to_string());
             continue;
         };
-        let sources_held = t.from.as_ref().is_some_and(|f| f.iter().all(|s| source_ok(s)));
+        // An empty list moves no faces, which the description can't say (an empty from makes none).
+        let sources_held = t.from.as_ref().is_some_and(|f| !f.is_empty() && f.iter().all(|s| source_ok(s)));
         let shown = cut(n);
         let first = seen.insert(n);
         if !names.contains(n) {
@@ -732,9 +711,13 @@ pub fn source_ok(t: &str) -> bool {
     }
 }
 
+/// The character classes POSIX names (`[[:digit:]]`), which every `regcomp` knows.
+const POSIX_CLASSES: [&str; 12] =
+    ["alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit"];
+
 /// Whether `re` is a regular expression OpenFOAM compiles, as far as can be told without its
 /// regex library (POSIX extended, `regcomp` with `REG_EXTENDED`, in OpenFOAM-8 and -12): brackets
-/// closed and not empty, no bracket inside one, ranges upward, groups closed and not starting
+/// closed and not empty, no bracket inside one but a POSIX class (`[:digit:]`), ranges upward, groups closed and not starting
 /// `(?`, a repeat (`* + ?`) only after what it repeats. Stricter than both, never looser:
 /// what may not compile is refused.
 fn regex_ok(re: &str) -> bool {
@@ -754,12 +737,31 @@ fn regex_ok(re: &str) -> bool {
                 if chars.peek() == Some(&'^') {
                     chars.next();
                 }
-                let mut class: Vec<char> = Vec::new();
+                // Its members: a character, or a POSIX class (`[:digit:]`, None), which no range
+                // may end at.
+                let mut class: Vec<Option<char>> = Vec::new();
                 loop {
                     match chars.next() {
-                        None | Some('[') => return false,
+                        None => return false,
                         Some(']') => break,
-                        Some(x) => class.push(x),
+                        Some('[') => {
+                            if chars.next() != Some(':') {
+                                return false;
+                            }
+                            let mut name = String::new();
+                            loop {
+                                match chars.next() {
+                                    Some(':') => break,
+                                    Some(x) if x.is_ascii_lowercase() && name.len() < 8 => name.push(x),
+                                    _ => return false,
+                                }
+                            }
+                            if chars.next() != Some(']') || !POSIX_CLASSES.contains(&name.as_str()) {
+                                return false;
+                            }
+                            class.push(None);
+                        }
+                        Some(x) => class.push(Some(x)),
                     }
                 }
                 if class.is_empty() {
@@ -767,11 +769,16 @@ fn regex_ok(re: &str) -> bool {
                 }
                 let mut i = 1;
                 while i + 1 < class.len() {
-                    // Upward, and not chained (`a-c-e`, which POSIX leaves undefined).
-                    if class.get(i) == Some(&'-')
-                        && (class.get(i - 1) > class.get(i + 1) || class.get(i + 2) == Some(&'-'))
-                    {
-                        return false;
+                    // Upward, between characters, and not chained (`a-c-e`, which POSIX leaves
+                    // undefined).
+                    if class.get(i) == Some(&Some('-')) {
+                        match (class.get(i - 1), class.get(i + 1)) {
+                            (Some(Some(lo)), Some(Some(hi))) if lo <= hi => {}
+                            _ => return false,
+                        }
+                        if class.get(i + 2) == Some(&Some('-')) {
+                            return false;
+                        }
                     }
                     i += 1;
                 }

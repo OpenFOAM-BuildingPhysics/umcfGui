@@ -163,7 +163,9 @@ fn described(
 fn undescribed(f: &mut FormState, k: &'static str) {
     let was = f.initial.get(k).cloned().unwrap_or_default();
     let value = f.values.get(k).cloned().unwrap_or_default();
-    if value == was {
+    // Sources by their names: spacing alone isn't an edit (as when rebased).
+    let unchanged = if k == "from" { value.split_whitespace().eq(was.split_whitespace()) } else { value == was };
+    if unchanged {
         f.values.insert(k, String::new());
     } else if let Some(merged) = merge_table(k, &value, &was, "") {
         f.values.insert(k, merged);

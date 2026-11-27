@@ -157,11 +157,12 @@ fn what_cant_be_written_is_refused() {
     assert!(e.contains("patch `two words` of region street isn't a plain OpenFOAM word"), "{e}");
     let e = refused(&|d| d.regions[2].name = "con".into());
     assert!(e.contains("region `con` can't be a directory on every system"), "{e}");
-    // The same patches in another order are the same.
+    // The same patches in another order: refused, as any two may take the same faces (a
+    // name may be a patch group).
     let mut d = three();
     d.regions[0].patches.push(patch("roofs", Some(Role::Coupled), &["x"]));
     d.regions[1].patches.insert(0, patch("roofs", Some(Role::Coupled), &["x"]));
-    assert!(targets(&d, None).is_ok());
+    assert!(targets(&d, None).unwrap_err().contains("in another order"));
 }
 
 #[test]
@@ -494,14 +495,16 @@ fn the_order_decides_where_shared_faces_go() {
     let mut d = two(["roof", "wall"]);
     d.regions[1].patches.reverse();
     let e = targets(&d, None).unwrap_err();
-    assert!(e.contains("they make roof and wall, whose sources may overlap, in another order"), "{e}");
-    // Sources that can't overlap: any order.
+    assert!(e.contains("they make roof and wall in another order"), "{e}");
+    // Sources by other names: a name may be a patch group holding the other, so any order
+    // other than the same is refused too.
     let mut d = two(["roof", "wall"]);
     for r in &mut d.regions {
-        r.patches[1].from = vec!["other".into()];
+        r.patches[1].from = vec!["facades".into()];
     }
-    d.regions[1].patches.reverse();
     assert!(targets(&d, None).is_ok());
+    d.regions[1].patches.reverse();
+    assert!(targets(&d, None).unwrap_err().contains("they make roof and wall in another order"));
     // The case's own in the other order: a difference, not what the description can't hold.
     let made = targets(&two(["roof", "wall"]), None).unwrap().remove(0).made;
     let item =
@@ -510,57 +513,52 @@ fn the_order_decides_where_shared_faces_go() {
     assert_eq!(
         differences(&root(&other), &made, OfVersion::V12),
         [
-            "patches roof and wall, whose sources may overlap, are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it)"
+            "patches wall and roof are made in the other order there, or one is given again around the other (createPatch gives a face to the last that takes it, and any two may take the same faces: a source both name, a pattern, a patch group)"
         ]
     );
     assert_eq!(kept(&root(&other), &made, OfVersion::V12), Vec::<String>::new());
     let same = format!("patches ( {} {} );", item("roof"), item("wall"));
     assert_eq!(differences(&root(&same), &made, OfVersion::V12), Vec::<String>::new());
-    // A name given again after the other: its last item decides too.
+    // A name given again right after itself: one item.
+    let twice = format!("patches ( {} {} {} );", item("roof"), item("roof"), item("wall"));
+    assert_eq!(differences(&root(&twice), &made, OfVersion::V12), Vec::<String>::new());
+    // A name given again around the other: the faces both take may go elsewhere, whatever the
+    // places of each name's first and last items.
     let again = format!("patches ( {} {} {} );", item("roof"), item("wall"), item("roof"));
     assert_eq!(differences(&root(&again), &made, OfVersion::V12).len(), 1);
-    // Many patches: compared two by two among the first few hundred only, quickly.
-    let many = |reversed: bool| {
+    let at =
+        |n: &str, s: &str| format!("{{ name {n}; patchInfo {{ type wall; }} constructFrom patches; patches ({s}); }}");
+    let made = vec![
+        Made { patch: "roof".into(), kind: "wall".into(), from: vec!["x".into(), "y".into()] },
+        Made { patch: "wall".into(), kind: "wall".into(), from: vec!["y".into(), "z".into()] },
+    ];
+    let around =
+        format!("patches ( {} {} {} {} );", at("roof", "x"), at("wall", "y"), at("roof", "y"), at("wall", "z"));
+    let d = differences(&root(&around), &made, OfVersion::V12);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].starts_with("patches wall and roof are made in the other order there"), "{d:?}");
+    // An empty list moves no faces, which the description can't say: kept.
+    let empty = format!("patches ( {} {} );", at("roof", ""), at("wall", "y z"));
+    assert_eq!(kept(&root(&empty), &made, OfVersion::V12), ["patch roof's sources"]);
+    // Many patches, in one pass: the other order found wherever it is.
+    let many = |swap: Option<(usize, usize)>| {
         let mut d = three();
         d.regions.truncate(2);
         for (k, r) in d.regions.iter_mut().enumerate() {
             r.patches = (0..20_000)
                 .map(|i| PatchDesc { kind: Some("wall".into()), ..patch(&format!("p{i}"), None, &[&format!("s{i}")]) })
                 .collect();
-            if reversed && k == 1 {
-                r.patches.reverse();
+            if let Some((i, j)) = swap
+                && k == 1
+            {
+                r.patches.swap(i, j);
             }
         }
         d
     };
-    assert!(targets(&many(true), None).is_ok());
-    assert!(targets(&many(false), None).is_ok());
-    // Wide patches, the other order, no source shared: within a budget of lookups.
-    let wide = |reversed: bool| {
-        let mut d = three();
-        d.regions.truncate(2);
-        for (k, r) in d.regions.iter_mut().enumerate() {
-            r.patches = (0..MAX_ORDERED)
-                .map(|i| {
-                    let from: Vec<String> = (0..2_000).map(|j| format!("s{i}_{j}")).collect();
-                    PatchDesc { kind: Some("wall".into()), from, ..patch(&format!("p{i}"), None, &[]) }
-                })
-                .collect();
-            if reversed && k == 1 {
-                r.patches.reverse();
-            }
-        }
-        d
-    };
-    assert!(targets(&wide(true), None).is_ok());
-    // A shared source among the first: still found at that scale.
-    let mut d = wide(true);
-    for r in &mut d.regions {
-        for p in r.patches.iter_mut().filter(|p| p.name == "p0" || p.name == "p1") {
-            p.from.push("shared".into());
-        }
-    }
-    assert!(targets(&d, None).unwrap_err().contains("p0 and p1"), "{:?}", targets(&d, None));
+    assert!(targets(&many(None), None).is_ok());
+    assert!(targets(&many(Some((300, 301))), None).unwrap_err().contains("they make p300 and p301 in another order"));
+    assert!(targets(&many(Some((0, 19_999))), None).is_err());
 }
 
 #[test]
@@ -587,6 +585,8 @@ fn patterns_that_may_not_compile_are_refused() {
         "\"[a-c]x+\"",
         "\"wall.?\"",
         "\"(?i)wall.*\"",
+        "\"wall[[:digit:]]+\"",
+        "\"[^[:space:]a-c]x\"",
     ] {
         assert!(source_ok(ok), "{ok}");
     }
@@ -604,6 +604,11 @@ fn patterns_that_may_not_compile_are_refused() {
         "\"(?i)\"",
         "\"(?i)*\"",
         "\"[a-c-e]\"",
+        "\"[[:digits:]]\"",
+        "\"[[:digit:]\"",
+        "\"[[:digit]]\"",
+        "\"[[=a=]]\"",
+        "\"[a-[:digit:]]\"",
     ] {
         assert!(!source_ok(bad), "{bad}");
     }

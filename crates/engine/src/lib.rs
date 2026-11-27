@@ -85,11 +85,21 @@ impl std::fmt::Debug for CommandSpec {
 pub struct Outcome {
     pub message: String,
     pub data: Value,
+    /// Whether the case is as it was: an undoable command that changed nothing adds no step to
+    /// the history, and what can be redone stays.
+    pub unchanged: bool,
 }
 
 impl Outcome {
     pub fn new(message: impl Into<String>, data: Value) -> Self {
-        Outcome { message: message.into(), data }
+        Outcome { message: message.into(), data, unchanged: false }
+    }
+
+    /// The same, for a case left as it was ([`Outcome::unchanged`]).
+    #[must_use]
+    pub fn unchanged(mut self) -> Self {
+        self.unchanged = true;
+        self
     }
 }
 
@@ -443,7 +453,7 @@ impl Session {
             }
             Ok(Ok(outcome)) => {
                 self.prune_selection();
-                if let Some(case) = before {
+                if let Some(case) = before.filter(|_| !outcome.unchanged) {
                     let edit = Edit { command: spec.id, label: spec.label, detail: detail(params) };
                     self.undo.push(Step { case, edit });
                     if self.undo.len() > UNDO_DEPTH {

@@ -163,7 +163,7 @@ patches by their roles and points them at their partners, as the
 - Generated, with a checksum: one umcfGui wrote and nobody changed since is written over as the
   description changes. One edited by hand or not written by umcfGui is written over only with
   `replace: true`; `case.save` keeps it in `.umcfgui/backup/` and `edit.undo` takes the write
-  back. One that doesn't load (or a directory there), a symbolic link and one that is the same
+  back (a run that writes nothing adds no step to the history and leaves what can be redone). One that doesn't load (or a directory there), a symbolic link and one that is the same
   file as another dictionary aren't written over, and nothing is written then. `region` writes
   one region's only; a region with coupled patches whose steps don't run `changeDictionary` is
   noted.
@@ -235,8 +235,9 @@ canopy (`"region1_to_.*"`, a pattern). `workflow.dictionaries` writes, for each,
   -region`, after the mesh);
 - `system/createPatchDict` for the regions whose mesh runs `createPatch` in `constant/polyMesh`
   (`mesh ( blockMesh … createPatch … )`, the 3×3 cases' air and vegetation): one dictionary for
-  them all, so they must make the same patches, in the same order where their sources may
-  overlap.
+  them all, so they must make the same patches, in the same order (any two may take the same
+  faces: a source both name, a pattern, or a name that is a patch group, which OpenFOAM takes a
+  name no patch has for).
 
 The patches are written in the order the region lists them, which is `createPatch`'s: a face two
 patches' sources take goes to the last. Each patch is `{ name …; patchInfo { type …; } constructFrom patches; patches ( … ); }`, its
@@ -249,8 +250,7 @@ stops without it (OpenFOAM-12 doesn't read it). A region whose steps run `create
 patch to make gets an empty list. Refused, writing none: a patch made by `createPatch` with
 neither a role nor a type, one in a region whose mesh and steps run no `createPatch`, a region
 whose mesh and steps both run it with patches to make (which makes them isn't told), regions
-meshed in `constant/polyMesh` that make different patches (or in another order, where their
-sources may overlap), a patch name that isn't a plain
+meshed in `constant/polyMesh` that make different patches (or in another order), a patch name that isn't a plain
 OpenFOAM word, and a region's name that can't be a directory on every system. Generated, written
 over and kept as the `changeDictionaryDict`s are (`replace`, `region`: that region's, and the
 shared one when its mesh runs `createPatch`; a problem in another region's doesn't stop it,
@@ -267,8 +267,8 @@ hand; the other dictionaries are written.
 The case check (`workflow.create-patch`) says when one is missing, doesn't load, was written by
 umcfGui otherwise than it writes now, or is the case's own and makes the patches otherwise: a
 patch not made there, made of a set or of other patches, of another type or of none, one made
-there that the description doesn't make, two whose sources may overlap made in the other order
-(`createPatch` gives a face to the last patch that takes it), the `patches` list or OpenFOAM-8's
+there that the description doesn't make, two made in the other order, or one given again around another
+(`createPatch` gives a face to the last patch that takes it, and any two may take the same faces), the `patches` list or OpenFOAM-8's
 `pointSync` missing, which `createPatch` stops without, a `pointSync` that isn't a switch, and a
 `patches` list whose count isn't its items'; and the case's own that shows no difference but
 holds what it can't (as above). The sources are compared as `createPatch` takes them, their
@@ -409,7 +409,7 @@ space inside, or one that may not compile), part of which a macro or directive g
 dictionary or holds more than a plain type (a mapped or cyclic patch's entries), is noted and
 left out (the first 20 of a dictionary,
 then a count, for each region reading it); a patch given in two items is made of both items' sources (noted where
-it comes again after a patch whose sources may overlap its own: the faces they share may then go
+it comes again after another patch, whose faces may be the same, through a source both name, a pattern or a patch group: the faces they share may then go
 elsewhere, and `workflow.dictionaries` leaves the file as it is). The patches made keep the
 dictionary's order among the region's patches (`createPatch` gives a face to the last patch that
 takes it); the order of the patches in the description is the order the dictionary makes them in. A region whose mesh

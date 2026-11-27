@@ -1551,10 +1551,9 @@ fn import_created(
     let mut imported: HashMap<String, HashSet<String>> = HashMap::new();
     // The patches made, in the dictionary's order (createPatch's: the last to take a face has it).
     let mut order: Vec<String> = Vec::new();
-    let mut order_at: HashMap<String, usize> = HashMap::new();
-    let mut normals: HashMap<String, (HashSet<String>, bool)> = HashMap::new();
+    // For a name given again after another: the name of the item before.
+    let mut last: Option<String> = None;
     let mut again: HashSet<String> = HashSet::new();
-    let mut budget: usize = 1 << 20;
     let mut noted = 0usize;
     let mut note = |notes: &mut Vec<String>, m: String| {
         noted += 1;
@@ -1670,46 +1669,25 @@ fn import_created(
         let own = |role: Option<Role>| {
             given.clone().filter(|t| role.is_none_or(|r| crate::create_patch::role_type(kind, r) != t.as_str()))
         };
-        // A name given again after others: its sources join the first item's place, which
-        // changes where faces it shares with those between go (the last to take a face has it).
-        // (Only the repeat's own sources: those of the first item go where they would anyway.)
-        // Bounded (a hostile file): the patches after its first item, a few hundred, by their
-        // sources as createPatch takes them, a budget of lookups for the whole dictionary; a
-        // patch noted once.
-        if let Some(first) = order_at.get(&patch)
-            && order.last() != Some(&patch)
-            && budget > 0
-            && !again.contains(&patch)
+        // A name given again after another: its sources join the first item's place, which
+        // changes where the faces it shares with those between go (the last to take a face has
+        // it), and any two may take the same faces (a source both name, a pattern, a name that is
+        // a patch group). A patch noted once (a later repeat comes after this one); in one pass.
+        if let Some(q) = last.as_ref().filter(|q| imported.contains_key(&patch) && **q != patch)
+            && again.insert(patch.clone())
         {
-            let own: HashSet<String> = from.iter().map(|f| crate::create_patch::normal(f)).collect();
-            let own_pattern = own.iter().any(|f| f.starts_with('"'));
-            let between = order.iter().skip(first.saturating_add(1)).take(crate::create_patch::MAX_ORDERED);
-            let shared = between.filter_map(|n| normals.get(n).map(|s| (n, s))).find(|(_, (theirs, pattern))| {
-                let (small, big) = if theirs.len() < own.len() { (theirs, &own) } else { (&own, theirs) };
-                budget = budget.saturating_sub(small.len().max(1));
-                own_pattern || *pattern || small.iter().any(|f| big.contains(f))
-            });
-            if let Some((q, _)) = shared {
-                let q = q.clone();
-                again.insert(patch.clone());
-                note(
-                    notes,
-                    format!(
-                        "region {name}, patch {patch}: {path} makes it again after {q}, whose sources may overlap: the description makes it of both items' sources in the first one's place, which may give the faces they share to {q} (workflow.dictionaries leaves the file as it is)"
-                    ),
-                );
-            }
+            note(
+                notes,
+                format!(
+                    "region {name}, patch {patch}: {path} makes it again after {q}: the description makes it of both items' sources in the first one's place, which may give faces they share to {q} (any two may take the same faces: a source both name, a pattern, a patch group; workflow.dictionaries leaves the file as it is)"
+                ),
+            );
+        }
+        if last.as_ref() != Some(&patch) {
+            last = Some(patch.clone());
         }
         if !imported.contains_key(&patch) {
-            order_at.insert(patch.clone(), order.len());
             order.push(patch.clone());
-        }
-        // Its sources as createPatch takes them, and whether one is a pattern, for the above.
-        let entry = normals.entry(patch.clone()).or_default();
-        for f in &from {
-            let n = crate::create_patch::normal(f);
-            entry.1 |= n.starts_with('"');
-            entry.0.insert(n);
         }
         match at.get(&patch).and_then(|i| patches.get_mut(*i)) {
             Some(p) if imported.contains_key(&patch) => {
