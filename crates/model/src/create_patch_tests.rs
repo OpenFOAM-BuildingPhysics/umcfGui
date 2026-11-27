@@ -587,6 +587,8 @@ fn patterns_that_may_not_compile_are_refused() {
         "\"(?i)wall.*\"",
         "\"wall[[:digit:]]+\"",
         "\"[^[:space:]a-c]x\"",
+        "\"wall[a-c-]\"",
+        "\"[^a-c-]\"",
     ] {
         assert!(source_ok(ok), "{ok}");
     }
@@ -604,6 +606,7 @@ fn patterns_that_may_not_compile_are_refused() {
         "\"(?i)\"",
         "\"(?i)*\"",
         "\"[a-c-e]\"",
+        "\"[a-c--]\"",
         "\"[[:digits:]]\"",
         "\"[[:digit:]\"",
         "\"[[:digit]]\"",

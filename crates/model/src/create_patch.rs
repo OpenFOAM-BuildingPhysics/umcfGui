@@ -776,7 +776,8 @@ fn regex_ok(re: &str) -> bool {
                             (Some(Some(lo)), Some(Some(hi))) if lo <= hi => {}
                             _ => return false,
                         }
-                        if class.get(i + 2) == Some(&Some('-')) {
+                        // (A hyphen ending the bracket is a character: `[a-c-]`.)
+                        if class.get(i + 2) == Some(&Some('-')) && class.get(i + 3).is_some() {
                             return false;
                         }
                     }
