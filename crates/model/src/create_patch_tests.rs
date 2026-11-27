@@ -618,3 +618,86 @@ fn patterns_that_may_not_compile_are_refused() {
     assert_eq!(source_token("["), "\"[\"");
     assert!(!source_ok(&source_token("[")));
 }
+
+#[test]
+fn numbers_mixed_items_missing_names_and_header_macros_are_seen() {
+    let made = |from: &str| vec![Made { patch: "roof".into(), kind: "wall".into(), from: vec![from.into()] }];
+    let item = |s: &str| format!("{{ name roof; patchInfo {{ type wall; }} constructFrom patches; patches ({s}); }}");
+    let diff = |text: &str, m: &[Made]| differences(&root(text), m, OfVersion::V12);
+    // A quoted name compares as the name, but not one read bare as a number.
+    assert_eq!(diff(&format!("patches ( {} );", item("west")), &made("\"west\"")), Vec::<String>::new());
+    assert_eq!(diff(&format!("patches ( {} );", item("123")), &made("\"123\"")).len(), 1);
+    assert_eq!(diff(&format!("patches ( {} );", item("\"123\"")), &made("\"123\"")), Vec::<String>::new());
+    assert_eq!(diff(&format!("patches ( {} );", item("-x")), &made("\"-x\"")).len(), 1);
+    assert_eq!(diff(&format!("patches ( {} );", item("\"-x\"")), &made("\"-x\"")), Vec::<String>::new());
+    // A name made of patches and of a set: a difference, not left uncompared.
+    let set = "{ name roof; patchInfo { type wall; } constructFrom set; set roofFaces; }";
+    let d = diff(&format!("patches ( {} {set} );", item("west")), &made("west"));
+    assert_eq!(
+        d,
+        [
+            "patch roof is made in two ways there (items of other patches and of a set or zone), the description makes it of ( west )"
+        ]
+    );
+    // Two items of no patches, or one without a constructFrom: said as for one item.
+    let zone = "{ name roof; patchInfo { type wall; } constructFrom zone; zone z; }";
+    assert_eq!(
+        diff(&format!("patches ( {set} {zone} );"), &made("west")),
+        ["patch roof is made of a set there, the description makes it of ( west )"]
+    );
+    let bare = "{ name roof; patchInfo { type wall; } patches (west); }";
+    assert_eq!(
+        diff(&format!("patches ( {bare} {} );", item("west")), &made("west")),
+        ["patch roof has no constructFrom there, which createPatch stops without"]
+    );
+    let d = diff(&format!("patches ( {} {bare} );", item("west")), &made("west"));
+    assert_eq!(d, ["patch roof has no constructFrom there, which createPatch stops without"]);
+    // In any order: with a set too, and around an item a macro holds part of.
+    let untold = "{ name roof; $more constructFrom patches; patches (west); }";
+    for items in [
+        format!("{} {set} {bare}", item("west")),
+        format!("{} {bare} {set}", item("west")),
+        format!("{bare} {untold} {set}"),
+    ] {
+        let d = diff(&format!("patches ( {items} );"), &made("west"));
+        assert_eq!(d, ["patch roof has no constructFrom there, which createPatch stops without"], "{items}");
+    }
+    // Of a set or a zone only: said whatever the order, and beside an item a macro holds part of.
+    for items in [format!("{set} {zone}"), format!("{zone} {set}"), format!("{untold} {set}")] {
+        assert_eq!(
+            diff(&format!("patches ( {items} );"), &made("west")),
+            ["patch roof is made of a set there, the description makes it of ( west )"],
+            "{items}"
+        );
+    }
+    let two = "patch roof is made in two ways there (items of other patches and of a set or zone), the description makes it of ( west )";
+    for items in [format!("{} {untold} {set}", item("west")), format!("{} {set} {untold}", item("west"))] {
+        assert_eq!(diff(&format!("patches ( {items} );"), &made("west")), [two], "{items}");
+    }
+    // An item read whole without a name stops createPatch: said, and what isn't made is too.
+    let d = diff("patches ( { constructFrom patches; patches (west); } );", &made("west"));
+    assert_eq!(
+        d,
+        [
+            "an item there has no name (a word), at which createPatch stops",
+            "patch roof isn't made there, the description makes it of ( west )"
+        ]
+    );
+    // One whose name a macro may give: nothing said of what isn't made.
+    assert_eq!(
+        diff("patches ( { $named constructFrom patches; patches (west); } );", &made("west")),
+        Vec::<String>::new()
+    );
+    // A header value from a macro is kept; a literal one isn't.
+    let header = |loc: &str| {
+        format!(
+            "FoamFile {{ version 2.0; format ascii; class dictionary; location {loc}; object createPatchDict; }} patches ( {} );",
+            item("west")
+        )
+    };
+    assert_eq!(
+        kept(&root(&header("$caseLocation")), &made("west"), OfVersion::V12),
+        ["its FoamFile location, given by a macro or directive"]
+    );
+    assert_eq!(kept(&root(&header("\"system\"")), &made("west"), OfVersion::V12), Vec::<String>::new());
+}

@@ -70,8 +70,10 @@ fn the_cases_change_dictionaries_are_generated_from_their_descriptions() {
 /// Each `createPatchDict` the description's meshes and steps read, generated from what
 /// `workflow.import` reads of the case's own (`umcf_model::create_patch`), against the case's
 /// own: every patch it makes of others, as it makes it (`create_patch::differences`, the same
-/// patches, sources and types). A patch whose role the import can't tell (a case without a
-/// mesh) leaves its case uncompared, noted; a run that compares none fails.
+/// patches, sources and types). Not compared, noted: a case whose OpenFOAM version isn't told,
+/// and one with a patch made of others that has neither a role (a case without a mesh) nor a
+/// type of its own; a target the case doesn't have is passed over (one there must load). A run
+/// that compares none fails.
 #[test]
 fn the_cases_create_patch_dictionaries_are_generated_from_their_descriptions() {
     use umcf_model::create_patch;

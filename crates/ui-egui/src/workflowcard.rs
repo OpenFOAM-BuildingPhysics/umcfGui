@@ -157,14 +157,28 @@ fn described(
     }
 }
 
+/// Whether field `k` holds the same in `value` as in `was`, as the form sends it: sources
+/// (`from`) by their names however spaced, a partner (`region|patch`) by its parts trimmed,
+/// the others trimmed.
+fn same(k: &str, value: &str, was: &str) -> bool {
+    match k {
+        "from" => value.split_whitespace().eq(was.split_whitespace()),
+        "partner" => {
+            let trimmed = |v: &str| crate::forms::parts(v, 2).iter().map(|p| p.trim().to_string()).collect::<Vec<_>>();
+            trimmed(value) == trimmed(was)
+        }
+        _ => value.trim() == was.trim(),
+    }
+}
+
 /// A field `k` (not held as JSON) whose entry is gone (taken away, or another one chosen that
 /// doesn't have it): emptied as filled; a table typed in keeps only its rows typed over or added,
 /// to be sent as new. The caller resets `initial`.
 fn undescribed(f: &mut FormState, k: &'static str) {
     let was = f.initial.get(k).cloned().unwrap_or_default();
     let value = f.values.get(k).cloned().unwrap_or_default();
-    // Sources by their names: spacing alone isn't an edit (as when rebased).
-    let unchanged = if k == "from" { value.split_whitespace().eq(was.split_whitespace()) } else { value == was };
+    // Spacing alone isn't an edit (as when rebased).
+    let unchanged = same(k, &value, &was);
     if unchanged {
         f.values.insert(k, String::new());
     } else if let Some(merged) = merge_table(k, &value, &was, "") {
@@ -276,9 +290,8 @@ impl App {
         for (k, v) in now {
             let was = f.initial.get(k).cloned().unwrap_or_default();
             let value = f.values.get(k).cloned().unwrap_or_default();
-            // Sources apart by spaces: the same as filled in however they are spaced.
-            let unchanged =
-                if k == "from" { value.split_whitespace().eq(was.split_whitespace()) } else { value == was };
+            // Spacing alone isn't an edit: sources however they are spaced, the others trimmed.
+            let unchanged = same(k, &value, &was);
             if !f.extra.contains_key(k) && unchanged {
                 f.values.insert(k, v.clone());
             } else if !f.extra.contains_key(k)

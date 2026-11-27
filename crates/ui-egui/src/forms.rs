@@ -952,7 +952,7 @@ fn grid_json(f: &Field, text: &str, was: &str) -> Result<Option<Value>, String> 
 /// The text of a [`Kind::Numbers`] or [`Kind::Counts`] field: its parts, one per label.
 const PARTS: char = '|';
 
-fn parts(text: &str, n: usize) -> Vec<String> {
+pub(crate) fn parts(text: &str, n: usize) -> Vec<String> {
     let mut v: Vec<String> = text.split(PARTS).map(str::to_string).collect();
     v.resize(n, String::new());
     v

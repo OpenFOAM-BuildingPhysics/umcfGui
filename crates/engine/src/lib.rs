@@ -86,7 +86,8 @@ pub struct Outcome {
     pub message: String,
     pub data: Value,
     /// Whether the case is as it was: an undoable command that changed nothing adds no step to
-    /// the history, and what can be redone stays.
+    /// the history, and what can be redone stays (the journal keeps it: run on another case, it
+    /// may change that one).
     pub unchanged: bool,
 }
 

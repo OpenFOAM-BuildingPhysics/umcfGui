@@ -373,10 +373,17 @@ fn pattern(inner: &str) -> bool {
 }
 
 /// How a source compares: a quoted one OpenFOAM doesn't take for a pattern is the name it holds,
-/// as `createPatch` matches it; else as written.
+/// as `createPatch` matches it, unless the name written bare would be read otherwise (`123`, a
+/// number, or starting with a sign or a dot); else as written.
 pub(crate) fn normal(t: &str) -> String {
     match t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
-        Some(inner) if t.len() >= 2 && !pattern(inner) => inner.to_string(),
+        Some(inner)
+            if t.len() >= 2
+                && !pattern(inner)
+                && !inner.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) =>
+        {
+            inner.to_string()
+        }
         _ => t.to_string(),
     }
 }
@@ -426,8 +433,9 @@ pub(crate) fn listed(values: &[Node]) -> Option<&[Node]> {
 
 /// How a `createPatchDict` (`root`, the file's top level) differs from the patches `made`, for
 /// `version`: a patch not made there, made of a set or of other patches (in any order: their
-/// union), of what isn't a list of names, of another type, one made there the description
-/// doesn't make, and the `patches` list or OpenFOAM-8's `pointSync` missing, which
+/// union), of both (in two items), of what isn't a list of names, of another type, one made
+/// there the description doesn't make, an item read whole without a name or a constructFrom, two patches in the
+/// other order (or one given again around another), and the `patches` list or OpenFOAM-8's `pointSync` missing, which
 /// `createPatch` stops without. A name or type quoted or not is the same, and so is a source
 /// quoted that OpenFOAM doesn't take for a pattern; what a macro or directive gives isn't
 /// compared (an item holding one is compared by its name only); a `patches` list that isn't one
@@ -461,8 +469,21 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
     // By name: a name given twice is one patch of both items' sources (createPatch moves both
     // items' faces into the first), compared whole only when both are.
     let mut by_name: HashMap<&str, There> = HashMap::with_capacity(there.len());
+    // How a name's items read whole make it, in any order: one without a constructFrom (which
+    // stops createPatch), one of patches, and what else they are made of (the first by name, so
+    // the message doesn't depend on the order: a set, a zone): what that moves isn't the
+    // description's, whatever an item that can't be read whole holds.
+    let mut ways: HashMap<&str, (bool, bool, Option<&str>)> = HashMap::with_capacity(there.len());
     for t in &there {
         let Some(n) = t.name.as_deref() else { continue };
+        if t.told {
+            let w = ways.entry(n).or_default();
+            match t.construct.as_deref() {
+                None => w.0 = true,
+                Some("patches") => w.1 = true,
+                Some(c) => w.2 = Some(w.2.map_or(c, |o: &str| o.min(c))),
+            }
+        }
         match by_name.get_mut(n) {
             None => {
                 by_name.insert(
@@ -481,7 +502,7 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
                 );
             }
             Some(first) => {
-                first.told &= t.told && t.construct == first.construct;
+                first.told &= t.told;
                 match (&mut first.from, &t.from) {
                     (Some(a), Some(b)) => a.extend(b.iter().cloned()),
                     (a, _) => *a = None,
@@ -489,7 +510,12 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
             }
         }
     }
-    let unnamed = there.iter().any(|t| t.name.as_deref().is_none_or(untold));
+    // An item whose name a macro or directive may give: what isn't made may be made by it. One
+    // read whole without a name stops createPatch.
+    let unnamed = there.iter().any(|t| t.name.as_deref().map_or(!t.told, untold));
+    if there.iter().any(|t| t.name.is_none() && t.told) {
+        out.push("an item there has no name (a word), at which createPatch stops".to_string());
+    }
     let names: HashSet<&str> = made.iter().map(|m| m.patch.as_str()).collect();
     for m in made {
         let Some(t) = by_name.get(m.patch.as_str()) else {
@@ -499,6 +525,31 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
             out.push(format!("patch {} isn't made there, the description makes it of ( {} )", m.patch, shown(&m.from)));
             continue;
         };
+        let (bare, of_patches, of_set) = ways.get(m.patch.as_str()).copied().unwrap_or_default();
+        if bare {
+            out.push(format!("patch {} has no constructFrom there, which createPatch stops without", m.patch));
+            continue;
+        }
+        match of_set {
+            Some(_) if of_patches => {
+                out.push(format!(
+                    "patch {} is made in two ways there (items of other patches and of a set or zone), the description makes it of ( {} )",
+                    m.patch,
+                    shown(&m.from)
+                ));
+                continue;
+            }
+            Some(c) => {
+                out.push(format!(
+                    "patch {} is made of a {} there, the description makes it of ( {} )",
+                    m.patch,
+                    cut(c),
+                    shown(&m.from)
+                ));
+                continue;
+            }
+            None => {}
+        }
         if !t.told {
             continue;
         }
@@ -570,8 +621,9 @@ pub fn differences(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String
 /// made of a face set or of sources the description can't hold, a key given twice in an item or
 /// its `patchInfo` (OpenFOAM merges them), the entries of a `patchInfo` besides its `type` and
 /// other keys of an item, a `patches` list that can't be read, a top-level entry
-/// besides `patches` (OpenFOAM-8's `pointSync` unless it is off, as written). Empty: the
-/// description holds all of it.
+/// besides `patches` (OpenFOAM-8's `pointSync` unless it is off, as written), a key of its
+/// `FoamFile` header besides version, format, class, location and object, or one whose value a
+/// macro or directive gives. Empty: the description holds all of it.
 pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
     let mut out = Vec::new();
     if root.items.iter().any(|i| matches!(i, Item::Directive { .. } | Item::Macro { .. })) {
@@ -587,12 +639,16 @@ pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
         match e.key() {
             "FoamFile" => match e.dict() {
                 Some(h) => {
-                    for k in h.entries().map(|x| x.key()) {
+                    for x in h.entries() {
+                        let k = x.key();
                         if !matches!(k, "version" | "format" | "class" | "location" | "object") {
                             out.push(format!("its FoamFile {}", cut(k)));
-                            if out.len() > 2 * MAX_KEPT {
-                                break;
-                            }
+                        } else if holds_untold(&x.value) {
+                            // Written over, the value would be lost.
+                            out.push(format!("its FoamFile {k}, given by a macro or directive"));
+                        }
+                        if out.len() > 2 * MAX_KEPT {
+                            break;
                         }
                     }
                     if h.items.iter().any(|i| !matches!(i, Item::Entry(_))) {

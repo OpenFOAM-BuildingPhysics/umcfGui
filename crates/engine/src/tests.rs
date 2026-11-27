@@ -5290,10 +5290,13 @@ fn each_create_patch_dict_is_written_from_the_patches_made_of_others() {
         s.execute("workflow.patch", &json!({"region": "air", "patch": "extra", "role": "side"})).unwrap();
         s.execute("edit.undo", &Value::Null).unwrap();
         let undo = s.history().0.len();
+        let journal = s.journal().len();
         let again = s.execute("workflow.dictionaries", &json!({"region": "air", "replace": true})).unwrap();
         assert!(again.unchanged, "{}", again.message);
         assert!(s.can_redo());
         assert_eq!(s.history().0.len(), undo);
+        // Kept in the journal: replayed on another case, it may write there.
+        assert_eq!(s.journal().len(), journal + 1);
         let many: Vec<String> = (0..65).map(|i| format!("p{i}")).collect();
         let e = s
             .execute("workflow.patch", &json!({"region": "air", "patch": "buildings", "from": many}))

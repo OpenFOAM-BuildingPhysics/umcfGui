@@ -163,7 +163,9 @@ patches by their roles and points them at their partners, as the
 - Generated, with a checksum: one umcfGui wrote and nobody changed since is written over as the
   description changes. One edited by hand or not written by umcfGui is written over only with
   `replace: true`; `case.save` keeps it in `.umcfgui/backup/` and `edit.undo` takes the write
-  back (a run that writes nothing adds no step to the history and leaves what can be redone). One that doesn't load (or a directory there), a symbolic link and one that is the same
+  back; after a save, saving again brings back a file the save wrote over, but a dictionary the save created stays on disk (`case.save` removes no file:
+  delete it by hand). A run that writes nothing adds no step to the history and leaves what can
+  be redone (the journal keeps it, for a case it would change). One that doesn't load (or a directory there), a symbolic link and one that is the same
   file as another dictionary aren't written over, and nothing is written then. `region` writes
   one region's only; a region with coupled patches whose steps don't run `changeDictionary` is
   noted.
@@ -258,7 +260,7 @@ unless the two share `system/createPatchDict`). The case's own that holds what t
 can't (a patch it doesn't make or makes in two items, one made of a face set or of sources it
 can't hold, an entry of `patchInfo` besides its `type`, such as a cyclic's `neighbourPatch`, or
 another key of the item, a key given twice in an item or its `patchInfo` (OpenFOAM merges them),
-a value given by a macro or directive, a `patches` list that can't be
+a value given by a macro or directive (in its `FoamFile` header too), a `patches` list that can't be
 read whole, another entry at its top or in its `FoamFile` header, OpenFOAM-8's `pointSync` that isn't off) isn't written over,
 even with `replace`: it is left as it is and noted, naming what would be lost, for
 `workflow.patch` to give the patches their `from` and `type`, or for the file to be mended by
@@ -266,15 +268,15 @@ hand; the other dictionaries are written.
 
 The case check (`workflow.create-patch`) says when one is missing, doesn't load, was written by
 umcfGui otherwise than it writes now, or is the case's own and makes the patches otherwise: a
-patch not made there, made of a set or of other patches, of another type or of none, one made
-there that the description doesn't make, two made in the other order, or one given again around another
+patch not made there, made of a set or of other patches (or of both, in two items), of another type or of none, one made
+there that the description doesn't make, an item without a name or a `constructFrom` (`createPatch` stops), two made in the other order, or one given again around another
 (`createPatch` gives a face to the last patch that takes it, and any two may take the same faces), the `patches` list or OpenFOAM-8's
 `pointSync` missing, which `createPatch` stops without, a `pointSync` that isn't a switch, and a
 `patches` list whose count isn't its items'; and the case's own that shows no difference but
 holds what it can't (as above). The sources are compared as `createPatch` takes them, their
 union in any order (of both items, for a patch given twice); a name or type quoted or not is the same, and so is a source quoted that OpenFOAM
 doesn't take for a pattern (`"defaultFaces"`: one without `. * + ? ( ) | [ ]` or a character a
-word can't hold); what a macro or directive gives isn't compared (an item holding one is
+word can't hold, and not read otherwise bare: `"123"` isn't `123`, a number); what a macro or directive gives isn't compared (an item holding one is
 compared by its name only). Where the case's own makes
 what the description can't hold, it says to give the patches their `from` with `workflow.patch`
 rather than to write it over. When the dictionaries can't be written from the description, it
