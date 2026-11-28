@@ -689,9 +689,13 @@ pub fn kept(root: &Dict, made: &[Made], version: OfVersion) -> Vec<String> {
     };
     let names: HashSet<&str> = made.iter().map(|m| m.patch.as_str()).collect();
     let mut seen: HashSet<&str> = HashSet::with_capacity(there.len());
+    let mut unnamed = false;
     for t in &there {
         let Some(n) = t.name.as_deref().filter(|n| !untold(n)) else {
-            out.push("a patch without a plain name".to_string());
+            // Said once: the items can't be told apart, and a file may hold many.
+            if !std::mem::replace(&mut unnamed, true) {
+                out.push("a patch without a plain name".to_string());
+            }
             continue;
         };
         // An empty list moves no faces, which the description can't say (an empty from makes none).

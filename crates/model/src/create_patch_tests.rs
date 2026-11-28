@@ -573,6 +573,8 @@ fn a_header_of_its_own_is_kept_and_long_lists_are_capped() {
     let k = kept(&root(&format!("{many} patches ( );")), &[], OfVersion::V12);
     assert_eq!(k.len(), MAX_KEPT + 1);
     assert_eq!(k.last().map(String::as_str), Some("and more"));
+    let unnamed: String = (0..1000).map(|_| "{ name $n; constructFrom patches; patches (a); } ").collect();
+    assert_eq!(kept(&root(&format!("patches ( {unnamed} );")), &[], OfVersion::V12), ["a patch without a plain name"]);
 }
 
 #[test]
