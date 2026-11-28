@@ -133,8 +133,9 @@ case's own scripts, read as above, without a description.
 
 `workflow.dictionaries` writes, from the [workflow description](#the-workflow-description) and
 for its OpenFOAM version, the dictionaries the scripts' steps read that carry only names and
-types. So far that is each region's `system/<region>/changeDictionaryDict`, for a region whose
-steps run `changeDictionary` (the others of [gaps](../gaps.md) row 4 follow). It types the
+types. So far those are each region's `system/<region>/changeDictionaryDict`, for a region whose
+steps run `changeDictionary`, and the `createPatchDict`s ([below](#the-createpatchdicts)) (the
+others of [gaps](../gaps.md) row 4 follow). The `changeDictionaryDict` types the
 patches by their roles and points them at their partners, as the
 [coupling rules](../case-requirements.md#coupling-rules) say:
 
@@ -162,7 +163,9 @@ patches by their roles and points them at their partners, as the
 - Generated, with a checksum: one umcfGui wrote and nobody changed since is written over as the
   description changes. One edited by hand or not written by umcfGui is written over only with
   `replace: true`; `case.save` keeps it in `.umcfgui/backup/` and `edit.undo` takes the write
-  back. One that doesn't load (or a directory there), a symbolic link and one that is the same
+  back; after a save, saving again brings back a file the save wrote over, but a dictionary the save created stays on disk (`case.save` removes no file:
+  delete it by hand). A run that writes nothing adds no step to the history and leaves what can
+  be redone (the journal keeps it, for a case it would change). One that doesn't load (or a directory there), a symbolic link and one that is the same
   file as another dictionary aren't written over, and nothing is written then. `region` writes
   one region's only; a region with coupled patches whose steps don't run `changeDictionary` is
   noted.
@@ -221,11 +224,71 @@ umcf-cli run --case path/to/case --cmd 'workflow.import={}' \
 With a dictionary there edited by hand, or the case's own, that isn't what it writes, the
 command names it and writes none; `{"replace":true}` writes them from the description (`case.save` keeps a backup of each).
 
+### The createPatchDicts
+
+A patch `createPatch` makes of others has their names in its `from`
+([the description](#the-workflow-description)): blockMesh's own `defaultFaces` made into the
+buildings' walls (the 3×3 cases' `buildings` and their solids' `sides`, the street canyons'
+`buildings`), or the patch `splitMeshRegions` leaves on the vegetation region made into its
+canopy (`"region1_to_.*"`, a pattern). `workflow.dictionaries` writes, for each, the
+`createPatchDict` its `createPatch` reads:
+
+- `system/<region>/createPatchDict` for a region whose steps run `createPatch` (`createPatch
+  -region`, after the mesh);
+- `system/createPatchDict` for the regions whose mesh runs `createPatch` in `constant/polyMesh`
+  (`mesh ( blockMesh … createPatch … )`, the 3×3 cases' air and vegetation): one dictionary for
+  them all, so they must make the same patches, in the same order (any two may take the same
+  faces: a source both name, a pattern, or a name that is a patch group, which OpenFOAM takes a
+  name no patch has for).
+
+The patches are written in the order the region lists them, which is `createPatch`'s: a face two
+patches' sources take goes to the last. Each patch is `{ name …; patchInfo { type …; } constructFrom patches; patches ( … ); }`, its
+sources as the description has them: a bare name one patch, a quoted one a pattern, as
+`createPatch` reads them (`"region.1"` is a regular expression, `region.1` a name). Its type is the
+patch's own `type` where it has one, else `wall` for a wall's role (`ground`, `coupled`,
+`interior`, `bottom`), the canopy and every solid's patch, else `patch`; `changeDictionary` makes
+a coupled one and the canopy mapped after. `pointSync false;` is written for OpenFOAM-8, which
+stops without it (OpenFOAM-12 doesn't read it). A region whose steps run `createPatch` with no
+patch to make gets an empty list. Refused, writing none: a patch made by `createPatch` with
+neither a role nor a type, one in a region whose mesh and steps run no `createPatch`, a region
+whose mesh and steps both run it with patches to make (which makes them isn't told), regions
+meshed in `constant/polyMesh` that make different patches (or in another order), a patch name that isn't a plain
+OpenFOAM word, and a region's name that can't be a directory on every system. Generated, written
+over and kept as the `changeDictionaryDict`s are (`replace`, `region`: that region's, and the
+shared one when its mesh runs `createPatch`; a problem in another region's doesn't stop it,
+unless the two share `system/createPatchDict`). The case's own that holds what the description
+can't (a patch it doesn't make or makes in two items, one made of a face set or of sources it
+can't hold, an entry of `patchInfo` besides its `type`, such as a cyclic's `neighbourPatch`, or
+another key of the item, a key given twice in an item or its `patchInfo` (OpenFOAM merges them),
+a value given by a macro or directive (in its `FoamFile` header too), a `patches` list that can't be
+read whole, another entry at its top or in its `FoamFile` header, OpenFOAM-8's `pointSync` that isn't off) isn't written over,
+even with `replace`: it is left as it is and noted, naming what would be lost, for
+`workflow.patch` to give the patches their `from` and `type`, or for the file to be mended by
+hand; the other dictionaries are written.
+
+The case check (`workflow.create-patch`) says when one is missing, doesn't load, was written by
+umcfGui otherwise than it writes now, or is the case's own and makes the patches otherwise: a
+patch not made there, made of a set or of other patches (or of both, in two items), of another type or of none, one made
+there that the description doesn't make, an item without a name or a `constructFrom` (`createPatch` stops), two made in the other order, or one given again around another
+(`createPatch` gives a face to the last patch that takes it, and any two may take the same faces), the `patches` list or OpenFOAM-8's
+`pointSync` missing, which `createPatch` stops without, a `pointSync` that isn't a switch, and a
+`patches` list whose count isn't its items'; and the case's own that shows no difference but
+holds what it can't (as above). The sources are compared as `createPatch` takes them, their
+union in any order (of both items, for a patch given twice); a name or type quoted or not is the same, and so is a source quoted that OpenFOAM
+doesn't take for a pattern (`"defaultFaces"`: one without `. * + ? ( ) | [ ]` or a character a
+word can't hold, and not read otherwise bare: `"123"` isn't `123`, a number); what a macro or directive gives isn't compared (an item holding one is
+compared by its name only). Where the case's own makes
+what the description can't hold, it says to give the patches their `from` with `workflow.patch`
+rather than to write it over. When the dictionaries can't be written from the description, it
+says why.
+
 On the three 3×3 cases (OpenFOAM-8 and -12) the dictionaries written from the imported
-description map every patch as the cases' own do. On the street canyon with vegetation
-(`streetCanyon_CFDHAM_veg`), `Allprepare` run with them makes the same meshes as with the
-tutorial's own: byte for byte in OpenFOAM-8; in OpenFOAM-12 with `method nearest` added to the
-air's and solids' pairs, and `Allrun` then gives the same fields.
+description map every patch as the cases' own do, and make the same patches of the same ones.
+On the street canyon with vegetation (`streetCanyon_CFDHAM_veg`), `Allprepare` run with the
+generated dictionaries makes the same meshes as with the tutorial's own: byte for byte in
+OpenFOAM-8; in OpenFOAM-12 byte for byte with the generated `createPatchDict`s, and with the
+generated `changeDictionaryDict`s with `method nearest` added to the air's and solids' pairs,
+after which `Allrun` gives the same fields.
 
 ## The workflow description
 
@@ -235,7 +298,7 @@ each patch with its role and partner, the radiation pre-processing and the solve
 first piece of [the common workflow](../common-workflow.md): the scripts are written from it
 (`workflow.scripts`, [above](#writing-the-scripts)), and so are the dictionaries that only carry
 names and types (`workflow.dictionaries`, [above](#writing-the-dictionaries); so far each
-region's `changeDictionaryDict`).
+region's `changeDictionaryDict` and the `createPatchDict`s).
 
 ```c++
 version     12;
@@ -297,6 +360,8 @@ settings
 | `steps` | after the mesh: `createPatch`, `changeDictionary`, `topoSet` (or `setSet "batch"` in OpenFOAM-8), `setFields` with the fields it restores from their backups first |
 | `role` | `inlet`, `outlet`, `side`, `top`, `ground`, `coupled`, `canopy`, `interior`, `bottom`, `sky` |
 | `partner` | the region and patch a coupled patch is mapped to |
+| `from` | the patches `createPatch` makes the patch of, as its dictionary has them: a bare name one patch (`( defaultFaces )`), a quoted one a pattern (`( "region1_to_.*" )`), without quotes, backslashes, braces or spaces inside and a pattern OpenFOAM compiles; in the [`createPatchDict`](#the-createpatchdicts) its region's mesh or steps read. A patch another of its region is made of (by name) isn't renamed with `workflow.patch` (refused: change the `from` first) |
+| `type` | the type `createPatch` makes it of, over the one its role gives (`wall` for a plain wall without a partner, as the street canyons' `buildings`); read only with `from`; not a mapped type, which `changeDictionary` gives from the role and partner. |
 | `materials` | a solid region's materials, in the order of its `buildingMaterials`: each the name of the cell zone built of it, with its `model` (`buildingMaterialModel`); the coefficients stay in the region's `transportProperties` |
 | `radiation` | the region the view factors and solar ray tracing are computed on, and the one `calcLAI` runs on |
 | `settings` | the [settings](#settings) the case chose; one that isn't there is the default |
@@ -329,13 +394,28 @@ directory, or over the size limit), or one the open case doesn't hold (written o
 nothing: the save would write the file it points to); with `replace` it writes over the case's own, whose
 comments and hand edits are not kept (`edit.undo` brings them back). In the desktop app, both
 commands show in the results card the problems and the import's notes first, then the settings
-(version, radiation, components, solver), then the regions with their meshes, steps, patch roles and
+(version, radiation, components, solver), then the regions with their meshes, steps, patch roles (with what a patch is made of and its type) and
 materials. The case
 check reads the file against the case (`workflow.description`): what can't be read in it, regions
 and patches the case doesn't have or it leaves out, other kinds, partners that aren't there, a
 solid's materials the case doesn't list (or lists with another model), a model the solver
 doesn't have for the case's version (one the case's file has too is the case check's to say),
 materials of the case it leaves out, and another OpenFOAM version.
+
+The import reads the `createPatchDict` each region's `createPatch` reads (its own when its steps
+run it, else `system/createPatchDict` when its mesh does): each patch made of others
+(`constructFrom patches`) gets their names as its `from`, and its type as `type` where its role
+wouldn't give that one (a patch the region doesn't have is added without a role). One made of a
+face set, whose name or sources aren't plain (a pattern with a backslash, a quote, a brace or a
+space inside, or one that may not compile), part of which a macro or directive gives, with other keys or a key given twice, or whose `patchInfo` isn't a
+dictionary or holds more than a plain type (a mapped or cyclic patch's entries), is noted and
+left out (the first 20 of a dictionary,
+then a count, for each region reading it); a patch given in two items is made of both items' sources (noted where
+it comes again after another patch, whose faces may be the same, through a source both name, a pattern or a patch group: the faces they share may then go
+elsewhere, and `workflow.dictionaries` leaves the file as it is). The patches made keep the
+dictionary's order among the region's patches (`createPatch` gives a face to the last patch that
+takes it); the order of the patches in the description is the order the dictionary makes them in. A region whose mesh
+and steps both run `createPatch` is noted: only its own dictionary is read.
 
 
 ### Blocks
@@ -1161,7 +1241,7 @@ its comments kept.
 | Command | What |
 |---|---|
 | `workflow.region` | `region` with `kind` (`fluid`, `solid` or `vegetation`) adds the region or gives it that kind (an empty `materials { }` goes when a solid becomes another kind); with `remove: true` it is taken out, and what still names it (coupled patches, regions meshed from its [background](#background), the radiation) is listed. A solid with materials stays one |
-| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`) and `name`. `null` takes a role or partner away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
+| `workflow.patch` | `region`, `patch` and any of `role`, `partner` (`{"region": "street", "patch": "top"}`), `from` (`["defaultFaces"]`: names, and patterns, a name that isn't a plain word quoted for it, `"\"region.1\""` given quoted; none with a quote, backslash, brace or space inside, nor a pattern that may not compile; at most 64), `type` (not a mapped one; only with `from`, which isn't taken away while it is there) and `name`. `null` takes a role, partner, `from` or `type` away; a patch the region doesn't list is added. A new name is followed by the region's [blocks](#blocks) and the partners that named the patch (its own too, when it is coupled to itself, unless the same call sets or takes away its partner) |
 | `workflow.material` | `region` (a solid), `material` (the name of its cell zone) and `model` (its `buildingMaterialModel`, or `null`), or `remove: true` |
 
 ```sh
@@ -1188,13 +1268,14 @@ materials, the partner region's patches, the solver's material models for the ca
 (the patch card starts on the description's first region, the material card on its first
 solid).
 Choosing what it describes fills in what the description says of it (a region's kind, a patch's
-role and partner, a material's model; a name the description doesn't have keeps what was
-typed for it, and clears what another's filled in), and only what is changed from that is sent: a role, partner or model emptied is taken
+role, partner, *Made of* (its `from`, apart by spaces) and type, a material's model; a name the description doesn't have keeps what was
+typed for it, and clears what another's filled in), and only what is changed from that is sent: a role, partner, *Made of*, type or model emptied is taken
 away (`null`). A region's kind is sent as chosen. After another command or an undo, what wasn't
-typed follows the description. A patch is added with a role or a partner (a patch without either
+typed follows the description. A patch is added with a role, a partner or *Made of* (a type only with *Made of*; a patch without any
 goes through *Edit as JSON*: `"role": null`, sent as given). *Back to the form* fills the form
 again from what the JSON names, as the description has it then, with the JSON over it; a value
 a field can't hold (a name that isn't text) is kept and sent as it is, for the command to
 refuse. *Write workflow description*
 and *Write the scripts* are forms of their *replace* checkbox; *Write the dictionaries* has the
-region (left to choose: every region) and *replace*.
+region (left to choose: every region whose steps run `changeDictionary`, or whose mesh or steps
+run `createPatch`) and *replace*.

@@ -1,9 +1,9 @@
 //! The workflow description's cards (`workflow.region`, `workflow.patch`, `workflow.material`,
 //! `workflow.component`, `mesh.split`, `mesh.snappy`): each frame, the names their fields offer
 //! (the description's regions, a region's patches and materials, the material models of the
-//! solver, the air's patches), and
-//! what they describe filled in when it is chosen (a region's kind, a patch's role and partner,
-//! a material's model, a region's snappy entry).
+//! solver, the air's patches), and what they describe filled in when it is chosen (a region's
+//! kind, a patch's role, partner and the patches it is made of, a material's model, a region's
+//! snappy entry).
 
 use umcf_model::RegionKind;
 use umcf_model::description::Description;
@@ -89,7 +89,15 @@ fn described(
                 .filter(|(a, b)| !a.contains('|') && !b.contains('|'))
                 .map(|(a, b)| format!("{a}|{b}"))
                 .unwrap_or_default();
-            Some(vec![("role", role), ("partner", partner)])
+            // Sources with a space can't be shown apart by spaces: none shown.
+            let from =
+                if p.from.iter().any(|x| x.contains(char::is_whitespace)) { String::new() } else { p.from.join(" ") };
+            Some(vec![
+                ("role", role),
+                ("partner", partner),
+                ("from", from),
+                ("type", p.kind.clone().unwrap_or_default()),
+            ])
         }
         "workflow.material" => {
             let m = r.materials.iter().find(|m| m.name == value("material"))?;
@@ -149,13 +157,29 @@ fn described(
     }
 }
 
+/// Whether field `k` holds the same in `value` as in `was`, as the form sends it: sources
+/// (`from`) by their names however spaced, a partner (`region|patch`) by its parts trimmed,
+/// the others trimmed.
+fn same(k: &str, value: &str, was: &str) -> bool {
+    match k {
+        "from" => value.split_whitespace().eq(was.split_whitespace()),
+        "partner" => {
+            let trimmed = |v: &str| crate::forms::parts(v, 2).iter().map(|p| p.trim().to_string()).collect::<Vec<_>>();
+            trimmed(value) == trimmed(was)
+        }
+        _ => value.trim() == was.trim(),
+    }
+}
+
 /// A field `k` (not held as JSON) whose entry is gone (taken away, or another one chosen that
 /// doesn't have it): emptied as filled; a table typed in keeps only its rows typed over or added,
 /// to be sent as new. The caller resets `initial`.
 fn undescribed(f: &mut FormState, k: &'static str) {
     let was = f.initial.get(k).cloned().unwrap_or_default();
     let value = f.values.get(k).cloned().unwrap_or_default();
-    if value == was {
+    // Spacing alone isn't an edit (as when rebased).
+    let unchanged = same(k, &value, &was);
+    if unchanged {
         f.values.insert(k, String::new());
     } else if let Some(merged) = merge_table(k, &value, &was, "") {
         f.values.insert(k, merged);
@@ -178,7 +202,7 @@ fn merge_table(k: &str, value: &str, was: &str, now: &str) -> Option<String> {
 fn card_fields(id: &str) -> &'static [&'static str] {
     match id {
         "workflow.region" => &["kind"],
-        "workflow.patch" => &["role", "partner"],
+        "workflow.patch" => &["role", "partner", "from", "type"],
         "workflow.material" => &["model"],
         "material.set" => &["coefficients"],
         "mesh.split" => &["of", "zone", "dict"],
@@ -266,7 +290,9 @@ impl App {
         for (k, v) in now {
             let was = f.initial.get(k).cloned().unwrap_or_default();
             let value = f.values.get(k).cloned().unwrap_or_default();
-            if !f.extra.contains_key(k) && value == was {
+            // Spacing alone isn't an edit: sources however they are spaced, the others trimmed.
+            let unchanged = same(k, &value, &was);
+            if !f.extra.contains_key(k) && unchanged {
                 f.values.insert(k, v.clone());
             } else if !f.extra.contains_key(k)
                 && let Some(merged) = merge_table(k, &value, &was, &v)
@@ -305,6 +331,7 @@ impl App {
                     options.insert("patch", patches_of(d, &region));
                     let partner = f.values.get("partner").and_then(|p| p.split('|').next()).unwrap_or("").trim();
                     options.insert(PARTNER_PATCHES, patches_of(d, partner));
+                    options.insert("type", vec!["wall".to_string(), "patch".to_string()]);
                     options.insert("partner", regions);
                 }
                 "mesh.split" => {

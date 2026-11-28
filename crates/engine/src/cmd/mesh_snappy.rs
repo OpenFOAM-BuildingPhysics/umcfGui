@@ -771,9 +771,13 @@ fn snappy(s: &mut Session, p: &Value) -> Result<Outcome, Error> {
     for (name, role) in &roles {
         match with.patches.iter_mut().find(|q| q.name == *name) {
             Some(q) => q.role = *role,
-            None => {
-                with.patches.push(umcf_model::description::PatchDesc { name: name.clone(), role: *role, partner: None })
-            }
+            None => with.patches.push(umcf_model::description::PatchDesc {
+                name: name.clone(),
+                role: *role,
+                partner: None,
+                from: Vec::new(),
+                kind: None,
+            }),
         }
     }
     let type_of = blocks::type_lookup(&with);

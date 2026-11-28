@@ -18,6 +18,11 @@ pub struct PatchEdit {
     pub partner: Option<Option<(String, String)>>,
     /// A new name; the partners that name the patch follow it.
     pub rename: Option<String>,
+    /// The patches `createPatch` makes it of (names, or patterns); `Some(vec![])` takes them
+    /// away.
+    pub from: Option<Vec<String>>,
+    /// Its type, over the one its role gives; `Some(None)` takes it away.
+    pub kind: Option<Option<String>>,
 }
 
 /// What an edit did, besides the change itself.
@@ -260,8 +265,43 @@ impl Case {
         if let Some(to) = &edit.rename {
             name("new name", to)?;
         }
+        let from: Option<Vec<String>> =
+            edit.from.as_ref().map(|f| f.iter().map(|s| crate::create_patch::source_token(s)).collect());
+        for f in from.iter().flatten() {
+            if !crate::create_patch::source_ok(f) {
+                return Err(refuse(format!(
+                    "from `{f}` is neither a plain OpenFOAM name nor a pattern OpenFOAM compiles, without quotes, backslashes, braces or spaces inside"
+                )));
+            }
+        }
+        if let Some(Some(t)) = &edit.kind {
+            name("type", t)?;
+            if crate::blocks::needs_own_entries(t) {
+                return Err(refuse(format!(
+                    "type {t} needs entries of its own (neighbourPatch, …): changeDictionary gives it from the role and partner"
+                )));
+            }
+        }
         if edit == &PatchEdit::default() {
-            return Err(refuse("nothing to change: give a role, a partner or a new name".into()));
+            return Err(refuse(
+                "nothing to change: give a role, a partner, the patches it is made of, a type or a new name".into(),
+            ));
+        }
+        // A type is read only with from: neither left without the other.
+        // (Not told while the description doesn't read: the edit then sees what is there.)
+        if (edit.from.is_some() || edit.kind.is_some())
+            && let Some((d, _)) = self.description()
+        {
+            let now = d.region(region).and_then(|r| r.patches.iter().find(|p| p.name == patch).cloned());
+            let from =
+                edit.from.as_ref().map_or_else(|| now.as_ref().is_some_and(|p| !p.from.is_empty()), |f| !f.is_empty());
+            let kind =
+                edit.kind.as_ref().map_or_else(|| now.as_ref().is_some_and(|p| p.kind.is_some()), Option::is_some);
+            if kind && !from {
+                return Err(refuse(format!(
+                    "patch {patch} of region {region}: a type is read only for a patch createPatch makes (from): give from too, or take the type away (null)"
+                )));
+            }
         }
         let doc = self.editable()?;
         if !once(doc, &["regions", region])? {
@@ -272,6 +312,8 @@ impl Case {
         if there {
             once(doc, &[&base[..], &["role"]].concat())?;
             once(doc, &[&base[..], &["partner"]].concat())?;
+            once(doc, &[&base[..], &["from"]].concat())?;
+            once(doc, &[&base[..], &["type"]].concat())?;
             unended(doc, &base)?;
         } else if edit.rename.is_some() {
             return Err(refuse(format!("patch {patch} of region {region} is not in {PATH}: nothing to rename")));
@@ -307,6 +349,25 @@ impl Case {
                     "region {region}'s blocks name a patch {to} already: renaming {patch} to it would make the two one"
                 )));
             }
+            // Nor one another patch is made of (by name): its from would name what isn't there.
+            if let Some(by) = self.description().and_then(|(d, _)| {
+                d.region(region)?
+                    .patches
+                    .iter()
+                    .find(|q| {
+                        // The patch renamed is made of what this call gives it, where it gives it.
+                        let from = match &from {
+                            Some(given) if q.name == patch => given,
+                            _ => &q.from,
+                        };
+                        from.iter().any(|f| crate::create_patch::normal(f) == patch)
+                    })
+                    .map(|q| q.name.clone())
+            }) {
+                return Err(refuse(format!(
+                    "patch {by} of region {region} is made of {patch} (from): renaming {patch} would leave it made of what isn't there; change its from first"
+                )));
+            }
             for (r, p, pr, pp) in partners(doc) {
                 // Its own partner, when this call sets it, is the one given.
                 let own = r == region && p == patch;
@@ -321,6 +382,8 @@ impl Case {
         let changes: Vec<(&str, Option<String>)> = [
             edit.role.map(|r| ("role", r.map(|r| r.name().to_string()))),
             edit.partner.as_ref().map(|p| ("partner", p.as_ref().map(|(r, q)| format!("( {r} {q} )")))),
+            from.as_ref().map(|f| ("from", (!f.is_empty()).then(|| format!("( {} )", f.join(" "))))),
+            edit.kind.as_ref().map(|t| ("type", t.clone())),
         ]
         .into_iter()
         .flatten()

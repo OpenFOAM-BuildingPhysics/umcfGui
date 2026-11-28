@@ -221,7 +221,13 @@ fn written_and_read_back_it_is_the_same() {
             RootStep::CreatePatch,
             RootStep::SnappyHexMesh("system/snappyHexMeshDict.street".into()),
         ]));
-        r.patches.push(PatchDesc { name: "with space".into(), role: Some(Role::Interior), partner: None });
+        r.patches.push(PatchDesc {
+            name: "with space".into(),
+            role: Some(Role::Interior),
+            partner: None,
+            from: Vec::new(),
+            kind: None,
+        });
     }
     d.features = true;
     d.solver = None;
@@ -245,6 +251,8 @@ fn odd_names_come_back_as_they_were() {
                     name: odd.into(),
                     role: Some(Role::Coupled),
                     partner: Some((odd.into(), odd.into())),
+                    from: vec!["\"region1_to_.*\"".into(), "defaultFaces".into()],
+                    kind: Some("wall".into()),
                 }],
                 materials: vec![MaterialDesc { name: odd.into(), model: Some(odd.into()) }],
                 blocks: None,
@@ -337,6 +345,41 @@ fn problems_are_named_and_the_rest_is_read() {
     assert_eq!(air.patches.iter().map(|p| p.role).collect::<Vec<_>>(), [None, Some(Role::Outlet), Some(Role::Side)]);
     assert_eq!(d.region("street").unwrap().mesh, Some(MeshBuild::Block));
     assert!(d.radiation.is_none());
+}
+
+#[test]
+fn the_patches_a_patch_is_made_of_are_names_or_patterns() {
+    let text = format!(
+        "{}regions\n{{\n    air\n    {{\n        kind fluid;\n        mesh blocks;\n        steps ( createPatch );\n        patches {{ buildings {{ role coupled; from ( defaultFaces \"region1_to_.*\" ); }} w {{ from ( defaultFaces ); type wall; }} m {{ type mappedWall; }} l {{ type ( wall ); }} t {{ type wall; }} a {{ from ( ); }} b {{ from defaultFaces; }} c {{ from ( ( x ) ); }} d {{ from ( \"\" ); }} }}\n    }}\n}}\n",
+        header("dictionary", "umcfWorkflow")
+    );
+    let (d, problems) = Description::read(&Document::parse(&text).unwrap());
+    let at: Vec<&str> = problems.iter().map(|p| p.at.as_str()).collect();
+    assert_eq!(
+        at,
+        [
+            "regions/air/patches/m/type",
+            "regions/air/patches/l/type",
+            "regions/air/patches/t/type",
+            "regions/air/patches/a/from",
+            "regions/air/patches/b/from",
+            "regions/air/patches/c/from",
+            "regions/air/patches/d/from"
+        ],
+        "{problems:#?}"
+    );
+    assert!(problems[0].message.starts_with("mappedWall needs entries of its own"), "{problems:#?}");
+    assert_eq!(problems[1].message, "is a patch type (one plain word)");
+    assert_eq!(problems[2].message, "is read only with from (the patches createPatch makes it of)");
+    assert!(problems[3..].iter().all(|p| p.message.starts_with("is ( patch … ): names, or quoted patterns")));
+    let air = d.region("air").unwrap();
+    assert_eq!(air.patches[0].from, ["defaultFaces", "\"region1_to_.*\""]);
+    assert_eq!(air.patches[1].from, ["defaultFaces"]);
+    assert_eq!(air.patches[1].kind.as_deref(), Some("wall"));
+    assert!(air.patches[2..].iter().all(|p| p.from.is_empty() && p.kind.is_none()));
+    assert!(d.write().contains("w               { from ( defaultFaces ); type wall; }"));
+    // Written back as read: the pattern quoted.
+    assert!(d.write().contains("buildings       { role coupled; from ( defaultFaces \"region1_to_.*\" ); }"));
 }
 
 #[test]
@@ -981,4 +1024,103 @@ fn a_mesh_from_another_regions_background_is_written_read_back_and_found() {
         );
         assert_eq!(d.region("vegetation").and_then(|r| r.mesh.clone()), None, "{mesh}");
     }
+}
+
+#[test]
+fn import_reads_what_create_patch_makes() {
+    let item = |name: &str, info: &str, rest: &str| format!("{{ name {name}; patchInfo {info}; {rest} }}");
+    let made =
+        |name: &str, info: &str, from: &str| item(name, info, &format!("constructFrom patches; patches ({from});"));
+    let items = [
+        // The ground's role gives wall: no type kept. Given twice: both items' sources.
+        made("ground", "{ type wall; }", "a"),
+        made("ground", "{ type wall; }", "b a"),
+        // A patch the mesh doesn't have: added without a role, its type kept.
+        made("buildings", "{ type wall; }", "defaultFaces"),
+        // The top's role gives patch: wall kept.
+        made("top", "{ type wall; }", "\"top_.*\""),
+        // Left out, noted.
+        item("setp", "{ type patch; }", "constructFrom set; set f0;"),
+        made("m", "$info", "x"),
+        made("pi", "wall", "x"),
+        made("cyc", "{ type cyclic; neighbourPatch c2; }", "x"),
+        made("bs", "{ type wall; }", "\"a b\""),
+        item("ex", "{ type wall; }", "constructFrom patches; patches (x); extra 1;"),
+        item("tw", "{ inGroups (g); } patchInfo { type wall; }", "constructFrom patches; patches (x);"),
+        "{ name $n; }".to_string(),
+    ];
+    let dict = format!("{}patches ( {} );\n", header("dictionary", "createPatchDict"), items.join(" "));
+    let c = Case::open(&canyon().with("system/air/createPatchDict", dict)).unwrap();
+    let (d, notes) = Description::import(&c);
+    let air = d.region("air").unwrap();
+    let get = |n: &str| air.patches.iter().find(|p| p.name == n).unwrap();
+    assert_eq!(
+        (get("ground").from.clone(), get("ground").kind.clone()),
+        (vec!["a".to_string(), "b".to_string()], None)
+    );
+    assert_eq!((get("buildings").role, get("buildings").kind.as_deref()), (None, Some("wall")));
+    assert_eq!((get("top").from.clone(), get("top").kind.as_deref()), (vec!["\"top_.*\"".to_string()], Some("wall")));
+    for n in ["setp", "m", "pi", "cyc", "bs", "ex", "tw"] {
+        assert!(air.patches.iter().all(|p| p.name != n || p.from.is_empty()), "{n}");
+    }
+    let said = |s: &str| notes.iter().any(|n| n.contains(s));
+    for s in [
+        "patch setp: system/air/createPatchDict makes it of a set",
+        "patch m: system/air/createPatchDict gives part of it by a macro or directive",
+        "patch pi: system/air/createPatchDict gives its patchInfo, which isn't a dictionary",
+        "patch cyc: system/air/createPatchDict gives its patchInfo more than a plain type",
+        "patch bs: the patches system/air/createPatchDict makes it of aren't a plain list",
+        "patch ex: system/air/createPatchDict gives it extra",
+        "patch tw: system/air/createPatchDict gives a key of it twice",
+        "a patch of system/air/createPatchDict has no plain name",
+        "patch buildings: made by createPatch, its role isn't told",
+    ] {
+        assert!(said(s), "{s}: {notes:#?}");
+    }
+    // Many left out: 20 notes, then a count.
+    let bad: Vec<String> = (0..30).map(|i| made(&format!("m{i}"), "$info", "x")).collect();
+    let dict = format!("{}patches ( {} );\n", header("dictionary", "createPatchDict"), bad.join(" "));
+    let c = Case::open(&canyon().with("system/air/createPatchDict", dict)).unwrap();
+    let (_, notes) = Description::import(&c);
+    assert_eq!(notes.iter().filter(|n| n.contains("by a macro or directive")).count(), 20);
+    assert!(notes.iter().any(|n| n.contains("and 10 more notes like these")), "{notes:#?}");
+}
+
+#[test]
+fn import_keeps_the_order_create_patch_makes_the_patches_in() {
+    let made = |name: &str, from: &str| {
+        format!("{{ name {name}; patchInfo {{ type wall; }} constructFrom patches; patches ({from}); }}")
+    };
+    let order = |items: &[String]| {
+        let dict =
+            format!("{}patches {} ( {} );\n", header("dictionary", "createPatchDict"), items.len(), items.join(" "));
+        let c = Case::open(&canyon().with("system/air/createPatchDict", dict)).unwrap();
+        let (d, notes) = Description::import(&c);
+        let names: Vec<String> = d.region("air").unwrap().patches.iter().map(|p| p.name.clone()).collect();
+        let at = |n: &str| names.iter().position(|x| x == n).unwrap();
+        (at("top") < at("ground"), names.len(), notes)
+    };
+    let (top_first, n, notes) = order(&[made("top", "x"), made("ground", "x")]);
+    assert!(top_first, "{notes:#?}");
+    let (top_first, m, _) = order(&[made("ground", "x"), made("top", "x")]);
+    assert!(!top_first);
+    assert_eq!(n, m);
+    // Given again after another patch: noted (any two may take the same faces).
+    let (_, _, notes) = order(&[made("top", "x"), made("ground", "y"), made("top", "y")]);
+    assert!(
+        notes.iter().any(|n| n.contains("patch top: system/air/createPatchDict makes it again after ground")),
+        "{notes:#?}"
+    );
+    // A hostile file: a patch of many sources, then many repeats after it: noted once.
+    let wide: Vec<String> = (0..50_000).map(|i| format!("s{i}")).collect();
+    let mut items = vec![made("top", "x"), made("ground", &wide.join(" "))];
+    items.extend((0..5_000).map(|i| made("top", &format!("s{i}"))));
+    let (_, _, notes) = order(&items);
+    assert_eq!(notes.iter().filter(|n| n.contains("makes it again after ground")).count(), 1, "{notes:#?}");
+    // Sources by other names: one may be a patch group holding the other's, noted too.
+    let (_, _, notes) = order(&[made("top", "x"), made("ground", "facades"), made("top", "y")]);
+    assert!(notes.iter().any(|n| n.contains("makes it again after ground")), "{notes:#?}");
+    // Given again right after itself: one item, nothing between.
+    let (_, _, notes) = order(&[made("top", "x"), made("top", "y"), made("ground", "x")]);
+    assert!(notes.iter().all(|n| !n.contains("makes it again")), "{notes:#?}");
 }

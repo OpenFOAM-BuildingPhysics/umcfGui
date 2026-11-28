@@ -123,7 +123,7 @@ named by the description too: a solid's materials, the tree zone.
 | `system/umcfWorkflow` | the user, through umcfGui's commands or by hand |
 | Geometry: the STL surfaces, the blocks, refinement levels, layers, extrusion thicknesses | settings in `umcfWorkflow`, written into the meshing dictionaries |
 | A region's `blockMeshDict` (the one its `mesh` reads) | generated from its `blocks` by `mesh.block` ([the workflow](user-guide/workflow.md#blocks)) |
-| `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` (`changeDictionaryDict` so far: `workflow.dictionaries`) |
+| `createPatchDict`, `changeDictionaryDict`, `topoSetDict` (or the `setSet` batch), `viewFactorsDict`, `setFieldsDict` | generated from `umcfWorkflow` (`changeDictionaryDict` and `createPatchDict` so far: `workflow.dictionaries`) |
 | `0.orig/<region>/`: the initial fields with an entry per patch, by role, and the tables there (`Tambient`, `wambient`, `cloudCover`, …) | the fields' entries generated for patches that have none, then set by the user and kept: `bc.set` sets a condition in the start time's field today, and will set it in `0.orig` too (see [the fields](#the-fields)); the tables from the site and weather data (row 9) or the user |
 | The materials' entries in `buildingMaterials` (`transportProperties` of each solid) | added with the material from a library of materials with their coefficients, then edited by the user |
 | `Allprepare`, `Allrun`, `Allclean` | generated, for the version in `umcfWorkflow` |
@@ -134,7 +134,9 @@ umcfGui from the case workflow; edit the workflow, not this file.`), and is writ
 whenever the description changes. One edited by hand since it was generated is kept in the backup
 before it is replaced, and the change says which. A `blockMeshDict` carries a checksum in its
 header too: one edited since (or not written by umcfGui) is written over only when asked
-(`replace`). The fields of `0.orig` are not generated files:
+(`replace`). A `createPatchDict` holding what the description can't (a patch's `inGroups`, a
+cyclic patch, a face set) isn't written over even with `replace`, as that would be lost: edit
+it by hand, or move into the description what it holds. The fields of `0.orig` are not generated files:
 they are edited in place (below).
 
 ## The fields

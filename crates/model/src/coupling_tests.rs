@@ -16,7 +16,13 @@ fn region(name: &str, kind: RegionKind, patches: Vec<PatchDesc>) -> RegionDesc {
 }
 
 fn patch(name: &str, role: Option<Role>, partner: Option<(&str, &str)>) -> PatchDesc {
-    PatchDesc { name: name.into(), role, partner: partner.map(|(r, p)| (r.into(), p.into())) }
+    PatchDesc {
+        name: name.into(),
+        role,
+        partner: partner.map(|(r, p)| (r.into(), p.into())),
+        from: Vec::new(),
+        kind: None,
+    }
 }
 
 fn canyon() -> Description {

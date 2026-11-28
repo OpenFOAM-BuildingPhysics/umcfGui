@@ -1,4 +1,4 @@
-//! Each region's `changeDictionaryDict` generated from the description `workflow.import` reads
+//! Each region's `changeDictionaryDict` (and each `createPatchDict`, below) generated from the description `workflow.import` reads
 //! from a real case (`umcf_model::coupling`), compared with the case's own, read only, from
 //! `UMCF_CASES` (`:`-separated case directories); skipped without it.
 //!
@@ -65,4 +65,67 @@ fn the_cases_change_dictionaries_are_generated_from_their_descriptions() {
     }
     eprintln!("{compared} changeDictionaryDicts compared");
     assert!(compared > 0, "UMCF_CASES gives no case with a changeDictionaryDict");
+}
+
+/// Each `createPatchDict` the description's meshes and steps read, generated from what
+/// `workflow.import` reads of the case's own (`umcf_model::create_patch`), against the case's
+/// own: every patch it makes of others, as it makes it (`create_patch::differences`, the same
+/// patches, sources and types). Not compared, noted: a case whose OpenFOAM version isn't told,
+/// and one with a patch made of others that has neither a role (a case without a mesh) nor a
+/// type of its own; a target the case doesn't have is passed over (one there must load). A run
+/// that compares none fails.
+#[test]
+fn the_cases_create_patch_dictionaries_are_generated_from_their_descriptions() {
+    use umcf_model::create_patch;
+    let Ok(cases) = std::env::var("UMCF_CASES") else {
+        eprintln!(
+            "SKIP the_cases_create_patch_dictionaries_are_generated_from_their_descriptions: set UMCF_CASES=<case>:<case>… to run it"
+        );
+        return;
+    };
+    let mut compared = 0;
+    for dir in cases.split(':').filter(|d| !d.is_empty()) {
+        let case = match umcf_model::Case::open_with(&umcf_core::DirFs::new(dir), umcf_model::OpenOptions::default()) {
+            Ok(c) => c,
+            Err(e) => panic!("{dir}: doesn't open: {e}"),
+        };
+        let (desc, _) = Description::import(&case);
+        let Some(version) = desc.version.or(case.layout.version) else {
+            eprintln!("{dir}: its OpenFOAM version isn't told: not compared");
+            continue;
+        };
+        let targets = match create_patch::targets(&desc, None) {
+            Ok(t) => t,
+            Err(e) if e.contains("neither a role nor a type") => {
+                eprintln!("{dir}: {e}: not compared");
+                continue;
+            }
+            Err(e) => panic!("{dir}: {e}"),
+        };
+        for t in &targets {
+            let Some(own) = case.dict(&t.path) else {
+                assert_ne!(case.exists(&t.path), Some(true), "{dir}: {} is there but doesn't load", t.path);
+                continue;
+            };
+            assert_eq!(
+                create_patch::differences(&own.root, &t.made, version),
+                Vec::<String>::new(),
+                "{dir}: {}",
+                t.path
+            );
+            let text = create_patch::dict(t, version);
+            let doc = umcf_foam_dict::Document::parse(&text).unwrap();
+            assert!(umcf_model::blocks::untouched(&text), "{dir}: {}", t.path);
+            assert_eq!(
+                create_patch::differences(&doc.root, &t.made, version),
+                Vec::<String>::new(),
+                "{dir}: {}",
+                t.path
+            );
+            eprintln!("{dir}: {}: {} patches as the case's", t.path, t.made.len());
+            compared += 1;
+        }
+    }
+    eprintln!("{compared} createPatchDicts compared");
+    assert!(compared > 0, "UMCF_CASES gives no case with a createPatchDict");
 }

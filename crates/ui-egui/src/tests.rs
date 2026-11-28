@@ -3475,10 +3475,37 @@ fn the_workflow_cards_fill_from_the_description() {
         form(&h).params(spec).unwrap(),
         json!({"region": "street", "patch": "street_to_air", "partner": {"region": "air", "patch": "top"}})
     );
+    // Sources only spaced otherwise than filled in are unchanged: they follow a command run
+    // meanwhile.
+    h.state_mut()
+        .act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "from": ["defaultFaces"]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["from"], "defaultFaces");
+    set(&mut h, "from", "  defaultFaces ");
+    h.state_mut().act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "from": ["other"]}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["from"], "other");
+    // A type only trimmed otherwise (as the form sends it) is unchanged too.
+    h.state_mut().act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "type": "wall"}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["type"], "wall");
+    set(&mut h, "type", "wall ");
+    h.state_mut().act("workflow.patch", json!({"region": "street", "patch": "street_to_air", "type": "patch"}));
+    h.run();
+    h.run();
+    assert_eq!(form(&h).values["type"], "patch");
     // Leaving a patch the description has for a name it doesn't: what was filled in from it is
-    // cleared, not carried over; what was typed (the partner) stays.
+    // cleared, not carried over (sources only spaced, a type only trimmed otherwise too); what
+    // was typed (the partner) stays.
+    set(&mut h, "from", " other ");
+    set(&mut h, "type", "patch ");
     set(&mut h, "patch", "street_to_air2");
     h.run();
+    assert_eq!(form(&h).values["from"], "");
+    assert_eq!(form(&h).values["type"], "");
     assert_eq!(form(&h).values["role"], "");
     assert_eq!(form(&h).values["partner"], "air|top");
     // A new patch's name being typed keeps the role chosen for it.
